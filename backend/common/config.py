@@ -3,7 +3,6 @@ import os
 import json
 from typing import Dict, Any
 
-from backend.agents import AgentManager
 from backend.common.utils import get_local_ip
 from backend.common.resource import get_backend_resource
 from backend.utils.logger import get_logger
