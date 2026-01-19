@@ -64,50 +64,21 @@ RUN apt-get update && \
 # 安装 Python 构建依赖
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip && \
-    pip install pyarmor pyinstaller
+    pip install pyinstaller
 
-# 使用 RUN --mount 在同一层中复制、混淆并删除原始代码
-# 这样原始源码不会保留在任何 Docker 层中
+# 复制代码（不混淆）
 RUN --mount=type=bind,source=backend,target=/src/backend \
     --mount=type=bind,source=main.py,target=/src/main.py \
-    echo "=== 复制并混淆代码（不保留原始源码到镜像层） ===" && \
+    echo "=== 复制代码 ===" && \
     cp -r /src/backend ./backend && \
     cp /src/main.py ./main.py && \
-    echo "=== 确保 backend 是 Python 包 ===" && \
-    if [ ! -f "backend/__init__.py" ]; then \
-        echo "# Backend package" > backend/__init__.py; \
-    fi && \
-    echo "=== 备份资源文件 ===" && \
-    cp backend/config_template.json /tmp/config_template.json && \
-    echo "=== 显示 PyArmor 版本 ===" && \
-    pyarmor --version && \
-    echo "=== 开始混淆 Python 代码 ===" && \
-    pyarmor gen --recursive --output obfuscated_temp backend/ 2>&1 || { \
-        echo "PyArmor gen 失败，尝试使用旧版命令..." && \
-        pyarmor obfuscate --recursive --output obfuscated_temp backend/__init__.py 2>&1 || { \
-            echo "混淆失败，跳过混淆步骤，直接使用原始代码" && \
-            mkdir -p obfuscated_temp && \
-            cp -r backend obfuscated_temp/backend; \
-        }; \
-    } && \
-    echo "✓ 代码处理完成" && \
-    echo "=== 检查输出目录 ===" && \
-    ls -la obfuscated_temp/ && \
-    echo "=== 移动 PyArmor 运行时文件（如果存在） ===" && \
-    (mv obfuscated_temp/pyarmor_runtime_* ./ 2>/dev/null || echo "无运行时文件需要移动") && \
-    echo "=== 删除原始源码并替换为混淆版本 ===" && \
-    rm -rf backend/ main.py && \
-    mv obfuscated_temp/backend backend/ && \
-    rm -rf obfuscated_temp && \
-    echo "=== 恢复资源文件 ===" && \
-    cp /tmp/config_template.json backend/config_template.json && \
-    echo "✓ 原始源码已被混淆版本替换，不保留在镜像层" && \
+    echo "✓ 代码复制完成" && \
     ls -la backend/
 
 # 复制前端构建产物
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist/
 
-# 创建混淆版本的启动文件
+# 创建启动文件
 RUN cat > main_obfuscated.py << 'EOF'
 #!/usr/bin/env python3
 import sys
@@ -115,13 +86,10 @@ import os
 
 # 处理 PyInstaller 打包环境
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    # PyInstaller 环境：添加 _MEIPASS 到路径
     sys.path.insert(0, sys._MEIPASS)
 else:
-    # 开发环境：添加当前目录到路径
     sys.path.insert(0, os.path.dirname(__file__))
 
-# 导入混淆后的 app 模块（包名保持为 backend）
 from backend.app import app
 
 if __name__ == '__main__':
@@ -133,41 +101,26 @@ RUN cat > config_flow.spec << 'EOF'
 # -*- mode: python ; coding: utf-8 -*-
 import os
 import sys
-import glob
+from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
 # 收集数据文件
 datas = []
 binaries = []
-hiddenimports = []
 
 # 添加前端静态文件
 if os.path.exists('frontend/dist'):
     datas.append(('frontend/dist', 'static'))
 
-# 添加整个混淆后的 backend 目录作为数据文件
-# 注意：config_template.json 会随 backend 目录一起打包
-if os.path.exists('backend'):
-    # 收集所有混淆后的文件（包括 .py 和其他资源文件）
-    for root, dirs, files in os.walk('backend'):
-        for file in files:
-            src_path = os.path.join(root, file)
-            # 计算相对路径，保持目录结构
-            rel_dir = os.path.dirname(src_path)
-            datas.append((src_path, rel_dir))
+# 添加 backend 资源文件
+if os.path.exists('backend/config_template.json'):
+    datas.append(('backend/config_template.json', 'backend'))
 
-# 添加 PyArmor 运行时文件
-pyarmor_runtime = glob.glob('pyarmor_runtime_*')
-for runtime_dir in pyarmor_runtime:
-    if os.path.isdir(runtime_dir):
-        for root, dirs, files in os.walk(runtime_dir):
-            for file in files:
-                src_path = os.path.join(root, file)
-                rel_dir = os.path.dirname(src_path)
-                datas.append((src_path, rel_dir))
+# 收集所有 backend 子模块
+hiddenimports = collect_submodules('backend')
 
-# 添加必要的隐藏导入
+# 添加第三方库的隐藏导入
 hiddenimports += [
     'flask', 'flask_cors', 'yaml', 'requests', 'urllib3', 'jwt',
     'webdav3', 'webdav3.client', 'webdav3.connection', 'webdav3.exceptions',
@@ -183,34 +136,6 @@ hiddenimports += [
     'cryptography.hazmat.backends.openssl',
     'logging.handlers',
     'logging.config',
-    # backend 模块
-    'backend',
-    'backend.agents',
-    'backend.agents.manager',
-    'backend.agents.config_generator',
-    'backend.agents.install_script',
-    'backend.agents.go_install_script',
-    'backend.agents.metrics_history',
-    'backend.agents.version',
-    'backend.common',
-    'backend.common.config',
-    'backend.common.agent_manager',
-    'backend.common.auth',
-    'backend.common.utils',
-    'backend.common.resource',
-    'backend.converters',
-    'backend.converters.mihomo',
-    'backend.converters.mosdns',
-    'backend.converters.surge',
-    'backend.routes',
-    'backend.utils',
-    'backend.utils.logger',
-    'backend.utils.subscription_parser',
-    'backend.utils.subscription_cache',
-    'backend.utils.rule_matcher',
-    'backend.utils.rule_utils',
-    'backend.models',
-    'backend.models.config',
 ]
 
 a = Analysis(
