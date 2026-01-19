@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# ConfigFlow 混淆版本 Dockerfile（简化版，使用 PyArmor 免费功能）
+# ConfigFlow PyInstaller 打包版本 Dockerfile
 
 # ==============================================================================
 # Stage 1: Builder - 构建 Go Agent 二进制文件
