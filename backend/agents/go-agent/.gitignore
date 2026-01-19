@@ -1,0 +1,52 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+sublink-agent
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories
+vendor/
+# 注意: go.mod 和 go.sum 必须提交到 git，不要排除！
+
+# Docker build artifacts
+Dockerfile.*
+docker-compose.*.yml
+docker-compose.*.yaml
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Environment files
+.env
+
+# Build artifacts
+bin/
+dist/
+build/
+
+# Configuration files (if any)
+config.json
+config-*.json
+
+# Backup files
+*.backup.*
+*.bak
+
+# Temporary files
+tmp/
+temp/
+config/

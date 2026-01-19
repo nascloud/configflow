@@ -1,0 +1,113 @@
+version: '3.8'
+
+services:
+  config-flow-agent-aio:
+    image: thsrite/config-flow-agent-aio:latest
+    container_name: configflow-agent-aio
+    restart: always
+
+    ports:
+      # --- Agent 端口 ---
+      # Mihomo Agent API
+      - "8080:8080"
+      # MosDNS Agent API
+      - "8081:8081"
+
+      # --- DNS 端口 ---
+      # MosDNS DNS (主 DNS)
+      - "53:53/tcp"
+      - "53:53/udp"
+      # Mihomo DNS (备用 DNS)
+      - "1053:1053/tcp"
+      - "1053:1053/udp"
+
+      # --- Mihomo 服务端口 ---
+      # Mixed Proxy (HTTP + SOCKS5)
+      - "7890:7890"
+      # HTTP Proxy
+      - "7891:7891"
+      # External Controller (Dashboard)
+      - "9090:9090"
+
+    volumes:
+      # 持久化配置目录（可选，如果不挂载则使用容器内配置）
+      - ./config/mihomo:/etc/mihomo
+      - ./config/mosdns:/etc/mosdns
+
+    environment:
+      # --- 必需配置 ---
+      # ConfigFlow 服务器地址
+      - SERVER_URL=http://192.168.1.100:5801
+      # Agent 的外部 IP 地址（用于注册到 ConfigFlow）
+      - AGENT_IP=192.168.1.100
+
+      # --- 可选配置 ---
+      # 心跳间隔（秒）
+      - HEARTBEAT_INTERVAL=60
+      # 时区
+      - TZ=Asia/Shanghai
+
+      # --- Mihomo 控制 ---
+      # 是否启用 Mihomo 服务 (true/false)
+      - ENABLE_MIHOMO=true
+      # Mihomo Agent 名称
+      - AGENT_MIHOMO_NAME=mihomo-agent
+      # Mihomo Agent 端口（必须与上面 ports 部分匹配）
+      - AGENT_MIHOMO_PORT=8080
+
+      # --- MosDNS 控制 ---
+      # 是否启用 MosDNS 服务 (true/false)
+      - ENABLE_MOSDNS=true
+      # MosDNS Agent 名称
+      - AGENT_MOSDNS_NAME=mosdns-agent
+      # MosDNS Agent 端口（必须与上面 ports 部分匹配）
+      - AGENT_MOSDNS_PORT=8081
+
+    # 网络模式（可选）
+    # network_mode: "host"  # 使用主机网络模式可以获得更好的性能
+
+    # DNS 配置（可选）
+    # dns:
+    #   - 223.5.5.5
+    #   - 119.29.29.29
+
+    # 健康检查（可选）
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# 如果需要多个实例，可以这样配置：
+# services:
+#   # 实例 1: 只启用 Mihomo
+#   mihomo-only:
+#     image: thsrite/config-flow-agent-aio:latest
+#     container_name: configflow-mihomo
+#     restart: always
+#     ports:
+#       - "8080:8080"
+#       - "7890:7890"
+#       - "9090:9090"
+#     environment:
+#       - SERVER_URL=http://192.168.1.100:5801
+#       - AGENT_IP=192.168.1.100
+#       - ENABLE_MIHOMO=true
+#       - ENABLE_MOSDNS=false
+#       - AGENT_MIHOMO_NAME=mihomo-only
+#
+#   # 实例 2: 只启用 MosDNS
+#   mosdns-only:
+#     image: thsrite/config-flow-agent-aio:latest
+#     container_name: configflow-mosdns
+#     restart: always
+#     ports:
+#       - "8081:8081"
+#       - "53:53/udp"
+#     environment:
+#       - SERVER_URL=http://192.168.1.100:5801
+#       - AGENT_IP=192.168.1.100
+#       - ENABLE_MIHOMO=false
+#       - ENABLE_MOSDNS=true
+#       - AGENT_MOSDNS_NAME=mosdns-only

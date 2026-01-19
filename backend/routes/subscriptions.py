@@ -1,0 +1,494 @@
+"""订阅管理路由"""
+from flask import request, jsonify, current_app, Response
+from datetime import datetime
+import uuid
+import yaml
+
+from backend.routes import subscriptions_bp
+from backend.common.auth import require_auth, validate_token_or_jwt
+from backend.common.config import get_config, save_config
+from backend.utils.subscription_parser import parse_subscription
+from backend.utils.subscription_cache import (
+    load_subscription_cache,
+    save_subscription_nodes,
+)
+from backend.converters.mihomo import convert_node_to_mihomo
+
+
+def clean_aggregations_subscription(sub_id):
+    """从所有聚合中移除指定的订阅，如果聚合变空则禁用并从策略组中移除"""
+    config_data = get_config()
+    aggregations = config_data.get('subscription_aggregations', [])
+    modified = False
+
+    for agg in aggregations:
+        if sub_id in agg.get('subscriptions', []):
+            agg['subscriptions'] = [s for s in agg['subscriptions'] if s != sub_id]
+            modified = True
+            current_app.logger.info(f"从聚合 '{agg.get('name')}' 中移除订阅 {sub_id}")
+
+            # 检查聚合是否变空（没有订阅也没有节点）
+            if not agg.get('subscriptions') and not agg.get('nodes'):
+                current_app.logger.info(f"聚合 '{agg.get('name')}' 已变空，自动禁用")
+                agg['enabled'] = False
+                # 从所有策略组中移除此聚合
+                clean_proxy_groups_aggregation(agg['id'])
+
+    if modified:
+        save_config()
+    return modified
+
+
+def clean_proxy_groups_aggregation(agg_id):
+    """从所有策略组中移除指定的聚合引用"""
+    config_data = get_config()
+    proxy_groups = config_data.get('proxy_groups', [])
+    modified = False
+
+    for group in proxy_groups:
+        aggregations = group.get('aggregations', [])
+        if agg_id in aggregations:
+            group['aggregations'] = [a for a in aggregations if a != agg_id]
+            modified = True
+            current_app.logger.info(f"从策略组 '{group.get('name')}' 中移除聚合 {agg_id}")
+
+    if modified:
+        save_config()
+    return modified
+
+
+@subscriptions_bp.route('', methods=['GET', 'POST'])
+@require_auth
+def handle_subscriptions():
+    """订阅管理"""
+    config_data = get_config()
+
+    if request.method == 'GET':
+        subscriptions_with_cache = []
+        for sub in config_data['subscriptions']:
+            sub_copy = dict(sub)
+            cache = load_subscription_cache(sub.get('id', ''))
+            if cache:
+                sub_copy['cached_node_count'] = cache.get('count')
+                sub_copy['cached_updated_at'] = cache.get('updated_at')
+            else:
+                sub_copy['cached_node_count'] = None
+                sub_copy['cached_updated_at'] = None
+            subscriptions_with_cache.append(sub_copy)
+        return jsonify(subscriptions_with_cache)
+
+    elif request.method == 'POST':
+        sub = request.json
+        config_data['subscriptions'].append(sub)
+        save_config()
+        return jsonify({'success': True, 'data': sub})
+
+
+@subscriptions_bp.route('/<sub_id>', methods=['DELETE', 'PUT'])
+@require_auth
+def handle_subscription(sub_id):
+    """单个订阅操作"""
+    config_data = get_config()
+    subs = config_data['subscriptions']
+
+    if request.method == 'DELETE':
+        config_data['subscriptions'] = [s for s in subs if s['id'] != sub_id]
+        # 从所有聚合中移除此订阅
+        clean_aggregations_subscription(sub_id)
+        save_config()
+        return jsonify({'success': True})
+
+    elif request.method == 'PUT':
+        for i, s in enumerate(subs):
+            if s['id'] == sub_id:
+                old_enabled = s.get('enabled', True)
+                new_data = request.json
+                new_enabled = new_data.get('enabled', True)
+
+                config_data['subscriptions'][i] = new_data
+
+                # 如果订阅被禁用，从所有聚合中移除
+                if old_enabled and not new_enabled:
+                    clean_aggregations_subscription(sub_id)
+
+                save_config()
+                return jsonify({'success': True, 'data': new_data})
+        return jsonify({'success': False, 'message': 'Subscription not found'}), 404
+
+
+@subscriptions_bp.route('/reorder', methods=['POST'])
+@require_auth
+def reorder_subscriptions():
+    """批量更新订阅顺序"""
+    try:
+        config_data = get_config()
+        new_order = request.json.get('subscriptions', [])
+        config_data['subscriptions'] = new_order
+        save_config()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@subscriptions_bp.route('/<sub_id>/nodes', methods=['GET'])
+@require_auth
+def get_subscription_nodes(sub_id):
+    """获取订阅下的所有节点"""
+    config_data = get_config()
+    subs = config_data['subscriptions']
+    sub = next((s for s in subs if s['id'] == sub_id), None)
+
+    if not sub:
+        return jsonify({'success': False, 'message': 'Subscription not found'}), 404
+
+    # 从全局节点列表中过滤出属于该订阅的节点
+    nodes = [n for n in config_data.get('nodes', []) if n.get('subscription_id') == sub_id]
+
+    return jsonify(nodes)
+
+
+@subscriptions_bp.route('/<sub_id>/fetch', methods=['POST'])
+@require_auth
+def fetch_subscription(sub_id):
+    """获取订阅节点，优先从URL获取并缓存，失败则读取本地缓存"""
+    config_data = get_config()
+    subs = config_data['subscriptions']
+    sub = next((s for s in subs if s['id'] == sub_id), None)
+
+    if not sub:
+        return jsonify({'success': False, 'message': 'Subscription not found'}), 404
+
+    # 获取请求参数，判断是否是预览模式
+    data = request.get_json() or {}
+    preview_mode = data.get('preview', False)
+
+    nodes = None
+    cache_payload = None
+    fetch_error = None
+    from_cache = False
+
+    # 优先尝试从URL获取
+    try:
+        current_app.logger.info(f"尝试从URL获取订阅: {sub['name']} (id: {sub_id})")
+        nodes = parse_subscription(sub['url'])
+
+        # 为节点添加订阅来源信息和ID
+        for node in nodes:
+            node['subscription_id'] = sub_id
+            node['subscription_name'] = sub['name']
+            # 如果节点没有ID，生成一个临时ID（用于前端列表展示）
+            if 'id' not in node:
+                node['id'] = f"node_{uuid.uuid4().hex[:8]}"
+
+        # 写入缓存
+        cache_payload = save_subscription_nodes(
+            sub_id,
+            nodes,
+            {
+                'subscription_name': sub.get('name'),
+                'url': sub.get('url')
+            }
+        )
+        current_app.logger.info(f"成功从URL获取订阅并缓存: {sub['name']}, 节点数: {len(nodes)}")
+
+    except Exception as e:
+        fetch_error = str(e)
+        current_app.logger.warning(f"从URL获取订阅失败: {sub['name']}, 错误: {fetch_error}, 尝试读取本地缓存")
+
+        # 从URL获取失败，尝试读取本地缓存
+        cache = load_subscription_cache(sub_id)
+        if cache:
+            nodes = cache.get('nodes', [])
+            cache_payload = cache
+            from_cache = True
+            current_app.logger.info(f"使用本地缓存数据: {sub['name']}, 节点数: {len(nodes)}")
+        else:
+            # 既没有从URL获取成功，也没有本地缓存
+            return jsonify({
+                'success': False,
+                'message': f'从订阅URL获取失败: {fetch_error}，且本地无缓存数据'
+            }), 500
+
+    # 如果是预览模式，只返回节点列表，不添加到配置中
+    if preview_mode:
+        return jsonify({
+            'success': True,
+            'count': len(nodes),
+            'nodes': nodes,
+            'preview': True,
+            'from_cache': from_cache,
+            'fetch_error': fetch_error,
+            'cached_count': cache_payload.get('count') if cache_payload else 0,
+            'cached_updated_at': cache_payload.get('updated_at') if cache_payload else None
+        })
+
+    # 非预览模式：添加到节点列表
+    try:
+        added_count = 0
+        for node in nodes:
+            # 检查是否已存在（根据名称判断）
+            existing = next((n for n in config_data['nodes'] if n['name'] == node['name']), None)
+            if not existing:
+                config_data['nodes'].append(node)
+                added_count += 1
+
+        save_config()
+        return jsonify({
+            'success': True,
+            'count': len(nodes),
+            'added': added_count,
+            'nodes': nodes,
+            'from_cache': from_cache,
+            'fetch_error': fetch_error,
+            'cached_count': cache_payload.get('count') if cache_payload else 0,
+            'cached_updated_at': cache_payload.get('updated_at') if cache_payload else None
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@subscriptions_bp.route('/test', methods=['GET'])
+def test_subscription_route():
+    """测试订阅路由是否正常工作"""
+    return {'success': True, 'message': 'Subscription route is working!', 'timestamp': datetime.now().isoformat()}
+
+
+@subscriptions_bp.route('/proxies', methods=['GET'])
+def get_all_subscription_proxies():
+    """获取所有订阅的代理列表（YAML proxies 格式）
+
+    支持两种授权方式：
+    1. Authorization header: Bearer <JWT_TOKEN>
+    2. URL query 参数: ?token=<CONFIG_TOKEN>
+
+    返回格式为 YAML proxies 列表
+    """
+    # 验证授权
+    auth_result = validate_token_or_jwt(request)
+    if not auth_result.get('valid'):
+        return jsonify({
+            'success': False,
+            'message': auth_result.get('message', 'Unauthorized')
+        }), 401
+
+    try:
+        config_data = get_config()
+        subscriptions = config_data.get('subscriptions', [])
+
+        # 收集所有订阅的代理列表
+        all_proxies = []
+        subscription_info = []
+
+        for sub in subscriptions:
+            if not sub.get('enabled', True):
+                continue
+
+            sub_id = sub.get('id')
+            sub_name = sub.get('name', 'Unknown')
+
+            # 加载订阅缓存
+            cache = load_subscription_cache(sub_id)
+            if not cache:
+                current_app.logger.warning(f"订阅 '{sub_name}' (id: {sub_id}) 没有缓存数据")
+                continue
+
+            nodes = cache.get('nodes', [])
+            if not nodes:
+                current_app.logger.warning(f"订阅 '{sub_name}' (id: {sub_id}) 缓存中没有节点")
+                continue
+
+            # 转换节点为 proxies 格式
+            proxies = []
+            for node in nodes:
+                try:
+                    proxy = convert_node_to_mihomo(node)
+                    if proxy:
+                        proxies.append(proxy)
+                except Exception as e:
+                    current_app.logger.error(f"转换节点失败: {node.get('name')}, 错误: {str(e)}")
+                    continue
+
+            all_proxies.extend(proxies)
+            subscription_info.append({
+                'name': sub_name,
+                'id': sub_id,
+                'proxy_count': len(proxies),
+                'total_nodes': len(nodes),
+                'updated_at': cache.get('updated_at')
+            })
+
+        # 构建 YAML 响应
+        yaml_data = {
+            'proxies': all_proxies
+        }
+
+        # 添加元数据注释（英文，避免编码问题）
+        yaml_output = f"""# ConfigFlow Subscription Proxies
+# Generated: {datetime.now().isoformat()}Z
+# Subscriptions: {len(subscription_info)}
+# Total Proxies: {len(all_proxies)}
+#
+# Subscription Details:
+"""
+        for info in subscription_info:
+            yaml_output += f"#   - {info['name']}: {info['proxy_count']} proxies (updated: {info.get('updated_at', 'N/A')})\n"
+
+        yaml_output += "\n"
+        # 使用 IndentDumper 确保正确的缩进格式
+        from backend.converters.mihomo import IndentDumper
+        yaml_output += yaml.dump(
+            yaml_data,
+            Dumper=IndentDumper,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+            indent=2
+        )
+
+        return Response(
+            yaml_output,
+            mimetype='text/yaml; charset=utf-8',
+            headers={
+                'Content-Disposition': f'inline; filename="proxies_{datetime.now().strftime("%Y%m%d_%H%M%S")}.yaml"'
+            }
+        )
+
+    except Exception as e:
+        current_app.logger.error(f"获取订阅代理列表失败: {str(e)}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@subscriptions_bp.route('/<sub_id>/proxies', methods=['GET'])
+def get_subscription_proxies(sub_id):
+    """获取单个订阅的代理列表（YAML proxies 格式）
+
+    支持两种授权方式：
+    1. Authorization header: Bearer <JWT_TOKEN>
+    2. URL query 参数: ?token=<CONFIG_TOKEN>
+
+    优先从原订阅URL获取新配置并更新缓存，如果失败则返回本地缓存
+    返回格式为 YAML proxies 列表
+    """
+    # 验证授权
+    auth_result = validate_token_or_jwt(request)
+    if not auth_result.get('valid'):
+        return jsonify({
+            'success': False,
+            'message': auth_result.get('message', 'Unauthorized')
+        }), 401
+
+    try:
+        config_data = get_config()
+        subscriptions = config_data.get('subscriptions', [])
+        sub = next((s for s in subscriptions if s['id'] == sub_id), None)
+
+        if not sub:
+            return jsonify({'success': False, 'message': 'Subscription not found'}), 404
+
+        sub_name = sub.get('name', 'Unknown')
+        sub_url = sub.get('url')
+        nodes = None
+        cache_updated = False
+        fetch_error = None
+
+        # 优先尝试从原订阅URL获取新配置
+        if sub_url:
+            try:
+                current_app.logger.info(f"尝试从订阅URL获取最新配置: {sub_name} (id: {sub_id})")
+                nodes = parse_subscription(sub_url)
+
+                if nodes:
+                    # 为节点添加订阅来源信息
+                    for node in nodes:
+                        node['subscription_id'] = sub_id
+                        node['subscription_name'] = sub_name
+                        if 'id' not in node:
+                            node['id'] = f"node_{uuid.uuid4().hex[:8]}"
+
+                    # 更新缓存
+                    save_subscription_nodes(
+                        sub_id,
+                        nodes,
+                        {
+                            'subscription_name': sub_name,
+                            'url': sub_url
+                        }
+                    )
+                    cache_updated = True
+                    current_app.logger.info(f"成功从订阅URL获取并更新缓存: {sub_name}, 节点数: {len(nodes)}")
+            except Exception as e:
+                fetch_error = str(e)
+                current_app.logger.warning(f"从订阅URL获取配置失败: {sub_name}, 错误: {fetch_error}, 将使用本地缓存")
+
+        # 如果从URL获取失败或没有URL，则从本地缓存加载
+        if nodes is None:
+            cache = load_subscription_cache(sub_id)
+            if not cache:
+                return jsonify({
+                    'success': False,
+                    'message': f"订阅 '{sub_name}' 没有缓存数据，且从订阅URL获取失败: {fetch_error or '未知错误'}"
+                }), 404
+
+            nodes = cache.get('nodes', [])
+            if not nodes:
+                return jsonify({
+                    'success': False,
+                    'message': f"订阅 '{sub_name}' 缓存中没有节点"
+                }), 404
+
+            current_app.logger.info(f"使用本地缓存数据: {sub_name}, 节点数: {len(nodes)}")
+
+        # 转换节点为 proxies 格式
+        proxies = []
+        for node in nodes:
+            try:
+                proxy = convert_node_to_mihomo(node)
+                if proxy:
+                    proxies.append(proxy)
+            except Exception as e:
+                current_app.logger.error(f"转换节点失败: {node.get('name')}, 错误: {str(e)}")
+                continue
+
+        # 构建 YAML 响应
+        yaml_data = {
+            'proxies': proxies
+        }
+
+        # 添加元数据注释（英文，避免编码问题）
+        source_info = "from URL (cache updated)" if cache_updated else "from local cache"
+        if fetch_error and not cache_updated:
+            source_info += f" (fetch error: {fetch_error})"
+
+        yaml_output = f"""# ConfigFlow Subscription Proxies
+# Subscription: {sub_name}
+# ID: {sub_id}
+# Generated: {datetime.now().isoformat()}Z
+# Proxies: {len(proxies)} / {len(nodes)}
+# Source: {source_info}
+
+"""
+        # 使用 IndentDumper 确保正确的缩进格式
+        from backend.converters.mihomo import IndentDumper
+        yaml_output += yaml.dump(
+            yaml_data,
+            Dumper=IndentDumper,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+            indent=2
+        )
+
+        # 使用 ASCII 安全的文件名
+        safe_filename = f"proxies_{sub_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml"
+
+        return Response(
+            yaml_output,
+            mimetype='text/yaml; charset=utf-8',
+            headers={
+                'Content-Disposition': f'inline; filename="{safe_filename}"'
+            }
+        )
+
+    except Exception as e:
+        current_app.logger.error(f"获取订阅代理列表失败: {str(e)}")
+        return jsonify({'success': False, 'message': str(e)}), 500

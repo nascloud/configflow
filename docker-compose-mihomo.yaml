@@ -1,0 +1,39 @@
+services:
+  mihomo-agent:
+    container_name: configflow-agent-mihomo
+    build:
+      context: .
+      dockerfile: Dockerfile.agent.mihomo
+    image: thsrite/config-flow-agent-mihomo:latest
+    restart: always
+
+    ports:
+      # --- Agent 端口 ---
+      - "58080:8080"  # ConfigFlow Agent API
+
+      # --- Mihomo 服务端口 ---
+      - "57890:7890"  # Mix Proxy
+      - "57891:7891"  # HTTP(S) Proxy
+      - "57892:7892"  # SOCKS5 Proxy
+      - "59090:9090"  # External Controller API
+
+    volumes:
+      # !! 重要 !!: 将宿主机配置目录挂载到容器
+      # 如果目录不存在，Docker 会自动创建
+      - ./mihomo:/etc/mihomo
+
+    environment:
+      # --- 必填配置 ---
+      - SERVER_URL=http://192.168.50.100:5801  # ConfigFlow 服务器地址
+      - AGENT_NAME=mihomo-agent                # Agent 唯一标识
+
+      # --- 可选配置 ---
+      - AGENT_PORT=8080                        # Agent 监听端口（容器内）
+      - AGENT_IP=192.168.50.100                # Agent 外部 IP
+      - TZ=Asia/Shanghai                       # 时区
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,37 @@
+services:
+  mosdns-agent:
+    container_name: configflow-agent-mosdns
+    build:
+      context: .
+      dockerfile: Dockerfile.agent.mosdns
+    image: thsrite/config-flow-agent-mosdns:latest
+    restart: always
+
+    ports:
+      # --- Agent 端口 ---
+      - "58081:8080"  # ConfigFlow Agent API
+
+      # --- MosDNS 服务端口 ---
+      - "53:53/tcp"   # DNS TCP
+      - "53:53/udp"   # DNS UDP
+
+    volumes:
+      # !! 重要 !!: 将宿主机配置目录挂载到容器
+      # 如果目录不存在，Docker 会自动创建
+      - ./mosdns:/etc/mosdns
+
+    environment:
+      # --- 必填配置 ---
+      - SERVER_URL=http://192.168.50.100:5801  # ConfigFlow 服务器地址
+      - AGENT_NAME=mosdns-agent                # Agent 唯一标识
+
+      # --- 可选配置 ---
+      - AGENT_PORT=8080                        # Agent 监听端口（容器内）
+      - AGENT_IP=192.168.50.100                # Agent 外部 IP
+      - TZ=Asia/Shanghai                       # 时区
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

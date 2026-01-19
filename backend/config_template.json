@@ -1,0 +1,1191 @@
+{
+  "subscriptions": [
+    {
+      "enabled": true,
+      "id": "sub_1760688109177",
+      "interval": 86400,
+      "name": "subscribe",
+      "type": "universal",
+      "url": "订阅链接"
+    }
+  ],
+  "nodes": [],
+  "rule_configs": [
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760433378053",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760433349957",
+      "name": "Tracker",
+      "policy": "🎯 全球直连",
+      "url": "/api/rule-library/content/lib_1760433349957"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760431931322",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760317332488",
+      "name": "PrivateTracker",
+      "policy": "🎯 全球直连",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/PrivateTracker/PrivateTracker.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760086901784",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320991_1",
+      "name": "GoogleFCM",
+      "policy": "📢 谷歌FCM",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/GoogleFCM/GoogleFCM.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089433204",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320991_3",
+      "name": "Speedtest",
+      "policy": "📈 网络测试",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/Speedtest/Speedtest.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089440899",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320991_4",
+      "name": "Apple",
+      "policy": "🍎 苹果服务",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Apple/Apple.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089411859",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320991_2",
+      "name": "Direct",
+      "policy": "🎯 全球直连",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Direct/Direct.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760426568771",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760089568834",
+      "name": "Grok",
+      "policy": "🤖 人工智能",
+      "uniqueId": "ruleset-ruleset_1760426568771",
+      "url": "/api/rule-library/content/lib_1760089568834"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089611786",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320991_5",
+      "name": "AI",
+      "policy": "🤖 人工智能",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089718347",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_11",
+      "name": "OneDrive",
+      "policy": "Ⓜ️ 微软云盘",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OneDrive/OneDrive.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089728547",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_12",
+      "name": "Microsoft",
+      "policy": "Ⓜ️ 微软服务",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Microsoft/Microsoft.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760412868162",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_13",
+      "name": "Amazon",
+      "policy": "🛒 亚马逊",
+      "url": "/api/rule-library/content/lib_1760086320992_13"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089746112",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_14",
+      "name": "Telegram",
+      "policy": "📲 Telegram",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/Telegram/Telegram.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089786591",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_15",
+      "name": "Epic",
+      "policy": "🎮 游戏平台",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Epic/Epic.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089799393",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_16",
+      "name": "Sony",
+      "policy": "🎮 游戏平台",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Sony/Sony.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089807522",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_17",
+      "name": "Steam",
+      "policy": "🎮 游戏平台",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Steam/Steam.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760089813950",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_18",
+      "name": "Nintendo",
+      "policy": "🎮 游戏平台",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Nintendo/Nintendo.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760090028667",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_24",
+      "name": "GitHub",
+      "policy": "⌨️ GitHub",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/GitHub/GitHub.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760090035200",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_19",
+      "name": "BiliBili",
+      "policy": "📺 哔哩哔哩",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/BiliBili/BiliBili.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760090048527",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_20",
+      "name": "ChinaMedia",
+      "policy": "🎬 国内媒体",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMedia/ChinaMedia.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760090061375",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_21",
+      "name": "TikTok",
+      "policy": "🎵 TikTok",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/TikTok/TikTok.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760090070389",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_22",
+      "name": "GlobalMedia",
+      "policy": "🎞️ 国外媒体",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GlobalMedia/GlobalMedia.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760090098845",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_23",
+      "name": "Docker",
+      "policy": "✈️ 节点选择",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Docker/Docker.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760090109429",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_25",
+      "name": "Proxy",
+      "policy": "✈️ 节点选择",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Proxy/Proxy.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760317416697",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320991_0",
+      "name": "Lan",
+      "policy": "DIRECT",
+      "uniqueId": "ruleset-ruleset_1760317416697",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Lan/Lan.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "ruleset_1760090164882",
+      "itemType": "ruleset",
+      "library_rule_id": "lib_1760086320992_26",
+      "name": "ChinaMax",
+      "policy": "🎯 全球直连",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/ChinaMax/ChinaMax.list",
+      "uniqueId": "ruleset-ruleset_1760090164882"
+    },
+    {
+      "enabled": true,
+      "id": "rule_1760090172712",
+      "itemType": "rule",
+      "policy": "🐟 漏网之鱼",
+      "rule_type": "MATCH",
+      "value": ""
+    }
+  ],
+  "proxy_groups": [
+    {
+      "enabled": true,
+      "id": "group_b68937ec",
+      "include_groups": [
+        "group_0e2da85c",
+        "group_74d0364a",
+        "group_e537cc3f",
+        "group_9c6a6c3b",
+        "group_2740708d",
+        "group_bcf10e0a",
+        "group_1760080391905_3",
+        "group_c121613d"
+      ],
+      "manual_nodes": [],
+      "name": "✈️ 节点选择",
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148227318",
+      "id": "group_1760080391905_1",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "🐟 漏网之鱼",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148227318",
+      "id": "group_1760080391905_2",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "📈 网络测试",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "id": "group_1760080391905_3",
+      "name": "🚀 手动切换",
+      "type": "select",
+      "enabled": true,
+      "subscriptions": [],
+      "regex": "",
+      "manual_nodes": [],
+      "include_groups": [],
+      "proxies_order": [],
+      "follow_group": "group_1760248559077"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760147923979",
+      "id": "group_1760080391905_4",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "🎮 游戏平台",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148330550",
+      "id": "group_1760080391905_5",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "⌨️ GitHub",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148330550",
+      "id": "group_1760080391905_6",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "🎞️ 国外媒体",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760147923979",
+      "id": "group_1760080391905_7",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "🎵 TikTok",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148227318",
+      "id": "group_1760080391905_8",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "📺 哔哩哔哩",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148045742",
+      "id": "group_1760080391905_9",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "🤖 人工智能",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148227318",
+      "id": "group_1760080391905_10",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "🎬 国内媒体",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148227318",
+      "id": "group_1760080391905_11",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "Ⓜ️ 微软云盘",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148227318",
+      "id": "group_1760080391905_12",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "Ⓜ️ 微软服务",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148227318",
+      "id": "group_1760080391905_13",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "🛒 亚马逊",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148330550",
+      "id": "group_1760080391905_14",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "📢 谷歌FCM",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148227318",
+      "id": "group_1760080391905_15",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "🍎 苹果服务",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "follow_group": "group_1760148330550",
+      "id": "group_1760080391905_16",
+      "include_groups": [],
+      "manual_nodes": [],
+      "name": "📲 Telegram",
+      "proxies_order": [],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": false,
+      "id": "group_1760080391905_17",
+      "include_groups": [
+        "group_c121613d"
+      ],
+      "manual_nodes": [],
+      "name": "🔒 私有网络",
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "id": "group_c121613d",
+      "include_groups": [],
+      "manual_nodes": [
+        "DIRECT"
+      ],
+      "name": "🎯 全球直连",
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": true,
+      "id": "group_8c07652b",
+      "include_groups": [],
+      "manual_nodes": [
+        "REJECT"
+      ],
+      "name": "🚫 拒绝访问",
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "id": "group_1760154959237",
+      "name": "🎯 广告屏蔽",
+      "type": "select",
+      "enabled": true,
+      "subscriptions": [],
+      "regex": "",
+      "manual_nodes": [
+        "DIRECT",
+        "REJECT"
+      ],
+      "include_groups": [],
+      "proxies_order": [
+        {
+          "id": "DIRECT",
+          "type": "node"
+        },
+        {
+          "id": "REJECT",
+          "type": "node"
+        }
+      ]
+    },
+    {
+      "id": "group_0e2da85c",
+      "name": "🇭🇰 香港节点",
+      "type": "url-test",
+      "enabled": true,
+      "subscriptions": [
+        "sub_1760688109177"
+      ],
+      "regex": "(?=.*?(香港|港|hk|hong\\s?kong))香港|港|hk|hong\\s?kong",
+      "aggregation_regex": "",
+      "manual_nodes": [],
+      "aggregations": [],
+      "include_groups": [],
+      "proxies_order": [],
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": 300
+    },
+    {
+      "id": "group_74d0364a",
+      "name": "🇹🇼 台湾节点",
+      "type": "url-test",
+      "enabled": true,
+      "subscriptions": [
+        "sub_1760688109177"
+      ],
+      "regex": "(?=.*?(台|tw|taiwan))台|tw|taiwan",
+      "aggregation_regex": "",
+      "manual_nodes": [],
+      "aggregations": [],
+      "include_groups": [],
+      "proxies_order": [],
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": 300
+    },
+    {
+      "id": "group_e537cc3f",
+      "name": "🇯🇵 日本节点",
+      "type": "url-test",
+      "enabled": true,
+      "subscriptions": [
+        "sub_1760688109177"
+      ],
+      "regex": "(?=.*?(日本|jp|japan))日本|jp|japan",
+      "aggregation_regex": "",
+      "manual_nodes": [],
+      "aggregations": [],
+      "include_groups": [],
+      "proxies_order": [],
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": 300
+    },
+    {
+      "id": "group_9c6a6c3b",
+      "name": "🇸🇬 新加坡节点",
+      "type": "url-test",
+      "enabled": true,
+      "subscriptions": [
+        "sub_1760688109177"
+      ],
+      "regex": "(?=.*?(新加坡|(?<![.])sg|singapore))新加坡|(?<![.])sg|singapore",
+      "aggregation_regex": "",
+      "manual_nodes": [],
+      "aggregations": [],
+      "include_groups": [],
+      "proxies_order": [],
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": 300
+    },
+    {
+      "id": "group_2740708d",
+      "name": "🇺🇸 美国节点",
+      "type": "url-test",
+      "enabled": true,
+      "subscriptions": [
+        "sub_1760688109177"
+      ],
+      "regex": "(?i)美(?:国|西|洲)|北美|united\\s?states|usa|us|america|north\\s?america",
+      "aggregation_regex": "",
+      "manual_nodes": [],
+      "aggregations": [],
+      "include_groups": [],
+      "proxies_order": [],
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": 300
+    },
+    {
+      "id": "group_bcf10e0a",
+      "name": "🇰🇷 韩国节点",
+      "type": "url-test",
+      "enabled": true,
+      "subscriptions": [
+        "sub_1760688109177"
+      ],
+      "regex": "(?=.*?(韩|kr|korea))韩|kr|korea",
+      "aggregation_regex": "",
+      "manual_nodes": [],
+      "aggregations": [],
+      "include_groups": [],
+      "proxies_order": [],
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": 300
+    },
+    {
+      "id": "group_1760075954008_7",
+      "name": "🇭🇰 香港负载均衡",
+      "type": "load-balance",
+      "enabled": true,
+      "subscriptions": [
+        "sub_1760688109177"
+      ],
+      "regex": "(?=.*?(香港|港|hk|hong\\s?kong))香港|港|hk|hong\\s?kong",
+      "aggregation_regex": "",
+      "manual_nodes": [],
+      "aggregations": [],
+      "include_groups": [],
+      "proxies_order": [],
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": 300,
+      "strategy": "round-robin",
+      "lazy": true
+    },
+    {
+      "id": "group_1760075954008_8",
+      "name": "🇺🇸 美国负载均衡",
+      "type": "load-balance",
+      "enabled": true,
+      "subscriptions": [
+        "sub_1760688109177"
+      ],
+      "regex": "(?i)美(?:国|西|洲)|北美|united\\s?states|usa|us|america|north\\s?america",
+      "aggregation_regex": "",
+      "manual_nodes": [],
+      "aggregations": [],
+      "include_groups": [],
+      "proxies_order": [],
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": 300,
+      "strategy": "round-robin",
+      "lazy": true
+    },
+    {
+      "id": "group_1760075954008_9",
+      "name": "🇯🇵 日本负载均衡",
+      "type": "load-balance",
+      "enabled": true,
+      "subscriptions": [
+        "sub_1760688109177"
+      ],
+      "regex": "(?=.*?(日本|jp|japan))日本|jp|japan",
+      "aggregation_regex": "",
+      "manual_nodes": [],
+      "aggregations": [],
+      "include_groups": [],
+      "proxies_order": [],
+      "url": "http://www.gstatic.com/generate_204",
+      "interval": 300,
+      "strategy": "round-robin",
+      "lazy": true
+    },
+    {
+      "enabled": false,
+      "id": "group_1760147923979",
+      "include_groups": [
+        "group_0e2da85c",
+        "group_74d0364a",
+        "group_e537cc3f",
+        "group_9c6a6c3b",
+        "group_2740708d",
+        "group_bcf10e0a",
+        "group_1760080391905_3",
+        "group_b68937ec",
+        "group_c121613d"
+      ],
+      "manual_nodes": [],
+      "name": "香港优先策略",
+      "proxies_order": [
+        {
+          "id": "group_0e2da85c",
+          "type": "strategy"
+        },
+        {
+          "id": "group_74d0364a",
+          "type": "strategy"
+        },
+        {
+          "id": "group_e537cc3f",
+          "type": "strategy"
+        },
+        {
+          "id": "group_9c6a6c3b",
+          "type": "strategy"
+        },
+        {
+          "id": "group_2740708d",
+          "type": "strategy"
+        },
+        {
+          "id": "group_bcf10e0a",
+          "type": "strategy"
+        },
+        {
+          "id": "group_1760080391905_3",
+          "type": "strategy"
+        },
+        {
+          "id": "group_b68937ec",
+          "type": "strategy"
+        },
+        {
+          "id": "group_c121613d",
+          "type": "strategy"
+        }
+      ],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": false,
+      "id": "group_1760148045742",
+      "include_groups": [
+        "group_2740708d",
+        "group_74d0364a",
+        "group_e537cc3f",
+        "group_9c6a6c3b",
+        "group_bcf10e0a",
+        "group_0e2da85c",
+        "group_1760080391905_3",
+        "group_b68937ec",
+        "group_c121613d"
+      ],
+      "manual_nodes": [],
+      "name": "美国优先策略",
+      "proxies_order": [
+        {
+          "id": "group_2740708d",
+          "type": "strategy"
+        },
+        {
+          "id": "group_74d0364a",
+          "type": "strategy"
+        },
+        {
+          "id": "group_e537cc3f",
+          "type": "strategy"
+        },
+        {
+          "id": "group_9c6a6c3b",
+          "type": "strategy"
+        },
+        {
+          "id": "group_bcf10e0a",
+          "type": "strategy"
+        },
+        {
+          "id": "group_0e2da85c",
+          "type": "strategy"
+        },
+        {
+          "id": "group_1760080391905_3",
+          "type": "strategy"
+        },
+        {
+          "id": "group_b68937ec",
+          "type": "strategy"
+        },
+        {
+          "id": "group_c121613d",
+          "type": "strategy"
+        }
+      ],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": false,
+      "id": "group_1760148227318",
+      "include_groups": [
+        "group_c121613d",
+        "group_b68937ec",
+        "group_0e2da85c",
+        "group_74d0364a",
+        "group_e537cc3f",
+        "group_9c6a6c3b",
+        "group_2740708d",
+        "group_bcf10e0a",
+        "group_1760080391905_3"
+      ],
+      "manual_nodes": [],
+      "name": "优先直连",
+      "proxies_order": [
+        {
+          "id": "group_c121613d",
+          "type": "strategy"
+        },
+        {
+          "id": "group_b68937ec",
+          "type": "strategy"
+        },
+        {
+          "id": "group_0e2da85c",
+          "type": "strategy"
+        },
+        {
+          "id": "group_74d0364a",
+          "type": "strategy"
+        },
+        {
+          "id": "group_e537cc3f",
+          "type": "strategy"
+        },
+        {
+          "id": "group_9c6a6c3b",
+          "type": "strategy"
+        },
+        {
+          "id": "group_2740708d",
+          "type": "strategy"
+        },
+        {
+          "id": "group_bcf10e0a",
+          "type": "strategy"
+        },
+        {
+          "id": "group_1760080391905_3",
+          "type": "strategy"
+        }
+      ],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "enabled": false,
+      "id": "group_1760148330550",
+      "include_groups": [
+        "group_b68937ec",
+        "group_0e2da85c",
+        "group_74d0364a",
+        "group_e537cc3f",
+        "group_9c6a6c3b",
+        "group_2740708d",
+        "group_bcf10e0a",
+        "group_1760080391905_3",
+        "group_c121613d"
+      ],
+      "manual_nodes": [],
+      "name": "优先代理",
+      "proxies_order": [
+        {
+          "id": "group_b68937ec",
+          "type": "strategy"
+        },
+        {
+          "id": "group_0e2da85c",
+          "type": "strategy"
+        },
+        {
+          "id": "group_74d0364a",
+          "type": "strategy"
+        },
+        {
+          "id": "group_e537cc3f",
+          "type": "strategy"
+        },
+        {
+          "id": "group_9c6a6c3b",
+          "type": "strategy"
+        },
+        {
+          "id": "group_2740708d",
+          "type": "strategy"
+        },
+        {
+          "id": "group_bcf10e0a",
+          "type": "strategy"
+        },
+        {
+          "id": "group_1760080391905_3",
+          "type": "strategy"
+        },
+        {
+          "id": "group_c121613d",
+          "type": "strategy"
+        }
+      ],
+      "regex": "",
+      "subscriptions": [],
+      "type": "select"
+    },
+    {
+      "id": "group_1760248559077",
+      "name": "ALL",
+      "type": "select",
+      "enabled": true,
+      "subscriptions": [
+        "sub_1760688109177"
+      ],
+      "regex": "",
+      "aggregation_regex": "",
+      "manual_nodes": [],
+      "aggregations": [],
+      "include_groups": [],
+      "proxies_order": []
+    }
+  ],
+  "rule_library": [
+    {
+      "behavior": "classical",
+      "content": "#DOMAIN-REGEX,tracker.*\nDOMAIN,pandapt.net\nDOMAIN,panda.pt\nDOMAIN,hdvideo.one\nDOMAIN,t.ourhelp.club\nDOMAIN,tracker.hhanclub.top\nDOMAIN,tracker.hhan.club\nDOMAIN,tracker.cyanbug.net\nDOMAIN,tracker.hdtime.org\nDOMAIN,tracker.piggo.me\nDOMAIN,tracker.hdarea.club\nDOMAIN,please.passthepopcorn.me\nDOMAIN,tracker.sjtu.edu.cn\nDOMAIN,tracker.beyond-hd.me\nDOMAIN,tracker.pterclub.com\nDOMAIN,t.audiences.me\nDOMAIN,tracker.cinefiles.info\nDOMAIN,tracker.m-team.cc\n#彩虹岛域名与tracker同属\nDOMAIN,chdbits.xyz\nDOMAIN,tracker.ptchdbits.co\nDOMAIN,tracker.rainbowisland.co\nDOMAIN,t.hdhome.org\n#我堡域名、tracker同属\nDOMAIN,tracker01.ilovelemonhd.me\nDOMAIN,tracker-public.tjupt.org\n#学校域名、tracker同属\nDOMAIN,pt.btschool.club\nDOMAIN,tracker.totheglory.im\nDOMAIN,t.pthome.org\nDOMAIN,on.springsunday.net\n#ultrahd域名、tracker同属\nDOMAIN,ultrahd.net\nDOMAIN,tracker.keepfrds.com\nDOMAIN,tracker.leaves.red\nDOMAIN,tracker2.leaves.red\nDOMAIN,tracker3.leaves.red\n#明教域名、tracker同属\nDOMAIN,hdpt.xyz\n#PT时间域名、tracker同属\nDOMAIN,www.pttime.online\nDOMAIN,t.hddolby.com\nDOMAIN,tracker.agsvpt.work\nDOMAIN,tracker.zhuque.in\nDOMAIN,announce.haidan.video\nDOMAIN,tracker.hdsky.me\n#海棠域名、tracker同属\nDOMAIN,www.htpt.cc\nDOMAIN,tracker.ilolicon.cc\nDOMAIN,sunnytk.top\nDOMAIN,t.ubits.club\nDOMAIN,connects.icu\nDOMAIN,nextpt.net\nDOMAIN,tracker.azusa.wiki\nDOMAIN,zimiao.icu\nDOMAIN,t.acg.rip\nDOMAIN,hdfans.org",
+      "enabled": true,
+      "id": "lib_1760433349957",
+      "name": "Tracker",
+      "source_type": "content"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320991_1",
+      "name": "GoogleFCM",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/GoogleFCM/GoogleFCM.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320991_2",
+      "name": "Direct",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Direct/Direct.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320991_3",
+      "name": "Speedtest",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/Speedtest/Speedtest.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320991_4",
+      "name": "Apple",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Apple/Apple.list"
+    },
+    {
+      "behavior": "classical",
+      "content": "DOMAIN-SUFFIX,x.ai\nDOMAIN-SUFFIX,grok.com",
+      "enabled": true,
+      "id": "lib_1760089568834",
+      "name": "Grok",
+      "source_type": "content"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320991_5",
+      "name": "AI",
+      "source_type": "url",
+      "url": "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/refs/heads/master/Clash/Ruleset/AI.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_11",
+      "name": "OneDrive",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OneDrive/OneDrive.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_12",
+      "name": "Microsoft",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Microsoft/Microsoft.list"
+    },
+    {
+      "behavior": "classical",
+      "content": "# 亚马逊全球购物规则组\nDOMAIN-SUFFIX,amazon.com\nDOMAIN-SUFFIX,amazon.ca\nDOMAIN-SUFFIX,amazon.com.mx\nDOMAIN-SUFFIX,amazon.co.uk\nDOMAIN-SUFFIX,amazon.de\nDOMAIN-SUFFIX,amazon.fr\nDOMAIN-SUFFIX,amazon.it\nDOMAIN-SUFFIX,amazon.es\nDOMAIN-SUFFIX,amazon.nl\nDOMAIN-SUFFIX,amazon.pl\nDOMAIN-SUFFIX,amazon.se\nDOMAIN-SUFFIX,amazon.com.tr\nDOMAIN-SUFFIX,amazon.in\nDOMAIN-SUFFIX,amazon.co.jp\nDOMAIN-SUFFIX,amazon.com.au\nDOMAIN-SUFFIX,amazon.com.br\nDOMAIN-SUFFIX,amazon.ae\nDOMAIN-SUFFIX,amazon.sa\nDOMAIN-SUFFIX,amazon.sg\n  # 通用子域名和 CDN\n# AWS CDN\nDOMAIN-SUFFIX,amazonaws.com\nDOMAIN-SUFFIX,ssl-images-amazon.com\n  # 广告\nDOMAIN-SUFFIX,amazon-adsystem.com\nDOMAIN,m.media-amazon.com\nDOMAIN,unagi-na.amazon.com",
+      "enabled": true,
+      "id": "lib_1760086320992_13",
+      "name": "Amazon",
+      "source_type": "content"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_14",
+      "name": "Telegram",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/Telegram/Telegram.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_15",
+      "name": "Epic",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Epic/Epic.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_16",
+      "name": "Sony",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Sony/Sony.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_17",
+      "name": "Steam",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Steam/Steam.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_18",
+      "name": "Nintendo",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Nintendo/Nintendo.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_24",
+      "name": "GitHub",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/GitHub/GitHub.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_19",
+      "name": "BiliBili",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/BiliBili/BiliBili.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_20",
+      "name": "ChinaMedia",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMedia/ChinaMedia.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_21",
+      "name": "TikTok",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/TikTok/TikTok.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_22",
+      "name": "GlobalMedia",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GlobalMedia/GlobalMedia.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_23",
+      "name": "Docker",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Docker/Docker.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_25",
+      "name": "Proxy",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Proxy/Proxy.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320991_0",
+      "name": "Lan",
+      "source_type": "url",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Lan/Lan.list"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760086320992_26",
+      "name": "ChinaMax",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/ChinaMax/ChinaMax.list",
+      "source_type": "url"
+    },
+    {
+      "behavior": "classical",
+      "enabled": true,
+      "id": "lib_1760317332488",
+      "name": "PrivateTracker",
+      "source_type": "url",
+      "url": "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/PrivateTracker/PrivateTracker.list"
+    }
+  ],
+  "system_config": {
+    "server_domain": "",
+    "github_proxy_domain": ""
+  },
+  "mosdns": {
+    "direct_rulesets": [
+      "ruleset_1760089411859",
+      "ruleset_1760090035200",
+      "ruleset_1760090048527",
+      "ruleset_1760317416697",
+      "ruleset_1760090164882",
+      "ruleset_1760431931322",
+      "ruleset_1760433378053"
+    ],
+    "proxy_rulesets": [
+      "ruleset_1760086901784",
+      "ruleset_1760089433204",
+      "ruleset_1760089440899",
+      "ruleset_1760426568771",
+      "ruleset_1760089611786",
+      "ruleset_1760089718347",
+      "ruleset_1760089728547",
+      "ruleset_1760412868162",
+      "ruleset_1760089746112",
+      "ruleset_1760089786591",
+      "ruleset_1760089799393",
+      "ruleset_1760089807522",
+      "ruleset_1760089813950",
+      "ruleset_1760090028667",
+      "ruleset_1760090061375",
+      "ruleset_1760090070389",
+      "ruleset_1760090098845",
+      "ruleset_1760090109429"
+    ],
+    "direct_rules": [],
+    "proxy_rules": [],
+    "local_dns": "",
+    "remote_dns": "",
+    "default_forward": "forward_remote",
+    "custom_hosts": "",
+    "custom_config": "log:\n  level: debug\n  file: ./mosdns.log",
+    "fallback_dns": "",
+    "log_enabled": true,
+    "log_level": "info",
+    "log_file": "./mosdns.log",
+    "api_enabled": true,
+    "api_address": "0.0.0.0:8338",
+    "custom_matches": [],
+    "custom_match_position": "tail"
+  },
+  "mihomo": {
+    "custom_config": "  # 全局配置 \nport: 7890\nsocks-port: 7891\nredir-port: 7892\nmixed-port: 7893\ntproxy-port: 7894\nallow-lan: true\nbind-address: \"*\"\nipv6: false\nunified-delay: true\ntcp-concurrent: true\nlog-level: warning\nfind-process-mode: 'strict'   #进程匹配 always/strict/off\n# interface-name: en0\nglobal-client-fingerprint: chrome\nkeep-alive-idle: 600\nkeep-alive-interval: 15\ndisable-keep-alive: false\nprofile:\n  store-selected: true\n  store-fake-ip: true\n\n# 控制面板\nexternal-controller: 0.0.0.0:9090\nsecret: \"123456\"\nexternal-ui: \"ui\"\n#external-ui-name: metacubexd\n#external-ui-url: \"https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip\"\nexternal-ui-url: \"https://github.com/Zephyruso/zashboard/archive/refs/heads/gh-pages.zip\"\n\n# 嗅探\nsniffer:\n  enable: true\n  sniff:\n    HTTP:\n      ports: [80, 8080-8880]\n      override-destination: true\n    TLS:\n      ports: [443, 8443]\n    QUIC:\n      ports: [443, 8443]\n  force-domain:\n    - \"+.v2ex.com\"\n  skip-domain:\n #   - \"rule-set:Private,Direct\"\n    - \"dlg.io.mi.com\"\n    - \"+.push.apple.com\"\n    - \"+.apple.com\"\n    - \"+.wechat.com\"\n    - \"+.qpic.cn\"\n    - \"+.qq.com\"\n    - \"+.wechatapp.com\"\n    - \"+.vivox.com\"\n    - \"+.oray.com\"\n    - \"+.sunlogin.net\"\n    - \"+.msftconnecttest.com\"\n    - \"+.msftncsi.com\"\n\n# 入站  \ntun:\n  enable: true\n  # system/gvisor/mixed\n  stack: mixed\n  dns-hijack: [\"any:53\", \"tcp://any:53\"]\n  auto-route: true\n  auto-redirect: true\n  auto-detect-interface: true\n  #中国IP绕过内核\n # route-exclude-address-set:\n#     - \"rule-set:ChinaMaxNoIP,Custom_Direct\"\n\n# DNS模块\ndns:\n  enable: true\n  concurrent: true       # 启用并行 DNS 查询，加速解析\n  query-timeout: 3000   # DNS 查询超时时间（毫秒），避免等待过长\n  listen: 0.0.0.0:1053\n  ipv6: false\n  respect-rules: true\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter-mode: blacklist\n  fake-ip-filter:\n#    - \"rule-set:Private,Direct\"\n    - '*.lan'\n    - '*.local'\n    - '*.arpa'\n    - 'time.*.com'\n    - 'ntp.*.com'\n    - \"+.ntp.ntsc.ac.cn\"\n    - \"+.cn.ntp.org.cn\"\n    - '+.market.xiaomi.com'\n    - 'localhost.ptlogin2.qq.com'\n    - '*.msftncsi.com'\n    - 'www.msftconnecttest.com'\n  default-nameserver:\n    - tls://223.5.5.5\n    - 119.29.29.29\n\n  # 直连 DNS 服务器，用于解析不需要代理的域名（通常为国内域名）\n  # 使用 DoH（DNS over HTTPS）以保护隐私，防止 DNS 污染\n  direct-nameserver:\n    - tls://223.5.5.5\n    - 119.29.29.29\n\n  # 控制直连 DNS 是否遵循 nameserver-policy 的策略\n  # 设置为 false，确保直连域名始终使用 direct-nameserver 中的服务器\n  direct-nameserver-follow-policy: false\n\n  # 代理服务器的 DNS 解析，用于解析需要通过代理访问的域名（通常为海外域名）\n  # 使用公共 DNS，确保海外域名解析准确\n  proxy-server-nameserver:\n    - https://doh.pub/dns-query\n    - https://dns.alidns.com/dns-query\n\n  # DNS 解析策略，针对特定域名或规则集指定专用的 DNS 服务器\n  # 优化规则以覆盖常见国内服务，降低延迟\n  nameserver-policy:\n    '+.115.com': '223.5.5.5'          # 115.com 及其子域名使用腾讯 DNS\n    # 'rule-set:gfw_domain': '8.8.8.8'     # GFW 屏蔽域名使用 Google DNS，绕过限制\n\n  # 全局 DNS 服务器，作为默认解析的最终备用\n  # 优先使用 DoH 服务器以增强隐私保护\n  nameserver:\n    - https://doh.pub/dns-query\n    - https://dns.alidns.com/dns-query "
+  }
+}
