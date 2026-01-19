@@ -272,9 +272,7 @@ def generate_surge_config(config_data: Dict[str, Any], base_url: str = '') -> st
 
     logger.debug(f"最终生成的 Surge proxies 数量: {len(proxies) - 1}")  # -1 because of '[Proxy]' header
 
-    # 添加内置代理
-    proxies.append('DIRECT = direct')
-    proxies.append('REJECT = reject')
+    # 注意：DIRECT 和 REJECT 是 Surge 内置策略，不需要在 [Proxy] 部分定义
 
     sections.append('\n'.join(proxies))
 
