@@ -32,12 +32,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 复制依赖文件、Go Agent、前端构建产物
+# 复制依赖文件、Go Agent
 COPY backend/requirements.txt ./
 COPY --from=go-builder /dist/ /opt/configflow/static/agents/
-COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 
-# 安装依赖、配置 nginx/supervisor
+# 安装依赖、配置 nginx/supervisor（必须先安装 nginx，再复制前端文件）
 RUN apt-get update && \
     apt-get install -y --no-install-recommends nginx supervisor && \
     rm -rf /var/lib/apt/lists/* && \
@@ -45,6 +44,9 @@ RUN apt-get update && \
     (groupadd -r nginx || true) && (useradd -r -g nginx -s /sbin/nologin -d /nonexistent nginx || true) && \
     mkdir -p /data /var/log/supervisor /var/cache/nginx /var/log/nginx /opt/configflow/static/agents /etc/supervisor/conf.d && \
     chown -R nginx:nginx /var/cache/nginx /var/log/nginx /usr/share/nginx/html
+
+# 复制前端构建产物（在 nginx 安装后，覆盖默认页面）
+COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 
 # 复制后端代码和配置文件
 COPY backend ./backend
