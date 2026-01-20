@@ -2,10 +2,6 @@ name: Docker ConfigFlow PyInstaller Build
 
 on:
   push:
-    paths:
-      - 'backend/**'
-      - 'docker/Dockerfile.pyinstaller'
-      - '.github/workflows/docker-pyinstaller.yml'
     tags:
       - 'v*'
   workflow_dispatch:
