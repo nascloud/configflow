@@ -1153,6 +1153,16 @@ def convert_node_to_mihomo(node: Dict[str, Any]) -> Dict[str, Any]:
             'enabled': params.get('smux', False)
         }
 
+        # ALPN
+        alpn = params.get('alpn')
+        if alpn:
+            if isinstance(alpn, str):
+                base['alpn'] = alpn.split(',')
+            else:
+                base['alpn'] = alpn
+        else:
+            base['alpn'] = []
+
         if security == 'reality':
             # Reality 模式
             base['tls'] = True
@@ -1192,14 +1202,6 @@ def convert_node_to_mihomo(node: Dict[str, Any]) -> Dict[str, Any]:
             fp = params.get('fp', '')
             if fp:
                 base['client-fingerprint'] = fp
-
-            # ALPN
-            alpn = params.get('alpn')
-            if alpn:
-                if isinstance(alpn, str):
-                    base['alpn'] = alpn.split(',')
-                else:
-                    base['alpn'] = alpn
 
         # 流控参数 (flow)
         flow = params.get('flow', '')
