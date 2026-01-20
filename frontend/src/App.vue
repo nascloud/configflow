@@ -12,7 +12,7 @@
               <el-icon :size="24"><Menu /></el-icon>
             </el-button>
             <img src="/icon.png" alt="Logo" class="logo-icon" />
-            <h2 class="logo-text">代理配置生成器</h2>
+            <h2 class="logo-text">ConfigFlow</h2>
           </div>
           <div class="header-actions">
             <div class="version-github-group">

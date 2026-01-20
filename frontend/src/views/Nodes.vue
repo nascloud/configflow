@@ -57,7 +57,10 @@
             />
             <div class="card-title">
               <span class="node-icon">🌐</span>
-              <span class="node-name">{{ node.name }}</span>
+              <div class="node-name-group">
+                <span class="node-name">{{ node.name }}</span>
+                <span v-if="node.remark" class="node-remark">{{ node.remark }}</span>
+              </div>
             </div>
           </div>
           <div class="card-meta">
@@ -135,6 +138,9 @@
         <el-form :model="form" label-position="top" class="nodes-form">
           <el-form-item label="节点名称">
             <el-input v-model="form.name" placeholder="请输入节点名称，例如：香港节点 01" />
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input v-model="form.remark" placeholder="可选，添加备注信息" />
           </el-form-item>
           <el-form-item label="节点字符串">
             <el-input
@@ -226,7 +232,8 @@ const isEdit = ref(false)
 const form = ref<Partial<ProxyNode>>({
   name: '',
   proxy_string: '',
-  enabled: true
+  enabled: true,
+  remark: ''
 })
 
 // 节点字符串展开/收起状态
@@ -375,7 +382,8 @@ const showAddDialog = () => {
   form.value = {
     name: '',
     proxy_string: '',
-    enabled: true
+    enabled: true,
+    remark: ''
   }
   dialogVisible.value = true
 }
@@ -1190,10 +1198,22 @@ onMounted(() => {
   font-size: 18px;
 }
 
+.node-name-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .node-name {
   font-size: 17px;
   font-weight: 600;
   color: #1f2d3d;
+}
+
+.node-remark {
+  font-size: 12px;
+  color: #7d88af;
+  font-weight: 400;
 }
 
 .card-meta {

@@ -14,6 +14,7 @@ export interface ProxyNode {
   name: string
   proxy_string: string  // 节点字符串，如 ss://..., vmess://..., trojan://... 等
   enabled: boolean
+  remark?: string  // 备注
   subscription_id?: string
   subscription_name?: string
 }
