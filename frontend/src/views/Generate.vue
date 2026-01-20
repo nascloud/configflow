@@ -2760,20 +2760,45 @@ h4 .el-tag {
   :deep(.mosdns-dialog .el-dialog) {
     width: 95vw !important;
     max-width: 95vw !important;
-    margin: 0 !important;
+    margin: 2.5vw auto !important;
     max-height: 92vh;
   }
 
+  :deep(.mosdns-dialog .el-dialog__header) {
+    padding: 14px 14px 10px;
+  }
+
+  :deep(.mosdns-dialog .el-dialog__title) {
+    font-size: 16px;
+  }
+
   :deep(.mosdns-dialog .el-dialog__body) {
-    padding: 18px 16px 14px;
+    padding: 10px 12px;
+    max-height: calc(92vh - 130px);
+    overflow-y: auto;
   }
 
   :deep(.mosdns-dialog .el-dialog__footer) {
-    padding: 16px;
+    padding: 10px 12px;
+  }
+
+  :deep(.mosdns-dialog .el-alert) {
+    padding: 8px 10px;
+  }
+
+  :deep(.mosdns-dialog .el-alert__description) {
+    font-size: 12px;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  :deep(.mosdns-dialog .el-alert__description p) {
+    margin: 0;
+    word-break: break-word;
   }
 
   :deep(.mosdns-dialog .el-tabs__header) {
-    margin-bottom: 16px;
+    margin-bottom: 12px;
   }
 
   :deep(.mosdns-dialog .el-tabs__nav-wrap) {
@@ -2792,33 +2817,36 @@ h4 .el-tag {
   :deep(.mosdns-dialog .el-tabs__nav) {
     display: flex;
     flex-wrap: nowrap;
-    gap: 8px;
+    gap: 4px;
     min-width: 100%;
   }
 
   :deep(.mosdns-dialog .el-tabs__item) {
     flex: 0 0 auto;
-    min-width: 120px;
+    min-width: 70px;
     text-align: center;
     border-radius: 999px;
-    padding: 10px 16px;
+    padding: 6px 10px;
+    font-size: 13px;
     white-space: nowrap;
   }
 
   :deep(.mosdns-dialog .el-form) {
-    gap: 16px;
+    gap: 10px;
   }
 
   :deep(.mosdns-dialog .el-form-item) {
     flex-direction: column;
     align-items: stretch;
+    margin-bottom: 10px;
   }
 
   :deep(.mosdns-dialog .el-form-item__label) {
     width: 100% !important;
     text-align: left;
     line-height: 1.4;
-    padding-bottom: 6px;
+    padding-bottom: 4px;
+    font-size: 13px;
   }
 
   :deep(.mosdns-dialog .el-form-item__content) {
@@ -2830,6 +2858,40 @@ h4 .el-tag {
   :deep(.mosdns-dialog .el-textarea),
   :deep(.mosdns-dialog .el-input-number) {
     width: 100%;
+  }
+
+  /* 多选标签样式优化 */
+  :deep(.mosdns-dialog .el-select .el-select__tags) {
+    max-width: 100%;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  :deep(.mosdns-dialog .el-select .el-tag) {
+    max-width: calc(50% - 4px);
+    margin: 2px 0;
+  }
+
+  :deep(.mosdns-dialog .el-select .el-tag .el-tag__content) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+
+  :deep(.mosdns-dialog .el-select .el-select__tags-text) {
+    max-width: 70px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  :deep(.mosdns-dialog .el-divider) {
+    margin: 14px 0 10px;
+  }
+
+  :deep(.mosdns-dialog .el-divider__text) {
+    font-size: 12px;
+    padding: 0 6px;
   }
 
   :deep(.mosdns-dialog .el-button[size='small']) {
