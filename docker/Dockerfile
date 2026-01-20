@@ -46,39 +46,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -rf /var/lib/apt/lists/* && \
     pip install --no-cache-dir -r requirements.txt && \
     (groupadd -r nginx || true) && (useradd -r -g nginx -s /sbin/nologin -d /nonexistent nginx || true) && \
-    mkdir -p /data /var/log/supervisor /var/cache/nginx /var/log/nginx /opt/configflow/static/agents /etc/supervisor/conf.d && \
-    chown -R nginx:nginx /var/cache/nginx /var/log/nginx /usr/share/nginx/html && \
-    cat > /etc/supervisor/conf.d/supervisord.conf << 'EOF'
-[supervisord]
-nodaemon=true
-logfile=/var/log/supervisor/supervisord.log
-pidfile=/var/run/supervisord.pid
+    mkdir -p /data /var/log/supervisor /var/cache/nginx /var/log/nginx /opt/configflow/static/agents && \
+    chown -R nginx:nginx /var/cache/nginx /var/log/nginx /usr/share/nginx/html
 
-[program:nginx]
-command=/usr/sbin/nginx -g "daemon off;"
-autostart=true
-autorestart=true
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
-
-[program:flask]
-command=python app.py
-directory=/app
-autostart=true
-autorestart=true
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
-environment=FLASK_APP=app.py,PYTHONUNBUFFERED=1,DATA_DIR=/data
-EOF
-
-# 复制后端代码和 nginx 配置
+# 复制后端代码和配置文件
 COPY backend ./backend
 COPY main.py app.py ./
 COPY docker/nginx.conf /etc/nginx/nginx.conf
+COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 ENV FLASK_APP=app.py PYTHONUNBUFFERED=1 DATA_DIR=/data TZ=Asia/Shanghai
 
