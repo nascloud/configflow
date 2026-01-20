@@ -43,7 +43,8 @@ RUN apt-get update && \
     pip install --no-cache-dir -r requirements.txt && \
     (groupadd -r nginx || true) && (useradd -r -g nginx -s /sbin/nologin -d /nonexistent nginx || true) && \
     mkdir -p /data /var/log/supervisor /var/cache/nginx /var/log/nginx /opt/configflow/static/agents /etc/supervisor/conf.d && \
-    chown -R nginx:nginx /var/cache/nginx /var/log/nginx /usr/share/nginx/html
+    chown -R nginx:nginx /var/cache/nginx /var/log/nginx /usr/share/nginx/html && \
+    rm -rf /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default /etc/nginx/conf.d/default.conf /usr/share/nginx/html/*
 
 # 复制前端构建产物（在 nginx 安装后，覆盖默认页面）
 COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
