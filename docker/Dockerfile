@@ -37,16 +37,13 @@ COPY backend/requirements.txt ./
 COPY --from=go-builder /dist/ /opt/configflow/static/agents/
 COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 
-# 安装依赖、配置 nginx/supervisor（合并为单个 RUN 减少层数）
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=cache,target=/root/.cache/pip \
-    apt-get update && \
+# 安装依赖、配置 nginx/supervisor
+RUN apt-get update && \
     apt-get install -y --no-install-recommends nginx supervisor && \
     rm -rf /var/lib/apt/lists/* && \
     pip install --no-cache-dir -r requirements.txt && \
     (groupadd -r nginx || true) && (useradd -r -g nginx -s /sbin/nologin -d /nonexistent nginx || true) && \
-    mkdir -p /data /var/log/supervisor /var/cache/nginx /var/log/nginx /opt/configflow/static/agents && \
+    mkdir -p /data /var/log/supervisor /var/cache/nginx /var/log/nginx /opt/configflow/static/agents /etc/supervisor/conf.d && \
     chown -R nginx:nginx /var/cache/nginx /var/log/nginx /usr/share/nginx/html
 
 # 复制后端代码和配置文件
