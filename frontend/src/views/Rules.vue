@@ -954,8 +954,6 @@ const saveRuleSet = async () => {
       if (originalItem && originalItem.policy !== ruleSetData.policy) {
         // 策略变化，清除组名称
         ruleSetData.group_name = ''
-        // 清除所有展开状态，避免旧的展开状态影响新分组
-        expandedGroups.value.clear()
       }
       await ruleSetApi.update(ruleSetData.id!, ruleSetData)
       ElMessage.success('更新成功')
@@ -964,6 +962,8 @@ const saveRuleSet = async () => {
       ElMessage.success('添加成功')
     }
     ruleSetDialogVisible.value = false
+    // 保存后重置所有展开状态，确保分组状态正确
+    expandedGroups.value = new Set()
     loadAllRules()
   } catch (error) {
     ElMessage.error('保存失败')
