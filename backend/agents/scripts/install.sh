@@ -331,17 +331,16 @@ fi
 if command -v logrotate >/dev/null 2>&1; then
     cat > /etc/logrotate.d/configflow-agent << 'LOGROTATE_EOF'
 /var/log/configflow-agent.log {
-    daily
-    rotate 7
+    rotate 3
     compress
     delaycompress
     missingok
     notifempty
-    size 50M
+    size 10M
     copytruncate
 }
 LOGROTATE_EOF
-    printf "%b\n" "${{GREEN}}日志轮转配置完成（保留7天，超过50M自动轮转）${{NC}}"
+    printf "%b\n" "${{GREEN}}日志轮转配置完成（保留3份，超过10M自动轮转）${{NC}}"
 else
     printf "%b\n" "${{YELLOW}}跳过日志轮转配置（logrotate 未安装）${{NC}}"
 fi
