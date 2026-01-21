@@ -33,6 +33,9 @@ RUN --mount=type=bind,source=frontend,target=/src \
 # ==============================================================================
 FROM python:3.11-slim AS python-builder
 
+# 版本号参数，从 GitHub Actions 传入
+ARG VERSION=dev
+
 WORKDIR /build
 
 # 复制依赖文件
@@ -46,6 +49,7 @@ RUN --mount=type=bind,source=backend,target=/src/backend \
     apt-get update && apt-get install -y --no-install-recommends binutils && \
     pip install --upgrade pip && pip install pyinstaller && pip install -r requirements.txt && \
     cp -r /src/backend ./backend && \
+    sed -i "s/__version__ = \"dev\"/__version__ = \"${VERSION}\"/" ./backend/version.py && \
     cat > main_obfuscated.py << 'ENTRY_EOF'
 #!/usr/bin/env python3
 import sys
