@@ -322,6 +322,13 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 16px;
   margin-bottom: 4px;
+  /* 固定顶部 */
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: #f5f7ff;
+  margin: -28px -32px 4px -32px;
+  padding: 28px 32px;
 }
 
 .title-block h2 {
@@ -632,6 +639,11 @@ onUnmounted(() => {
 @media (max-width: 768px) {
   .logs-container {
     padding: 20px 16px 32px;
+  }
+
+  .page-header {
+    margin: -20px -16px 4px -16px;
+    padding: 20px 16px;
   }
 
   .title-block h2 {

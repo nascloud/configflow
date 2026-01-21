@@ -527,7 +527,7 @@ watch(() => route.path, (newPath) => {
 /* 主内容区 */
 .modern-main {
   background: transparent;
-  padding: 24px;
+  padding: 0;
   overflow-y: auto;
   position: relative;
 }
@@ -751,7 +751,7 @@ watch(() => route.path, (newPath) => {
   }
 
   .modern-main {
-    padding: 12px;
+    padding: 0;
   }
 
   /* 全局卡片在移动端的调整 */
@@ -806,7 +806,7 @@ watch(() => route.path, (newPath) => {
   }
 
   .modern-main {
-    padding: 8px;
+    padding: 0;
   }
 
   :deep(.el-dialog) {

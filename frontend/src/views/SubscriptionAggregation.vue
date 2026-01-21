@@ -654,6 +654,13 @@ onMounted(async () => {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 16px;
+  /* 固定顶部 */
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: #f5f7ff;
+  margin: -28px -32px 28px -32px;
+  padding: 28px 32px;
 }
 
 .title-block h2 {
@@ -1188,6 +1195,8 @@ onMounted(async () => {
   .page-header {
     flex-direction: column;
     align-items: flex-start;
+    margin: -20px -16px 20px -16px;
+    padding: 20px 16px;
   }
 
   .header-actions {
