@@ -1970,8 +1970,10 @@ const refreshLogs = async () => {
 }
 
 // 日志路径切换
-const onLogPathChange = async () => {
-  if (selectedLogPath.value !== 'custom') {
+const onLogPathChange = async (newPath: string) => {
+  // 确保 selectedLogPath 已更新
+  selectedLogPath.value = newPath
+  if (newPath !== 'custom') {
     customLogPath.value = ''
     await loadLogs()
   }
