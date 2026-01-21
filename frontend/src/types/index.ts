@@ -26,6 +26,8 @@ export interface Rule {
   policy: string
   enabled: boolean
   order?: number  // 排序顺序
+  remark?: string  // 备注
+  no_resolve?: boolean  // no-resolve 开关
 }
 
 export interface RuleSet {
@@ -37,6 +39,8 @@ export interface RuleSet {
   policy?: string
   order?: number  // 排序顺序
   library_rule_id?: string  // 关联的规则仓库ID
+  remark?: string  // 备注
+  no_resolve?: boolean  // no-resolve 开关
 }
 
 export interface ProxyGroup {

@@ -106,7 +106,8 @@ def handle_rules():
         if 'itemType' not in rule:
             rule['itemType'] = 'rule' if 'rule_type' in rule else 'ruleset'
         normalize_rule_config_url(rule)
-        config_data.setdefault('rule_configs', []).append(rule)
+        rule_configs = config_data.setdefault('rule_configs', [])
+        rule_configs.insert(0, rule)  # 新规则添加到第一位
         save_config()
         return jsonify({'success': True, 'data': rule})
 
@@ -191,7 +192,8 @@ def batch_add_rules():
         }
         new_rules.append(rule)
 
-    config_data.setdefault('rule_configs', []).extend(new_rules)
+    rule_configs = config_data.setdefault('rule_configs', [])
+    rule_configs[:0] = new_rules  # 新规则添加到最前面
     save_config()
     return jsonify({'success': True, 'count': len(new_rules), 'rules': new_rules})
 
@@ -335,7 +337,8 @@ def handle_rule_sets():
         # 确保有 itemType 字段
         rule_set['itemType'] = 'ruleset'
         normalize_rule_config_url(rule_set)
-        config_data.setdefault('rule_configs', []).append(rule_set)
+        rule_configs = config_data.setdefault('rule_configs', [])
+        rule_configs.insert(0, rule_set)  # 新规则集添加到第一位
         save_config()
         return jsonify({'success': True, 'data': rule_set})
 

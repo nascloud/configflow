@@ -336,8 +336,9 @@ def generate_surge_config(config_data: Dict[str, Any], base_url: str = '') -> st
                 rules.append(f"{rule_type},{value},{policy}")
             else:
                 # 标准规则类型：DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, IP-CIDR, IP-CIDR6, IP-SUFFIX, DST-PORT, SRC-PORT, GEOIP 等
-                # 对于IP类型的规则，添加no-resolve参数
-                if rule_type in ['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'GEOIP']:
+                # 根据配置决定是否添加 no-resolve 参数
+                no_resolve = item.get('no_resolve', False)
+                if no_resolve:
                     rules.append(f"{rule_type},{value},{policy},no-resolve")
                 else:
                     rules.append(f"{rule_type},{value},{policy}")
@@ -364,8 +365,9 @@ def generate_surge_config(config_data: Dict[str, Any], base_url: str = '') -> st
             # 构建规则选项列表
             rule_options = []
 
-            # 检查规则集的behavior，如果是ipcidr则添加no-resolve
-            if ruleset_behaviors.get(ruleset_name) == 'ipcidr':
+            # 根据配置决定是否添加 no-resolve 参数
+            no_resolve = item.get('no_resolve', False)
+            if no_resolve:
                 rule_options.append('no-resolve')
 
             # 使用原始 URL 判断格式，如果是 YAML 格式则添加 rule-set-format

@@ -6,6 +6,22 @@
         <p>管理您的规则和规则集</p>
       </div>
       <div class="header-actions">
+        <el-button-group class="view-toggle">
+          <el-button
+            :class="['toggle-btn', { active: viewMode === 'list' }]"
+            @click="viewMode = 'list'"
+            title="列表视图"
+          >
+            <el-icon><List /></el-icon>
+          </el-button>
+          <el-button
+            :class="['toggle-btn', { active: viewMode === 'grid' }]"
+            @click="viewMode = 'grid'"
+            title="卡片视图"
+          >
+            <el-icon><Grid /></el-icon>
+          </el-button>
+        </el-button-group>
         <el-button
           class="action-btn action-primary"
           @click="showAddRuleDialog"
@@ -35,7 +51,117 @@
       <el-empty description="暂无规则，请添加规则或规则集" />
     </div>
 
-    <div v-else class="rules-grid" id="sortable-rules">
+    <!-- 列表视图 -->
+    <div v-else-if="viewMode === 'list'" class="rules-list" id="sortable-rules" ref="rulesContainer">
+      <div
+        v-for="item in allRulesAndSets"
+        :key="item.uniqueId"
+        class="list-item-wrapper"
+        :data-id="item.uniqueId"
+      >
+        <!-- 分组列表项（收起状态） -->
+        <div
+          v-if="item.isGroup"
+          class="list-item group-item"
+          @click="toggleGroup(item.groupId)"
+        >
+          <div class="list-item-drag">
+            <button class="card-drag-handle" type="button" @click.stop>
+              <el-icon><DCaret /></el-icon>
+            </button>
+          </div>
+          <div class="list-item-info">
+            <div class="list-item-name">{{ item.groupName || `${item.count} 个规则集` }}</div>
+            <div class="list-item-meta">
+              <span class="meta-badge group">规则集组</span>
+              <span v-if="item.groupName" class="meta-badge count">{{ item.count }} 个</span>
+              <span class="meta-badge policy">{{ item.policy }}</span>
+            </div>
+          </div>
+          <div class="list-item-actions">
+            <el-button class="list-btn" size="small" @click.stop="showGroupRenameDialog(item)" title="重命名">
+              <el-icon><Edit /></el-icon>
+            </el-button>
+            <button class="expand-btn" @click.stop="toggleGroup(item.groupId)">
+              <el-icon><ArrowDown /></el-icon>
+            </button>
+          </div>
+        </div>
+
+        <!-- 普通列表项 -->
+        <div
+          v-else
+          :class="[
+            'list-item',
+            item.itemType === 'rule' ? 'rule-type' : 'ruleset-type',
+            item.isExpandedGroupItem ? 'expanded-group-item' : '',
+            { disabled: !item.enabled }
+          ]"
+        >
+          <div class="list-item-drag">
+            <button class="card-drag-handle" type="button">
+              <el-icon><DCaret /></el-icon>
+            </button>
+          </div>
+          <div class="list-item-type">
+            <span class="type-badge" :class="item.itemType">
+              {{ item.itemType === 'rule' ? '规则' : '规则集' }}
+            </span>
+            <!-- 展开组的第一个项显示收起按钮 -->
+            <el-button
+              v-if="item.isExpandedGroupItem && item.isFirstInGroup"
+              class="collapse-btn"
+              size="small"
+              link
+              @click="toggleGroup(item.groupId)"
+            >
+              <el-icon><ArrowUp /></el-icon>
+              收起
+            </el-button>
+          </div>
+          <div class="list-item-content">
+            <!-- 规则：规则类型和值 -->
+            <template v-if="item.itemType === 'rule'">
+              <span class="rule-type-text">{{ item.rule_type }}</span>
+              <span class="rule-value-text" :title="item.value">{{ item.value }}</span>
+              <span v-if="item.remark" class="rule-remark-badge" :title="item.remark">
+                <el-icon><ChatLineSquare /></el-icon>
+                {{ item.remark }}
+              </span>
+            </template>
+            <!-- 规则集：规则名 -->
+            <template v-else>
+              <span class="ruleset-name-text" :title="`类型: ${item.behavior}\nURL: ${item.url}`">{{ item.name }}</span>
+              <el-tag v-if="item.library_rule_id" size="small" type="warning" effect="plain" class="library-badge">
+                <el-icon><FolderOpened /></el-icon>
+              </el-tag>
+              <span v-if="item.remark" class="rule-remark-badge" :title="item.remark">
+                <el-icon><ChatLineSquare /></el-icon>
+                {{ item.remark }}
+              </span>
+            </template>
+          </div>
+          <div class="list-item-policy">
+            <span class="policy-tag">{{ item.policy }}</span>
+          </div>
+          <div class="list-item-actions">
+            <button class="status-toggle" :class="{ active: item.enabled }" @click="toggleItemStatus(item)">
+              <el-icon v-if="item.enabled"><View /></el-icon>
+              <el-icon v-else><Hide /></el-icon>
+            </button>
+            <el-button class="list-btn" size="small" @click="editItem(item)" title="编辑">
+              <el-icon><Edit /></el-icon>
+            </el-button>
+            <el-button class="list-btn danger" size="small" @click="deleteItem(item)" title="删除">
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 卡片视图 -->
+    <div v-else class="rules-grid" id="sortable-rules" ref="rulesContainer">
       <div
         v-for="item in allRulesAndSets"
         :key="item.uniqueId"
@@ -122,6 +248,10 @@
                 <span class="rule-type-inline">{{ item.rule_type }}</span>
                 <span class="rule-value-inline" :title="item.value">{{ item.value }}</span>
               </div>
+              <div v-if="item.remark" class="rule-remark" :title="item.remark">
+                <el-icon><ChatLineSquare /></el-icon>
+                {{ item.remark }}
+              </div>
             </template>
 
             <!-- 规则集：显示规则名 -->
@@ -133,6 +263,10 @@
                 <el-tag v-if="item.library_rule_id" size="small" type="warning" effect="plain" class="library-badge">
                   <el-icon><FolderOpened /></el-icon>
                 </el-tag>
+              </div>
+              <div v-if="item.remark" class="rule-remark" :title="item.remark">
+                <el-icon><ChatLineSquare /></el-icon>
+                {{ item.remark }}
               </div>
             </template>
           </div>
@@ -190,6 +324,15 @@
                 :value="policy"
               />
             </el-select>
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input v-model="ruleForm.remark" placeholder="可选，添加备注说明" />
+          </el-form-item>
+          <el-form-item label="no-resolve" v-if="isIpRuleType">
+            <div class="switch-with-tip">
+              <el-switch v-model="ruleForm.no_resolve" />
+              <span class="form-tip">IP 类规则建议开启</span>
+            </div>
           </el-form-item>
           <el-form-item label="状态">
             <el-switch v-model="ruleForm.enabled" />
@@ -253,6 +396,15 @@
                 :value="policy"
               />
             </el-select>
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input v-model="ruleSetForm.remark" placeholder="可选，添加备注说明" />
+          </el-form-item>
+          <el-form-item label="no-resolve" v-if="ruleSetForm.behavior === 'ipcidr'">
+            <div class="switch-with-tip">
+              <el-switch v-model="ruleSetForm.no_resolve" />
+              <span class="form-tip">IP CIDR 类规则集建议开启</span>
+            </div>
           </el-form-item>
           <el-form-item label="状态">
             <el-switch v-model="ruleSetForm.enabled" @change="handleRuleSetStatusChange" />
@@ -404,9 +556,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, onActivated, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, computed, nextTick, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { DCaret, Edit, Delete, FolderOpened, ArrowUp, ArrowDown, Search, Plus, View, Hide, InfoFilled } from '@element-plus/icons-vue'
+import { DCaret, Edit, Delete, FolderOpened, ArrowUp, ArrowDown, Search, Plus, View, Hide, InfoFilled, List, Grid, ChatLineSquare } from '@element-plus/icons-vue'
 import { ruleApi, ruleSetApi, proxyGroupApi } from '@/api'
 import type { Rule, RuleSet, ProxyGroup } from '@/types'
 import Sortable from 'sortablejs'
@@ -420,6 +572,8 @@ const ruleDialogVisible = ref(false)
 const ruleSetDialogVisible = ref(false)
 const isEditRule = ref(false)
 const isEditRuleSet = ref(false)
+const viewMode = ref<'list' | 'grid'>('grid')  // 默认卡片视图
+const rulesContainer = ref<HTMLElement | null>(null)
 
 // 处理按钮点击
 const handleShowRuleIndex = () => {
@@ -437,7 +591,9 @@ const ruleForm = ref<Partial<Rule>>({
   rule_type: 'DOMAIN-SUFFIX',
   value: '',
   policy: 'DIRECT',
-  enabled: true
+  enabled: true,
+  remark: '',
+  no_resolve: false
 })
 
 const ruleSetForm = ref<Partial<RuleSet>>({
@@ -446,7 +602,9 @@ const ruleSetForm = ref<Partial<RuleSet>>({
   behavior: 'classical',
   policy: 'DIRECT',
   enabled: true,
-  library_rule_id: ''  // 关联的规则仓库ID
+  library_rule_id: '',  // 关联的规则仓库ID
+  remark: '',
+  no_resolve: false
 })
 
 // 可用的策略选项：DIRECT、REJECT和所有策略组
@@ -454,6 +612,11 @@ const availablePolicies = computed(() => {
   const policies = ['DIRECT', 'REJECT']
   const groupNames = proxyGroups.value.map(g => g.name)
   return [...policies, ...groupNames]
+})
+
+// 判断当前规则类型是否为 IP 类型（需要 no-resolve）
+const isIpRuleType = computed(() => {
+  return ['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'GEOIP'].includes(ruleForm.value.rule_type || '')
 })
 
 // 展开的组ID集合
@@ -643,6 +806,8 @@ const showAddRuleDialog = () => {
     value: '',
     policy: 'DIRECT',
     enabled: true,
+    remark: '',
+    no_resolve: false,  // DOMAIN-SUFFIX 不需要 no-resolve
     itemType: 'rule'
   }
   ruleDialogVisible.value = true
@@ -651,6 +816,11 @@ const showAddRuleDialog = () => {
 const editRule = (row: Rule) => {
   isEditRule.value = true
   ruleForm.value = { ...row }
+  // 如果没有 no_resolve 字段，根据规则类型设置默认值
+  if (ruleForm.value.no_resolve === undefined || ruleForm.value.no_resolve === null) {
+    const isIpType = ['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'GEOIP'].includes(ruleForm.value.rule_type || '')
+    ruleForm.value.no_resolve = isIpType
+  }
   ruleDialogVisible.value = true
 }
 
@@ -718,6 +888,8 @@ const showAddRuleSetDialog = () => {
     policy: 'DIRECT',
     enabled: true,
     library_rule_id: '',
+    remark: '',
+    no_resolve: false,  // classical 不需要 no-resolve
     itemType: 'ruleset'
   }
   ruleSetDialogVisible.value = true
@@ -730,6 +902,8 @@ const onLibraryRuleSelect = (libraryRuleId: string) => {
     ruleSetForm.value.name = selectedRule.name
     ruleSetForm.value.behavior = selectedRule.behavior
     ruleSetForm.value.library_rule_id = libraryRuleId  // 保存规则仓库ID
+    // 根据 behavior 自动设置 no_resolve
+    ruleSetForm.value.no_resolve = selectedRule.behavior === 'ipcidr'
 
     // 根据规则来源类型设置 URL
     if (selectedRule.source_type === 'content') {
@@ -750,11 +924,16 @@ const onLibraryRuleClear = () => {
   ruleSetForm.value.url = ''
   ruleSetForm.value.behavior = 'classical'
   ruleSetForm.value.library_rule_id = ''  // 清除关联
+  ruleSetForm.value.no_resolve = false  // classical 不需要 no-resolve
 }
 
 const editRuleSet = (row: RuleSet) => {
   isEditRuleSet.value = true
   ruleSetForm.value = { ...row }
+  // 如果没有 no_resolve 字段，根据 behavior 设置默认值
+  if (ruleSetForm.value.no_resolve === undefined || ruleSetForm.value.no_resolve === null) {
+    ruleSetForm.value.no_resolve = ruleSetForm.value.behavior === 'ipcidr'
+  }
 
   // 如果有关联的规则仓库ID，则反显
   if (row.library_rule_id) {
@@ -1251,6 +1430,26 @@ const performRuleIndexQuery = async () => {
   }
 }
 
+// 监听视图模式切换，重新初始化拖拽
+watch(viewMode, () => {
+  nextTick(() => {
+    initSortable()
+  })
+})
+
+// 监听规则类型变化，自动设置 no_resolve 默认值
+watch(() => ruleForm.value.rule_type, (newType) => {
+  // 切换规则类型时，自动设置 no_resolve（IP 类型默认开启）
+  const isIpType = ['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'GEOIP'].includes(newType || '')
+  ruleForm.value.no_resolve = isIpType
+})
+
+// 监听规则集类型变化，自动设置 no_resolve 默认值
+watch(() => ruleSetForm.value.behavior, (newBehavior) => {
+  // 切换 behavior 时，自动设置 no_resolve（ipcidr 类型默认开启）
+  ruleSetForm.value.no_resolve = newBehavior === 'ipcidr'
+})
+
 onMounted(() => {
   Promise.all([loadAllRules(), loadProxyGroups(), loadRuleLibrary()]).then(() => {
     initSortable()
@@ -1607,6 +1806,26 @@ onActivated(() => {
   -webkit-box-orient: vertical;
 }
 
+.rule-remark {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #909399;
+  padding: 4px 8px;
+  background: rgba(144, 147, 153, 0.08);
+  border-radius: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.rule-remark .el-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
 .ruleset-info {
   display: flex;
   align-items: center;
@@ -1771,6 +1990,17 @@ onActivated(() => {
   color: #6c74a0;
 }
 
+.switch-with-tip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: #909399;
+}
+
 .dialog-footer {
   display: flex;
   gap: 12px;
@@ -1800,6 +2030,255 @@ onActivated(() => {
   opacity: 0.4;
 }
 
+/* 视图切换按钮样式 */
+.view-toggle {
+  margin-right: 8px;
+}
+
+.toggle-btn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(107, 115, 255, 0.08);
+  border: 1px solid rgba(107, 115, 255, 0.2);
+  color: #7c86ae;
+  transition: all 0.2s ease;
+}
+
+.toggle-btn:hover {
+  background: rgba(107, 115, 255, 0.12);
+  color: #4e5eff;
+}
+
+.toggle-btn.active {
+  background: linear-gradient(135deg, #6b7dff 0%, #5b6dff 100%);
+  color: #fff;
+  border-color: transparent;
+}
+
+.toggle-btn .el-icon {
+  font-size: 18px;
+}
+
+/* 列表视图样式 */
+.rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.list-item-wrapper {
+  cursor: move;
+}
+
+.list-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  background: #fff;
+  border-radius: var(--rule-radius-md, 16px);
+  border: 1px solid rgba(107, 115, 255, 0.1);
+  box-shadow: 0 4px 12px rgba(65, 80, 180, 0.06);
+  transition: all 0.2s ease;
+}
+
+.list-item:hover {
+  transform: translateX(4px);
+  box-shadow: 0 8px 20px rgba(65, 80, 180, 0.12);
+  border-color: rgba(107, 115, 255, 0.25);
+}
+
+.list-item.disabled {
+  opacity: 0.5;
+  filter: grayscale(0.4);
+}
+
+.list-item.group-item {
+  background: linear-gradient(135deg, rgba(139, 143, 255, 0.08) 0%, rgba(139, 143, 255, 0.02) 100%);
+  border-color: rgba(139, 143, 255, 0.25);
+  cursor: pointer;
+}
+
+.list-item.group-item:hover {
+  border-color: rgba(139, 143, 255, 0.45);
+}
+
+.list-item.expanded-group-item {
+  border-left: 3px solid #8b8fff;
+  background: linear-gradient(90deg, rgba(139, 143, 255, 0.05) 0%, rgba(139, 143, 255, 0.01) 100%);
+}
+
+.list-item-drag {
+  flex-shrink: 0;
+}
+
+.list-item-type {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 80px;
+}
+
+.type-badge {
+  padding: 4px 12px;
+  border-radius: var(--rule-radius-pill, 999px);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.type-badge.rule {
+  background: rgba(107, 115, 255, 0.12);
+  color: #4e5eff;
+  border: 1px solid rgba(107, 115, 255, 0.18);
+}
+
+.type-badge.ruleset {
+  background: rgba(139, 143, 255, 0.12);
+  color: #8b8fff;
+  border: 1px solid rgba(139, 143, 255, 0.18);
+}
+
+.list-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-item-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #30354d;
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list-item-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.meta-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--rule-radius-pill, 999px);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.meta-badge.group {
+  background: rgba(139, 143, 255, 0.12);
+  color: #8b8fff;
+}
+
+.meta-badge.policy {
+  background: rgba(107, 115, 255, 0.12);
+  color: #4e5eff;
+}
+
+.meta-badge.count {
+  background: rgba(103, 194, 58, 0.12);
+  color: #67c23a;
+}
+
+.list-item-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.rule-type-text {
+  font-weight: 600;
+  color: #4e5eff;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.rule-value-text {
+  color: #30354d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ruleset-name-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #30354d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-remark-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #909399;
+  padding: 2px 8px;
+  background: rgba(144, 147, 153, 0.1);
+  border-radius: var(--rule-radius-pill, 999px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+  flex-shrink: 0;
+}
+
+.rule-remark-badge .el-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.list-item-policy {
+  flex-shrink: 0;
+}
+
+.list-item-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.list-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(107, 115, 255, 0.08);
+  border: 1px solid rgba(107, 115, 255, 0.2);
+  color: #4e5eff;
+  transition: all 0.2s ease;
+}
+
+.list-btn:hover {
+  background: rgba(107, 115, 255, 0.15);
+  border-color: rgba(107, 115, 255, 0.35);
+  transform: scale(1.08);
+}
+
+.list-btn.danger {
+  background: rgba(155, 143, 255, 0.12);
+  border-color: rgba(155, 143, 255, 0.25);
+  color: #9b8fff;
+}
+
+.list-btn.danger:hover {
+  background: rgba(155, 143, 255, 0.18);
+  border-color: rgba(155, 143, 255, 0.35);
+}
+
 @media (max-width: 768px) {
   .rules-page {
     padding: 20px 16px 32px;
@@ -1814,9 +2293,13 @@ onActivated(() => {
 
   .header-actions {
     width: 100%;
-    flex-direction: column;
+    flex-wrap: wrap;
     gap: 10px;
-    align-items: stretch;
+  }
+
+  .view-toggle {
+    order: -1;
+    margin-bottom: 8px;
   }
 
   :deep(.header-actions .el-button + .el-button) {
@@ -1824,13 +2307,38 @@ onActivated(() => {
   }
 
   .action-btn {
-    width: 100%;
+    flex: 1;
+    min-width: calc(50% - 6px);
     justify-content: center;
     box-sizing: border-box;
   }
 
   .rules-grid {
     grid-template-columns: 1fr;
+  }
+
+  .list-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .list-item-type {
+    width: 100%;
+  }
+
+  .list-item-content {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .list-item-policy {
+    width: 100%;
+  }
+
+  .list-item-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   :deep(.rule-dialog) {

@@ -836,8 +836,9 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '') -> s
                 rules.append(f"RULE-SET,{value},{policy}")
             else:
                 # 其他规则有三个字段：RULE_TYPE,VALUE,POLICY
-                # 对于IP类型的规则，添加no-resolve参数
-                if rule_type in ['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'GEOIP']:
+                # 根据配置决定是否添加 no-resolve 参数
+                no_resolve = item.get('no_resolve', False)
+                if no_resolve:
                     rules.append(f"{rule_type},{value},{policy},no-resolve")
                 else:
                     rules.append(f"{rule_type},{value},{policy}")
@@ -846,8 +847,9 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '') -> s
             # 规则集引用
             policy = item.get('policy', 'PROXY')
             ruleset_name = item['name']
-            # 检查规则集的behavior，如果是ipcidr则添加no-resolve
-            if ruleset_behaviors.get(ruleset_name) == 'ipcidr':
+            # 根据配置决定是否添加 no-resolve 参数
+            no_resolve = item.get('no_resolve', False)
+            if no_resolve:
                 rules.append(f"RULE-SET,{ruleset_name},{policy},no-resolve")
             else:
                 rules.append(f"RULE-SET,{ruleset_name},{policy}")
