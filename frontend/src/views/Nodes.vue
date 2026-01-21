@@ -1162,6 +1162,9 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 .node-checkbox {
@@ -1199,28 +1202,41 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 .node-icon {
   font-size: 18px;
+  flex-shrink: 0;
 }
 
 .node-name-group {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 .node-name {
   font-size: 17px;
   font-weight: 600;
   color: #1f2d3d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .node-remark {
   font-size: 12px;
   color: #7d88af;
   font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-meta {
@@ -1228,6 +1244,7 @@ onMounted(() => {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+  flex-shrink: 0;
 }
 
 .meta-pill {
