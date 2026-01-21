@@ -721,9 +721,16 @@ const allRulesAndSets = computed(() => {
   const finalResult: any[] = []
   result.forEach(item => {
     if (item.isGroup) {
-      // 如果组只有1个规则集，直接显示为单个卡片
+      // 如果组只有1个规则集，直接显示为单个卡片（确保清除所有组相关属性）
       if (item.count === 1) {
-        finalResult.push(item.items[0])
+        const singleItem = { ...item.items[0] }
+        // 明确清除组相关属性，确保不显示为展开组的样式
+        delete singleItem.isExpandedGroupItem
+        delete singleItem.isFirstInGroup
+        delete singleItem.isLastInGroup
+        delete singleItem.groupId
+        delete singleItem.groupPolicy
+        finalResult.push(singleItem)
       }
       // 如果组已展开，将所有项目展开
       else if (expandedGroups.value.has(item.groupId)) {
