@@ -188,7 +188,9 @@ const loadVersion = async () => {
   try {
     const response = await systemApi.getVersion()
     if (response.data && response.data.version) {
-      versionInfo.value = `v${response.data.version}`
+      const ver = response.data.version
+      // 如果版本号已经以 v 开头，直接使用；否则添加 v 前缀
+      versionInfo.value = ver.startsWith('v') ? ver : `v${ver}`
     }
   } catch (error) {
     console.error('Failed to load version:', error)
