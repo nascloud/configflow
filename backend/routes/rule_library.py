@@ -264,13 +264,19 @@ def handle_proxy_domains():
 def test_single_rule():
     """测试单个规则（检查URL是否可访问）"""
     import requests
+    from backend.converters.mihomo import apply_github_proxy_domain
+    from backend.common.config import load_config
 
     try:
         url = request.json.get('url', '')
         if not url:
             return jsonify({'success': False, 'message': 'URL is required'}), 400
 
-        response = requests.get(url, timeout=5)
+        # 应用 GitHub 代理域名替换
+        config_data = load_config()
+        test_url = apply_github_proxy_domain(url, config_data)
+
+        response = requests.get(test_url, timeout=5)
         return jsonify({
             'success': True,
             'status_code': response.status_code,
