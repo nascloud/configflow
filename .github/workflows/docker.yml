@@ -1,4 +1,4 @@
-name: Docker ConfigFlow PyInstaller Build
+name: Docker ConfigFlow Build
 
 on:
   push:
@@ -75,12 +75,12 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile.pyinstaller
+          file: ./docker/Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY_DOCKERHUB }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=pyinstaller-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=pyinstaller-${{ matrix.platform }}
+          cache-from: type=gha,scope=docker-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.platform }}
           build-args: |
             BUILDKIT_INLINE_CACHE=1
             VERSION=${{ steps.version.outputs.version }}

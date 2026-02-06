@@ -13,6 +13,8 @@ services:
     volumes:
       # 挂载数据目录以持久化配置（不包含应用代码）
       - ./data:/data
+      # 挂载后端源码，方便直接修改代码调试（取消注释即可使用）
+      # - ./backend:/app/backend
     restart: unless-stopped
     environment:
       - DATA_DIR=/data
