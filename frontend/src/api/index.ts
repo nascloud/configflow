@@ -158,6 +158,12 @@ export const configTokenApi = {
   delete: () => api.delete('/config-token')
 }
 
+// Sub-Store URL 管理
+export const subStoreUrlApi = {
+  get: () => api.get('/settings/sub-store-url'),
+  update: (data: { sub_store_url: string }) => api.post('/settings/sub-store-url', data)
+}
+
 // 统计数据
 export const statsApi = {
   getOverview: () => api.get('/stats/overview')

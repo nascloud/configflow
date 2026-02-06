@@ -1,7 +1,6 @@
 """Mihomo (Clash Meta) 配置生成器"""
 import yaml
 from typing import Dict, Any, List
-from backend.utils.subscription_parser import parse_uri_list
 from backend.utils.logger import get_logger
 
 # 获取当前模块的日志记录器
@@ -1029,293 +1028,31 @@ def get_mihomo_ruleset_downloads(config_data: Dict[str, Any], base_url: str = ''
 
 
 def convert_node_to_mihomo(node: Dict[str, Any]) -> Dict[str, Any]:
-    """将通用节点格式转换为 Mihomo 格式"""
-    # 保存外层节点名称（界面设置的名称）
+    """将通用节点格式转换为 Mihomo 格式（通过 Sub-Store 转换）"""
+    from backend.utils.sub_store_client import convert_proxy_string
+
     outer_name = node.get('name', '')
 
-    # 如果节点有 proxy_string 字段，需要先解析
-    if 'proxy_string' in node:
-        try:
-            parsed_nodes = parse_uri_list(node['proxy_string'])
-            if not parsed_nodes:
-                return None
-            # 使用解析后的节点数据
-            parsed_node = parsed_nodes[0]
+    # 有 proxy_string 的节点：通过 Sub-Store 转换
+    if node.get('proxy_string'):
+        proxy = convert_proxy_string(node['proxy_string'])
+        if proxy:
+            proxy['name'] = outer_name
+            return proxy
+        return None
 
-            # 如果是原始对象格式（YAML 对象），转换为 params 结构以便统一处理
-            if parsed_node.get('_raw_object'):
-                # 将扁平结构转换为 params 结构
-                flat_node = {k: v for k, v in parsed_node.items() if k != '_raw_object'}
-                node = {
-                    'name': outer_name,
-                    'type': flat_node.get('type', ''),
-                    'server': flat_node.get('server', ''),
-                    'port': flat_node.get('port', 0),
-                    'params': {k: v for k, v in flat_node.items() if k not in ['name', 'type', 'server', 'port']}
-                }
-            else:
-                parsed_node['name'] = outer_name  # 使用界面设置的名称
-                node = parsed_node
-        except:
-            return None
-
-    # 如果是扁平结构（有 _raw_object 标记），转换为 params 结构
-    if node.get('_raw_object'):
-        flat_node = {k: v for k, v in node.items() if k != '_raw_object'}
-        node = {
-            'name': flat_node.get('name', outer_name),
-            'type': flat_node.get('type', ''),
-            'server': flat_node.get('server', ''),
-            'port': flat_node.get('port', 0),
-            'params': {k: v for k, v in flat_node.items() if k not in ['name', 'type', 'server', 'port']}
-        }
-
+    # 已经是结构化的节点（从缓存加载的），将 params 展开为扁平 mihomo 格式
     node_type = node.get('type', '').lower()
     if not node_type:
         return None
 
     params = node.get('params', {})
-
     base = {
-        'name': node['name'],
+        'name': outer_name,
         'type': node_type,
         'server': node.get('server', ''),
         'port': node.get('port', 0)
     }
-
-    if node_type == 'ss':
-        base.update({
-            'cipher': params.get('cipher', 'aes-256-gcm'),
-            'password': params.get('password', '')
-        })
-        # 添加 UDP 支持
-        if params.get('udp') or params.get('udp-relay'):
-            base['udp'] = True
-        # 添加 plugin 支持（如 obfs、v2ray-plugin 等）
-        if params.get('plugin'):
-            base['plugin'] = params['plugin']
-        if params.get('plugin-opts'):
-            base['plugin-opts'] = params['plugin-opts']
-
-    elif node_type == 'ssr':
-        base.update({
-            'cipher': params.get('cipher', 'aes-256-cfb'),
-            'password': params.get('password', ''),
-            'protocol': params.get('protocol', 'origin'),
-            'protocol-param': params.get('protocol-param', ''),
-            'obfs': params.get('obfs', 'plain'),
-            'obfs-param': params.get('obfs-param', '')
-        })
-
-    elif node_type == 'vmess':
-        base.update({
-            'uuid': params.get('uuid', ''),
-            'alterId': params.get('alterId', 0),
-            'cipher': params.get('cipher', 'auto'),
-            'network': params.get('network', 'tcp'),
-            'tls': params.get('tls', False)
-        })
-
-        if params.get('network') == 'ws':
-            base['ws-opts'] = params.get('ws-opts', {})
-
-        # 添加 UDP 支持
-        if params.get('udp') or params.get('udp-relay'):
-            base['udp'] = True
-
-        # 添加其他可选字段
-        if params.get('skip-cert-verify'):
-            base['skip-cert-verify'] = params['skip-cert-verify']
-        if params.get('servername') or params.get('sni'):
-            base['servername'] = params.get('servername') or params.get('sni')
-
-    elif node_type == 'trojan':
-        base.update({
-            'password': params.get('password', ''),
-            'sni': params.get('sni', ''),
-            'skip-cert-verify': params.get('skip-cert-verify', False)
-        })
-        # 添加 UDP 支持
-        if params.get('udp') or params.get('udp-relay'):
-            base['udp'] = True
-
-    elif node_type in ['hysteria', 'hysteria2']:
-        base.update({
-            'password': params.get('password', ''),
-            'obfs': params.get('obfs', ''),
-            'sni': params.get('sni', ''),
-            'skip-cert-verify': params.get('skip-cert-verify', False)
-        })
-
-    elif node_type == 'vless':
-        # 基本字段
-        base['udp'] = params.get('udp', True)
-        base['uuid'] = params.get('uuid', '')
-        # network: 兼容 URI 格式 (type) 和 mihomo 格式 (network)
-        base['network'] = params.get('network') or params.get('type', 'tcp')
-        base['flow'] = params.get('flow', '')
-        base['packet-encoding'] = params.get('packet-encoding', '')
-
-        # 加密方式（VLESS 通常是 none）
-        encryption = params.get('encryption', 'none')
-        if encryption:
-            base['encryption'] = encryption
-
-        # 处理 security 字段（tls/reality）
-        security = params.get('security', 'none')
-
-        # 检测是否为 reality 模式（通过 security 字段或已存在 reality-opts）
-        has_reality_opts = 'reality-opts' in params
-        is_reality_mode = security == 'reality' or has_reality_opts
-
-        base['fingerprint'] = params.get('fingerprint', '')
-        # client-fingerprint: 兼容 URI 格式 (fp) 和 mihomo 格式 (client-fingerprint)
-        base['client-fingerprint'] = params.get('client-fingerprint') or params.get('fp', '')
-        base['skip-cert-verify'] = params.get('skip-cert-verify', False)
-
-        # tls: 兼容已设置的 tls 字段
-        if params.get('tls') is not None:
-            base['tls'] = params.get('tls')
-
-        # servername: 兼容 URI 格式 (sni) 和 mihomo 格式 (servername)
-        servername = params.get('servername') or params.get('sni', '')
-        if servername:
-            base['servername'] = servername
-
-        # smux
-        smux_value = params.get('smux')
-        if isinstance(smux_value, dict):
-            base['smux'] = smux_value
-        else:
-            base['smux'] = {
-                'enabled': smux_value if isinstance(smux_value, bool) else False
-            }
-
-        # ALPN
-        alpn = params.get('alpn')
-        if alpn:
-            if isinstance(alpn, str):
-                base['alpn'] = alpn.split(',')
-            else:
-                base['alpn'] = alpn
-        else:
-            base['alpn'] = []
-
-        if is_reality_mode:
-            # Reality 模式
-            base['tls'] = True
-
-            # servername (从 sni 转换，如果尚未设置)
-            if 'servername' not in base:
-                sni = params.get('sni', '')
-                if sni:
-                    base['servername'] = sni
-
-            # client-fingerprint (从 fp 转换，如果为空)
-            if not base.get('client-fingerprint'):
-                fp = params.get('fp', '')
-                if fp:
-                    base['client-fingerprint'] = fp
-
-            # reality-opts: 优先使用已存在的，否则从 pbk/sid/spx 构建
-            if has_reality_opts:
-                base['reality-opts'] = params['reality-opts']
-            else:
-                reality_opts = {}
-                pbk = params.get('pbk', '')
-                if pbk:
-                    reality_opts['public-key'] = pbk
-                sid = params.get('sid', '')
-                if sid:
-                    reality_opts['short-id'] = sid
-                spx = params.get('spx', '')
-                if spx:
-                    reality_opts['spider-x'] = spx
-                if reality_opts:
-                    base['reality-opts'] = reality_opts
-
-        elif security == 'tls':
-            # TLS 模式
-            base['tls'] = True
-
-            if 'servername' not in base:
-                sni = params.get('sni', '')
-                if sni:
-                    base['servername'] = sni
-
-            if not base.get('client-fingerprint'):
-                fp = params.get('fp', '')
-                if fp:
-                    base['client-fingerprint'] = fp
-
-            # ECH (Encrypted Client Hello) 参数
-            ech_opts = params.get('ech-opts')
-            if ech_opts:
-                # 已是 Mihomo 格式
-                base['ech-opts'] = ech_opts
-            else:
-                # 从 URI 格式解析
-                ech = params.get('ech', '')
-                if ech:
-                    base['ech-opts'] = {
-                        'enable': True,
-                        'config': ech
-                    }
-
-        # 流控参数 (flow)
-        flow = params.get('flow', '')
-        if flow:
-            base['flow'] = flow
-
-        # WebSocket 选项
-        network = base.get('network', '')
-        if network == 'ws':
-            ws_opts = params.get('ws-opts', {})
-            if ws_opts:
-                base['ws-opts'] = ws_opts
-
-        # gRPC 选项
-        if network == 'grpc':
-            grpc_opts = params.get('grpc-opts', {})
-            if grpc_opts:
-                base['grpc-opts'] = grpc_opts
-
-        # UDP 支持
-        if params.get('udp'):
-            base['udp'] = True
-
-    elif node_type == 'anytls':
-        # anytls 类型节点，将所有 params 参数复制到 base 中
-        # 跳过一些可能冲突的字段
-        for key, value in params.items():
-            if key not in base:
-                # 将下划线转换为中划线（例如 skip_cert_verify -> skip-cert-verify）
-                formatted_key = key.replace('_', '-')
-                base[formatted_key] = value
-
-    elif node_type == 'socks5' or node_type == 'socks':
-        base['type'] = 'socks5'
-
-        # 账号密码
-        if node.get('username'):
-            base['username'] = node.get('username')
-        if node.get('password'):
-            base['password'] = node.get('password')
-
-        # TLS 处理：仅当 tls 为 True 时处理后续
-        if node.get('tls') is True:
-            base['tls'] = True
-            if node.get('sni'):
-                base['sni'] = node.get('sni')
-            if node.get('fingerprint'):
-                base['fingerprint'] = node.get('fingerprint')
-            if node.get('skip-cert-verify') is not None:
-                base['skip-cert-verify'] = node.get('skip-cert-verify')
-
-        # UDP 和 IP 版本
-        if node.get('udp') is not None:
-            base['udp'] = node.get('udp')
-        if node.get('ip-version'):
-            base['ip-version'] = node.get('ip-version')
-
+    # 将 params 中的所有字段展开到顶层
+    base.update(params)
     return base

@@ -16,11 +16,23 @@ services:
       # 挂载后端源码，方便直接修改代码调试（取消注释即可使用）
       # - ./backend:/app/backend
     restart: unless-stopped
+    depends_on:
+      - sub-store
     environment:
       - DATA_DIR=/data
+      - SUB_STORE_URL=http://sub-store:3001
       # 登录认证配置（生产环境必需，请修改默认密码和密钥）
       # 本地开发可以设置 SKIP_AUTH_CHECK=true 跳过认证
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=admin123
       - JWT_SECRET_KEY=your-secret-key-please-change-in-production  # 必须修改为唯一的密钥
       # - SKIP_AUTH_CHECK=true  # 取消注释以禁用认证（仅用于开发测试）
+
+  sub-store:
+    image: xream/sub-store:latest
+    container_name: config-flow-sub-store
+    restart: unless-stopped
+    volumes:
+      - ./sub-store-data:/root/sub-store-data
+    environment:
+      - SUB_STORE_BACKEND_API_PORT=3001

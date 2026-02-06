@@ -7,12 +7,15 @@ import yaml
 from backend.routes import subscriptions_bp
 from backend.common.auth import require_auth, validate_token_or_jwt
 from backend.common.config import get_config, save_config
-from backend.utils.subscription_parser import parse_subscription
 from backend.utils.subscription_cache import (
     load_subscription_cache,
     save_subscription_nodes,
 )
-from backend.converters.mihomo import convert_node_to_mihomo
+from backend.utils.sub_store_client import (
+    get_subscription_proxies_yaml,
+    parse_proxies_from_yaml,
+    proxies_to_nodes,
+)
 
 
 def clean_aggregations_subscription(sub_id):
@@ -167,16 +170,17 @@ def fetch_subscription(sub_id):
     fetch_error = None
     from_cache = False
 
-    # 优先尝试从URL获取
+    # 优先尝试从 Sub-Store 获取
     try:
-        current_app.logger.info(f"尝试从URL获取订阅: {sub['name']} (id: {sub_id})")
-        nodes = parse_subscription(sub['url'])
+        current_app.logger.info(f"尝试通过 Sub-Store 获取订阅: {sub['name']} (id: {sub_id})")
+        yaml_text = get_subscription_proxies_yaml(sub_id, sub['url'])
+        proxies = parse_proxies_from_yaml(yaml_text)
+        nodes = proxies_to_nodes(proxies)
 
         # 为节点添加订阅来源信息和ID
         for node in nodes:
             node['subscription_id'] = sub_id
             node['subscription_name'] = sub['name']
-            # 如果节点没有ID，生成一个临时ID（用于前端列表展示）
             if 'id' not in node:
                 node['id'] = f"node_{uuid.uuid4().hex[:8]}"
 
@@ -189,7 +193,7 @@ def fetch_subscription(sub_id):
                 'url': sub.get('url')
             }
         )
-        current_app.logger.info(f"成功从URL获取订阅并缓存: {sub['name']}, 节点数: {len(nodes)}")
+        current_app.logger.info(f"成功通过 Sub-Store 获取订阅并缓存: {sub['name']}, 节点数: {len(nodes)}")
 
     except Exception as e:
         fetch_error = str(e)
@@ -285,36 +289,38 @@ def get_all_subscription_proxies():
 
             sub_id = sub.get('id')
             sub_name = sub.get('name', 'Unknown')
+            sub_url = sub.get('url')
 
-            # 加载订阅缓存
-            cache = load_subscription_cache(sub_id)
-            if not cache:
-                current_app.logger.warning(f"订阅 '{sub_name}' (id: {sub_id}) 没有缓存数据")
-                continue
-
-            nodes = cache.get('nodes', [])
-            if not nodes:
-                current_app.logger.warning(f"订阅 '{sub_name}' (id: {sub_id}) 缓存中没有节点")
-                continue
-
-            # 转换节点为 proxies 格式
+            # 通过 Sub-Store 获取 proxies
             proxies = []
-            for node in nodes:
-                try:
-                    proxy = convert_node_to_mihomo(node)
-                    if proxy:
-                        proxies.append(proxy)
-                except Exception as e:
-                    current_app.logger.error(f"转换节点失败: {node.get('name')}, 错误: {str(e)}")
-                    continue
+            try:
+                yaml_text = get_subscription_proxies_yaml(sub_id, sub_url)
+                proxies = parse_proxies_from_yaml(yaml_text)
+            except Exception as e:
+                current_app.logger.warning(f"通过 Sub-Store 获取订阅 '{sub_name}' 失败: {e}，尝试本地缓存")
+                # 降级：从本地缓存加载并转换
+                cache = load_subscription_cache(sub_id)
+                if cache:
+                    from backend.converters.mihomo import convert_node_to_mihomo
+                    for node in cache.get('nodes', []):
+                        try:
+                            proxy = convert_node_to_mihomo(node)
+                            if proxy:
+                                proxies.append(proxy)
+                        except Exception:
+                            continue
+
+            if not proxies:
+                current_app.logger.warning(f"订阅 '{sub_name}' (id: {sub_id}) 没有可用节点")
+                continue
 
             all_proxies.extend(proxies)
             subscription_info.append({
                 'name': sub_name,
                 'id': sub_id,
                 'proxy_count': len(proxies),
-                'total_nodes': len(nodes),
-                'updated_at': cache.get('updated_at')
+                'total_nodes': len(proxies),
+                'updated_at': datetime.now().isoformat()
             })
 
         # 构建 YAML 响应
@@ -387,25 +393,25 @@ def get_subscription_proxies(sub_id):
 
         sub_name = sub.get('name', 'Unknown')
         sub_url = sub.get('url')
-        nodes = None
+        proxies = None
         cache_updated = False
         fetch_error = None
 
-        # 优先尝试从原订阅URL获取新配置
+        # 优先通过 Sub-Store 获取
         if sub_url:
             try:
-                current_app.logger.info(f"尝试从订阅URL获取最新配置: {sub_name} (id: {sub_id})")
-                nodes = parse_subscription(sub_url)
+                current_app.logger.info(f"尝试通过 Sub-Store 获取最新配置: {sub_name} (id: {sub_id})")
+                yaml_text = get_subscription_proxies_yaml(sub_id, sub_url)
+                proxies = parse_proxies_from_yaml(yaml_text)
 
-                if nodes:
-                    # 为节点添加订阅来源信息
+                if proxies:
+                    # 更新本地缓存（转换为 node 格式存储）
+                    nodes = proxies_to_nodes(proxies)
                     for node in nodes:
                         node['subscription_id'] = sub_id
                         node['subscription_name'] = sub_name
                         if 'id' not in node:
                             node['id'] = f"node_{uuid.uuid4().hex[:8]}"
-
-                    # 更新缓存
                     save_subscription_nodes(
                         sub_id,
                         nodes,
@@ -415,18 +421,18 @@ def get_subscription_proxies(sub_id):
                         }
                     )
                     cache_updated = True
-                    current_app.logger.info(f"成功从订阅URL获取并更新缓存: {sub_name}, 节点数: {len(nodes)}")
+                    current_app.logger.info(f"成功通过 Sub-Store 获取并更新缓存: {sub_name}, 节点数: {len(proxies)}")
             except Exception as e:
                 fetch_error = str(e)
-                current_app.logger.warning(f"从订阅URL获取配置失败: {sub_name}, 错误: {fetch_error}, 将使用本地缓存")
+                current_app.logger.warning(f"通过 Sub-Store 获取配置失败: {sub_name}, 错误: {fetch_error}, 将使用本地缓存")
 
-        # 如果从URL获取失败或没有URL，则从本地缓存加载
-        if nodes is None:
+        # 如果从 Sub-Store 获取失败或没有URL，则从本地缓存加载并转换
+        if proxies is None:
             cache = load_subscription_cache(sub_id)
             if not cache:
                 return jsonify({
                     'success': False,
-                    'message': f"订阅 '{sub_name}' 没有缓存数据，且从订阅URL获取失败: {fetch_error or '未知错误'}"
+                    'message': f"订阅 '{sub_name}' 没有缓存数据，且从 Sub-Store 获取失败: {fetch_error or '未知错误'}"
                 }), 404
 
             nodes = cache.get('nodes', [])
@@ -437,17 +443,17 @@ def get_subscription_proxies(sub_id):
                 }), 404
 
             current_app.logger.info(f"使用本地缓存数据: {sub_name}, 节点数: {len(nodes)}")
-
-        # 转换节点为 proxies 格式
-        proxies = []
-        for node in nodes:
-            try:
-                proxy = convert_node_to_mihomo(node)
-                if proxy:
-                    proxies.append(proxy)
-            except Exception as e:
-                current_app.logger.error(f"转换节点失败: {node.get('name')}, 错误: {str(e)}")
-                continue
+            # 降级：从缓存节点转换为 proxies
+            from backend.converters.mihomo import convert_node_to_mihomo
+            proxies = []
+            for node in nodes:
+                try:
+                    proxy = convert_node_to_mihomo(node)
+                    if proxy:
+                        proxies.append(proxy)
+                except Exception as e:
+                    current_app.logger.error(f"转换节点失败: {node.get('name')}, 错误: {str(e)}")
+                    continue
 
         # 构建 YAML 响应
         yaml_data = {
@@ -455,7 +461,7 @@ def get_subscription_proxies(sub_id):
         }
 
         # 添加元数据注释（英文，避免编码问题）
-        source_info = "from URL (cache updated)" if cache_updated else "from local cache"
+        source_info = "from Sub-Store (cache updated)" if cache_updated else "from local cache"
         if fetch_error and not cache_updated:
             source_info += f" (fetch error: {fetch_error})"
 
@@ -463,7 +469,7 @@ def get_subscription_proxies(sub_id):
 # Subscription: {sub_name}
 # ID: {sub_id}
 # Generated: {datetime.now().isoformat()}Z
-# Proxies: {len(proxies)} / {len(nodes)}
+# Proxies: {len(proxies)}
 # Source: {source_info}
 
 """

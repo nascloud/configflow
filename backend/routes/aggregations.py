@@ -17,8 +17,12 @@ from backend.common.config import config_data, save_config, DATA_DIR
 from backend.common.auth import validate_token_or_jwt, require_auth
 from backend.routes import subscription_aggregations_bp as bp
 from backend.converters.mihomo import convert_node_to_mihomo
-from backend.utils.subscription_parser import parse_subscription
 from backend.utils.subscription_cache import load_subscription_cache, save_subscription_nodes
+from backend.utils.sub_store_client import (
+    get_subscription_proxies_yaml,
+    parse_proxies_from_yaml,
+    proxies_to_nodes,
+)
 from backend.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -65,7 +69,9 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
     # 记录各订阅的节点数统计（不保存到配置文件，仅用于返回）
     subscription_node_counts = {}
 
-    # 1. 从选择的订阅中获取节点 - 优先从URL获取新数据
+    # 1. 从选择的订阅中获取节点 - 优先通过 Sub-Store 获取
+    # sub_proxies_map: sub_id -> proxies list（mihomo 格式，用于最终输出）
+    sub_proxies_map = {}
     subscription_ids = aggregation.get('subscriptions', [])
     if subscription_ids:
         subscriptions = config_data.get('subscriptions', [])
@@ -74,46 +80,48 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
             if sub:
                 nodes_list = None
 
-                # 优先尝试从URL获取新数据
+                # 优先通过 Sub-Store 获取
                 try:
-                    logger.info(f"尝试从URL获取订阅最新数据: '{sub['name']}'")
-                    nodes_list = parse_subscription(sub['url'])
+                    logger.info(f"尝试通过 Sub-Store 获取订阅最新数据: '{sub['name']}'")
+                    yaml_text = get_subscription_proxies_yaml(sub_id, sub['url'])
+                    proxies = parse_proxies_from_yaml(yaml_text)
+                    sub_proxies_map[sub_id] = proxies
 
-                    if nodes_list:
-                        # 为节点添加订阅来源信息
-                        for node in nodes_list:
-                            node['subscription_id'] = sub_id
-                            node['subscription_name'] = sub['name']
-                            if 'id' not in node:
-                                node['id'] = f"node_{uuid.uuid4().hex[:8]}"
+                    # 转换为 node 格式用于缓存和过滤
+                    nodes_list = proxies_to_nodes(proxies)
+                    for node in nodes_list:
+                        node['subscription_id'] = sub_id
+                        node['subscription_name'] = sub['name']
+                        if 'id' not in node:
+                            node['id'] = f"node_{uuid.uuid4().hex[:8]}"
 
-                        # 保存到本地缓存
-                        save_subscription_nodes(
-                            sub_id,
-                            nodes_list,
-                            {
-                                'subscription_name': sub['name'],
-                                'url': sub.get('url')
-                            }
-                        )
-                        logger.info(f"成功从URL获取并更新缓存: '{sub['name']}', 节点数: {len(nodes_list)}")
+                    # 保存到本地缓存
+                    save_subscription_nodes(
+                        sub_id,
+                        nodes_list,
+                        {
+                            'subscription_name': sub['name'],
+                            'url': sub.get('url')
+                        }
+                    )
+                    logger.info(f"成功通过 Sub-Store 获取并更新缓存: '{sub['name']}', 节点数: {len(nodes_list)}")
                 except Exception as e:
-                    logger.warning(f"从URL获取订阅 '{sub['name']}' 失败: {e}, 尝试读取本地缓存")
+                    logger.warning(f"通过 Sub-Store 获取订阅 '{sub['name']}' 失败: {e}, 尝试读取本地缓存")
 
-                # 如果从URL获取失败，从本地缓存读取
+                # 如果从 Sub-Store 获取失败，从本地缓存读取
                 if not nodes_list:
                     cache = load_subscription_cache(sub_id)
                     if cache:
                         nodes_list = cache.get('nodes', [])
                         logger.info(f"从本地缓存读取订阅 '{sub['name']}', 节点数: {len(nodes_list)}")
                     else:
-                        logger.error(f"订阅 '{sub['name']}' 既无法从URL获取也没有本地缓存")
+                        logger.error(f"订阅 '{sub['name']}' 既无法从 Sub-Store 获取也没有本地缓存")
                         nodes_list = []
 
                 # 记录该订阅的节点数（在过滤前）
                 subscription_node_counts[sub_id] = len(nodes_list)
 
-                # 添加到节点列表
+                # 添加到节点列表（用于正则过滤）
                 for node in nodes_list:
                     node['subscription_id'] = sub_id
                     node['enabled'] = True
@@ -142,11 +150,23 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
             logger.error(f"聚合 '{agg_name}' 的正则表达式无效: {e}")
 
     # 4. 转换为 mihomo 格式
+    # 构建 sub-store proxies 按名称索引（用于快速查找）
+    sub_store_proxy_by_name = {}
+    for proxies_list in sub_proxies_map.values():
+        for p in proxies_list:
+            sub_store_proxy_by_name[p.get('name', '')] = p
+
     proxies = []
     for node in all_nodes:
-        proxy = convert_node_to_mihomo(node)
-        if proxy:
-            proxies.append(proxy)
+        node_name = node.get('name', '')
+        # 优先使用 Sub-Store 返回的原始 proxy（已经是 mihomo 格式）
+        if node_name in sub_store_proxy_by_name:
+            proxies.append(sub_store_proxy_by_name[node_name])
+        else:
+            # 手动节点或缓存降级节点，使用 convert_node_to_mihomo
+            proxy = convert_node_to_mihomo(node)
+            if proxy:
+                proxies.append(proxy)
 
     # 5. 生成 YAML 内容（使用 IndentDumper 确保正确的缩进）
     from backend.converters.mihomo import IndentDumper

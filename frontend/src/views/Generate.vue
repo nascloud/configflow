@@ -228,6 +228,19 @@
                   • 配置订阅 URL
                 </div>
               </el-form-item>
+              <el-form-item label="Sub-Store">
+                <el-input
+                  v-model="subStoreUrl"
+                  placeholder="http://127.0.0.1:3001"
+                  @blur="onSubStoreUrlBlur"
+                  size="small"
+                  clearable
+                />
+                <div class="server-domain-hint">
+                  Sub-Store 后端 API 地址，用于订阅解析和节点格式转换<br />
+                  Docker 部署时默认为 http://sub-store:3001，留空使用环境变量或默认值
+                </div>
+              </el-form-item>
               <el-form-item label="订阅聚合">
                 <div style="display: flex; align-items: center; gap: 8px;">
                   <el-switch
@@ -1135,7 +1148,7 @@
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { DCaret, RefreshLeft } from '@element-plus/icons-vue'
-import { generateApi, configApi, customConfigApi, subscriptionApi, nodeApi, ruleApi, ruleSetApi, proxyGroupApi, agentApi, serverDomainApi, configTokenApi } from '@/api'
+import { generateApi, configApi, customConfigApi, subscriptionApi, nodeApi, ruleApi, ruleSetApi, proxyGroupApi, agentApi, serverDomainApi, configTokenApi, subStoreUrlApi } from '@/api'
 import YamlEditor from '@/components/YamlEditor.vue'
 import api from '@/api'
 import type { RuleSet } from '@/types'
@@ -1467,6 +1480,9 @@ const serverDomain = ref(localStorage.getItem('serverDomain') || window.location
 // 配置令牌
 const configToken = ref('')
 
+// Sub-Store URL
+const subStoreUrl = ref('')
+
 // 订阅聚合开关
 const subscriptionAggregationEnabled = ref(false)
 
@@ -1634,6 +1650,29 @@ const onClearToken = async () => {
       console.error('清除令牌失败:', error)
       ElMessage.error('清除令牌失败')
     }
+  }
+}
+
+// Sub-Store URL 相关函数
+const onSubStoreUrlBlur = async () => {
+  try {
+    await subStoreUrlApi.update({
+      sub_store_url: subStoreUrl.value
+    })
+
+    ElMessage.success('Sub-Store URL 已保存')
+  } catch (error: any) {
+    console.error('保存 Sub-Store URL 失败:', error)
+    ElMessage.error('保存失败')
+  }
+}
+
+const loadSubStoreUrl = async () => {
+  try {
+    const response = await subStoreUrlApi.get()
+    subStoreUrl.value = response.data.sub_store_url || ''
+  } catch (error: any) {
+    console.error('加载 Sub-Store URL 失败:', error)
   }
 }
 
@@ -2398,6 +2437,9 @@ onMounted(async () => {
 
   // 加载配置令牌
   await loadConfigToken()
+
+  // 加载 Sub-Store URL
+  await loadSubStoreUrl()
 
   // 从后端加载订阅聚合开关配置
   try {
