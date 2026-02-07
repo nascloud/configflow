@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   config-flow-agent-aio:
-    image: thsrite/config-flow-agent-aio:latest
+    image: thsrite/config-flow-agent:latest
     container_name: configflow-agent-aio
     restart: always
 
@@ -83,7 +83,7 @@ services:
 # services:
 #   # 实例 1: 只启用 Mihomo
 #   mihomo-only:
-#     image: thsrite/config-flow-agent-aio:latest
+#     image: thsrite/config-flow-agent:latest
 #     container_name: configflow-mihomo
 #     restart: always
 #     ports:
@@ -99,7 +99,7 @@ services:
 #
 #   # 实例 2: 只启用 MosDNS
 #   mosdns-only:
-#     image: thsrite/config-flow-agent-aio:latest
+#     image: thsrite/config-flow-agent:latest
 #     container_name: configflow-mosdns
 #     restart: always
 #     ports:

@@ -4,8 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.agent
-      target: mosdns
-    image: thsrite/config-flow-agent-mosdns:latest
+    image: thsrite/config-flow-agent:latest
     restart: always
 
     ports:
@@ -25,6 +24,7 @@ services:
       # --- 必填配置 ---
       - SERVER_URL=http://192.168.50.100:5801  # ConfigFlow 服务器地址
       - AGENT_NAME=mosdns-agent                # Agent 唯一标识
+      - SERVICE_TYPE=mosdns                    # 单服务模式: mosdns
 
       # --- 可选配置 ---
       - AGENT_PORT=8080                        # Agent 监听端口（容器内）

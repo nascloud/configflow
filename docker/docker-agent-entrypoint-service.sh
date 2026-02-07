@@ -143,7 +143,7 @@ set_supervisor_autostart() {
 echo "Starting ConfigFlow Agent..."
 
 if [ -n "$SERVICE_TYPE" ]; then
-    # ---- 单服务模式 (mihomo 或 mosdns 镜像) ----
+    # ---- 单服务模式 ----
     echo "Mode: single service (${SERVICE_TYPE})"
 
     if [ "$SERVICE_TYPE" = "mihomo" ]; then
@@ -152,6 +152,8 @@ if [ -n "$SERVICE_TYPE" ]; then
             "${AGENT_NAME:-mihomo-agent}" \
             "${AGENT_PORT:-8080}" \
             "${CONFIG_PATH:-/etc/mihomo/config.yaml}"
+        set_supervisor_autostart /etc/supervisor/conf.d/agent-mihomo.conf true
+        set_supervisor_autostart /etc/supervisor/conf.d/mihomo.conf true
         chmod -R 755 /etc/mihomo
     elif [ "$SERVICE_TYPE" = "mosdns" ]; then
         create_default_mosdns_config
@@ -159,6 +161,8 @@ if [ -n "$SERVICE_TYPE" ]; then
             "${AGENT_NAME:-mosdns-agent}" \
             "${AGENT_PORT:-8080}" \
             "${CONFIG_PATH:-/etc/mosdns/config.yaml}"
+        set_supervisor_autostart /etc/supervisor/conf.d/agent-mosdns.conf true
+        set_supervisor_autostart /etc/supervisor/conf.d/mosdns.conf true
         chmod -R 775 /etc/mosdns
     fi
 else

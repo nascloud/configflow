@@ -736,11 +736,12 @@
               style="width: 280px"
               @change="onLogPathChange"
             >
-              <el-option label="主 Agent 日志" value="/var/log/configflow-agent.log" />
-              <el-option label="Supervisor 主日志" value="/var/log/supervisor/supervisord.log" />
-              <el-option label="Mihomo 输出日志" value="/var/log/supervisor/mihomo.log" />
-              <el-option label="Mihomo 错误日志" value="/var/log/supervisor/mihomo.err.log" />
-              <el-option label="MosDNS 错误日志" value="/etc/mosdns/mosdns.err.log" />
+              <el-option
+                v-for="opt in logPathOptions"
+                :key="opt.value"
+                :label="opt.label"
+                :value="opt.value"
+              />
               <el-option label="自定义路径..." value="custom" />
             </el-select>
           </el-form-item>
@@ -1909,6 +1910,25 @@ const deleteAgent = async (agent: Agent) => {
     }
   }
 }
+
+// 根据 Agent 类型动态生成日志选项
+const logPathOptions = computed(() => {
+  const common = [
+    { label: '主 Agent 日志', value: '/var/log/configflow-agent.log' },
+    { label: 'Supervisor 主日志', value: '/var/log/supervisor/supervisord.log' },
+  ]
+  const mihomo = [
+    { label: 'Mihomo 输出日志', value: '/var/log/supervisor/mihomo.log' },
+    { label: 'Mihomo 错误日志', value: '/var/log/supervisor/mihomo.err.log' },
+  ]
+  const mosdns = [
+    { label: 'MosDNS 错误日志', value: '/etc/mosdns/mosdns.err.log' },
+  ]
+  const type = currentAgent.value?.service_type
+  if (type === 'mihomo') return [...common, ...mihomo]
+  if (type === 'mosdns') return [...common, ...mosdns]
+  return [...common, ...mihomo, ...mosdns]
+})
 
 // 判断是否为主 Agent 日志
 const isMainAgentLog = computed(() => {

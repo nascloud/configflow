@@ -4,16 +4,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.agent
-      target: agent
     image: thsrite/config-flow-agent:latest
     restart: always
 
     ports:
       # --- Agent 端口 ---
       # Agent for Mihomo
-      - "58080:58080"
+      - "58080:8080"
       # Agent for MosDNS
-      - "58081:58081"
+      - "58081:8081"
 
       # --- Service 端口 (根据你的需要暴露) ---
       # Mihomo 默认端口
@@ -37,15 +36,16 @@ services:
       - HEARTBEAT_INTERVAL=15
       - AGENT_IP=192.168.50.100
 
+      # --- AIO 模式（不设置 SERVICE_TYPE） ---
       # --- Mihomo 控制 ---
       - ENABLE_MIHOMO=true  # 设置为 false 将完全禁用 mihomo 及其 agent
       - AGENT_MIHOMO_NAME=mihomo
-      - AGENT_MIHOMO_PORT=58080  # 必须与上面 ports 部分匹配
+      - AGENT_MIHOMO_PORT=8080  # 必须与上面 ports 部分匹配
 
       # --- MosDNS 控制 ---
       - ENABLE_MOSDNS=true  # 设置为 false 将完全禁用 mosdns 及其 agent
       - AGENT_MOSDNS_NAME=mosdns
-      - AGENT_MOSDNS_PORT=58081  # 必须与上面 ports 部分匹配
+      - AGENT_MOSDNS_PORT=8081  # 必须与上面 ports 部分匹配
 
     logging:
       driver: "json-file"

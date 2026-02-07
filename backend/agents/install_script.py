@@ -1555,7 +1555,7 @@ def generate_docker_mihomo_compose(
 
 services:
   mihomo:
-    image: thsrite/config-flow-agent-mihomo:latest
+    image: thsrite/config-flow-agent:latest
     container_name: {agent_name}
     restart: unless-stopped
     network_mode: host
@@ -1622,7 +1622,7 @@ docker run -d \\
   -v {data_dir}:/root/.config/mihomo \\
   --log-opt max-size=10m \\
   --log-opt max-file=3 \\
-  thsrite/config-flow-agent-mihomo:latest
+  thsrite/config-flow-agent:latest
 
 echo "Mihomo Agent 已启动"
 echo "容器名称: {agent_name}"
@@ -1659,7 +1659,7 @@ def generate_docker_mosdns_compose(
 
 services:
   mosdns:
-    image: thsrite/config-flow-agent-mosdns:latest
+    image: thsrite/config-flow-agent:latest
     container_name: {agent_name}
     restart: unless-stopped
     network_mode: host
@@ -1726,7 +1726,7 @@ docker run -d \\
   -v {data_dir}:/etc/mosdns \\
   --log-opt max-size=10m \\
   --log-opt max-file=3 \\
-  thsrite/config-flow-agent-mosdns:latest
+  thsrite/config-flow-agent:latest
 
 echo "MosDNS Agent 已启动"
 echo "容器名称: {agent_name}"
@@ -1763,7 +1763,7 @@ def generate_docker_aio_compose(
 
 services:
   mihomo:
-    image: thsrite/config-flow-agent-mihomo:latest
+    image: thsrite/config-flow-agent:latest
     container_name: {agent_name}-mihomo
     restart: unless-stopped
     network_mode: host
@@ -1784,7 +1784,7 @@ services:
         max-file: "3"
 
   mosdns:
-    image: thsrite/config-flow-agent-mosdns:latest
+    image: thsrite/config-flow-agent:latest
     container_name: {agent_name}-mosdns
     restart: unless-stopped
     network_mode: host
@@ -1854,7 +1854,7 @@ docker run -d \\
   -v {data_dir}/mihomo:/root/.config/mihomo \\
   --log-opt max-size=10m \\
   --log-opt max-file=3 \\
-  thsrite/config-flow-agent-mihomo:latest
+  thsrite/config-flow-agent:latest
 
 # 等待 Mihomo 启动
 sleep 3
@@ -1874,7 +1874,7 @@ docker run -d \\
   -v {data_dir}/mosdns:/etc/mosdns \\
   --log-opt max-size=10m \\
   --log-opt max-file=3 \\
-  thsrite/config-flow-agent-mosdns:latest
+  thsrite/config-flow-agent:latest
 
 echo "All-in-One Agent 已启动"
 echo "Mihomo 容器: {agent_name}-mihomo"
