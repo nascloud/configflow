@@ -7,13 +7,12 @@ on:
     branches:
       - main
     paths:
-      - 'backend/agents/**'
-      - 'docker/Dockerfile.agent'
-      - 'docker/Dockerfile.agent.aio'
-      - 'docker/Dockerfile.agent.mihomo'
-      - 'docker/Dockerfile.agent.mosdns'
-      - 'docker/docker-agent-entrypoint*.sh'
-      - '.github/workflows/docker-agent*.yml'
+      - 'backend/**'
+      - 'frontend/**'
+      - 'docker/Dockerfile'
+      - 'docker/nginx.conf'
+      - 'docker/supervisord.conf'
+      - '.github/workflows/docker.yml'
   workflow_dispatch:
 
 env:

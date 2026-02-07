@@ -1,24 +1,42 @@
-# Stage 1: 构建 Go Agent
+# syntax=docker/dockerfile:1
+# ConfigFlow Agent Dockerfile (multi-variant)
+# Usage: docker build --target=<variant> -f docker/Dockerfile.agent .
+# Variants: agent, mihomo, mosdns, aio
+
+# ==============================================================================
+# Stage: 构建 Go Agent（所有变体共享）
+# ==============================================================================
 FROM golang:1.21-alpine AS builder
 
 WORKDIR /build
 ENV GOPROXY=https://goproxy.cn,direct
 
-RUN --mount=type=bind,source=backend/agents/go-agent,target=/src \
-    --mount=type=cache,target=/go/pkg/mod \
-    cp /src/go.mod /src/go.sum ./ && go mod download && cp -r /src/* ./ && \
+# 先复制依赖文件，利用 Docker 层缓存
+COPY backend/agents/go-agent/go.mod backend/agents/go-agent/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+# 再复制源码并编译
+COPY backend/agents/go-agent/ ./
+RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /configflow-agent .
 
-# Stage 2: 最终镜像
-FROM alpine:latest
+# ==============================================================================
+# Stage: 服务二进制来源（BuildKit 仅在目标需要时才拉取）
+# ==============================================================================
+FROM metacubex/mihomo:latest AS mihomo-bin
+FROM irinesistiana/mosdns:latest AS mosdns-bin
 
-# 复制二进制和配置文件
+# ==============================================================================
+# Target: agent（纯 Agent，不含服务二进制）
+# ==============================================================================
+FROM alpine:latest AS agent
+
 COPY --from=builder /configflow-agent /usr/local/bin/configflow-agent
 COPY backend/agents/go-agent/supervisord.conf /etc/supervisor/supervisord.conf
-COPY backend/agents/go-agent/supervisor /etc/supervisor/conf.d/
+COPY backend/agents/go-agent/supervisor/ /etc/supervisor/conf.d/
 COPY docker/docker-agent-entrypoint-agent.sh /docker-entrypoint.sh
 
-# 安装依赖、设置权限（合并为单个 RUN）
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories && \
     apk add --no-cache ca-certificates supervisor python3-dev py3-pip && \
     pip3 install --break-system-packages "setuptools<81" && \
@@ -29,4 +47,92 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/re
 ENV TZ=Asia/Shanghai
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+
+# ==============================================================================
+# Target: mihomo（Agent + Mihomo）
+# ==============================================================================
+FROM alpine:latest AS mihomo
+
+COPY --from=builder /configflow-agent /usr/local/bin/configflow-agent
+COPY --from=mihomo-bin /mihomo /usr/local/bin/mihomo
+COPY backend/agents/go-agent/supervisord.conf /etc/supervisor/supervisord.conf
+COPY backend/agents/go-agent/supervisor/mihomo.conf /etc/supervisor/conf.d/
+COPY backend/agents/go-agent/supervisor/agent-mihomo.conf /etc/supervisor/conf.d/
+COPY docker/docker-agent-entrypoint-service.sh /entrypoint.sh
+
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories && \
+    apk add --no-cache ca-certificates su-exec supervisor python3-dev py3-pip bash && \
+    pip3 install --break-system-packages "setuptools<81" && \
+    mkdir -p /etc/mihomo /etc/supervisor/conf.d /var/log/supervisor /run && \
+    chmod +x /usr/local/bin/configflow-agent /usr/local/bin/mihomo /entrypoint.sh && \
+    chmod -R 755 /etc/mihomo && chmod -R 777 /var/log/supervisor /run
+
+ENV SERVER_URL="" AGENT_NAME="" SERVICE_TYPE="mihomo" AGENT_HOST="0.0.0.0" AGENT_PORT="8080" \
+    AGENT_IP="" SERVICE_NAME="" CONFIG_PATH="" RESTART_COMMAND="" HEARTBEAT_INTERVAL="30" \
+    TZ=Asia/Shanghai
+
+EXPOSE 8080 53/tcp 53/udp 1053/tcp 1053/udp 7890 7891 7892 9090
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+
+# ==============================================================================
+# Target: mosdns（Agent + MosDNS）
+# ==============================================================================
+FROM alpine:latest AS mosdns
+
+COPY --from=builder /configflow-agent /usr/local/bin/configflow-agent
+COPY --from=mosdns-bin /usr/bin/mosdns /usr/local/bin/mosdns
+COPY backend/agents/go-agent/supervisord.conf /etc/supervisor/supervisord.conf
+COPY backend/agents/go-agent/supervisor/mosdns.conf /etc/supervisor/conf.d/
+COPY backend/agents/go-agent/supervisor/agent-mosdns.conf /etc/supervisor/conf.d/
+COPY docker/docker-agent-entrypoint-service.sh /entrypoint.sh
+
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories && \
+    apk add --no-cache ca-certificates su-exec supervisor python3-dev py3-pip bash && \
+    pip3 install --break-system-packages "setuptools<81" && \
+    mkdir -p /etc/mosdns /etc/supervisor/conf.d /var/log/supervisor /run && \
+    chmod +x /usr/local/bin/configflow-agent /usr/local/bin/mosdns /entrypoint.sh && \
+    chmod -R 775 /etc/mosdns && chmod -R 777 /var/log/supervisor /run
+
+ENV SERVER_URL="" AGENT_NAME="" SERVICE_TYPE="mosdns" AGENT_HOST="0.0.0.0" AGENT_PORT="8080" \
+    AGENT_IP="" SERVICE_NAME="mosdns" CONFIG_PATH="/etc/mosdns/config.yaml" RESTART_COMMAND="" \
+    HEARTBEAT_INTERVAL="30" TZ=Asia/Shanghai
+
+EXPOSE 8080 53/tcp 53/udp
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+
+# ==============================================================================
+# Target: aio（Agent + Mihomo + MosDNS）
+# ==============================================================================
+FROM alpine:latest AS aio
+
+COPY --from=builder /configflow-agent /usr/local/bin/configflow-agent
+COPY --from=mihomo-bin /mihomo /usr/local/bin/mihomo
+COPY --from=mosdns-bin /usr/bin/mosdns /usr/local/bin/mosdns
+COPY backend/agents/go-agent/supervisord.conf /etc/supervisor/supervisord.conf
+COPY backend/agents/go-agent/supervisor/mihomo.conf /etc/supervisor/conf.d/
+COPY backend/agents/go-agent/supervisor/mosdns.conf /etc/supervisor/conf.d/
+COPY backend/agents/go-agent/supervisor/agent-mihomo.conf /etc/supervisor/conf.d/
+COPY backend/agents/go-agent/supervisor/agent-mosdns.conf /etc/supervisor/conf.d/
+COPY docker/docker-agent-entrypoint-service.sh /entrypoint.sh
+
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories && \
+    apk add --no-cache ca-certificates su-exec supervisor python3-dev py3-pip bash && \
+    pip3 install --break-system-packages "setuptools<81" && \
+    mkdir -p /etc/mihomo /etc/mosdns /etc/supervisor/conf.d /var/log/supervisor /run && \
+    chmod +x /usr/local/bin/configflow-agent /usr/local/bin/mihomo /usr/local/bin/mosdns /entrypoint.sh && \
+    chmod -R 755 /etc/mihomo && chmod -R 775 /etc/mosdns && chmod -R 777 /var/log/supervisor /run
+
+ENV SERVER_URL="" AGENT_IP="" HEARTBEAT_INTERVAL="60" \
+    ENABLE_MIHOMO="true" AGENT_MIHOMO_NAME="mihomo-agent" AGENT_MIHOMO_PORT="8080" \
+    ENABLE_MOSDNS="true" AGENT_MOSDNS_NAME="mosdns-agent" AGENT_MOSDNS_PORT="8081" \
+    TZ=Asia/Shanghai
+
+EXPOSE 8080 8081 53/tcp 53/udp 1053/tcp 1053/udp 7890 7891 9090
+
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

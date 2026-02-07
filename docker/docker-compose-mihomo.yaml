@@ -3,7 +3,8 @@ services:
     container_name: configflow-agent-mihomo
     build:
       context: .
-      dockerfile: Dockerfile.agent.mihomo
+      dockerfile: Dockerfile.agent
+      target: mihomo
     image: thsrite/config-flow-agent-mihomo:latest
     restart: always
 

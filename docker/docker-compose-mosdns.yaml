@@ -3,7 +3,8 @@ services:
     container_name: configflow-agent-mosdns
     build:
       context: .
-      dockerfile: Dockerfile.agent.mosdns
+      dockerfile: Dockerfile.agent
+      target: mosdns
     image: thsrite/config-flow-agent-mosdns:latest
     restart: always
 

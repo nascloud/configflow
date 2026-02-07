@@ -9,9 +9,14 @@ FROM golang:1.21-alpine AS go-builder
 WORKDIR /build
 ENV GOPROXY=https://goproxy.cn,direct
 
-RUN --mount=type=bind,source=backend/agents/go-agent,target=/src \
-    --mount=type=cache,target=/go/pkg/mod \
-    cp /src/go.mod /src/go.sum ./ && go mod download && cp -r /src/* ./ && \
+# 先复制依赖文件，利用 Docker 层缓存（go.mod/go.sum 不变则跳过 go mod download）
+COPY backend/agents/go-agent/go.mod backend/agents/go-agent/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+# 再复制源码并编译（仅 Go 源码变更时才重新编译）
+COPY backend/agents/go-agent/ ./
+RUN --mount=type=cache,target=/go/pkg/mod \
     mkdir -p /dist && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /dist/configflow-agent-linux-amd64 . && \
     CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o /dist/configflow-agent-linux-arm64 . && \
@@ -24,9 +29,14 @@ FROM node:18-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
-RUN --mount=type=bind,source=frontend,target=/src \
-    --mount=type=cache,target=/root/.npm \
-    cp /src/package*.json ./ && npm ci && cp -r /src/* ./ && npm run build
+# 先复制 package 文件，利用 Docker 层缓存（依赖不变则跳过 npm ci）
+COPY frontend/package*.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+# 再复制源码并构建（仅前端源码变更时才重新 build）
+COPY frontend/ ./
+RUN npm run build
 
 # ==============================================================================
 # Stage 3: 最终镜像（源码部署）
