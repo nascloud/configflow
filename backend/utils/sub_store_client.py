@@ -192,7 +192,7 @@ def convert_proxy_string(proxy_string, target='ClashMeta'):
 
 def _fix_proxy_fields(proxy):
     """补全代理节点的必需字段（如 VLESS 的 encryption: none）"""
-    if isinstance(proxy, dict) and proxy.get('type') == 'vless' and not proxy.get('encryption'):
+    if isinstance(proxy, dict) and proxy.get('type') == 'vless' and proxy.get('encryption', '') in ('', 'zero', None):
         proxy['encryption'] = 'none'
     return proxy
 

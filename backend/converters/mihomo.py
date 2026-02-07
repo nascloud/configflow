@@ -1072,7 +1072,7 @@ def _fix_proxy_fields(proxy: Dict[str, Any]) -> Dict[str, Any]:
 
     某些来源（Sub-Store、手动 YAML）可能缺少必需字段导致 Mihomo 报错。
     """
-    if proxy and proxy.get('type') == 'vless' and not proxy.get('encryption'):
+    if proxy and proxy.get('type') == 'vless' and proxy.get('encryption', '') in ('', 'zero', None):
         proxy['encryption'] = 'none'
     return proxy
 
