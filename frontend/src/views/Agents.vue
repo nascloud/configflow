@@ -733,7 +733,7 @@
             <el-select
               v-model="selectedLogPath"
               placeholder="选择日志文件"
-              style="width: 280px"
+              class="log-file-select"
               @change="onLogPathChange"
             >
               <el-option
@@ -3189,6 +3189,14 @@ onUnmounted(() => {
 }
 
 /* 日志样式 */
+.log-file-select {
+  width: 280px !important;
+}
+
+.log-file-select :deep(.el-select__wrapper) {
+  width: 100% !important;
+}
+
 .logs-config-section {
   margin-bottom: 12px;
   padding: 12px;
