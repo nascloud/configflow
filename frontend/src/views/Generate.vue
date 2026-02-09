@@ -1549,7 +1549,20 @@ const showSurgeSmartDialog = async () => {
       proxyGroupApi.getAll(),
       customConfigApi.getSurge()
     ])
-    proxyGroupOptions.value = (groupsRes.data || []).map((g: any) => ({ id: g.id, name: g.name }))
+    const allGroups = groupsRes.data || []
+    const groupMap = new Map(allGroups.map((g: any) => [g.id, g]))
+    // 检查策略组是否引用了其他策略组（含跟随链）
+    const hasStrategyRef = (g: any): boolean => {
+      if (g.include_groups?.length > 0) return true
+      if (g.follow_group) {
+        const followed = groupMap.get(g.follow_group)
+        if (followed) return hasStrategyRef(followed)
+      }
+      return false
+    }
+    proxyGroupOptions.value = allGroups
+      .filter((g: any) => !hasStrategyRef(g))
+      .map((g: any) => ({ id: g.id, name: g.name }))
     surgeSmartGroups.value = (surgeRes.data.smart_groups || []).map((sg: any) => ({
       group_id: sg.group_id || '',
       policy_priority: sg.policy_priority || ''
