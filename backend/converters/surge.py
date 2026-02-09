@@ -332,8 +332,10 @@ def generate_surge_config(config_data: Dict[str, Any], base_url: str = '') -> st
                 rules.append(f"RULE-SET,{value},{policy}")
             # 逻辑规则类型（AND、OR、NOT）需要特殊处理
             elif rule_type in ['AND', 'OR', 'NOT']:
-                # 逻辑规则格式：AND,((DOMAIN,example.com),(IP-CIDR,1.1.1.1/32)),POLICY
-                rules.append(f"{rule_type},{value},{policy}")
+                # Surge 逻辑规则格式：AND,((SRC-IP,1.1.1.1), (DOMAIN,example.com)),POLICY
+                # Surge 要求子条件之间有空格：), ( 而不是 ),(
+                surge_value = value.replace('),(', '), (')
+                rules.append(f"{rule_type},{surge_value},{policy}")
             else:
                 # 标准规则类型：DOMAIN, DOMAIN-SUFFIX, DOMAIN-KEYWORD, IP-CIDR, IP-CIDR6, IP-SUFFIX, DST-PORT, SRC-PORT, GEOIP 等
                 # 根据配置决定是否添加 no-resolve 参数
@@ -388,6 +390,35 @@ def generate_surge_config(config_data: Dict[str, Any], base_url: str = '') -> st
 
     # 组合所有部分
     return '\n\n'.join(sections)
+
+
+def convert_proxies_to_surge_text(proxies: List[Dict[str, Any]]) -> str:
+    """将 mihomo 格式 proxies 列表转换为 Surge 纯文本格式（每行一个节点）
+
+    用于 policy-path 返回 Surge 原生格式，替代 YAML 格式。
+
+    Args:
+        proxies: mihomo 格式的 proxy dict 列表
+
+    Returns:
+        str: Surge 格式纯文本，每行一个节点
+    """
+    from backend.utils.sub_store_client import proxies_to_nodes
+
+    nodes = proxies_to_nodes(proxies)
+    lines = []
+    for node in nodes:
+        try:
+            proxy_line, wireguard_section = convert_node_to_surge(node)
+            # 跳过 WireGuard 节点（policy-path 不支持需要独立 section 的节点）
+            if wireguard_section:
+                continue
+            if proxy_line:
+                lines.append(proxy_line)
+        except Exception as e:
+            logger.warning(f"转换节点到 Surge 格式失败: {node.get('name', '?')}, 错误: {e}")
+            continue
+    return '\n'.join(lines)
 
 
 def convert_node_to_surge(node: Dict[str, Any]) -> tuple:
@@ -872,7 +903,9 @@ def convert_proxy_group_to_surge(group: Dict[str, Any], config_data: Dict[str, A
                 sub_url = f"{effective_base_url}/api/subscriptions/{sub_id}/proxies"
                 # 如果配置了令牌，添加到 URL
                 if config_token:
-                    sub_url += f"?token={config_token}"
+                    sub_url += f"?token={config_token}&format=surge"
+                else:
+                    sub_url += f"?format=surge"
                 policy_paths.append(sub_url)
 
     # 添加聚合的 policy-path
@@ -885,7 +918,9 @@ def convert_proxy_group_to_surge(group: Dict[str, Any], config_data: Dict[str, A
                 agg_url = f"{effective_base_url}/api/aggregations/{agg_id}/provider"
                 # 如果配置了令牌，添加到 URL
                 if config_token:
-                    agg_url += f"?token={config_token}"
+                    agg_url += f"?token={config_token}&format=surge"
+                else:
+                    agg_url += f"?format=surge"
                 policy_paths.append(agg_url)
 
     # 如果没有普通节点但有 policy-path，允许继续生成

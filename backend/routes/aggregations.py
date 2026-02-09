@@ -11,7 +11,7 @@ import uuid
 import yaml
 from typing import Dict, Any
 from datetime import datetime
-from flask import request, jsonify, send_file, current_app
+from flask import request, jsonify, send_file, current_app, Response
 
 from backend.common.config import config_data, save_config, DATA_DIR
 from backend.common.auth import validate_token_or_jwt, require_auth
@@ -461,6 +461,15 @@ def get_aggregation_provider(agg_id):
         # 生成 provider 文件（优先从URL获取订阅新数据并更新缓存，失败则使用本地缓存）
         result = generate_aggregation_provider(aggregation)
         file_path = result['file_path']
+
+        # 如果请求 Surge 格式，转换为 Surge 纯文本
+        if request.args.get('format') == 'surge':
+            with open(file_path, 'r', encoding='utf-8') as f:
+                provider_data = yaml.safe_load(f)
+            proxies = provider_data.get('proxies', [])
+            from backend.converters.surge import convert_proxies_to_surge_text
+            surge_text = convert_proxies_to_surge_text(proxies)
+            return Response(surge_text, mimetype='text/plain')
 
         # 返回 YAML 文件
         return send_file(

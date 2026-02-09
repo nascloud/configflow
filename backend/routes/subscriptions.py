@@ -455,6 +455,12 @@ def get_subscription_proxies(sub_id):
                     current_app.logger.error(f"转换节点失败: {node.get('name')}, 错误: {str(e)}")
                     continue
 
+        # 如果请求 Surge 格式，转换为 Surge 纯文本
+        if request.args.get('format') == 'surge':
+            from backend.converters.surge import convert_proxies_to_surge_text
+            surge_text = convert_proxies_to_surge_text(proxies)
+            return Response(surge_text, mimetype='text/plain')
+
         # 构建 YAML 响应
         yaml_data = {
             'proxies': proxies
