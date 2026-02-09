@@ -1,10 +1,17 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.0.8-go"
+LATEST_AGENT_VERSION = "1.0.9-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.0.8-go": {
+        "date": "2026-02-09",
+        "features": [
+            "合并4个镜像为统一镜像，通过环境变量控制服务模式",
+            "支持清空指定日志文件"
+        ]
+    },
     "1.0.7-go": {
         "date": "2026-02-07",
         "features": [
