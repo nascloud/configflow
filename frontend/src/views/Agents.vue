@@ -1583,42 +1583,64 @@ const generateScript = async () => {
       // 生成 Docker Compose 和 Docker Run
       const serverUrl = localStorage.getItem('serverDomain') || window.location.origin
 
-      const dockerParams = {
-        name: scriptForm.value.name,
-        type: scriptForm.value.type,
-        port: scriptForm.value.port,
-        agent_ip: scriptForm.value.agent_ip || '',
-        docker_image: scriptForm.value.dockerImage || '',
-        container_name: scriptForm.value.containerName,
-        service_container_name: scriptForm.value.serviceContainerName || '',
-        network_mode: scriptForm.value.networkMode,
-        server_url: serverUrl,
-        install_type: scriptForm.value.installType  // 传递安装类型
-      }
-
-      // 根据安装类型选择不同的 API
+      // 根据安装类型选择不同的 API 和参数
       let composeResponse, runResponse
       if (scriptForm.value.installType === 'docker-mihomo') {
         // 使用 Docker Mihomo 专用 API
-        [composeResponse, runResponse] = await Promise.all([
+        // agent_name 使用 containerName（Docker 容器名称），而不是 name（Agent 显示名称）
+        const dockerParams = {
+          server_url: serverUrl,
+          agent_name: scriptForm.value.containerName || scriptForm.value.name,
+          agent_ip: scriptForm.value.agent_ip || '',
+          data_dir: './mihomo_data',
+          network_mode: scriptForm.value.networkMode
+        }
+        ;[composeResponse, runResponse] = await Promise.all([
           api.get('/agents/docker-mihomo-compose', { params: dockerParams }),
           api.get('/agents/docker-mihomo-run', { params: dockerParams })
         ])
       } else if (scriptForm.value.installType === 'docker-mosdns') {
         // 使用 Docker mosdns 专用 API
-        [composeResponse, runResponse] = await Promise.all([
+        // agent_name 使用 containerName（Docker 容器名称），而不是 name（Agent 显示名称）
+        const dockerParams = {
+          server_url: serverUrl,
+          agent_name: scriptForm.value.containerName || scriptForm.value.name,
+          agent_ip: scriptForm.value.agent_ip || '',
+          data_dir: './mosdns_data',
+          network_mode: scriptForm.value.networkMode
+        }
+        ;[composeResponse, runResponse] = await Promise.all([
           api.get('/agents/docker-mosdns-compose', { params: dockerParams }),
           api.get('/agents/docker-mosdns-run', { params: dockerParams })
         ])
       } else if (scriptForm.value.installType === 'docker-aio') {
         // 使用 Docker AIO 专用 API
-        [composeResponse, runResponse] = await Promise.all([
+        // agent_name 使用 containerName（Docker 容器名称），而不是 name（Agent 显示名称）
+        const dockerParams = {
+          server_url: serverUrl,
+          agent_name: scriptForm.value.containerName || scriptForm.value.name,
+          agent_ip: scriptForm.value.agent_ip || '',
+          data_dir: './aio_data',
+          network_mode: scriptForm.value.networkMode
+        }
+        ;[composeResponse, runResponse] = await Promise.all([
           api.get('/agents/docker-aio-compose', { params: dockerParams }),
           api.get('/agents/docker-aio-run', { params: dockerParams })
         ])
       } else {
-        // 使用原来的 Docker API
-        [composeResponse, runResponse] = await Promise.all([
+        // 使用原来的通用 Docker API
+        const dockerParams = {
+          name: scriptForm.value.name,
+          type: scriptForm.value.type,
+          port: scriptForm.value.port,
+          agent_ip: scriptForm.value.agent_ip || '',
+          docker_image: scriptForm.value.dockerImage || '',
+          container_name: scriptForm.value.containerName,
+          service_container_name: scriptForm.value.serviceContainerName || '',
+          network_mode: scriptForm.value.networkMode,
+          server_url: serverUrl
+        }
+        ;[composeResponse, runResponse] = await Promise.all([
           agentApi.generateDockerCompose(dockerParams),
           agentApi.generateDockerRun(dockerParams)
         ])

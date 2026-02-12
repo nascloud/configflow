@@ -1537,6 +1537,7 @@ def generate_docker_mihomo_compose(
     server_url: str,
     agent_token: str,
     agent_name: str = "mihomo-agent",
+    agent_ip: str = "",
     data_dir: str = "./mihomo_data",
     network_mode: str = "host"
 ) -> str:
@@ -1547,6 +1548,7 @@ def generate_docker_mihomo_compose(
         server_url: 服务器 URL
         agent_token: Agent 令牌
         agent_name: Agent 名称
+        agent_ip: Agent IP 地址（可选，留空则自动获取）
         data_dir: 数据目录路径
         network_mode: 网络模式 (host/bridge)
 
@@ -1567,6 +1569,9 @@ def generate_docker_mihomo_compose(
     else:
         ports_section = ""
 
+    # 如果指定了 agent_ip，添加 AGENT_IP 环境变量
+    agent_ip_env = f"      - AGENT_IP={agent_ip}\n" if agent_ip else ""
+
     compose_template = """version: '3.8'
 
 services:
@@ -1579,7 +1584,7 @@ services:
       - SERVER_URL={server_url}
       - AGENT_TOKEN={agent_token}
       - AGENT_NAME={agent_name}
-      - SERVICE_TYPE=mihomo
+{agent_ip_env}      - SERVICE_TYPE=mihomo
       - DEPLOYMENT_METHOD=docker
       - CONFIG_PATH=/root/.config/mihomo/config.yaml
       - RESTART_COMMAND=supervisorctl restart mihomo
@@ -1596,6 +1601,7 @@ services:
         server_url=server_url,
         agent_token=agent_token,
         agent_name=agent_name,
+        agent_ip_env=agent_ip_env,
         data_dir=data_dir,
         network_mode=network_mode,
         ports_section=ports_section
@@ -1606,6 +1612,7 @@ def generate_docker_mihomo_run(
     server_url: str,
     agent_token: str,
     agent_name: str = "mihomo-agent",
+    agent_ip: str = "",
     data_dir: str = "./mihomo_data",
     network_mode: str = "host"
 ) -> str:
@@ -1616,6 +1623,7 @@ def generate_docker_mihomo_run(
         server_url: 服务器 URL
         agent_token: Agent 令牌
         agent_name: Agent 名称
+        agent_ip: Agent IP 地址（可选，留空则自动获取）
         data_dir: 数据目录路径
         network_mode: 网络模式 (host/bridge)
 
@@ -1635,6 +1643,9 @@ def generate_docker_mihomo_run(
     else:
         ports_mapping = ""
 
+    # 如果指定了 agent_ip，添加 AGENT_IP 环境变量
+    agent_ip_env = f'  -e AGENT_IP="{agent_ip}" \\\n' if agent_ip else ""
+
     run_command = """#!/bin/bash
 
 # 创建数据目录
@@ -1648,7 +1659,7 @@ docker run -d \\
 {ports_mapping}  -e SERVER_URL="{server_url}" \\
   -e AGENT_TOKEN="{agent_token}" \\
   -e AGENT_NAME="{agent_name}" \\
-  -e SERVICE_TYPE="mihomo" \\
+{agent_ip_env}  -e SERVICE_TYPE="mihomo" \\
   -e DEPLOYMENT_METHOD="docker" \\
   -e CONFIG_PATH="/root/.config/mihomo/config.yaml" \\
   -e RESTART_COMMAND="supervisorctl restart mihomo" \\
@@ -1666,6 +1677,7 @@ echo "查看日志: docker logs -f {agent_name}"
         server_url=server_url,
         agent_token=agent_token,
         agent_name=agent_name,
+        agent_ip_env=agent_ip_env,
         data_dir=data_dir,
         network_mode=network_mode,
         ports_mapping=ports_mapping
@@ -1676,6 +1688,7 @@ def generate_docker_mosdns_compose(
     server_url: str,
     agent_token: str,
     agent_name: str = "mosdns-agent",
+    agent_ip: str = "",
     data_dir: str = "./mosdns_data",
     network_mode: str = "host"
 ) -> str:
@@ -1686,6 +1699,7 @@ def generate_docker_mosdns_compose(
         server_url: 服务器 URL
         agent_token: Agent 令牌
         agent_name: Agent 名称
+        agent_ip: Agent IP 地址（可选，留空则自动获取）
         data_dir: 数据目录路径
         network_mode: 网络模式 (host/bridge)
 
@@ -1702,6 +1716,9 @@ def generate_docker_mosdns_compose(
     else:
         ports_section = ""
 
+    # 如果指定了 agent_ip，添加 AGENT_IP 环境变量
+    agent_ip_env = f"      - AGENT_IP={agent_ip}\n" if agent_ip else ""
+
     compose_template = """version: '3.8'
 
 services:
@@ -1714,7 +1731,7 @@ services:
       - SERVER_URL={server_url}
       - AGENT_TOKEN={agent_token}
       - AGENT_NAME={agent_name}
-      - SERVICE_TYPE=mosdns
+{agent_ip_env}      - SERVICE_TYPE=mosdns
       - DEPLOYMENT_METHOD=docker
       - CONFIG_PATH=/etc/mosdns/config.yaml
       - RESTART_COMMAND=supervisorctl restart mosdns
@@ -1731,6 +1748,7 @@ services:
         server_url=server_url,
         agent_token=agent_token,
         agent_name=agent_name,
+        agent_ip_env=agent_ip_env,
         data_dir=data_dir,
         network_mode=network_mode,
         ports_section=ports_section
@@ -1741,6 +1759,7 @@ def generate_docker_mosdns_run(
     server_url: str,
     agent_token: str,
     agent_name: str = "mosdns-agent",
+    agent_ip: str = "",
     data_dir: str = "./mosdns_data",
     network_mode: str = "host"
 ) -> str:
@@ -1751,6 +1770,7 @@ def generate_docker_mosdns_run(
         server_url: 服务器 URL
         agent_token: Agent 令牌
         agent_name: Agent 名称
+        agent_ip: Agent IP 地址（可选，留空则自动获取）
         data_dir: 数据目录路径
         network_mode: 网络模式 (host/bridge)
 
@@ -1766,6 +1786,9 @@ def generate_docker_mosdns_run(
     else:
         ports_mapping = ""
 
+    # 如果指定了 agent_ip，添加 AGENT_IP 环境变量
+    agent_ip_env = f'  -e AGENT_IP="{agent_ip}" \\\n' if agent_ip else ""
+
     run_command = """#!/bin/bash
 
 # 创建数据目录
@@ -1779,7 +1802,7 @@ docker run -d \\
 {ports_mapping}  -e SERVER_URL="{server_url}" \\
   -e AGENT_TOKEN="{agent_token}" \\
   -e AGENT_NAME="{agent_name}" \\
-  -e SERVICE_TYPE="mosdns" \\
+{agent_ip_env}  -e SERVICE_TYPE="mosdns" \\
   -e DEPLOYMENT_METHOD="docker" \\
   -e CONFIG_PATH="/etc/mosdns/config.yaml" \\
   -e RESTART_COMMAND="supervisorctl restart mosdns" \\
@@ -1797,6 +1820,7 @@ echo "查看日志: docker logs -f {agent_name}"
         server_url=server_url,
         agent_token=agent_token,
         agent_name=agent_name,
+        agent_ip_env=agent_ip_env,
         data_dir=data_dir,
         network_mode=network_mode,
         ports_mapping=ports_mapping
@@ -1807,6 +1831,7 @@ def generate_docker_aio_compose(
     server_url: str,
     agent_token: str,
     agent_name: str = "aio-agent",
+    agent_ip: str = "",
     data_dir: str = "./aio_data",
     network_mode: str = "host"
 ) -> str:
@@ -1820,6 +1845,7 @@ def generate_docker_aio_compose(
         server_url: 服务器 URL
         agent_token: Agent 令牌
         agent_name: Agent 名称
+        agent_ip: Agent IP 地址（可选，留空则自动获取）
         data_dir: 数据目录路径
         network_mode: 网络模式 (host/bridge)
 
@@ -1841,6 +1867,9 @@ def generate_docker_aio_compose(
     else:
         ports_section = ""
 
+    # 如果指定了 agent_ip，添加 AGENT_IP 环境变量
+    agent_ip_env = f"      - AGENT_IP={agent_ip}\n" if agent_ip else ""
+
     compose_template = """version: '3.8'
 
 services:
@@ -1855,7 +1884,7 @@ services:
       - SERVER_URL={server_url}
       - AGENT_TOKEN={agent_token}
       - TZ=Asia/Shanghai
-      # AIO 模式：同时启用 Mihomo 和 MosDNS
+{agent_ip_env}      # AIO 模式：同时启用 Mihomo 和 MosDNS
       - ENABLE_MIHOMO=true
       - ENABLE_MOSDNS=true
       # Mihomo Agent 配置
@@ -1878,6 +1907,7 @@ services:
         server_url=server_url,
         agent_token=agent_token,
         agent_name=agent_name,
+        agent_ip_env=agent_ip_env,
         data_dir=data_dir,
         network_mode=network_mode,
         ports_section=ports_section
@@ -1888,6 +1918,7 @@ def generate_docker_aio_run(
     server_url: str,
     agent_token: str,
     agent_name: str = "aio-agent",
+    agent_ip: str = "",
     data_dir: str = "./aio_data",
     network_mode: str = "host"
 ) -> str:
@@ -1901,6 +1932,7 @@ def generate_docker_aio_run(
         server_url: 服务器 URL
         agent_token: Agent 令牌
         agent_name: Agent 名称
+        agent_ip: Agent IP 地址（可选，留空则自动获取）
         data_dir: 数据目录路径
         network_mode: 网络模式 (host/bridge)
 
@@ -1921,6 +1953,9 @@ def generate_docker_aio_run(
     else:
         ports_mapping = ""
 
+    # 如果指定了 agent_ip，添加 AGENT_IP 环境变量
+    agent_ip_env = f'  -e AGENT_IP="{agent_ip}" \\\n' if agent_ip else ""
+
     run_command = """#!/bin/bash
 
 # 创建数据目录
@@ -1935,13 +1970,10 @@ docker run -d \\
 {ports_mapping}  -e SERVER_URL="{server_url}" \\
   -e AGENT_TOKEN="{agent_token}" \\
   -e TZ=Asia/Shanghai \\
-  # AIO 模式：同时启用 Mihomo 和 MosDNS
-  -e ENABLE_MIHOMO="true" \\
+{agent_ip_env}  -e ENABLE_MIHOMO="true" \\
   -e ENABLE_MOSDNS="true" \\
-  # Mihomo Agent 配置
   -e AGENT_MIHOMO_NAME="{agent_name}-mihomo" \\
   -e AGENT_MIHOMO_PORT="8080" \\
-  # MosDNS Agent 配置
   -e AGENT_MOSDNS_NAME="{agent_name}-mosdns" \\
   -e AGENT_MOSDNS_PORT="8081" \\
   -v {data_dir}/mihomo:/root/.config/mihomo \\
@@ -1960,6 +1992,7 @@ echo "查看日志: docker logs -f {agent_name}"
         server_url=server_url,
         agent_token=agent_token,
         agent_name=agent_name,
+        agent_ip_env=agent_ip_env,
         data_dir=data_dir,
         network_mode=network_mode,
         ports_mapping=ports_mapping

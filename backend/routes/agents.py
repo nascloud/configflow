@@ -483,6 +483,7 @@ def get_docker_mihomo_compose():
             'server_url': request.args.get('server_url', ''),
             'agent_token': request.args.get('agent_token', ''),
             'agent_name': request.args.get('agent_name', 'mihomo-agent'),
+            'agent_ip': request.args.get('agent_ip', ''),
             'data_dir': request.args.get('data_dir', './mihomo_data'),
             'network_mode': request.args.get('network_mode', 'host')
         }
@@ -505,6 +506,7 @@ def get_docker_mihomo_run():
             'server_url': request.args.get('server_url', ''),
             'agent_token': request.args.get('agent_token', ''),
             'agent_name': request.args.get('agent_name', 'mihomo-agent'),
+            'agent_ip': request.args.get('agent_ip', ''),
             'data_dir': request.args.get('data_dir', './mihomo_data'),
             'network_mode': request.args.get('network_mode', 'host')
         }
@@ -527,6 +529,7 @@ def get_docker_mosdns_compose():
             'server_url': request.args.get('server_url', ''),
             'agent_token': request.args.get('agent_token', ''),
             'agent_name': request.args.get('agent_name', 'mosdns-agent'),
+            'agent_ip': request.args.get('agent_ip', ''),
             'data_dir': request.args.get('data_dir', './mosdns_data'),
             'network_mode': request.args.get('network_mode', 'host')
         }
@@ -549,6 +552,7 @@ def get_docker_mosdns_run():
             'server_url': request.args.get('server_url', ''),
             'agent_token': request.args.get('agent_token', ''),
             'agent_name': request.args.get('agent_name', 'mosdns-agent'),
+            'agent_ip': request.args.get('agent_ip', ''),
             'data_dir': request.args.get('data_dir', './mosdns_data'),
             'network_mode': request.args.get('network_mode', 'host')
         }
@@ -571,6 +575,7 @@ def get_docker_aio_compose():
             'server_url': request.args.get('server_url', ''),
             'agent_token': request.args.get('agent_token', ''),
             'agent_name': request.args.get('agent_name', 'aio-agent'),
+            'agent_ip': request.args.get('agent_ip', ''),
             'data_dir': request.args.get('data_dir', './aio_data'),
             'network_mode': request.args.get('network_mode', 'host')
         }
@@ -593,6 +598,7 @@ def get_docker_aio_run():
             'server_url': request.args.get('server_url', ''),
             'agent_token': request.args.get('agent_token', ''),
             'agent_name': request.args.get('agent_name', 'aio-agent'),
+            'agent_ip': request.args.get('agent_ip', ''),
             'data_dir': request.args.get('data_dir', './aio_data'),
             'network_mode': request.args.get('network_mode', 'host')
         }
