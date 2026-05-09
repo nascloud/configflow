@@ -222,6 +222,79 @@ def handle_mosdns_api_settings():
             return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@bp.route('/cache-settings', methods=['GET', 'POST'])
+@require_auth
+def handle_mosdns_cache_settings():
+    """MosDNS 缓存设置"""
+    # 确保 mosdns 字段存在
+    if 'mosdns' not in config_data:
+        config_data['mosdns'] = {
+            'direct_rulesets': [],
+            'proxy_rulesets': [],
+            'direct_rules': [],
+            'proxy_rules': [],
+            'local_dns': '',
+            'remote_dns': '',
+            'fallback_dns': '',
+            'default_forward': 'forward_remote',
+            'custom_hosts': '',
+            'custom_config': '',
+            'cache_enabled': True,
+            'cache_size': 10240,
+            'cache_lazy_ttl': 21600,
+            'cache_dump_file': './cache.dump',
+            'cache_dump_interval': 300
+        }
+
+    mosdns_config = config_data['mosdns']
+
+    # 确保字段存在（兼容老配置）
+    if 'cache_enabled' not in mosdns_config:
+        mosdns_config['cache_enabled'] = True
+    if 'cache_size' not in mosdns_config:
+        mosdns_config['cache_size'] = 10240
+    if 'cache_lazy_ttl' not in mosdns_config:
+        mosdns_config['cache_lazy_ttl'] = 21600
+    if 'cache_dump_file' not in mosdns_config:
+        mosdns_config['cache_dump_file'] = './cache.dump'
+    if 'cache_dump_interval' not in mosdns_config:
+        mosdns_config['cache_dump_interval'] = 300
+
+    if request.method == 'GET':
+        return jsonify({
+            'cache_enabled': mosdns_config.get('cache_enabled', True),
+            'cache_size': mosdns_config.get('cache_size', 10240),
+            'cache_lazy_ttl': mosdns_config.get('cache_lazy_ttl', 21600),
+            'cache_dump_file': mosdns_config.get('cache_dump_file', './cache.dump'),
+            'cache_dump_interval': mosdns_config.get('cache_dump_interval', 300)
+        })
+
+    elif request.method == 'POST':
+        try:
+            data = request.json or {}
+
+            mosdns_config['cache_enabled'] = bool(data.get('cache_enabled', True))
+
+            # 数字字段做简单容错
+            def _to_int(value, default: int) -> int:
+                try:
+                    return int(value)
+                except Exception:
+                    return default
+
+            mosdns_config['cache_size'] = _to_int(data.get('cache_size', 10240), 10240)
+            mosdns_config['cache_lazy_ttl'] = _to_int(data.get('cache_lazy_ttl', 21600), 21600)
+            mosdns_config['cache_dump_interval'] = _to_int(data.get('cache_dump_interval', 300), 300)
+
+            dump_file = data.get('cache_dump_file', './cache.dump')
+            mosdns_config['cache_dump_file'] = str(dump_file) if dump_file is not None else './cache.dump'
+
+            save_config()
+            return jsonify({'success': True})
+        except Exception as e:
+            return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @bp.route('/rule-proxy', methods=['GET'])
 def mosdns_rule_proxy():
     """
