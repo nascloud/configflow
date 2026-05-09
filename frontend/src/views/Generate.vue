@@ -610,6 +610,78 @@
           </el-form>
         </el-tab-pane>
 
+        <!-- 缓存设置 Tab -->
+        <el-tab-pane label="缓存" name="cache">
+          <el-alert
+            type="info"
+            :closable="false"
+            style="margin-bottom: 20px"
+          >
+            <p>配置 MosDNS 缓存（lazy cache），用于加速重复解析</p>
+            <p style="margin-top: 10px">关闭后会从生成配置中移除 cache 插件，并且不再在国内 DNS 序列中执行缓存</p>
+          </el-alert>
+
+          <el-form label-width="120px">
+            <el-form-item label="启用缓存">
+              <div>
+                <el-switch v-model="mosdnsCacheEnabled" />
+                <div style="margin-top: 8px; color: #909399; font-size: 12px; line-height: 1.5;">
+                  关闭后会完全移除 `tag: lazy_cache` 相关配置
+                </div>
+              </div>
+            </el-form-item>
+
+            <el-form-item label="size" v-if="mosdnsCacheEnabled">
+              <el-input-number
+                v-model="mosdnsCacheSize"
+                :min="1"
+                :max="2000000"
+                :step="256"
+                controls-position="right"
+              />
+              <div style="margin-top: 8px; color: #909399; font-size: 12px">
+                缓存条目数量（建议 10240 起）
+              </div>
+            </el-form-item>
+
+            <el-form-item label="lazy_cache_ttl" v-if="mosdnsCacheEnabled">
+              <el-input-number
+                v-model="mosdnsCacheLazyTtl"
+                :min="0"
+                :max="31536000"
+                :step="60"
+                controls-position="right"
+              />
+              <div style="margin-top: 8px; color: #909399; font-size: 12px">
+                缓存过期后的延迟删除时间（秒）
+              </div>
+            </el-form-item>
+
+            <el-form-item label="dump_file" v-if="mosdnsCacheEnabled">
+              <el-input
+                v-model="mosdnsCacheDumpFile"
+                placeholder="./cache.dump"
+              />
+              <div style="margin-top: 8px; color: #909399; font-size: 12px">
+                缓存持久化文件路径（相对于 MosDNS 配置目录）
+              </div>
+            </el-form-item>
+
+            <el-form-item label="dump_interval" v-if="mosdnsCacheEnabled">
+              <el-input-number
+                v-model="mosdnsCacheDumpInterval"
+                :min="0"
+                :max="86400"
+                :step="10"
+                controls-position="right"
+              />
+              <div style="margin-top: 8px; color: #909399; font-size: 12px">
+                缓存保存间隔（秒），0 表示禁用定时保存
+              </div>
+            </el-form-item>
+          </el-form>
+        </el-tab-pane>
+
         <!-- DNS 服务器配置 Tab -->
         <el-tab-pane label="DNS 服务器" name="dns">
           <el-alert
@@ -1507,6 +1579,11 @@ const mosdnsLogLevel = ref('info')
 const mosdnsLogFile = ref('./mosdns.log')
 const mosdnsApiEnabled = ref(true)
 const mosdnsApiAddress = ref('0.0.0.0:8338')
+const mosdnsCacheEnabled = ref(true)
+const mosdnsCacheSize = ref(10240)
+const mosdnsCacheLazyTtl = ref(21600)
+const mosdnsCacheDumpFile = ref('./cache.dump')
+const mosdnsCacheDumpInterval = ref(300)
 const availableRuleSets = ref<RuleSet[]>([])
 const availableRules = ref<any[]>([])
 const savingMosdnsSettings = ref(false)
@@ -2334,6 +2411,14 @@ const showMosdnsSettingsDialog = async () => {
     mosdnsApiEnabled.value = apiResponse.data.api_enabled !== undefined ? apiResponse.data.api_enabled : true
     mosdnsApiAddress.value = apiResponse.data.api_address || '0.0.0.0:8338'
 
+    // 加载缓存配置
+    const cacheResponse = await api.get('/mosdns/cache-settings')
+    mosdnsCacheEnabled.value = cacheResponse.data.cache_enabled !== undefined ? Boolean(cacheResponse.data.cache_enabled) : true
+    mosdnsCacheSize.value = Number(cacheResponse.data.cache_size ?? 10240)
+    mosdnsCacheLazyTtl.value = Number(cacheResponse.data.cache_lazy_ttl ?? 21600)
+    mosdnsCacheDumpFile.value = cacheResponse.data.cache_dump_file || './cache.dump'
+    mosdnsCacheDumpInterval.value = Number(cacheResponse.data.cache_dump_interval ?? 300)
+
     // 重置到第一个 tab
     mosdnsActiveTab.value = 'rules'
 
@@ -2405,6 +2490,15 @@ const saveMosdnsSettings = async () => {
     await api.post('/mosdns/api-settings', {
       api_enabled: mosdnsApiEnabled.value,
       api_address: mosdnsApiAddress.value
+    })
+
+    // 保存缓存配置
+    await api.post('/mosdns/cache-settings', {
+      cache_enabled: mosdnsCacheEnabled.value,
+      cache_size: mosdnsCacheSize.value,
+      cache_lazy_ttl: mosdnsCacheLazyTtl.value,
+      cache_dump_file: mosdnsCacheDumpFile.value,
+      cache_dump_interval: mosdnsCacheDumpInterval.value
     })
 
     ElMessage.success('MosDNS 设置已保存')
