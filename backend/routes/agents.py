@@ -133,6 +133,17 @@ def register_agent():
             logger.error("Failed to parse JSON data")
             return jsonify({'success': False, 'message': 'Invalid JSON data'}), 400
 
+        # 可选的注册密钥验证
+        registration_key = os.environ.get('AGENT_REGISTRATION_KEY', '')
+        if registration_key:
+            provided_key = agent_data.get('registration_key', '')
+            if provided_key != registration_key:
+                logger.warning(f"Agent 注册被拒绝：注册密钥不匹配（来源 IP: {request.remote_addr}）")
+                return jsonify({'success': False, 'message': 'Invalid registration key'}), 403
+
+        # 移除注册密钥（不存入配置，并先于日志记录以防止泄露）
+        agent_data.pop('registration_key', None)
+
         logger.info(f"Agent数据: {agent_data}")
 
         # 获取客户端真实 IP（用于 Docker 容器等场景）

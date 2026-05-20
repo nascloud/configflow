@@ -154,8 +154,8 @@ def validate_required_env_vars():
     # 检查 JWT_SECRET_KEY
     if not JWT_SECRET_KEY or JWT_SECRET_KEY.strip() == '':
         missing_vars.append('JWT_SECRET_KEY')
-    elif JWT_SECRET_KEY in ['your-secret-key-change-this-in-production', 'your-secret-key-please-change-in-production']:
-        invalid_vars.append('JWT_SECRET_KEY (using default value is not allowed)')
+    elif len(JWT_SECRET_KEY.strip()) < 32 or JWT_SECRET_KEY.strip() == 'your-secret-key-change-this-in-production':
+        invalid_vars.append('JWT_SECRET_KEY (must be at least 32 characters and not use default value)')
 
     if missing_vars or invalid_vars:
         error_msg = '\n' + '=' * 80 + '\n'

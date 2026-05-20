@@ -10,6 +10,9 @@ from flask import request, jsonify, send_file
 from backend.routes import config_bp
 from backend.common.auth import require_auth, JWT_SECRET_KEY, JWT_ALGORITHM
 from backend.common.config import get_config, save_config, CONFIG_FILE
+from backend.utils.logger import get_logger
+
+logger = get_logger(__name__)
 from backend.converters.mihomo import generate_mihomo_config
 from backend.converters.surge import generate_surge_config
 from backend.converters.mosdns import generate_mosdns_config
@@ -36,7 +39,7 @@ def get_mihomo_config():
                 jwt_token = auth_header.split(' ')[1]
                 jwt.decode(jwt_token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
                 has_valid_jwt = True
-            except:
+            except Exception:
                 pass
 
         # 如果没有有效的 JWT，检查配置令牌（外部请求）
@@ -89,7 +92,7 @@ def get_surge_config():
                 jwt_token = auth_header.split(' ')[1]
                 jwt.decode(jwt_token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
                 has_valid_jwt = True
-            except:
+            except Exception:
                 pass
 
         # 如果没有有效的 JWT，检查配置令牌（外部请求）
@@ -140,7 +143,7 @@ def get_mosdns_config():
                 jwt_token = auth_header.split(' ')[1]
                 jwt.decode(jwt_token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
                 has_valid_jwt = True
-            except:
+            except Exception:
                 pass
 
         # 如果没有有效的 JWT，检查配置令牌（外部请求）
@@ -204,8 +207,8 @@ def export_config():
             # 清理临时文件
             try:
                 os.unlink(temp_file)
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"清理临时文件失败: {temp_file}, 错误: {e}")
     else:
         # 正常导出
         return send_file(CONFIG_FILE, as_attachment=True, download_name='config.json')
@@ -214,12 +217,11 @@ def export_config():
 @config_bp.route('/import', methods=['POST'])
 @require_auth
 def import_config():
-    """导入配置"""
     try:
-        from backend.common.config import config_data as global_config
-        global_config.clear()
-        global_config.update(request.json)
-        save_config()
+        if not isinstance(request.json, dict):
+            return jsonify({'success': False, 'message': '请求数据必须是 JSON 对象'}), 400
+        from backend.common.config import safe_import_config
+        safe_import_config(request.json)
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
