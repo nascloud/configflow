@@ -2,6 +2,7 @@
 import yaml
 from typing import Dict, Any, List, Optional
 from backend.utils.logger import get_logger
+from backend.utils.proxy_utils import fix_proxy_fields
 
 # 获取当前模块的日志记录器
 logger = get_logger(__name__)
@@ -1070,20 +1071,6 @@ def _parse_structured_proxy_string(proxy_string: str) -> Optional[Dict[str, Any]
     return None
 
 
-def _fix_proxy_fields(proxy: Dict[str, Any]) -> Dict[str, Any]:
-    """补全 Mihomo 代理节点的必需字段。
-
-    某些来源（Sub-Store、手动 YAML）可能缺少必需字段导致 Mihomo 报错。
-    """
-    if proxy and proxy.get('type') == 'vless':
-        if proxy.get('encryption', '') in ('', 'zero', None):
-            proxy['encryption'] = 'none'
-        # reality-opts 存在时，确保 short-id 字段存在
-        reality_opts = proxy.get('reality-opts')
-        if isinstance(reality_opts, dict) and 'short-id' not in reality_opts:
-            reality_opts['short-id'] = ''
-    return proxy
-
 
 def convert_node_to_mihomo(node: Dict[str, Any]) -> Dict[str, Any]:
     """将通用节点格式转换为 Mihomo 格式。
@@ -1104,14 +1091,14 @@ def convert_node_to_mihomo(node: Dict[str, Any]) -> Dict[str, Any]:
         if parsed:
             logger.info(f"节点 '{outer_name}' 为 JSON/YAML 格式，本地解析")
             parsed['name'] = outer_name
-            return _fix_proxy_fields(parsed)
+            return fix_proxy_fields(parsed)
 
         # URI 或 base64 格式，通过 Sub-Store 转换
         logger.info(f"节点 '{outer_name}' 为 URI/base64 格式，调用 Sub-Store 转换")
         proxy = convert_proxy_string(proxy_string)
         if proxy:
             proxy['name'] = outer_name
-            return _fix_proxy_fields(proxy)
+            return fix_proxy_fields(proxy)
         return None
 
     # 已经是结构化的节点（从缓存加载的），将 params 展开为扁平 mihomo 格式
@@ -1128,4 +1115,4 @@ def convert_node_to_mihomo(node: Dict[str, Any]) -> Dict[str, Any]:
     }
     # 将 params 中的所有字段展开到顶层
     base.update(params)
-    return _fix_proxy_fields(base)
+    return fix_proxy_fields(base)

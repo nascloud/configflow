@@ -192,16 +192,7 @@ def convert_proxy_string(proxy_string, target='ClashMeta'):
         _delete_subscription(base, _TEMP_NODE_SUB_NAME)
 
 
-def _fix_proxy_fields(proxy):
-    """补全代理节点的必需字段（如 VLESS 的 encryption: none）"""
-    if isinstance(proxy, dict) and proxy.get('type') == 'vless':
-        if proxy.get('encryption', '') in ('', 'zero', None):
-            proxy['encryption'] = 'none'
-        # reality-opts 存在时，确保 short-id 字段存在
-        reality_opts = proxy.get('reality-opts')
-        if isinstance(reality_opts, dict) and 'short-id' not in reality_opts:
-            reality_opts['short-id'] = ''
-    return proxy
+from backend.utils.proxy_utils import fix_proxy_fields
 
 
 def parse_proxies_from_yaml(yaml_text):
@@ -217,7 +208,7 @@ def parse_proxies_from_yaml(yaml_text):
     if isinstance(data, dict):
         proxies = data.get('proxies', [])
         for proxy in proxies:
-            _fix_proxy_fields(proxy)
+            fix_proxy_fields(proxy)
         return proxies
     return []
 
