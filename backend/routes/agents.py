@@ -135,6 +135,17 @@ def register_agent():
 
         logger.info(f"Agent数据: {agent_data}")
 
+        # 可选的注册密钥验证
+        registration_key = os.environ.get('AGENT_REGISTRATION_KEY', '')
+        if registration_key:
+            provided_key = agent_data.get('registration_key', '')
+            if provided_key != registration_key:
+                logger.warning(f"Agent 注册被拒绝：注册密钥不匹配（来源 IP: {request.remote_addr}）")
+                return jsonify({'success': False, 'message': 'Invalid registration key'}), 403
+
+        # 移除注册密钥（不存入配置）
+        agent_data.pop('registration_key', None)
+
         # 获取客户端真实 IP（用于 Docker 容器等场景）
         agent_host = agent_data.get('host', '')
         client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
