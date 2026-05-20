@@ -15,7 +15,7 @@ from pathlib import Path
 
 # 导入公共模块
 from backend.common.auth import validate_required_env_vars
-from backend.common.config import load_config
+from backend.common.config import load_config, DATA_DIR
 from backend.common.agent_manager import init_agent_manager
 
 # 导入版本信息
@@ -41,11 +41,6 @@ log_level_map = {
 log_level = log_level_map.get(LOG_LEVEL, logging.INFO)
 
 # 确保日志目录存在
-# 参考 config.py 的逻辑：优先使用环境变量，如果目录不存在则回退到当前目录
-DATA_DIR = os.environ.get('DATA_DIR', '/data')
-if not os.path.exists(DATA_DIR):
-    DATA_DIR = '.'  # 开发模式，使用当前目录
-
 log_dir = Path(DATA_DIR)
 log_dir.mkdir(exist_ok=True, parents=True)
 

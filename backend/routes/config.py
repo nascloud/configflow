@@ -10,6 +10,9 @@ from flask import request, jsonify, send_file
 from backend.routes import config_bp
 from backend.common.auth import require_auth, JWT_SECRET_KEY, JWT_ALGORITHM
 from backend.common.config import get_config, save_config, CONFIG_FILE
+from backend.utils.logger import get_logger
+
+logger = get_logger(__name__)
 from backend.converters.mihomo import generate_mihomo_config
 from backend.converters.surge import generate_surge_config
 from backend.converters.mosdns import generate_mosdns_config
@@ -204,8 +207,8 @@ def export_config():
             # 清理临时文件
             try:
                 os.unlink(temp_file)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"清理临时文件失败: {temp_file}, 错误: {e}")
     else:
         # 正常导出
         return send_file(CONFIG_FILE, as_attachment=True, download_name='config.json')

@@ -1119,8 +1119,6 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
         }
     })
 
-    mosdns_config['plugins'] = plugins
-
     # 重新组织配置，确保字段顺序正确
     # Python 3.7+ 字典保持插入顺序，所以创建一个新字典按正确顺序插入
     ordered_config = {}
