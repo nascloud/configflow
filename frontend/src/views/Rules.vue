@@ -71,9 +71,9 @@
             </button>
           </div>
           <div class="list-item-info">
-            <div class="list-item-name">{{ item.groupName || `${item.count} 个规则集` }}</div>
+            <div class="list-item-name">{{ item.groupName || item.groupDefaultName }}</div>
             <div class="list-item-meta">
-              <span class="meta-badge group">规则集组</span>
+              <span class="meta-badge group">{{ item.groupLabel }}</span>
               <span v-if="item.groupName" class="meta-badge count">{{ item.count }} 个</span>
               <span class="meta-badge policy">{{ item.policy }}</span>
             </div>
@@ -107,17 +107,6 @@
             <span class="type-badge" :class="item.itemType">
               {{ item.itemType === 'rule' ? '规则' : '规则集' }}
             </span>
-            <!-- 展开组的第一个项显示收起按钮 -->
-            <el-button
-              v-if="item.isExpandedGroupItem && item.isFirstInGroup"
-              class="collapse-btn"
-              size="small"
-              link
-              @click="toggleGroup(item.groupId)"
-            >
-              <el-icon><ArrowUp /></el-icon>
-              收起
-            </el-button>
           </div>
           <div class="list-item-content">
             <!-- 规则：规则类型和值 -->
@@ -145,6 +134,15 @@
             <span class="policy-tag">{{ item.policy }}</span>
           </div>
           <div class="list-item-actions">
+            <el-button
+              v-if="item.isExpandedGroupItem && item.isFirstInGroup"
+              class="collapse-group-btn"
+              size="small"
+              @click.stop="toggleGroup(item.groupId)"
+            >
+              <el-icon><ArrowUp /></el-icon>
+              收起分组
+            </el-button>
             <button class="status-toggle" :class="{ active: item.enabled }" @click="toggleItemStatus(item)">
               <el-icon v-if="item.enabled"><View /></el-icon>
               <el-icon v-else><Hide /></el-icon>
@@ -179,7 +177,7 @@
               <button class="card-drag-handle" type="button" @click.stop>
                 <el-icon><DCaret /></el-icon>
               </button>
-              <div class="card-title">{{ item.groupName || `${item.count} 个规则集` }}</div>
+              <div class="card-title">{{ item.groupName || item.groupDefaultName }}</div>
             </div>
             <button class="expand-btn" @click.stop="toggleGroup(item.groupId)">
               <el-icon><ArrowDown /></el-icon>
@@ -187,7 +185,7 @@
           </div>
 
           <div class="card-meta">
-            <span class="meta-pill group-pill">规则集组</span>
+            <span class="meta-pill group-pill">{{ item.groupLabel }}</span>
             <span v-if="item.groupName" class="meta-pill count-pill">{{ item.count }} 个</span>
             <span class="meta-pill policy-pill">{{ item.policy }}</span>
           </div>
@@ -222,22 +220,22 @@
               <span class="card-type-badge" :class="item.itemType">
                 {{ item.itemType === 'rule' ? '规则' : '规则集' }}
               </span>
-              <!-- 展开组的第一个项显示收起按钮 -->
+            </div>
+            <div class="card-header-actions">
               <el-button
                 v-if="item.isExpandedGroupItem && item.isFirstInGroup"
-                class="collapse-btn"
+                class="collapse-group-btn"
                 size="small"
-                link
-                @click="toggleGroup(item.groupId)"
+                @click.stop="toggleGroup(item.groupId)"
               >
                 <el-icon><ArrowUp /></el-icon>
-                收起
+                收起分组
               </el-button>
+              <button class="status-toggle" :class="{ active: item.enabled }" @click="toggleItemStatus(item)">
+                <el-icon v-if="item.enabled"><View /></el-icon>
+                <el-icon v-else><Hide /></el-icon>
+              </button>
             </div>
-            <button class="status-toggle" :class="{ active: item.enabled }" @click="toggleItemStatus(item)">
-              <el-icon v-if="item.enabled"><View /></el-icon>
-              <el-icon v-else><Hide /></el-icon>
-            </button>
           </div>
 
           <!-- 卡片主体内容 -->
@@ -420,8 +418,8 @@
       </template>
     </el-dialog>
 
-    <!-- 规则集组重命名对话框 -->
-    <el-dialog v-model="groupRenameDialogVisible" title="重命名规则集组" width="450px" class="rule-dialog">
+    <!-- 规则组重命名对话框 -->
+    <el-dialog v-model="groupRenameDialogVisible" :title="groupRenameDialogTitle" width="450px" class="rule-dialog">
       <div class="dialog-card">
         <el-form :model="groupRenameForm" label-width="70px" class="rule-form">
           <el-form-item label="组名称">
@@ -575,6 +573,7 @@ const isEditRule = ref(false)
 const isEditRuleSet = ref(false)
 const viewMode = ref<'list' | 'grid'>('grid')  // 默认卡片视图
 const rulesContainer = ref<HTMLElement | null>(null)
+let sortableInstance: Sortable | null = null
 
 // 处理按钮点击
 const handleShowRuleIndex = () => {
@@ -625,40 +624,77 @@ const expandedGroups = ref<Set<string>>(new Set())
 
 // 切换组的展开/收起状态
 const toggleGroup = (groupId: string) => {
-  if (expandedGroups.value.has(groupId)) {
-    expandedGroups.value.delete(groupId)
+  const nextExpandedGroups = new Set(expandedGroups.value)
+
+  if (nextExpandedGroups.has(groupId)) {
+    nextExpandedGroups.delete(groupId)
   } else {
-    expandedGroups.value.add(groupId)
+    nextExpandedGroups.add(groupId)
   }
+
+  expandedGroups.value = nextExpandedGroups
 }
 
-// 规则集组重命名相关
+// 规则组重命名相关
 const groupRenameDialogVisible = ref(false)
 const groupRenameForm = ref({
   groupId: '',
+  groupLabel: '规则组',
   groupName: '',
   items: [] as any[]
 })
 
+const groupRenameDialogTitle = computed(() => `重命名${groupRenameForm.value.groupLabel}`)
+
+const getGroupMeta = (items: any[]) => {
+  const itemTypes = new Set(items.map(item => item.itemType))
+
+  if (itemTypes.size === 1) {
+    const itemType = items[0]?.itemType
+    if (itemType === 'ruleset') {
+      return {
+        groupLabel: '规则集组',
+        groupDefaultName: `${items.length} 个规则集`
+      }
+    }
+
+    return {
+      groupLabel: '规则组',
+      groupDefaultName: `${items.length} 条规则`
+    }
+  }
+
+  return {
+    groupLabel: '混合规则组',
+    groupDefaultName: `${items.length} 个规则项`
+  }
+}
+
 // 显示重命名对话框
 const showGroupRenameDialog = (group: any) => {
+  const { groupLabel } = getGroupMeta(group.items)
   groupRenameForm.value = {
     groupId: group.groupId,
+    groupLabel,
     groupName: group.groupName || '',
     items: group.items
   }
   groupRenameDialogVisible.value = true
 }
 
-// 保存规则集组名称
+// 保存规则组名称
 const saveGroupName = async () => {
   try {
     const newGroupName = groupRenameForm.value.groupName.trim()
-    // 更新组内所有规则集的 group_name 字段
+    // 更新组内所有规则项的 group_name 字段
     for (const item of groupRenameForm.value.items) {
       const updatedItem = { ...item, group_name: newGroupName }
       delete updatedItem.uniqueId // 移除前端添加的字段
-      await ruleSetApi.update(item.id, updatedItem)
+      if (item.itemType === 'rule') {
+        await ruleApi.update(item.id, updatedItem)
+      } else {
+        await ruleSetApi.update(item.id, updatedItem)
+      }
     }
     ElMessage.success('重命名成功')
     groupRenameDialogVisible.value = false
@@ -673,59 +709,48 @@ const allRulesAndSets = computed(() => {
   const result: any[] = []
   let currentGroup: any = null
 
-  allRules.value.forEach((item, index) => {
+  allRules.value.forEach((item) => {
     const uniqueId = `${item.itemType}-${item.id}`
     const itemWithId = { ...item, uniqueId }
 
-    // 只对规则集（ruleset）进行分组
-    if (item.itemType === 'ruleset') {
-      // 检查是否可以与当前组合并（相同策略）
-      if (currentGroup && currentGroup.policy === item.policy) {
-        // 添加到当前组（groupId保持不变，基于第一个成员）
-        currentGroup.items.push(itemWithId)
-        currentGroup.count++
-      } else {
-        // 如果有未完成的组，先添加到结果
-        if (currentGroup) {
-          result.push(currentGroup)
-        }
-        // 创建新组，使用成员ID作为groupId而不是索引
-        const groupId = `group_${item.id}_${item.policy}`
-        currentGroup = {
-          isGroup: true,
-          groupId: groupId,
-          policy: item.policy,
-          groupName: item.group_name || '',  // 使用第一个规则集的 group_name 作为组名称
-          count: 1,
-          items: [itemWithId],
-          uniqueId: groupId
-        }
+    // 连续且同策略的规则项都参与分组
+    if (currentGroup && currentGroup.policy === item.policy) {
+      currentGroup.items.push(itemWithId)
+      currentGroup.count++
+      if (!currentGroup.groupName && item.group_name) {
+        currentGroup.groupName = item.group_name
       }
     } else {
-      // 规则（rule）不参与分组
-      // 如果有未完成的组，先添加到结果
       if (currentGroup) {
         result.push(currentGroup)
-        currentGroup = null
       }
-      // 直接添加规则
-      result.push(itemWithId)
+
+      const groupId = `group_${item.id}_${item.policy}`
+      currentGroup = {
+        isGroup: true,
+        groupId,
+        policy: item.policy,
+        groupName: item.group_name || '',
+        count: 1,
+        items: [itemWithId],
+        uniqueId: groupId
+      }
     }
   })
 
-  // 添加最后一个组（如果有）
   if (currentGroup) {
     result.push(currentGroup)
   }
 
-  // 处理分组展开：如果组已展开，则将组内项目展开成独立卡片
   const finalResult: any[] = []
   result.forEach(item => {
+    const { groupLabel, groupDefaultName } = getGroupMeta(item.items)
+    item.groupLabel = groupLabel
+    item.groupDefaultName = groupDefaultName
+
     if (item.isGroup) {
-      // 如果组只有1个规则集，直接显示为单个卡片（确保清除所有组相关属性）
       if (item.count === 1) {
         const singleItem = { ...item.items[0] }
-        // 明确清除组相关属性，确保不显示为展开组的样式
         delete singleItem.isExpandedGroupItem
         delete singleItem.isFirstInGroup
         delete singleItem.isLastInGroup
@@ -733,26 +758,22 @@ const allRulesAndSets = computed(() => {
         delete singleItem.groupPolicy
         finalResult.push(singleItem)
       }
-      // 如果组已展开，将所有项目展开
       else if (expandedGroups.value.has(item.groupId)) {
-        // 给展开的项目添加分组信息，用于显示收起按钮
         item.items.forEach((subItem: any, index: number) => {
           finalResult.push({
             ...subItem,
             isExpandedGroupItem: true,
             groupId: item.groupId,
             groupPolicy: item.policy,
+            groupLabel: item.groupLabel,
             isFirstInGroup: index === 0,
             isLastInGroup: index === item.items.length - 1
           })
         })
       }
-      // 否则显示为折叠的组
       else {
         finalResult.push(item)
       }
-    } else {
-      finalResult.push(item)
     }
   })
 
@@ -836,6 +857,10 @@ const saveRule = async () => {
   try {
     const ruleData = { ...ruleForm.value, itemType: 'rule' }
     if (isEditRule.value) {
+      const originalItem = allRules.value.find(r => r.id === ruleData.id && r.itemType === 'rule')
+      if (originalItem && originalItem.policy !== ruleData.policy) {
+        ruleData.group_name = ''
+      }
       await ruleApi.update(ruleData.id!, ruleData)
       ElMessage.success('更新成功')
     } else {
@@ -1168,204 +1193,80 @@ const toggleItemStatus = async (item: any) => {
   }
 }
 
+const getItemKey = (item: any) => `${item.itemType}-${item.id}`
+
+const rebuildRulesOrderFromDisplay = (displayItems: any[], orderedIds: string[]) => {
+  const rawItems = new Map(allRules.value.map(item => [getItemKey(item), item]))
+  const displayMap = new Map(displayItems.map(item => [item.uniqueId, item]))
+  const reorderedRules: any[] = []
+
+  orderedIds.forEach(uniqueId => {
+    const displayItem = displayMap.get(uniqueId)
+    if (!displayItem) return
+
+    if (displayItem.isGroup) {
+      displayItem.items.forEach((groupItem: any) => {
+        const rawItem = rawItems.get(getItemKey(groupItem))
+        if (rawItem) {
+          reorderedRules.push(rawItem)
+        }
+      })
+      return
+    }
+
+    const rawItem = rawItems.get(getItemKey(displayItem))
+    if (rawItem) {
+      reorderedRules.push(rawItem)
+    }
+  })
+
+  return reorderedRules
+}
+
 const initSortable = () => {
   nextTick(() => {
-    const container = document.querySelector('#sortable-rules')
+    const container = rulesContainer.value || document.querySelector('#sortable-rules')
+    if (sortableInstance) {
+      sortableInstance.destroy()
+      sortableInstance = null
+    }
+
     if (container) {
-      Sortable.create(container as HTMLElement, {
+      sortableInstance = Sortable.create(container as HTMLElement, {
         handle: '.card-drag-handle',
         animation: 150,
         ghostClass: 'sortable-ghost',
         onEnd: async (evt: any) => {
-          const { oldIndex, newIndex } = evt
-          if (oldIndex === newIndex) return
+          const { oldIndex, newIndex, to } = evt
+          if (oldIndex === undefined || newIndex === undefined || oldIndex === newIndex) return
 
-          // 获取被拖动的元素对应的数据项（从渲染的列表中）
-          const draggedDisplayItem = allRulesAndSets.value[oldIndex]
-          const targetDisplayItem = allRulesAndSets.value[newIndex]
+          const displayItemsSnapshot = [...allRulesAndSets.value]
+          const orderedIds = Array.from((to as HTMLElement).children)
+            .map(child => (child as HTMLElement).dataset.id)
+            .filter((id): id is string => !!id)
 
-          // 检测是否拖动的是展开的规则组成员 - 展开状态下拖动单个成员
-          if (draggedDisplayItem.isExpandedGroupItem) {
-            // 展开状态下，只拖动单个项目
-            const draggedItemInAllRules = allRules.value.findIndex(
-              item => item.id === draggedDisplayItem.id && item.itemType === draggedDisplayItem.itemType
-            )
-
-            let targetIndexInAllRules = 0
-            if (targetDisplayItem) {
-              if (targetDisplayItem.isExpandedGroupItem) {
-                // 目标是展开组的成员
-                targetIndexInAllRules = allRules.value.findIndex(
-                  item => item.id === targetDisplayItem.id && item.itemType === targetDisplayItem.itemType
-                )
-                if (newIndex > oldIndex) {
-                  targetIndexInAllRules++
-                }
-              } else if (targetDisplayItem.isGroup) {
-                // 目标是折叠的组
-                const targetGroupFirstId = targetDisplayItem.items[0].id
-                targetIndexInAllRules = allRules.value.findIndex(item => item.id === targetGroupFirstId)
-
-                if (newIndex > oldIndex) {
-                  const targetGroupLastId = targetDisplayItem.items[targetDisplayItem.items.length - 1].id
-                  const targetGroupLastIdx = allRules.value.findIndex(item => item.id === targetGroupLastId)
-                  targetIndexInAllRules = targetGroupLastIdx + 1
-                }
-              } else {
-                // 目标是普通项
-                targetIndexInAllRules = allRules.value.findIndex(
-                  item => item.id === targetDisplayItem.id && item.itemType === targetDisplayItem.itemType
-                )
-                if (newIndex > oldIndex) {
-                  targetIndexInAllRules++
-                }
-              }
-            } else {
-              targetIndexInAllRules = allRules.value.length
-            }
-
-            // 移除并插入单个项目
-            const movedItem = allRules.value.splice(draggedItemInAllRules, 1)[0]
-            if (draggedItemInAllRules < targetIndexInAllRules) {
-              targetIndexInAllRules--
-            }
-            allRules.value.splice(targetIndexInAllRules, 0, movedItem)
-          } else {
-            // 处理普通项或折叠的组卡片的拖动
-
-            // 检查拖动的是否是折叠的组
-            if (draggedDisplayItem.isGroup) {
-              // 拖动折叠的组，需要移动整个组的所有成员
-              const groupMembers = draggedDisplayItem.items.map((item: any) => ({
-                id: item.id,
-                itemType: item.itemType
-              }))
-
-              // 在 allRules 中找到这些成员的起始和结束索引
-              let groupStartIdx = -1
-              let groupEndIdx = -1
-              for (let i = 0; i < allRules.value.length; i++) {
-                const match = groupMembers.some(
-                  member => member.id === allRules.value[i].id && member.itemType === allRules.value[i].itemType
-                )
-                if (match) {
-                  if (groupStartIdx === -1) groupStartIdx = i
-                  groupEndIdx = i
-                }
-              }
-
-              // 提取整个组
-              const groupItems = allRules.value.slice(groupStartIdx, groupEndIdx + 1)
-
-              // 计算目标位置
-              let targetIndexInAllRules = 0
-              if (targetDisplayItem) {
-                if (targetDisplayItem.isExpandedGroupItem) {
-                  // 目标是展开组的成员
-                  const targetGroupFirstId = allRulesAndSets.value
-                    .find(item => item.isExpandedGroupItem && item.groupId === targetDisplayItem.groupId)?.id
-                  targetIndexInAllRules = allRules.value.findIndex(item => item.id === targetGroupFirstId)
-
-                  if (newIndex > oldIndex) {
-                    const targetGroupLastId = allRulesAndSets.value
-                      .reverse()
-                      .find(item => item.isExpandedGroupItem && item.groupId === targetDisplayItem.groupId)?.id
-                    const targetGroupLastIdx = allRules.value.findIndex(item => item.id === targetGroupLastId)
-                    targetIndexInAllRules = targetGroupLastIdx + 1
-                    allRulesAndSets.value.reverse()
-                  }
-                } else if (targetDisplayItem.isGroup) {
-                  // 目标也是折叠的组
-                  const targetGroupFirstId = targetDisplayItem.items[0].id
-                  targetIndexInAllRules = allRules.value.findIndex(item => item.id === targetGroupFirstId)
-
-                  if (newIndex > oldIndex) {
-                    const targetGroupLastId = targetDisplayItem.items[targetDisplayItem.items.length - 1].id
-                    const targetGroupLastIdx = allRules.value.findIndex(item => item.id === targetGroupLastId)
-                    targetIndexInAllRules = targetGroupLastIdx + 1
-                  }
-                } else {
-                  // 目标是普通项
-                  targetIndexInAllRules = allRules.value.findIndex(
-                    item => item.id === targetDisplayItem.id && item.itemType === targetDisplayItem.itemType
-                  )
-                  if (newIndex > oldIndex) {
-                    targetIndexInAllRules++
-                  }
-                }
-              } else {
-                targetIndexInAllRules = allRules.value.length
-              }
-
-              // 从原位置移除组
-              allRules.value.splice(groupStartIdx, groupItems.length)
-
-              // 重新计算插入位置（如果原位置在目标位置之前，需要调整）
-              if (groupStartIdx < targetIndexInAllRules) {
-                targetIndexInAllRules -= groupItems.length
-              }
-
-              // 插入到新位置
-              allRules.value.splice(targetIndexInAllRules, 0, ...groupItems)
-            } else {
-              // 拖动普通项（单个规则或规则集）
-              const draggedItemInAllRules = allRules.value.findIndex(
-                item => item.id === draggedDisplayItem.id && item.itemType === draggedDisplayItem.itemType
-              )
-
-              let targetIndexInAllRules = 0
-              if (targetDisplayItem) {
-                if (targetDisplayItem.isExpandedGroupItem) {
-                  // 目标是展开组的成员，找到该组在 allRules 中的位置
-                  const targetGroupFirstId = allRulesAndSets.value
-                    .find(item => item.isExpandedGroupItem && item.groupId === targetDisplayItem.groupId)?.id
-                  targetIndexInAllRules = allRules.value.findIndex(item => item.id === targetGroupFirstId)
-
-                  if (newIndex > oldIndex) {
-                    const targetGroupLastId = allRulesAndSets.value
-                      .reverse()
-                      .find(item => item.isExpandedGroupItem && item.groupId === targetDisplayItem.groupId)?.id
-                    const targetGroupLastIdx = allRules.value.findIndex(item => item.id === targetGroupLastId)
-                    targetIndexInAllRules = targetGroupLastIdx + 1
-                    allRulesAndSets.value.reverse()
-                  }
-                } else if (targetDisplayItem.isGroup) {
-                  // 目标是折叠的组，找到该组第一个成员在 allRules 中的位置
-                  const targetGroupFirstId = targetDisplayItem.items[0].id
-                  targetIndexInAllRules = allRules.value.findIndex(item => item.id === targetGroupFirstId)
-
-                  if (newIndex > oldIndex) {
-                    const targetGroupLastId = targetDisplayItem.items[targetDisplayItem.items.length - 1].id
-                    const targetGroupLastIdx = allRules.value.findIndex(item => item.id === targetGroupLastId)
-                    targetIndexInAllRules = targetGroupLastIdx + 1
-                  }
-                } else {
-                  // 目标是普通项
-                  targetIndexInAllRules = allRules.value.findIndex(
-                    item => item.id === targetDisplayItem.id && item.itemType === targetDisplayItem.itemType
-                  )
-                  if (newIndex > oldIndex) {
-                    targetIndexInAllRules++
-                  }
-                }
-              } else {
-                targetIndexInAllRules = allRules.value.length
-              }
-
-              // 移除并插入
-              const movedItem = allRules.value.splice(draggedItemInAllRules, 1)[0]
-              if (draggedItemInAllRules < targetIndexInAllRules) {
-                targetIndexInAllRules--
-              }
-              allRules.value.splice(targetIndexInAllRules, 0, movedItem)
-            }
+          const reorderedRules = rebuildRulesOrderFromDisplay(displayItemsSnapshot, orderedIds)
+          if (reorderedRules.length !== allRules.value.length) {
+            console.error('拖拽排序重建失败，规则数量不一致', {
+              orderedIds,
+              expected: allRules.value.length,
+              actual: reorderedRules.length
+            })
+            ElMessage.error('拖拽排序失败，请重试')
+            loadAllRules()
+            return
           }
+
+          allRules.value = reorderedRules
 
           // 保存新顺序到后端
           try {
             const saved = await saveRulesOrder()
             // 只有在真正执行了保存才显示成功消息
             if (saved) {
+              // 重新加载并折叠分组，确保拖拽合并后立即反映为最新分组卡片
+              expandedGroups.value = new Set()
+              await loadAllRules()
               ElMessage.success('排序已更新')
             }
           } catch (error) {
@@ -1473,6 +1374,10 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (sortableInstance) {
+    sortableInstance.destroy()
+    sortableInstance = null
+  }
 })
 
 // 页面激活时重新加载数据（从其他页面返回时）
@@ -1691,6 +1596,31 @@ onActivated(() => {
   font-size: 12px;
   padding: 2px 8px;
   color: #8b8fff;
+}
+
+.card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.collapse-group-btn {
+  border-radius: var(--rule-radius-pill, 999px);
+  border: 1px solid rgba(107, 115, 255, 0.24);
+  background: rgba(107, 115, 255, 0.12);
+  color: #4e5eff;
+  font-weight: 600;
+  padding: 7px 12px;
+}
+
+.collapse-group-btn:hover {
+  border-color: rgba(107, 115, 255, 0.4);
+  background: rgba(107, 115, 255, 0.18);
+  color: #3346ff;
+}
+
+.collapse-group-btn .el-icon {
+  margin-right: 4px;
 }
 
 .status-toggle {
