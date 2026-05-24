@@ -50,6 +50,7 @@ jobs:
           tags: |
             type=raw,value=test-{{branch}}
             type=raw,value=test-{{sha}}
+            type=raw,value=test-latest
 
       - name: Build and push
         uses: docker/build-push-action@v5
