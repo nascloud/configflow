@@ -1046,9 +1046,11 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
                 (rule_set.get('name') or _normalize_ruleset_id(item_id))
             )
             if behavior == 'ipcidr':
-                match_expr = f"resp_ip ${tag}"
-            else:
-                match_expr = f"qname ${tag}"
+                # IP 类规则集在主序列中无效：此处尚未向上游查询，
+                # 没有响应可供 resp_ip 匹配，规则永远不会命中。
+                # IP 维度的分流由 Mihomo 的 IP 规则负责，此处跳过。
+                continue
+            match_expr = f"qname ${tag}"
 
             if item_id in direct_ruleset_ids:
                 # 直连规则集，使用国内 DNS
@@ -1079,13 +1081,14 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
             # 标记为已添加
             added_merged_tags.add(rule_tag)
 
-            # 根据tag类型决定使用 qname 还是 resp_ip
+            # IP 类规则在主序列中无效：此处尚未向上游查询，
+            # 没有响应可供 resp_ip 匹配，规则永远不会命中。
+            # IP 维度的分流由 Mihomo 的 IP 规则负责，此处跳过。
             if 'ip_rules' in rule_tag:
-                # IP规则使用 resp_ip
-                match_expr = f"resp_ip ${rule_tag}"
-            else:
-                # 域名规则使用 qname
-                match_expr = f"qname ${rule_tag}"
+                continue
+
+            # 域名规则使用 qname
+            match_expr = f"qname ${rule_tag}"
 
             if item_id in direct_rule_ids:
                 # 直连规则，使用国内 DNS
