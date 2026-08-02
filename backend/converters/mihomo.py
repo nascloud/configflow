@@ -408,7 +408,10 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
                 'health-check': {
                     'enable': True,
                     'url': 'http://www.gstatic.com/generate_204',
-                    'interval': 300
+                    'interval': 300,
+                    # 懒惰检测：仅当 Provider 被策略组实际使用时才探测，
+                    # 避免闲置节点持续占用 CPU（低配设备上尤其明显）
+                    'lazy': True
                 }
             }
 
@@ -432,7 +435,10 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
                 'health-check': {
                     'enable': True,
                     'url': 'http://www.gstatic.com/generate_204',
-                    'interval': 300
+                    'interval': 300,
+                    # 懒惰检测：仅当 Provider 被策略组实际使用时才探测，
+                    # 避免闲置节点持续占用 CPU（低配设备上尤其明显）
+                    'lazy': True
                 }
             }
 
