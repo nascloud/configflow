@@ -852,6 +852,20 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
         }
     })
 
+    # 9.1 代理 DNS 执行序列
+    # fallback 插件通过 exec 执行后不会终止主序列，会导致主序列继续
+    # 往下匹配（甚至在尾部默认转发处重复查询一次）
+    # 包装一层 sequence：执行 $proxy_dns 后 accept 终止，
+    # 代理规则统一通过 goto 跳入本序列
+    plugins.append({
+        'tag': 'proxy_dns_seq',
+        'type': 'sequence',
+        'args': [
+            {'exec': '$proxy_dns'},
+            {'exec': 'accept'}
+        ]
+    })
+
     # 10. 国内 DNS 序列插件
     # 先查缓存，未命中再转发到国内 DNS
     china_dns_args: List[Dict[str, Any]] = []
@@ -1043,10 +1057,10 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
                     'exec': 'goto china_dns'
                 })
             elif item_id in proxy_ruleset_ids:
-                # 代理规则集，使用国外 DNS
+                # 代理规则集，使用国外 DNS（goto 跳转后终止主序列）
                 rule_match_entries.append({
                     'matches': [match_expr],
-                    'exec': '$proxy_dns'
+                    'exec': 'goto proxy_dns_seq'
                 })
         elif item_type == 'rule':
             # 单条规则
@@ -1080,10 +1094,10 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
                     'exec': 'goto china_dns'
                 })
             elif item_id in proxy_rule_ids:
-                # 代理规则，使用国外 DNS
+                # 代理规则，使用国外 DNS（goto 跳转后终止主序列）
                 rule_match_entries.append({
                     'matches': [match_expr],
-                    'exec': '$proxy_dns'
+                    'exec': 'goto proxy_dns_seq'
                 })
 
     # 根据配置决定自定义 match 的插入位置
@@ -1106,7 +1120,7 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
         sequence.append({'exec': 'goto china_dns'})
     else:
         # 使用国外 DNS（带 fallback）
-        sequence.append({'exec': '$proxy_dns'})
+        sequence.append({'exec': 'goto proxy_dns_seq'})
 
     plugins.append({
         'tag': 'sequence_main',
@@ -1118,11 +1132,18 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
 
     # 添加服务器配置
     # 使用简化的服务器配置格式
-    # type: udp_server 表示 UDP 服务器（也会自动监听 TCP）
+    # udp_server 仅监听 UDP，TCP 需单独配置 tcp_server（截断回退场景需要）
     # args.entry: 入口插件标签
     # args.listen: 监听地址和端口
     plugins.append({
         'type': 'udp_server',
+        'args': {
+            'entry': 'sequence_main',
+            'listen': ':53'
+        }
+    })
+    plugins.append({
+        'type': 'tcp_server',
         'args': {
             'entry': 'sequence_main',
             'listen': ':53'
