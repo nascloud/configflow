@@ -103,8 +103,77 @@ def normalize_find_process_mode(mihomo_config: Dict[str, Any]) -> None:
             mihomo_config['find-process-mode'] = normalized
 
 
-def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '') -> str:
-    """生成 Mihomo YAML 配置"""
+def parse_mosdns_custom_hosts(custom_hosts: str) -> Dict[str, str]:
+    """解析 MosDNS 自定义 Hosts 文本为 {域名: IP} 映射
+
+    与 MosDNS 转换器保持一致，支持两种格式：
+    1. 域名在前，IP 在后：example.com 192.168.1.1（推荐格式）
+    2. IP 在前，域名在后：192.168.1.1 example.com（传统 hosts 格式）
+    """
+    import re
+
+    hosts: Dict[str, str] = {}
+    if not custom_hosts or not custom_hosts.strip():
+        return hosts
+
+    for line in custom_hosts.strip().split('\n'):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        first, second = parts[0], parts[1]
+        if re.match(r'^[\d\.]+$', second):
+            domain, ip = first, second
+        else:
+            domain, ip = second, first
+        hosts[domain] = ip
+    return hosts
+
+
+def sync_mosdns_hosts(mihomo_config: Dict[str, Any], config_data: Dict[str, Any]) -> None:
+    """将 MosDNS 自定义 Hosts 同步注入 Mihomo 配置
+
+    MosDNS 的自定义 Hosts 只对查询 MosDNS 的客户端生效；Mihomo 自身
+    使用独立的 DNS 上游（不能指回 MosDNS，否则形成解析回环），因此
+    内网域名映射需要同步写入 Mihomo 顶层 hosts，避免 Mihomo 自身
+    （订阅更新、节点域名解析）经公网 NAT 回环访问内网服务。
+
+    注意：仅用于推送给局域网内 Agent 的配置（sync_lan_hosts=True）；
+    订阅/下载配置可能被漫游设备（手机在外）使用，注入内网 IP 会导致
+    这些域名在外网不可达，因此默认不注入。
+
+    - 自定义配置中已显式写的同名 hosts 条目优先，不覆盖
+    - hosts 参与解析需要 dns.use-hosts: true；用户显式配置过则不改动
+    """
+    synced = parse_mosdns_custom_hosts(
+        config_data.get('mosdns', {}).get('custom_hosts', '')
+    )
+    if not synced:
+        return
+
+    hosts = mihomo_config.get('hosts')
+    if not isinstance(hosts, dict):
+        hosts = {}
+    for domain, ip in synced.items():
+        hosts.setdefault(domain, ip)
+    mihomo_config['hosts'] = hosts
+
+    dns_config = mihomo_config.get('dns')
+    if isinstance(dns_config, dict) and 'use-hosts' not in dns_config:
+        dns_config['use-hosts'] = True
+
+
+def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
+                           sync_lan_hosts: bool = False) -> str:
+    """生成 Mihomo YAML 配置
+
+    Args:
+        sync_lan_hosts: 是否把 MosDNS 自定义 Hosts（内网域名映射）注入
+            顶层 hosts。仅推送给局域网内 Agent 时为 True；订阅/下载
+            配置保持 False，避免漫游设备在外网解析到内网 IP。
+    """
 
     # 从合并数组中分离规则和规则集
     rules_list, rule_sets_list = split_rules_and_rulesets(config_data)
@@ -155,6 +224,10 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '') -> s
         }
 
     normalize_find_process_mode(mihomo_config)
+
+    # 仅 Agent 推送场景同步 MosDNS 自定义 Hosts（内网域名映射）
+    if sync_lan_hosts:
+        sync_mosdns_hosts(mihomo_config, config_data)
 
     # 收集被策略组使用的节点ID、订阅ID和聚合ID
     used_node_ids = set()
