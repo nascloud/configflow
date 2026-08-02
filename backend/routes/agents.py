@@ -607,7 +607,10 @@ def push_config_to_agent(agent_id):
         try:
             if service_type == 'mihomo':
                 logger.info("生成 Mihomo 配置...")
-                config_content = generate_mihomo_config(config_data, base_url=base_url)
+                # Agent 在局域网内，注入 MosDNS 自定义 Hosts 让内网域名直达；
+                # 订阅/下载配置（可能被在外设备使用）不注入
+                config_content = generate_mihomo_config(config_data, base_url=base_url,
+                                                        sync_lan_hosts=True)
 
                 # 获取 provider 下载信息
                 provider_downloads = get_mihomo_provider_downloads(config_data, base_url=base_url)
