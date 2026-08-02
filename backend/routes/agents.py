@@ -714,6 +714,19 @@ def push_config_to_agent(agent_id):
                 if ruleset_downloads:
                     result['ruleset_downloads'] = ruleset_downloads
             save_config()
+
+            # 推送成功后自动重启服务加载新配置
+            # Agent 的 /api/config/update 只落盘文件，不重启进程；
+            # 不重启的话新配置不会生效。可通过请求体 {"restart": false} 关闭
+            if data.get('restart', True):
+                logger.info(f"配置推送成功，触发服务重启: {agent_id}")
+                restart_result = agent_manager.restart_agent_service(agent_id)
+                result['restart'] = restart_result
+                if not restart_result.get('success'):
+                    logger.warning(
+                        f"配置已推送但服务重启失败: {restart_result.get('message')}，"
+                        f"需手动重启服务后新配置才会生效"
+                    )
         else:
             logger.error(f"配置推送失败: {result.get('message')}")
 
