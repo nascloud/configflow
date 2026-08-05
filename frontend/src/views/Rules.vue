@@ -329,7 +329,7 @@
           <el-form-item label="no-resolve" v-if="isIpRuleType">
             <div class="switch-with-tip">
               <el-switch v-model="ruleForm.no_resolve" />
-              <span class="form-tip">IP 类规则建议开启</span>
+              <span class="form-tip">IP 类规则建议开启；逻辑规则会写入其 IP 子条件</span>
             </div>
           </el-form-item>
           <el-form-item label="状态">
@@ -615,8 +615,13 @@ const availablePolicies = computed(() => {
 })
 
 // 判断当前规则类型是否为 IP 类型（需要 no-resolve）
+// 逻辑规则内部可包含 IP 类条件，同样需要 no-resolve（生成时会写入子条件内）
+const LOGIC_RULE_TYPES = ['AND', 'OR', 'NOT']
+const IP_RULE_TYPES = ['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'GEOIP']
+
 const isIpRuleType = computed(() => {
-  return ['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'GEOIP'].includes(ruleForm.value.rule_type || '')
+  const type = ruleForm.value.rule_type || ''
+  return IP_RULE_TYPES.includes(type) || LOGIC_RULE_TYPES.includes(type)
 })
 
 // 展开的组ID集合
@@ -847,8 +852,7 @@ const editRule = (row: Rule) => {
   ruleForm.value = { ...row }
   // 如果没有 no_resolve 字段，根据规则类型设置默认值
   if (ruleForm.value.no_resolve === undefined || ruleForm.value.no_resolve === null) {
-    const isIpType = ['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'GEOIP'].includes(ruleForm.value.rule_type || '')
-    ruleForm.value.no_resolve = isIpType
+    ruleForm.value.no_resolve = IP_RULE_TYPES.includes(ruleForm.value.rule_type || '')
   }
   ruleDialogVisible.value = true
 }

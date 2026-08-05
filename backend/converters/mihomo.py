@@ -1,4 +1,5 @@
 """Mihomo (Clash Meta) 配置生成器"""
+import re
 import yaml
 from typing import Dict, Any, List, Optional
 from backend.utils.logger import get_logger
@@ -85,6 +86,33 @@ def split_rules_and_rulesets(config_data: Dict[str, Any]) -> tuple:
         rule_sets = config_data.get('rule_sets', [])
 
     return rules, rule_sets
+
+
+# 逻辑规则类型：no-resolve 不能作为第四个字段追加，Mihomo 会把它当成策略名
+LOGIC_RULE_TYPES = ('AND', 'OR', 'NOT')
+
+# 会触发域名解析的目标 IP 类规则（SRC-IP-CIDR 匹配来源 IP，不触发解析）
+_RESOLVE_TRIGGER_RULE_TYPES = ('IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'GEOIP', 'IP-ASN')
+
+
+def apply_no_resolve_to_logic_rule(value: str) -> str:
+    """为逻辑规则内部的目标 IP 类子条件补上 no-resolve
+
+    Mihomo 的逻辑规则（AND/OR/NOT）不接受尾部的 no-resolve 参数，会报
+    `proxy [no-resolve] not found` 导致配置加载失败；正确写法是写在子条件内：
+
+        AND,((SRC-IP-CIDR,10.0.0.0/24),(IP-CIDR,10.0.0.0/24,no-resolve)),DIRECT
+    """
+    def _inject(match: 're.Match') -> str:
+        inner = match.group(1)
+        parts = [p.strip() for p in inner.split(',')]
+        if not parts or parts[0].upper() not in _RESOLVE_TRIGGER_RULE_TYPES:
+            return match.group(0)
+        if any(p.lower() == 'no-resolve' for p in parts):
+            return match.group(0)
+        return f"({inner},no-resolve)"
+
+    return re.sub(r'\(([^()]*)\)', _inject, value)
 
 
 def normalize_find_process_mode(mihomo_config: Dict[str, Any]) -> None:
@@ -916,6 +944,12 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
                 rules.append(f"MATCH,{policy}")
             elif rule_type == 'RULE-SET':
                 rules.append(f"RULE-SET,{value},{policy}")
+            elif rule_type in LOGIC_RULE_TYPES:
+                # 逻辑规则的 no-resolve 必须写在子条件内部，追加为第四个字段
+                # 会被 Mihomo 当作策略名，导致配置加载失败
+                if item.get('no_resolve', False):
+                    value = apply_no_resolve_to_logic_rule(value)
+                rules.append(f"{rule_type},{value},{policy}")
             else:
                 # 其他规则有三个字段：RULE_TYPE,VALUE,POLICY
                 # 根据配置决定是否添加 no-resolve 参数
