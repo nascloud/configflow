@@ -88,6 +88,28 @@ def split_rules_and_rulesets(config_data: Dict[str, Any]) -> tuple:
     return rules, rule_sets
 
 
+# Provider 健康检查默认地址
+DEFAULT_HEALTH_CHECK_URL = 'http://www.gstatic.com/generate_204'
+
+
+def build_provider_health_check(source: Dict[str, Any]) -> Dict[str, Any]:
+    """构建 Provider 的健康检查配置
+
+    默认使用境外地址探测。回家/内网类订阅从国内网络出网，用境外地址
+    检查必然超时而被误判为失活，客户端因此不会选用这些节点，故允许每个
+    订阅/聚合单独指定检查地址（如 http://www.baidu.com）。
+    """
+    url = str(source.get('health_check_url') or '').strip() or DEFAULT_HEALTH_CHECK_URL
+    return {
+        'enable': True,
+        'url': url,
+        'interval': 300,
+        # 懒惰检测：仅当 Provider 被策略组实际使用时才探测，
+        # 避免闲置节点持续占用 CPU（低配设备上尤其明显）
+        'lazy': True
+    }
+
+
 # 逻辑规则类型：no-resolve 不能作为第四个字段追加，Mihomo 会把它当成策略名
 LOGIC_RULE_TYPES = ('AND', 'OR', 'NOT')
 
@@ -433,14 +455,7 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
                 'url': sub_url,
                 'path': f"./providers/{sub['name']}.yaml",
                 'interval': 3600,
-                'health-check': {
-                    'enable': True,
-                    'url': 'http://www.gstatic.com/generate_204',
-                    'interval': 300,
-                    # 懒惰检测：仅当 Provider 被策略组实际使用时才探测，
-                    # 避免闲置节点持续占用 CPU（低配设备上尤其明显）
-                    'lazy': True
-                }
+                'health-check': build_provider_health_check(sub)
             }
 
     # 添加聚合提供者 - 只添加被策略组使用且启用的聚合
@@ -460,14 +475,7 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
                 'url': agg_url,
                 'path': f"./providers/{agg['name']}.yaml",
                 'interval': 3600,
-                'health-check': {
-                    'enable': True,
-                    'url': 'http://www.gstatic.com/generate_204',
-                    'interval': 300,
-                    # 懒惰检测：仅当 Provider 被策略组实际使用时才探测，
-                    # 避免闲置节点持续占用 CPU（低配设备上尤其明显）
-                    'lazy': True
-                }
+                'health-check': build_provider_health_check(agg)
             }
 
     if proxy_providers:
