@@ -1488,7 +1488,8 @@ const performDuplicateScan = async () => {
 }
 
 const deleteDuplicateRule = async (occ: any) => {
-  const rule = allRules.value.find(r => r.id === occ.rule_id && r.itemType === 'rule')
+  // 后端对缺失 itemType 的旧数据按 'rule' 兜底，这里保持同样口径
+  const rule = allRules.value.find(r => r.id === occ.rule_id && (r.itemType ?? 'rule') === 'rule')
   if (!rule) {
     ElMessage.error('未找到对应的规则，可能已被删除')
     return

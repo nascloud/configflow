@@ -618,11 +618,19 @@ def find_duplicate_rules():
         rule_configs = config_data.get('rule_configs', [])
         rule_library = config_data.get('rule_library', [])
 
-        # key: (规则类型, 规则值) -> 出现位置列表
+        # key: (规则类型, 归一化规则值) -> {'value': 首次出现的原始值, 'items': 出现位置列表}
         occurrences = {}
         rules_checked = 0
         rulesets_checked = 0
         failed_rulesets = []
+
+        # 正则类规则值大小写敏感，不做小写归一
+        case_sensitive_types = {'REGEX', 'REGEXP'}
+
+        def add_occurrence(rule_type, rule_value, item):
+            normalized = rule_value if rule_type in case_sensitive_types else rule_value.lower()
+            entry = occurrences.setdefault((rule_type, normalized), {'value': rule_value, 'items': []})
+            entry['items'].append(item)
 
         for index, rule_item in enumerate(rule_configs, start=1):
             # 跳过禁用的规则（与生成配置、规则索引行为一致）
@@ -638,8 +646,7 @@ def find_duplicate_rules():
                     continue
 
                 rules_checked += 1
-                key = (rule_type, rule_value.lower())
-                occurrences.setdefault(key, []).append({
+                add_occurrence(rule_type, rule_value, {
                     'source_type': 'rule',
                     'source': '直接配置的规则',
                     'rule_id': rule_item.get('id', ''),
@@ -673,7 +680,7 @@ def find_duplicate_rules():
                     if not rule_value:
                         continue
 
-                    occurrences.setdefault((rule_type, rule_value.lower()), []).append({
+                    add_occurrence(rule_type, rule_value, {
                         'source_type': 'ruleset',
                         'source': rule_set_name,
                         'rule_id': rule_item.get('id', ''),
@@ -685,12 +692,13 @@ def find_duplicate_rules():
 
         # 同一规则集内部与跨来源的重复都算重复
         duplicates = []
-        for (rule_type, rule_value), items in occurrences.items():
+        for (rule_type, _), entry in occurrences.items():
+            items = entry['items']
             if len(items) < 2:
                 continue
             duplicates.append({
                 'rule_type': rule_type,
-                'value': rule_value,
+                'value': entry['value'],  # 首次出现的原始值，保留大小写用于展示
                 'count': len(items),
                 'policy_conflict': len({i['policy'] for i in items}) > 1,
                 'occurrences': items
