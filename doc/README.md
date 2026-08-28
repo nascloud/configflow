@@ -166,7 +166,7 @@ services:
 
 启动：`docker-compose up -d`，访问 `http://localhost` 即可使用。
 
-> 请把 `ADMIN_PASSWORD` 和 `JWT_SECRET_KEY` 替换为更安全的值，生产环境务必更新凭据。
+> 认证是可选的：不设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 即无需登录直接使用；设置后才开启登录，此时请把 `ADMIN_PASSWORD` 和 `JWT_SECRET_KEY` 替换为更安全的值。
 > Sub-Store 用于订阅解析和节点格式转换，也可在「配置生成」页面配置已有的 Sub-Store 地址。
 
 [查看完整部署指南 →](module/deployment.md)
