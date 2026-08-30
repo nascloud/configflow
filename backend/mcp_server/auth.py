@@ -1,17 +1,18 @@
 """MCP 端点的认证
 
-复用 ConfigFlow 既有的凭证，不引入新的证书体系。
+复用 ConfigFlow 既有的凭证，不引入新的证书体系：
 
-MCP 工具可执行导出整份配置、重置系统、卸载 Agent 等管理操作，因此凭证的
-接受范围必须与「管理员」对齐，而不是与「订阅链接」对齐：
-
-- 启用了账号密码登录时，只接受前端签发的 JWT。
-  配置令牌是分发给代理客户端设备、用于拉取配置的只读凭证，在 REST 上也
-  取不到订阅列表和配置导出，不能让它经由 MCP 获得管理员权限。
-- 未启用账号密码登录时，配置令牌是此时唯一的凭证，接受它；
-  支持 Authorization: Bearer <token> 和 ?token=<token> 两种带法，
-  因为多数 MCP 客户端只能配其中一种。
+- 系统设置里的配置令牌。支持 Authorization: Bearer <token> 和
+  ?token=<token> 两种带法，因为多数 MCP 客户端只能配其中一种。
+- 启用账号密码登录时，也接受前端签发的 JWT。
 - 两者都没有配置时放行，与现有「认证完全可选」的行为一致。
+
+安全须知（有意为之的取舍，勿在不了解影响时"顺手修正"）：
+配置令牌同时也是订阅链接令牌（前端会把它拼进订阅 URL 分发到各代理客户端
+设备），而 MCP 工具可以导出整份配置、重置系统、卸载 Agent。也就是说
+**持有订阅链接即等同持有管理员权限**。这是项目所有者在知悉该影响后作出的
+选择，理由是订阅链接不对外分享。若日后订阅链接需要外发，应改用独立的
+MCP 令牌，而不是继续共用此令牌。
 """
 from flask import request
 
@@ -43,13 +44,13 @@ def authenticate() -> bool:
     config_token = _config_token()
     bearer = _bearer()
 
-    # 启用了账号密码登录：只有管理员 JWT 能调用 MCP
+    # 配置令牌（两种带法）
+    if config_token and (bearer == config_token or request.args.get('token', '') == config_token):
+        return True
+
+    # 启用账号密码登录时，前端签发的 JWT 同样可用
     if is_auth_enabled():
         return _is_valid_jwt(bearer)
 
-    # 未启用登录，但设置了配置令牌：此时它是唯一凭证
-    if config_token:
-        return bearer == config_token or request.args.get('token', '') == config_token
-
-    # 未配置任何认证 —— 与现有 REST 行为保持一致
-    return True
+    # 未启用登录：设了配置令牌就必须带对，没设则放行
+    return not config_token
