@@ -11,7 +11,7 @@ from flask import Blueprint, Response, jsonify, request
 
 from backend.mcp_server import auth
 from backend.mcp_server.invoker import ApiError
-from backend.mcp_server.tools import call_tool, list_tools
+from backend.mcp_server.tools import call_tool, list_tools, has_tool
 from backend.utils.logger import get_logger
 from backend.version import get_version_info
 
@@ -31,6 +31,14 @@ INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+
+
+class InvalidParams(Exception):
+    """请求参数不合法。
+
+    用独立异常而非 ValueError：工具内部意外抛出的 ValueError
+    （如解码失败）不应被误报成「参数非法」而掩盖真实故障。
+    """
 
 
 def _result(request_id: Any, result: Any) -> Dict[str, Any]:
@@ -71,16 +79,17 @@ def _handle_initialize(params: Dict[str, Any]) -> Dict[str, Any]:
 def _handle_tools_call(params: Dict[str, Any]) -> Dict[str, Any]:
     name = params.get('name')
     if not name:
-        raise ValueError('tools/call 缺少参数 name')
+        raise InvalidParams('tools/call 缺少参数 name')
 
     arguments = params.get('arguments') or {}
     if not isinstance(arguments, dict):
-        raise ValueError('tools/call 的 arguments 必须是对象')
+        raise InvalidParams('tools/call 的 arguments 必须是对象')
+
+    if not has_tool(name):
+        raise InvalidParams(f"未知的工具: {name}")
 
     try:
         payload = call_tool(name, arguments)
-    except KeyError:
-        raise ValueError(f"未知的工具: {name}")
     except ApiError as exc:
         # 业务失败通过 isError 回给模型，让它有机会自行纠正，而不是中断整个会话
         logger.warning(f"MCP 工具 {name} 调用失败: {exc.message}")
@@ -113,7 +122,7 @@ def _dispatch(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if method == 'tools/call':
             return _result(request_id, _handle_tools_call(params))
         return _error(request_id, METHOD_NOT_FOUND, f"不支持的方法: {method}")
-    except ValueError as exc:
+    except InvalidParams as exc:
         return _error(request_id, INVALID_PARAMS, str(exc))
     except Exception as exc:  # noqa: BLE001 - 兜底，避免单条消息把整个端点打挂
         logger.exception(f"MCP 方法 {method} 执行异常")

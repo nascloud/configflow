@@ -51,11 +51,24 @@ def call_api(
         headers={INTERNAL_CALL_HEADER: INTERNAL_CALL_TOKEN},
     )
 
-    raw = response.get_data(as_text=True)
+    # 部分接口（如 MosDNS 配置生成）返回 zip 等二进制，不能按文本解码
+    data = response.get_data()
     try:
-        payload = json.loads(raw) if raw else None
-    except ValueError:
-        payload = raw
+        raw = data.decode('utf-8')
+    except UnicodeDecodeError:
+        raw = None
+
+    if raw is None:
+        payload = {
+            'binary': True,
+            'content_type': response.mimetype,
+            'size': len(data),
+        }
+    else:
+        try:
+            payload = json.loads(raw) if raw else None
+        except ValueError:
+            payload = raw
 
     if response.status_code >= 400:
         raise ApiError(response.status_code, _extract_message(payload, response.status_code))

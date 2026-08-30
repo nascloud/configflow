@@ -40,12 +40,14 @@ def list_tools() -> List[Dict[str, Any]]:
     return [entry['definition'] for entry in _REGISTRY.values()]
 
 
+def has_tool(name: str) -> bool:
+    """工具是否存在"""
+    return name in _REGISTRY
+
+
 def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     """执行一个工具（tools/call）"""
-    entry = _REGISTRY.get(name)
-    if entry is None:
-        raise KeyError(name)
-    return entry['handler'](arguments or {})
+    return _REGISTRY[name]['handler'](arguments or {})
 
 
 # ---------------------------------------------------------------- schema 助手
@@ -442,19 +444,14 @@ def _manage_rule_library(args):
 
 @tool(
     'test_rule_library',
-    '测试规则仓库条目的连通性。给 url 时测试单个 URL；'
-    '给 rule_ids 或留空时批量测试仓库中的条目，返回每条的可用性。',
-    obj(
-        {
-            'url': string('直接测试某个 URL 是否可访问'),
-            'rule_ids': array('要测试的规则仓库条目 id 列表，留空表示测试全部'),
-        }
-    ),
+    '测试规则仓库条目的连通性。给 url 时只测这一个地址；'
+    '不给 url 时批量测试仓库中所有 URL 类型的条目（不支持只测其中几条）。',
+    obj({'url': string('只测试某个 URL 是否可访问；留空则批量测试全部条目')}),
 )
 def _test_rule_library(args):
     if args.get('url'):
         return call_api('POST', '/api/rule-library/test-single', body={'url': args['url']})
-    return call_api('POST', '/api/rule-library/test', body={'rule_ids': args.get('rule_ids', [])})
+    return call_api('POST', '/api/rule-library/test', body={})
 
 
 # ================================================================ 策略组
@@ -549,8 +546,9 @@ def _preview_config(args):
 
 @tool(
     'generate_config',
-    '生成配置并保存到服务端数据目录（Mihomo 存为 config.yaml、Surge 存为 config.conf、'
-    'MosDNS 打包为 zip），保存后订阅链接即可取到新配置。',
+    'Mihomo / Surge：生成配置并保存到服务端数据目录（config.yaml / config.conf）。'
+    'MosDNS：打包成含规则文件的 zip 供界面下载，不落盘（MosDNS 订阅链接本就实时生成，无需此步）。'
+    '只返回结果摘要，需要查看配置内容请用 preview_config。',
     obj(
         {
             'target': string('目标格式', _CONFIG_TARGETS),
@@ -564,11 +562,30 @@ def _generate_config(args):
     if target not in _CONFIG_TARGETS:
         raise ApiError(400, f"target 必须是 {_CONFIG_TARGETS} 之一")
     result = call_api('POST', f"/api/generate/{target}", body={'base_url': args.get('base_url', '')})
-    if target == 'mosdns':
-        # MosDNS 产出的是 zip 二进制，不回传内容
-        return {'success': True, 'target': target, 'message': 'MosDNS 配置包已生成并保存到数据目录'}
-    content = result if isinstance(result, str) else str(result)
-    return {'success': True, 'target': target, 'saved': True, 'content': content}
+    # 生成接口返回的是配置文件本身，内容可达数千行且含节点凭证，
+    # 不回灌进模型上下文；要看内容用 preview_config。
+    if isinstance(result, (str, bytes)):
+        size = len(result)
+    elif isinstance(result, dict) and result.get('binary'):
+        size = result.get('size')
+    else:
+        size = None
+
+    # MosDNS 走的是内存打包下载，不写入数据目录；其订阅链接为实时生成
+    saved = target != 'mosdns'
+    message = (
+        f'{target} 配置已生成并保存到数据目录，订阅链接即可取到新配置'
+        if saved else
+        'MosDNS 规则包已打包（含规则文件，需在界面下载）；'
+        'MosDNS 订阅链接为实时生成，配置改动无需此步即已生效'
+    )
+    return {
+        'success': True,
+        'target': target,
+        'saved': saved,
+        'size': size,
+        'message': message,
+    }
 
 
 @tool(
@@ -640,7 +657,10 @@ def _get_agent(args):
                 ['update', 'delete', 'restart', 'push_config', 'uninstall', 'upgrade'],
             ),
             'id': string('Agent id'),
-            'data': free_object('update 时要修改的字段，如 name、config_path、restart_command'),
+            'data': free_object(
+                'update 时要修改的字段，仅 name、host、port、enabled、service_type 生效；'
+                '配置路径、重启命令等属于 Agent 端的安装参数，需在 Agent 侧调整'
+            ),
             'base_url': string('push_config 时 Agent 回取配置用的服务地址，留空自动推断'),
         },
         ['action', 'id'],
@@ -853,10 +873,10 @@ def _update_settings(args):
         raise ApiError(400, f"'{section}' 是只读设置")
 
     if section == 'backup':
-        # 备份配置的 POST 会整体覆盖，先读回补齐未传字段
+        # 备份配置的 POST 会整体覆盖，先读回补齐未传字段。
+        # GET 把已存的密码掩码成 '******'，而路由正是以这个字面量表示
+        # 「沿用已存密码」，所以必须原样回传：一旦抹掉该键，路由会把密码写成空串。
         current = call_api('GET', get_path) or {}
-        # 掩码后的密码不能回写，留空表示沿用服务端已存的密码
-        current.pop('webdav_password', None)
         data = {**current, **data}
 
     # 少数端点的读写字段名不一致，按映射改写
@@ -874,13 +894,14 @@ def _update_settings(args):
 )
 def _run_backup(args):
     action = _require(args, 'action')
-    if action == 'test_connection':
-        current = call_api('GET', '/api/backup/config') or {}
-        current.pop('webdav_password', None)
-        return call_api('POST', '/api/backup/test', body=current)
-    if action == 'backup_now':
-        return call_api('POST', '/api/backup/now', body={})
-    raise ApiError(400, f"不支持的 action: {action}")
+    if action not in ('test_connection', 'backup_now'):
+        raise ApiError(400, f"不支持的 action: {action}")
+
+    # 两个端点都从请求体读取 WebDAV 凭证，不会回落到已存配置，
+    # 因此把设置里的配置整份带上（密码保持 '******' 让路由取用已存值）。
+    settings = call_api('GET', '/api/backup/config') or {}
+    path = '/api/backup/test' if action == 'test_connection' else '/api/backup/now'
+    return call_api('POST', path, body=settings)
 
 
 @tool(
