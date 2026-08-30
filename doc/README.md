@@ -130,6 +130,19 @@
 
 ---
 
+### 🔌 MCP 服务
+
+内置 MCP 服务端，可用 Claude 等 AI 客户端通过自然语言操作平台的全部功能。
+
+**主要特性：**
+- 内置 `/mcp` 端点，与主应用同进程，无需额外部署
+- 36 个工具覆盖订阅、节点、规则、策略组、MosDNS、Agent 与配置生成
+- 复用现有配置令牌 / 登录凭证，无需额外密钥
+
+[查看详细文档 →](module/mcp.md)
+
+---
+
 ## 快速开始
 
 ### 1. 部署系统
@@ -221,6 +234,7 @@ services:
 - [规则仓库](module/rule-library.md) - 集中管理规则集
 - [规则配置](module/rules.md) - 创建分流规则
 - [配置生成](module/generate.md) - 生成和导出配置
+- [MCP 服务](module/mcp.md) - 通过 MCP 用 AI 客户端操作平台
 
 ### 部署文档
 - [部署指南](module/deployment.md) - Docker 和 Docker Compose 部署

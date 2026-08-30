@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from functools import wraps
 from flask import request, jsonify
 
+from backend.common.internal_call import is_internal_call
+
 # JWT 配置
 # 未显式配置时随机生成（进程级），避免使用可预测的硬编码默认密钥
 JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY') or secrets.token_urlsafe(48)
@@ -53,6 +55,10 @@ def validate_token_or_jwt(request_obj):
     Returns:
         dict: {'valid': bool, 'message': str}
     """
+    # MCP 层发起的进程内调用，认证已在 /mcp 入口完成
+    if is_internal_call():
+        return {'valid': True}
+
     # 2. 检查 URL query token（用于外部客户端）
     from backend.common.config import config_data
     config_token = config_data.get('system_config', {}).get('config_token', '')
@@ -86,6 +92,10 @@ def require_auth(f):
     """认证装饰器 - 只有在启用认证时才检查 token"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # MCP 层发起的进程内调用，认证已在 /mcp 入口完成
+        if is_internal_call():
+            return f(*args, **kwargs)
+
         # 如果没有设置用户名和密码，则不需要认证（直接放行，忽略任何 token）
         if not is_auth_enabled():
             return f(*args, **kwargs)
