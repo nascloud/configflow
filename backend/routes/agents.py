@@ -25,6 +25,7 @@ from backend.common.config_repository import ProfileRepositoryError
 from backend.common.agent_manager import get_agent_manager
 from backend.common.utils import str_to_bool
 from backend.utils.logger import get_logger
+from backend.utils.url_utils import safe_url_for_log
 
 logger = get_logger(__name__)
 
@@ -690,9 +691,9 @@ def _prefetch_download_contents(downloads, base_url):
             resp = requests.get(fetch_url, timeout=30)
             resp.raise_for_status()
             item['content'] = resp.text
-            logger.info(f"预获取成功: {item.get('name', url)} ({len(resp.text)} 字符)")
+            logger.info(f"预获取成功: {item.get('name') or safe_url_for_log(url)} ({len(resp.text)} 字符)")
         except Exception as e:
-            logger.warning(f"预获取失败: {item.get('name', url)}, 错误: {e}, Agent 将 fallback 到 URL 下载")
+            logger.warning(f"预获取失败: {item.get('name') or safe_url_for_log(url)}, Agent 将 fallback 到 URL 下载")
             item['content'] = ''
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -724,7 +725,7 @@ def push_config_to_agent(agent_id):
             host = request.headers.get('X-Forwarded-Host', request.host)
             base_url = f"{scheme}://{host}"
 
-        logger.info(f"Agent: {agent.get('name')}, Service Type: {agent.get('service_type')}, Base URL: {base_url}")
+        logger.info(f"Agent: {agent.get('name')}, Service Type: {agent.get('service_type')}, Base URL: {safe_url_for_log(base_url)}")
 
         profile_id = agent.get('profile_id', 'default')
         try:

@@ -17,6 +17,7 @@ from backend.common.profile_context import profile_api_path, resolve_profile_id
 from backend.utils.rule_matcher import parse_rule_line, match_query, is_valid_domain, is_valid_ip
 from backend.utils.rule_utils import get_rules_dir, sanitize_rule_name
 from backend.utils.logger import get_logger
+from backend.utils.url_utils import safe_exception_details, safe_url_for_log
 
 logger = get_logger(__name__)
 
@@ -173,8 +174,8 @@ def reorder_rules():
         logger.info(f"Successfully reordered {len(rule_configs)} rules")
         return jsonify({'success': True})
     except Exception as e:
-        logger.error(f"Error reordering rules: {e}", exc_info=True)
-        return jsonify({'success': False, 'message': str(e)}), 500
+        logger.error("Error reordering rules: %s", safe_exception_details(e))
+        return jsonify({'success': False, 'message': 'Error reordering rules'}), 500
 
 
 @bp.route('/batch', methods=['POST'])
@@ -265,7 +266,7 @@ def get_local_rule(name):
         if rule.get('source_type') == 'url':
             import requests
             url = rule.get('url', '')
-            logger.info(f"Rule '{name}' is URL type, attempting to fetch from: {url}")
+            logger.info(f"Rule '{name}' is URL type, attempting to fetch from: {safe_url_for_log(url)}")
 
             try:
                 # 尝试在 2 秒内拉取最新数据
@@ -289,7 +290,7 @@ def get_local_rule(name):
             except requests.Timeout:
                 logger.warning(f"Timeout fetching rule '{name}', falling back to cache")
             except Exception as e:
-                logger.error(f"Error fetching rule '{name}': {e}, falling back to cache")
+                logger.error("Error fetching rule '%s', falling back to cache: %s", name, safe_exception_details(e))
 
         # 如果是 content 类型或拉取失败，使用本地缓存
         if os.path.exists(filepath):
@@ -327,8 +328,8 @@ def get_local_rule(name):
                 }), 500
 
     except Exception as e:
-        logger.error(f"Error getting local rule '{name}': {str(e)}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        logger.error("Error getting local rule '%s': %s", name, safe_exception_details(e))
+        return jsonify({'success': False, 'message': 'Error getting local rule'}), 500
 
 
 # ==================== /api/rule-sets 路由（向后兼容）====================
@@ -396,7 +397,8 @@ def reorder_rule_sets():
             'message': 'This endpoint is deprecated. Please use /api/rules/reorder instead.'
         }), 410
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        logger.error("Deprecated rule endpoint failed: %s", safe_exception_details(e))
+        return jsonify({'success': False, 'message': 'Deprecated rule endpoint failed'}), 500
 
 
 def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
@@ -435,7 +437,7 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
             logger.info(f"Loaded rule content from cache: {filepath}")
             return rule_content
         except Exception as e:
-            logger.warning(f"Failed to read cached rule file {filepath}: {e}")
+            logger.warning("Failed to read cached rule file %s: %s", filepath, safe_exception_details(e))
 
     # 2. 如果缓存不存在或读取失败，从规则仓库获取内容
     if library_rule and not rule_content:
@@ -453,7 +455,7 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
                     response = requests.get(url, timeout=30)
                     if response.status_code == 200:
                         rule_content = response.text
-                        logger.info(f"Fetched rule content from library URL: {url}")
+                        logger.info(f"Fetched rule content from library URL: {safe_url_for_log(url)}")
 
                         # 保存到本地缓存
                         if filepath:
@@ -469,7 +471,7 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
 
                         return rule_content
                 except Exception as e:
-                    logger.warning(f"Failed to fetch rule from library URL {url}: {e}")
+                    logger.warning("Failed to fetch rule from library URL %s: %s", safe_url_for_log(url), safe_exception_details(e))
 
     # 3. 如果规则仓库没有，尝试从规则集的 url 字段获取
     if not rule_content:
@@ -485,7 +487,7 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
                 response = requests.get(url, timeout=30)
                 if response.status_code == 200:
                     rule_content = response.text
-                    logger.info(f"Fetched rule content from item URL: {url}")
+                    logger.info(f"Fetched rule content from item URL: {safe_url_for_log(url)}")
 
                     # 保存到本地缓存
                     if filepath:
@@ -501,7 +503,7 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
 
                     return rule_content
             except Exception as e:
-                logger.warning(f"Failed to fetch rule from item URL {url}: {e}")
+                logger.warning("Failed to fetch rule from item URL %s: %s", safe_url_for_log(url), safe_exception_details(e))
 
     return rule_content
 
@@ -610,7 +612,7 @@ def match_test_rule():
 
                 except Exception as e:
                     # 规则集处理失败，记录错误并跳过该规则集
-                    logger.error(f'Error processing ruleset "{rule_set_name}": {e}')
+                    logger.error('Error processing ruleset "%s": %s', rule_set_name, safe_exception_details(e))
                     continue
 
         # 没有匹配到任何规则
@@ -623,8 +625,8 @@ def match_test_rule():
         })
 
     except Exception as e:
-        logger.error(f'Rule match test failed: {e}')
-        return jsonify({'success': False, 'message': f'查询失败: {str(e)}'}), 500
+        logger.error('Rule match test failed: %s', safe_exception_details(e))
+        return jsonify({'success': False, 'message': '查询失败'}), 500
 
 
 @bp.route('/find-duplicates', methods=['POST'])
@@ -742,5 +744,5 @@ def find_duplicate_rules():
         })
 
     except Exception as e:
-        logger.error(f'Find duplicate rules failed: {e}', exc_info=True)
-        return jsonify({'success': False, 'message': f'查重失败: {str(e)}'}), 500
+        logger.error('Find duplicate rules failed: %s', safe_exception_details(e))
+        return jsonify({'success': False, 'message': '查重失败'}), 500

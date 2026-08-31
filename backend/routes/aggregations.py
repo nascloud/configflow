@@ -32,6 +32,7 @@ from backend.utils.sub_store_client import (
     proxies_to_nodes,
 )
 from backend.utils.logger import get_logger
+from backend.utils.url_utils import safe_exception_details
 
 logger = get_logger(__name__)
 
@@ -127,7 +128,7 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
             except Exception as e:
                 proxies = None
                 nodes_list = None
-                logger.warning(f"通过 Sub-Store 获取订阅 '{sub['name']}' 失败: {e}, 尝试读取本地缓存")
+                logger.warning("通过 Sub-Store 获取订阅 '%s' 失败, 尝试读取本地缓存: %s", sub['name'], safe_exception_details(e))
 
             # 如果从 Sub-Store 获取失败，从本地缓存读取
             if not nodes_list:
@@ -164,7 +165,7 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
                         results[fetched_id] = (proxies, nodes_list)
                     except Exception as e:
                         # 兜底：单个订阅的任何未预期异常都不影响其他订阅
-                        logger.error(f"订阅拉取任务异常: {e}")
+                        logger.error("订阅拉取任务异常: %s", safe_exception_details(e))
 
         # 按聚合中配置的订阅顺序汇总，保证输出稳定
         for sub_id, _sub in pending:
@@ -201,7 +202,7 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
             regex = re.compile(regex_filter)
             all_nodes = [node for node in all_nodes if regex.search(node.get('name', ''))]
         except re.error as e:
-            logger.error(f"聚合 '{agg_name}' 的正则表达式无效: {e}")
+            logger.error("聚合 '%s' 的正则表达式无效: %s", agg_name, safe_exception_details(e))
 
     # 4. 转换为 mihomo 格式
     # 构建 sub-store proxies 按名称索引（用于快速查找）
@@ -383,7 +384,8 @@ def handle_subscription_aggregation_item(agg_id):
 
             return jsonify({'success': False, 'message': 'Aggregation not found'}), 404
         except Exception as e:
-            return jsonify({'success': False, 'message': str(e)}), 500
+            logger.error("聚合操作失败: %s", safe_exception_details(e))
+            return jsonify({'success': False, 'message': '聚合操作失败'}), 500
 
     elif request.method == 'DELETE':
         # 删除聚合
@@ -433,8 +435,8 @@ def get_aggregation_node_count(agg_id):
         })
 
     except Exception as e:
-        logger.error(f"获取聚合节点数量失败: {str(e)}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        logger.error("获取聚合节点数量失败: %s", safe_exception_details(e))
+        return jsonify({'success': False, 'message': '获取聚合节点数量失败'}), 500
 
 
 @bp.route('/<agg_id>/preview', methods=['GET'])
@@ -471,7 +473,8 @@ def preview_aggregation_nodes(agg_id):
         })
 
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        logger.error("聚合操作失败: %s", safe_exception_details(e))
+        return jsonify({'success': False, 'message': '聚合操作失败'}), 500
 
 
 @bp.route('/<agg_id>/provider', methods=['GET'])
@@ -531,4 +534,5 @@ def get_aggregation_provider(agg_id):
         )
 
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        logger.error("聚合操作失败: %s", safe_exception_details(e))
+        return jsonify({'success': False, 'message': '聚合操作失败'}), 500

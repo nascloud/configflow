@@ -14,6 +14,7 @@ from backend.routes import register_blueprints
 
 
 SCRIPT = Path(__file__).parent / "agents" / "scripts" / "agent.sh"
+GO_INSTALL_SCRIPT = Path(__file__).parent / "agents" / "scripts" / "install-go.sh"
 GO_CLIENT = Path(__file__).parent / "agents" / "go-agent" / "client.go"
 
 
@@ -201,6 +202,63 @@ def test_shell_registers_against_real_flask_and_heartbeats_with_persisted_token(
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_shell_agent_does_not_interpolate_urls_or_request_paths_into_logs():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    forbidden = [
+        'log "注册URL: $register_url"',
+        "'$heartbeat_url'",
+        'log "收到HTTP请求: $method $path"',
+        'log_error "规则集下载失败: $item_url"',
+        'url=$item_url',
+    ]
+    for fragment in forbidden:
+        assert fragment not in source
+
+
+def test_shell_installer_does_not_log_binary_download_url():
+    source = GO_INSTALL_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'URL: $BINARY_URL' not in source
+
+
+def test_shell_restart_logs_never_include_restart_url_or_command():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert 'log "执行重启命令: $RESTART_CMD"' not in source
+    assert 'curl -s' in source
+    assert 'eval "$RESTART_CMD"' in source
+
+
+def test_shell_restart_runtime_logs_only_fixed_descriptions(tmp_path):
+    source = SCRIPT.read_text(encoding="utf-8")
+    functions = source.split("# HTTP 服务器", 1)[0]
+    log_file = tmp_path / "agent.log"
+    functions = functions.replace('LOG_FILE="/var/log/configflow-agent.log"', f'LOG_FILE="{log_file.as_posix()}"')
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "curl").write_text('#!/bin/sh\nprintf "{}\\n200\\n"\n', encoding="utf-8")
+    os.chmod(fake_bin / "curl", 0o755)
+    harness = tmp_path / "restart-probe.sh"
+    harness.write_text(
+        functions + "\n"
+        "RESTART_CMD='https://restart.test/restart?token=url-secret#key=fragment-secret'\n"
+        "restart_service\n"
+        "RESTART_CMD='true # command-secret'\n"
+        "restart_service\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(["sh", str(harness)], env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    logs = log_file.read_text(encoding="utf-8")
+    for secret in ("url-secret", "fragment-secret", "command-secret", "restart.test"):
+        assert secret not in logs
+    assert "执行服务重启操作" in logs
+    assert "检测到 URL，使用 curl 发送重启请求" in logs
+    assert "检测到命令，直接执行" in logs
 
 
 def test_shell_agent_has_portable_syntax():

@@ -10,6 +10,7 @@ import re
 from typing import Dict, Any
 from backend.common.config import get_repository
 from backend.common.profile_context import resolve_profile_id
+from backend.utils.url_utils import safe_url_for_log
 
 
 def get_rules_dir(profile_id: str = None) -> str:
@@ -84,7 +85,7 @@ def save_rule_to_local(rule: Dict[str, Any], profile_id: str = None) -> str:
             return filename
 
         try:
-            logger.info(f"Fetching rule content from {url}")
+            logger.info(f"Fetching rule content from {safe_url_for_log(url)}")
             response = requests.get(url, timeout=10)
             response.raise_for_status()
 
@@ -94,10 +95,10 @@ def save_rule_to_local(rule: Dict[str, Any], profile_id: str = None) -> str:
                 response.text,
             )
 
-            logger.info(f"Downloaded and saved rule from {url} to {filepath}")
+            logger.info(f"Downloaded and saved rule from {safe_url_for_log(url)} to {filepath}")
 
         except requests.RequestException as e:
-            logger.error(f"Failed to download rule from {url}: {e}")
+            logger.error(f"Failed to download rule from {safe_url_for_log(url)}")
             # 下载失败时抛出异常，不创建占位符文件
             raise
 

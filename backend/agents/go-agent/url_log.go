@@ -1,19 +1,16 @@
-package routes
+package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 )
 
-var nonAlphaNumeric = regexp.MustCompile(`[^a-z0-9]`)
+var urlLogNonAlphaNumeric = regexp.MustCompile(`[^a-z0-9]`)
 
 func sensitiveURLQueryKey(key string) bool {
-	normalized := nonAlphaNumeric.ReplaceAllString(strings.ToLower(key), "")
+	normalized := urlLogNonAlphaNumeric.ReplaceAllString(strings.ToLower(key), "")
 	for _, part := range []string{"token", "authorization", "auth", "key", "secret", "password", "passwd", "credential"} {
 		if strings.Contains(normalized, part) {
 			return true
@@ -108,26 +105,7 @@ func (e *safeWrappedError) Unwrap() error { return e.cause }
 
 func safeURLFailure(action, rawURL string, cause error) error {
 	return &safeWrappedError{
-		message: action + " " + redactURLForLog(rawURL),
+		message: fmt.Sprintf("%s %s", action, redactURLForLog(rawURL)),
 		cause:   cause,
-	}
-}
-
-func commandForLog(command string) string {
-	if strings.HasPrefix(command, "http://") || strings.HasPrefix(command, "https://") {
-		return redactURLForLog(command)
-	}
-	return "[COMMAND REDACTED]"
-}
-
-// JsonResponse 是一个辅助函数，用于统一返回JSON响应
-func JsonResponse(w http.ResponseWriter, statusCode int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if data != nil {
-		if statusCode >= 400 {
-			log.Printf("Returning error response: %d", statusCode)
-		}
-		json.NewEncoder(w).Encode(data)
 	}
 }

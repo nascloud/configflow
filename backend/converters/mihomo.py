@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from backend.utils.logger import get_logger
 from backend.utils.proxy_utils import fix_proxy_fields
 from backend.common.profile_context import append_url_query, profile_api_path
+from backend.utils.url_utils import safe_url_for_log
 
 # 获取当前模块的日志记录器
 logger = get_logger(__name__)
@@ -438,7 +439,7 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
     # 使用本地接口而不是原始订阅 URL
     proxy_providers = {}
     logger.info(f"开始生成订阅 proxy-providers，使用本地接口")
-    logger.info(f"Server domain: {effective_base_url}")
+    logger.info(f"Server domain: {safe_url_for_log(effective_base_url)}")
     logger.info(f"Config token: {'已配置' if config_token else '未配置'}")
 
     for sub in config_data.get('subscriptions', []):
@@ -451,7 +452,7 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
             if config_token:
                 sub_url = append_url_query(sub_url, {'token': config_token})
 
-            logger.info(f"订阅 '{sub['name']}' 使用本地接口: {sub_url}")
+            logger.info(f"订阅 '{sub['name']}' 使用本地接口: {safe_url_for_log(sub_url)}")
 
             proxy_providers[sub['name']] = {
                 'type': 'http',
