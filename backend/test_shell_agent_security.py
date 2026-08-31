@@ -16,6 +16,7 @@ from backend.routes import register_blueprints
 SCRIPT = Path(__file__).parent / "agents" / "scripts" / "agent.sh"
 GO_INSTALL_SCRIPT = Path(__file__).parent / "agents" / "scripts" / "install-go.sh"
 GO_CLIENT = Path(__file__).parent / "agents" / "go-agent" / "client.go"
+DOCKER_ENTRYPOINT = Path(__file__).parents[1] / "docker" / "docker-agent-entrypoint-service.sh"
 
 
 def test_shell_agent_heartbeat_sends_real_token_but_only_logs_redacted_token(tmp_path):
@@ -269,3 +270,41 @@ def test_shell_agent_has_portable_syntax():
 def test_go_agent_heartbeat_sends_configured_bearer_token():
     source = GO_CLIENT.read_text(encoding="utf-8")
     assert 'req.Header.Set("Authorization", "Bearer "+c.Token)' in source
+
+
+def test_docker_entrypoint_preserves_registered_agent_identity(tmp_path):
+    source = DOCKER_ENTRYPOINT.read_text(encoding="utf-8")
+    functions = source.split("# 主逻辑", 1)[0]
+    functions = functions.replace(
+        'AGENT_DIR="/opt/configflow-agent"',
+        'AGENT_DIR="$TEST_AGENT_DIR"',
+    )
+    config_dir = tmp_path / "agent-state"
+    config_dir.mkdir()
+    config_file = config_dir / "config-mihomo.json"
+    config_file.write_text(
+        json.dumps({
+            "server_url": "http://old-server",
+            "agent_name": "old-name",
+            "agent_id": "existing-agent-id",
+            "token": "existing-agent-token",
+        }),
+        encoding="utf-8",
+    )
+    harness = tmp_path / "entrypoint-test.sh"
+    harness.write_text(
+        functions
+        + "\nSERVER_URL='http://new-server'\n"
+        + "HEARTBEAT_INTERVAL=5\n"
+        + "generate_agent_config mihomo new-name 18080 /etc/mihomo/config.yaml\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["TEST_AGENT_DIR"] = str(config_dir)
+    result = subprocess.run(["sh", str(harness)], env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(config_file.read_text(encoding="utf-8"))
+    assert saved["agent_id"] == "existing-agent-id"
+    assert saved["token"] == "existing-agent-token"
+    assert saved["server_url"] == "http://new-server"
+    assert saved["agent_name"] == "new-name"
