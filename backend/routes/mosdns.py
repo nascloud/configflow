@@ -364,6 +364,32 @@ def handle_mosdns_cache_settings():
 
 _MAX_RULE_PROXY_BYTES = 5 * 1024 * 1024
 _MAX_RULE_PROXY_REDIRECTS = 3
+_FORBIDDEN_REMOTE_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        # Multicast.
+        '224.0.0.0/4',
+        'ff00::/8',
+        # Carrier-grade NAT.
+        '100.64.0.0/10',
+        # Documentation and benchmarking ranges.
+        '192.0.2.0/24',
+        '198.51.100.0/24',
+        '203.0.113.0/24',
+        '2001:db8::/32',
+        '198.18.0.0/15',
+        '2001:2::/48',
+        # IPv6 unique-local addresses.
+        'fc00::/7',
+        # Link-local, loopback, and unspecified ranges.
+        '169.254.0.0/16',
+        'fe80::/10',
+        '127.0.0.0/8',
+        '::1/128',
+        '0.0.0.0/32',
+        '::/128',
+    )
+)
 
 
 def _validate_remote_url(url: str) -> str:
@@ -382,12 +408,28 @@ def _resolve_remote_url(url: str):
         addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port, type=socket.SOCK_STREAM)}
     except (OSError, ValueError) as exc:
         raise ValueError('Unable to resolve remote host') from exc
-    for address in addresses:
-        ip = ipaddress.ip_address(address)
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified or ip.is_reserved:
-            raise ValueError('Private network targets are not allowed')
     if not addresses:
         raise ValueError('Unable to resolve remote host')
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError as exc:
+            raise ValueError('Unable to resolve remote host') from exc
+        explicitly_forbidden = any(
+            ip.version == network.version and ip in network
+            for network in _FORBIDDEN_REMOTE_NETWORKS
+        )
+        if (
+            explicitly_forbidden
+            or ip.is_multicast
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_loopback
+            or ip.is_unspecified
+            or ip.is_reserved
+            or not ip.is_global
+        ):
+            raise ValueError('Public network targets only')
     return parsed, sorted(addresses)[0]
 
 

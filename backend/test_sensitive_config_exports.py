@@ -442,6 +442,10 @@ def test_rule_proxy_authentication_still_uses_migrated_internal_token(tmp_path, 
     app, repository = _app_with_secrets(tmp_path)
     current_token = repository.get_system()["system_config"]["rule_proxy_token"]
     monkeypatch.setattr(
+        "backend.routes.mosdns.socket.getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    monkeypatch.setattr(
         "backend.routes.mosdns._fetch_remote_content",
         lambda url: "domain:internal-path-still-works",
     )
@@ -503,6 +507,10 @@ def test_legacy_unicode_token_survives_restarts_and_stays_private_across_api_web
     )
     monkeypatch.setattr(
         "backend.routes.mosdns._fetch_remote_content", lambda url: "domain:restart-ok"
+    )
+    monkeypatch.setattr(
+        "backend.routes.mosdns.socket.getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
     )
 
     for restart in range(3):

@@ -293,6 +293,13 @@ def test_auth_enabled_rule_proxy_accepts_valid_config_token(monkeypatch, tmp_pat
     config_module.set_repository(repository)
     monkeypatch.setattr("backend.common.auth.is_auth_enabled", lambda: True)
     monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr(
+        mosdns.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
     monkeypatch.setattr(mosdns, "_fetch_remote_content", lambda url: "domain:example.com")
     app = Flask(__name__)
     register_blueprints(app)
@@ -329,6 +336,13 @@ def test_auth_enabled_rule_proxy_accepts_valid_jwt(monkeypatch, tmp_path):
     config_module.set_repository(repository)
     monkeypatch.setattr("backend.common.auth.is_auth_enabled", lambda: True)
     monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr(
+        mosdns.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
+    )
     monkeypatch.setattr(mosdns, "_fetch_remote_content", lambda url: "domain:example.com")
     app = Flask(__name__)
     register_blueprints(app)
@@ -401,6 +415,88 @@ def test_rule_proxy_rejects_non_http_and_private_targets():
     ):
         with pytest.raises(ValueError):
             mosdns._validate_remote_url(url)
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "224.0.0.1",
+        "ff02::1",
+        "100.64.0.1",
+        "192.0.2.1",
+        "2001:db8::1",
+        "240.0.0.1",
+        "198.18.0.1",
+        "fd00::1",
+        "169.254.1.1",
+        "fe80::1",
+        "127.0.0.1",
+        "::1",
+        "0.0.0.0",
+        "::",
+    ],
+    ids=[
+        "ipv4-multicast",
+        "ipv6-multicast",
+        "cgnat",
+        "ipv4-documentation",
+        "ipv6-documentation",
+        "reserved",
+        "benchmark",
+        "ula",
+        "ipv4-link-local",
+        "ipv6-link-local",
+        "ipv4-loopback",
+        "ipv6-loopback",
+        "ipv4-unspecified",
+        "ipv6-unspecified",
+    ],
+)
+def test_rule_proxy_rejects_every_non_global_dns_result(monkeypatch, address):
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    monkeypatch.setattr(
+        mosdns.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(family, socket.SOCK_STREAM, 6, "", (address, 443))],
+    )
+
+    with pytest.raises(ValueError, match="Public network"):
+        mosdns._resolve_remote_url("https://rules.example/list")
+
+
+def test_rule_proxy_rejects_mixed_public_and_private_dns_results(monkeypatch):
+    monkeypatch.setattr(
+        mosdns.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443)),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Public network"):
+        mosdns._resolve_remote_url("https://rules.example/list")
+
+
+@pytest.mark.parametrize(
+    "address,family",
+    [
+        ("93.184.216.34", socket.AF_INET),
+        ("2606:4700:4700::1111", socket.AF_INET6),
+    ],
+    ids=["public-ipv4", "public-ipv6"],
+)
+def test_rule_proxy_accepts_public_ipv4_and_ipv6(monkeypatch, address, family):
+    monkeypatch.setattr(
+        mosdns.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(family, socket.SOCK_STREAM, 6, "", (address, 443))],
+    )
+
+    parsed, selected = mosdns._resolve_remote_url("https://rules.example/list")
+
+    assert parsed.hostname == "rules.example"
+    assert selected == address
 
 
 def test_rule_proxy_pins_validated_ip_and_preserves_https_identity(monkeypatch):
@@ -478,16 +574,24 @@ class _FakePoolResponse:
         self.released = True
 
 
-def test_rule_proxy_revalidates_and_pins_each_redirect_hop(monkeypatch):
+@pytest.mark.parametrize(
+    "redirect_address",
+    ["224.0.0.1", "ff02::1", "100.64.0.1", "fd00::1"],
+    ids=["ipv4-multicast", "ipv6-multicast", "cgnat", "ula"],
+)
+def test_rule_proxy_revalidates_and_rejects_forbidden_redirect_hop(
+    monkeypatch, redirect_address
+):
+    redirect_family = socket.AF_INET6 if ":" in redirect_address else socket.AF_INET
     resolutions = iter([
         [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
-        [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80))],
+        [(redirect_family, socket.SOCK_STREAM, 6, "", (redirect_address, 80))],
     ])
     monkeypatch.setattr(mosdns.socket, "getaddrinfo", lambda *args, **kwargs: next(resolutions))
-    redirect = _FakePoolResponse(302, {"Location": "http://private.example/rules"})
+    redirect = _FakePoolResponse(302, {"Location": "http://forbidden.example/rules"})
     observed = _install_fake_http_pool(monkeypatch, [redirect])
 
-    with pytest.raises(ValueError, match="Private network"):
+    with pytest.raises(ValueError, match="Public network"):
         mosdns._fetch_remote_content("http://public.example/rules")
 
     assert [entry[0] for entry in observed] == ["93.184.216.34"]
