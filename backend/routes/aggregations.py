@@ -13,7 +13,15 @@ from typing import Dict, Any
 from datetime import datetime
 from flask import request, jsonify, send_file, current_app, Response
 
-from backend.common.config import config_data, save_config, DATA_DIR
+from backend.common.config import (
+    config_data,
+    save_config,
+    update_config_transaction,
+    DATA_DIR,
+    get_repository,
+    get_config,
+)
+from backend.common.profile_context import resolve_profile_id
 from backend.common.auth import validate_token_or_jwt, require_auth
 from backend.routes import subscription_aggregations_bp as bp
 from backend.converters.mihomo import convert_node_to_mihomo
@@ -30,9 +38,6 @@ logger = get_logger(__name__)
 # 聚合 provider 文件存储目录
 AGGREGATION_PROVIDERS_DIR = os.path.join(DATA_DIR, 'providers')
 
-# 确保目录存在
-if not os.path.exists(AGGREGATION_PROVIDERS_DIR):
-    os.makedirs(AGGREGATION_PROVIDERS_DIR)
 
 
 # ============================================================================
@@ -60,6 +65,8 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
     4. 转换为 mihomo 格式
     5. 生成并保存 YAML 文件
     """
+    profile_id = resolve_profile_id()
+    config_data = get_config(profile_id)
     agg_id = aggregation['id']
     agg_name = aggregation['name']
 
@@ -106,7 +113,8 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
                     {
                         'subscription_name': sub['name'],
                         'url': sub.get('url')
-                    }
+                    },
+                    profile_id=profile_id,
                 )
                 if source == 'rendered_yaml':
                     logger.info(f"成功直接复用订阅 URL 返回的 Sub-Store YAML 并更新缓存: '{sub['name']}', 节点数: {len(nodes_list)}")
@@ -123,7 +131,7 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
 
             # 如果从 Sub-Store 获取失败，从本地缓存读取
             if not nodes_list:
-                cache = load_subscription_cache(sub_id)
+                cache = load_subscription_cache(sub_id, profile_id=profile_id)
                 if cache:
                     nodes_list = cache.get('nodes', [])
                     logger.info(f"从本地缓存读取订阅 '{sub['name']}', 节点数: {len(nodes_list)}")
@@ -226,16 +234,18 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
         indent=2
     )
 
-    # 6. 保存到文件
-    file_path = os.path.join(AGGREGATION_PROVIDERS_DIR, f"{agg_id}.yaml")
-    with open(file_path, 'w', encoding='utf-8') as f:
-        f.write(yaml_content)
+    # 6. 保存到当前 profile 的文件
+    file_path = get_repository().write_profile_text(
+        profile_id,
+        os.path.join('providers', f"{agg_id}.yaml"),
+        yaml_content,
+    )
 
     logger.info(f"生成聚合 provider: {agg_name}, {len(proxies)} 个节点")
 
     # 7. 返回文件路径和统计数据（不保存到配置文件）
     return {
-        'file_path': file_path,
+        'file_path': str(file_path),
         'subscription_node_counts': subscription_node_counts,
         'total_count': len(proxies)
     }
@@ -317,11 +327,9 @@ def handle_subscription_aggregations():
         aggregation.pop('subscription_node_counts', None)
         aggregation.pop('loading_count', None)
 
-        if 'subscription_aggregations' not in config_data:
-            config_data['subscription_aggregations'] = []
-
-        config_data['subscription_aggregations'].append(aggregation)
-        save_config()
+        update_config_transaction(
+            lambda profile: profile.setdefault('subscription_aggregations', []).append(aggregation)
+        )
 
         return jsonify({'success': True, 'data': aggregation})
 

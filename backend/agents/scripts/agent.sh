@@ -133,6 +133,34 @@ get_local_ip() {
     fi
 }
 
+# 从 JSON 响应读取顶层字符串字段。优先使用 jq/python，最后用唯一字段回退。
+json_string_field() {
+    local json="$1"
+    local key="$2"
+    if command -v jq >/dev/null 2>&1; then
+        local value=$(printf '%s' "$json" | jq -r --arg key "$key" '.[$key] // empty' 2>/dev/null)
+        if [ -n "$value" ]; then
+            printf '%s' "$value"
+            return
+        fi
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        local value=$(printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get(sys.argv[1], ""); print(v if isinstance(v,str) else "")' "$key" 2>/dev/null)
+        if [ -n "$value" ]; then
+            printf '%s' "$value"
+            return
+        fi
+    fi
+    if command -v python >/dev/null 2>&1; then
+        local value=$(printf '%s' "$json" | python -c 'import json,sys; d=json.load(sys.stdin); v=d.get(sys.argv[1], ""); print(v if isinstance(v,str) else "")' "$key" 2>/dev/null)
+        if [ -n "$value" ]; then
+            printf '%s' "$value"
+            return
+        fi
+    fi
+    printf '%s\n' "$json" | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"
+}
+
 # 注册到服务器
 register_to_server() {
     log "正在向主服务器注册..."
@@ -155,24 +183,40 @@ register_to_server() {
 
     log "注册数据: $json_data"
 
-    # 发送注册请求
-    local response=$(curl -s -w "\n%{http_code}" -X POST "$register_url" \
-        -H "Content-Type: application/json" \
-        -H "Accept: application/json" \
-        -d "$json_data" 2>&1)
+    # 已有令牌时进行真实 Bearer 认证，但日志只记录脱敏占位符。
+    local response=""
+    if [ -n "$TOKEN" ]; then
+        log "注册请求认证: Authorization: Bearer ***"
+        AUTH_HEADER="Authorization: Bearer $TOKEN"
+        response=$(curl -s -w "\n%{http_code}" -X POST "$register_url" \
+            -H "$AUTH_HEADER" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d "$json_data" 2>&1)
+    else
+        response=$(curl -s -w "\n%{http_code}" -X POST "$register_url" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d "$json_data" 2>&1)
+    fi
 
     local http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | sed '$d')
 
     log "注册响应状态码: $http_code"
-    log "注册响应内容: $body"
+    # 响应可能包含首次注册令牌，禁止写入日志。
 
     if [ "$http_code" = "200" ]; then
         # 解析 JSON 响应
         local success=$(echo "$body" | grep -o '"success"[[:space:]]*:[[:space:]]*true')
         if [ -n "$success" ]; then
-            local agent_id=$(echo "$body" | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-            local token=$(echo "$body" | grep -o '"token"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+            local agent_id=$(json_string_field "$body" "id")
+            local token=$(json_string_field "$body" "token")
+
+            # 合法重注册不会再次返回 token；此时必须保留本地现有令牌。
+            if [ -z "$token" ]; then
+                token="$TOKEN"
+            fi
 
             save_config "$agent_id" "$token"
             AGENT_ID="$agent_id"
@@ -226,13 +270,13 @@ send_heartbeat() {
 
     local json_data="{\"version\":\"$AGENT_VERSION\",\"service_status\":\"$service_status\"}"
 
-    # 打印心跳命令（方便调试）
-    local token_prefix=$(echo "$TOKEN" | cut -c1-10)
-    log "发送心跳: curl -X POST '$heartbeat_url' -H 'Authorization: Bearer ${token_prefix}...' -H 'Content-Type: application/json' -d '$json_data'"
+    # 打印脱敏后的心跳命令（不得泄露任何令牌片段）
+    log "发送心跳: curl -X POST '$heartbeat_url' -H 'Authorization: Bearer ***' -H 'Content-Type: application/json' -d '$json_data'"
 
-    # 发送心跳并记录详细结果
+    # 发送心跳并只记录非敏感结果
+    local heartbeat_auth_header="Authorization: Bearer $TOKEN"
     local response=$(curl -s -w "\n%{http_code}" --connect-timeout 5 --max-time 10 -X POST "$heartbeat_url" \
-        -H "Authorization: Bearer $TOKEN" \
+        -H "$heartbeat_auth_header" \
         -H "Content-Type: application/json" \
         -d "$json_data" 2>&1)
 
@@ -244,12 +288,12 @@ send_heartbeat() {
 
     if [ $exit_code -ne 0 ]; then
         log_error "心跳发送失败: curl 退出码 $exit_code"
-        log_error "完整响应: $response"
+        log_error "心跳请求未完成（响应长度: ${#response}）"
     elif [ "$http_code" = "200" ]; then
         log "心跳发送成功 (服务状态: $service_status)"
     else
         log_error "心跳发送失败，HTTP状态码: $http_code"
-        log_error "响应内容: $body"
+        log_error "响应内容未记录（响应长度: ${#body}）"
     fi
 }
 
@@ -279,7 +323,7 @@ restart_service() {
         local http_code=$(echo "$response" | tail -n1)
         local body=$(echo "$response" | sed '$d')
 
-        log "重启请求响应: HTTP状态码=$http_code, 响应内容=$body"
+        log "重启请求响应: HTTP状态码=$http_code, 响应长度=${#body}"
 
         if [ "$http_code" = "200" ] || [ "$http_code" = "204" ]; then
             log "服务重启成功 (URL方式)"
@@ -368,7 +412,7 @@ handle_http_request() {
     log "收到HTTP请求: $method $path"
 
     # 跳过 HTTP 头（改用更兼容的方式）
-    local auth_token=""
+    local auth_token=""""
     local content_length=""
     local line_count=0
     while IFS= read -r header; do
@@ -384,7 +428,7 @@ handle_http_request() {
 
         # 检查 Authorization 头
         if echo "$header" | grep -qi "^Authorization:"; then
-            auth_token=$(echo "$header" | sed 's/Authorization: *Bearer *//i')
+            auth_token=""$(echo "$header" | sed 's/Authorization: *Bearer *//i')
         fi
 
         # 检查 Content-Length
@@ -517,7 +561,7 @@ handle_http_request() {
                             # 如果数量为0，输出调试信息
                             if [ "$count" -eq 0 ]; then
                                 log_error "未能从 ruleset_downloads 中提取到规则集信息"
-                                log "检查 body 前 500 字符: $(echo "$body" | head -c 500)"
+                                log "请求体解析失败（长度: ${#body}）"
                             fi
 
                             # 逐行读取并下载

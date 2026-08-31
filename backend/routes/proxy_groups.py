@@ -5,7 +5,7 @@ from flask import request, jsonify
 
 from backend.routes import proxy_groups_bp
 from backend.common.auth import require_auth
-from backend.common.config import get_config, save_config
+from backend.common.config import get_config, save_config, update_config_transaction
 from backend.utils.subscription_cache import load_subscription_cache
 
 
@@ -72,8 +72,9 @@ def handle_proxy_groups():
 
     elif request.method == 'POST':
         group = request.json
-        config_data['proxy_groups'].append(group)
-        save_config()
+        update_config_transaction(
+            lambda profile: profile.setdefault('proxy_groups', []).append(group)
+        )
         return jsonify({'success': True, 'data': group})
 
 

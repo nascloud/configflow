@@ -6,7 +6,7 @@ import yaml
 
 from backend.routes import subscriptions_bp
 from backend.common.auth import require_auth, validate_token_or_jwt
-from backend.common.config import get_config, save_config
+from backend.common.config import get_config, save_config, update_config_transaction
 from backend.utils.subscription_cache import (
     load_subscription_cache,
     save_subscription_nodes,
@@ -82,8 +82,9 @@ def handle_subscriptions():
 
     elif request.method == 'POST':
         sub = request.json
-        config_data['subscriptions'].append(sub)
-        save_config()
+        update_config_transaction(
+            lambda profile: profile.setdefault('subscriptions', []).append(sub)
+        )
         return jsonify({'success': True, 'data': sub})
 
 

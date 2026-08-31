@@ -6,7 +6,8 @@ import os
 from flask import request, jsonify
 from flask import Blueprint
 from backend.common.auth import require_auth
-from backend.common.config import config_data, save_config, get_config
+from backend.common.config import config_data, save_config, get_config, update_config_transaction
+from backend.common.profile_context import profile_api_path, resolve_profile_id
 from backend.utils.rule_utils import sanitize_rule_name, get_rules_dir, save_rule_to_local
 from backend.utils.logger import get_logger
 
@@ -37,12 +38,11 @@ def handle_rule_library():
             if 'content' in rule:
                 del rule['content']
 
-        config_data.setdefault('rule_library', []).append(rule)
-
         # 保存规则到本地文件
         save_rule_to_local(rule)
-
-        save_config()
+        update_config_transaction(
+            lambda profile: profile.setdefault('rule_library', []).append(rule)
+        )
         return jsonify({'success': True, 'data': rule})
 
 
@@ -148,7 +148,10 @@ def handle_rule_library_item(rule_id):
                             if source_type_changed:
                                 if new_source_type == 'content':
                                     # 使用内容接口的相对路径
-                                    rule_config['url'] = f"/api/rule-library/content/{rule_id}"
+                                    rule_config['url'] = profile_api_path(
+                                        config_data,
+                                        f'/rule-library/content/{rule_id}',
+                                    )
                                 else:
                                     # 使用规则库中的 URL
                                     rule_config['url'] = new_rule.get('url', '')
@@ -389,6 +392,7 @@ def cache_rules():
     try:
         data = request.get_json()
         rule_ids = data.get('rule_ids', [])
+        profile_id = resolve_profile_id()
 
         if not rule_ids:
             return jsonify({'success': False, 'message': '请选择要缓存的规则'}), 400
@@ -407,7 +411,7 @@ def cache_rules():
         def cache_single_rule(rule):
             """缓存单个规则"""
             try:
-                local_path = save_rule_to_local(rule)
+                local_path = save_rule_to_local(rule, profile_id=profile_id)
                 return {
                     'id': rule.get('id', ''),
                     'name': rule.get('name', ''),

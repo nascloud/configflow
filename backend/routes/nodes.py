@@ -4,7 +4,7 @@ import uuid
 
 from backend.routes import nodes_bp
 from backend.common.auth import require_auth
-from backend.common.config import get_config, save_config
+from backend.common.config import get_config, save_config, update_config_transaction
 
 
 def clean_aggregations_node(node_id):
@@ -63,8 +63,9 @@ def handle_nodes():
         # 如果没有 ID，生成一个唯一 ID
         if 'id' not in node:
             node['id'] = f"node_{uuid.uuid4().hex[:8]}"
-        config_data['nodes'].append(node)
-        save_config()
+        update_config_transaction(
+            lambda profile: profile.setdefault('nodes', []).append(node)
+        )
         return jsonify({'success': True, 'data': node})
 
 

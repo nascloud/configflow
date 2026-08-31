@@ -9,6 +9,10 @@ from backend.routes import settings_bp
 from backend.common.auth import require_auth
 from backend.common.utils import generate_random_token
 from backend.common.config import get_config, save_config
+from backend.common.config_export import (
+    contains_internal_rule_proxy_token,
+    prepare_config_export,
+)
 from backend.version import get_version_info
 
 
@@ -75,6 +79,12 @@ def handle_config_token():
             # 如果没有提供令牌且不生成，返回错误
             if not new_token:
                 return jsonify({'success': False, 'message': 'Token is required or set generate=true'}), 400
+
+            if contains_internal_rule_proxy_token(new_token):
+                return jsonify({
+                    'success': False,
+                    'message': 'Config token must not contain an internal rule proxy token',
+                }), 400
 
             # 确保 system_config 存在
             if 'system_config' not in config_data:
@@ -264,9 +274,8 @@ def backup_now():
 
         # 创建临时文件保存配置
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp_file:
-            # 复制配置并脱敏
-            import copy
-            backup_data = copy.deepcopy(config_data)
+            # 复制配置、移除内部能力字段，并脱敏备份凭证
+            backup_data = prepare_config_export(config_data)
             if 'backup' in backup_data and 'webdav_password' in backup_data['backup']:
                 backup_data['backup']['webdav_password'] = '******'
 
