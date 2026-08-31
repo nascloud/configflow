@@ -29,6 +29,18 @@ def test_safe_request_error_details_include_only_type_and_status():
     assert safe_exception_details(error) == "exception_type=HTTPError status=502"
 
 
+def test_direct_subscription_fetch_log_does_not_include_subscription_url(monkeypatch, caplog):
+    monkeypatch.setattr(sub_store_client.requests, "get", lambda *args, **kwargs: _Response())
+
+    with caplog.at_level(logging.INFO):
+        result = sub_store_client._fetch_direct_subscription_yaml(SECRET_URL)
+
+    assert "proxies:" in result
+    for forbidden in ("upstream.test", "dynamic-request-secret", "secret-fragment"):
+        assert forbidden not in caplog.text
+    assert "Direct subscription fetch started" in caplog.text
+
+
 def test_convert_proxy_string_logs_only_event_type_and_length(monkeypatch, caplog):
     proxy_uri = "vless://user-secret@example.test:443?token=converter-secret#fragment-secret"
     monkeypatch.setattr(sub_store_client, "_get_base_url", lambda: "http://sub-store.test")

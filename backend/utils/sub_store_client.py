@@ -75,7 +75,7 @@ def _fetch_direct_subscription_yaml(url):
     headers = {
         'User-Agent': 'clash.meta'
     }
-    logger.info(f"直接拉取订阅 URL: {safe_url_for_log(url)}")
+    logger.info("Direct subscription fetch started")
     resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
 
