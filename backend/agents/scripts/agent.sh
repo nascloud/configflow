@@ -176,7 +176,7 @@ register_to_server() {
     fi
 
     local register_url="${SERVER_URL}/api/agents/register"
-    log "注册URL: $register_url"
+    log "准备发送注册请求"
 
     # 构建 JSON 数据
     local json_data="{\"name\":\"$AGENT_NAME\",\"host\":\"$local_ip\",\"port\":$AGENT_PORT,\"service_type\":\"$SERVICE_TYPE\",\"version\":\"$AGENT_VERSION\"}"
@@ -271,7 +271,7 @@ send_heartbeat() {
     local json_data="{\"version\":\"$AGENT_VERSION\",\"service_status\":\"$service_status\"}"
 
     # 打印脱敏后的心跳命令（不得泄露任何令牌片段）
-    log "发送心跳: curl -X POST '$heartbeat_url' -H 'Authorization: Bearer ***' -H 'Content-Type: application/json' -d '$json_data'"
+    log "发送心跳请求 (Authorization: Bearer ***)"
 
     # 发送心跳并只记录非敏感结果
     local heartbeat_auth_header="Authorization: Bearer $TOKEN"
@@ -313,7 +313,7 @@ backup_config() {
 
 # 重启服务
 restart_service() {
-    log "执行重启命令: $RESTART_CMD"
+    log "执行服务重启操作"
 
     # 判断是 URL 还是命令
     if echo "$RESTART_CMD" | grep -qE '^https?://'; then
@@ -335,8 +335,8 @@ restart_service() {
     else
         # 命令方式：直接执行命令
         log "检测到命令，直接执行"
-        # 将输出直接写入日志文件，避免污染 HTTP 响应
-        if eval "$RESTART_CMD" >> "$LOG_FILE" 2>&1; then
+        # 丢弃命令输出，日志只保留固定描述，避免命令输出泄露敏感信息
+        if eval "$RESTART_CMD" >/dev/null 2>&1; then
             log "服务重启成功 (命令方式)"
             return 0
         else
@@ -409,7 +409,7 @@ handle_http_request() {
     local path=$(echo "$request_line" | awk '{print $2}')
 
     # 记录收到的请求
-    log "收到HTTP请求: $method $path"
+    log "收到HTTP请求: $method"
 
     # 跳过 HTTP 头（改用更兼容的方式）
     local auth_token=""""
@@ -582,10 +582,10 @@ handle_http_request() {
                                         log "规则集下载成功: $full_path"
                                         download_count=$((download_count + 1))
                                     else
-                                        log_error "规则集下载失败: $item_url"
+                                        log_error "规则集下载失败: $item_name"
                                     fi
                                 else
-                                    log_error "规则集信息不完整: name=$item_name, url=$item_url, path=$item_path"
+                                    log_error "规则集信息不完整: name=$item_name, path=$item_path"
                                 fi
 
                                 i=$((i + 1))

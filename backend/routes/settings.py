@@ -14,6 +14,7 @@ from backend.common.config_export import (
     prepare_config_export,
 )
 from backend.version import get_version_info
+from backend.utils.url_utils import safe_url_for_log
 
 
 @settings_bp.route('/server-domain', methods=['GET', 'POST'])
@@ -315,7 +316,7 @@ def handle_sub_store_url():
 
             config_data['system_config']['sub_store_url'] = new_url
 
-            current_app.logger.info(f"Updated Sub-Store URL to {new_url}")
+            current_app.logger.info(f"Updated Sub-Store URL to {safe_url_for_log(new_url)}")
 
             save_config()
             return jsonify({

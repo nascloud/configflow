@@ -12,6 +12,7 @@ from backend.routes import mosdns_bp as bp
 from backend.common.auth import require_auth
 from backend.common.config import config_data, save_config
 from backend.utils.rule_utils import get_rules_dir, sanitize_rule_name
+from backend.utils.url_utils import safe_exception_details, safe_url_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -562,10 +563,14 @@ def mosdns_rule_proxy():
             original_content = _fetch_remote_content(fetch_url)
 
         except requests.exceptions.RequestException as e:
-            logger.warning(f"远程拉取规则失败，尝试使用本地缓存兜底: {original_url}, 错误: {e}")
+            logger.warning(
+                "远程拉取规则失败，尝试使用本地缓存兜底: %s %s",
+                safe_url_for_log(original_url),
+                safe_exception_details(e),
+            )
             original_content = _load_cached_rule_content_for_url(original_url)
             if not original_content:
-                return jsonify({'success': False, 'message': f'Failed to fetch original URL: {str(e)}'}), 500
+                return jsonify({'success': False, 'message': 'Failed to fetch original URL'}), 500
 
         # 检测内容格式
         # 如果内容已经是 mosdns 格式，则直接返回
@@ -690,6 +695,8 @@ def mosdns_rule_proxy():
         return converted_content, 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
     except ValueError as e:
-        return jsonify({'success': False, 'message': str(e)}), 400
+        logger.warning("MosDNS rule-proxy rejected request: %s", safe_exception_details(e))
+        return jsonify({'success': False, 'message': 'Invalid remote URL'}), 400
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        logger.error("MosDNS rule-proxy request failed: %s", safe_exception_details(e))
+        return jsonify({'success': False, 'message': 'Failed to process rule proxy request'}), 500
