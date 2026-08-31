@@ -4,6 +4,7 @@ from flask import jsonify, request
 
 from backend.common.auth import require_auth
 from backend.common.config import get_repository
+from backend.common.config_export import sanitize_config_for_output
 from backend.routes import profiles_bp
 
 
@@ -48,7 +49,7 @@ def activate_profile(profile_id):
 @profiles_bp.route('/<profile_id>/export', methods=['GET'])
 @require_auth
 def export_profile(profile_id):
-    response = jsonify(get_repository().export_profile(profile_id))
+    response = jsonify(sanitize_config_for_output(get_repository().export_profile(profile_id)))
     response.headers['Content-Disposition'] = f'attachment; filename={profile_id}.json'
     return response
 

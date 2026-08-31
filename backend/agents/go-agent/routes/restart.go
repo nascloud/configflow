@@ -2,11 +2,11 @@ package routes
 
 import (
 	"fmt"
-	"net/http"
+	"io"
 	"log"
+	"net/http"
 	"os/exec"
 	"strings"
-	"io"
 )
 
 // RestartService 执行服务重启命令，返回命令输出。
@@ -63,10 +63,10 @@ func RestartHandler(cfg *Config) http.HandlerFunc {
 				if startErr != nil {
 					log.Printf("Start command also failed: %v\nOutput: %s", startErr, string(startOutput))
 					JsonResponse(w, http.StatusInternalServerError, map[string]interface{}{
-						"success": false,
-						"message": "Restart and start both failed",
+						"success":        false,
+						"message":        "Restart and start both failed",
 						"restart_output": string(output),
-						"start_output": string(startOutput),
+						"start_output":   string(startOutput),
 					})
 					return
 				}
@@ -88,7 +88,7 @@ func RestartHandler(cfg *Config) http.HandlerFunc {
 // executeURLCommand 执行URL格式的命令
 func executeURLCommand(command string) ([]byte, error) {
 	log.Printf("Executing command: %s", command)
-	
+
 	// 检查是否为URL格式的命令
 	if strings.HasPrefix(command, "http://") || strings.HasPrefix(command, "https://") {
 		log.Printf("Executing URL command: %s", command)
@@ -99,32 +99,32 @@ func executeURLCommand(command string) ([]byte, error) {
 			return nil, fmt.Errorf("failed to execute URL command: %w", err)
 		}
 		defer resp.Body.Close()
-		
+
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			log.Printf("Failed to read response: %v", err)
 			return nil, fmt.Errorf("failed to read response: %w", err)
 		}
-		
+
 		if resp.StatusCode >= 400 {
-			log.Printf("URL command failed with status %d: %s", resp.StatusCode, string(body))
-			return body, fmt.Errorf("URL command failed with status %d: %s", resp.StatusCode, string(body))
+			log.Printf("URL command failed with status %d", resp.StatusCode)
+			return body, fmt.Errorf("URL command failed with status %d", resp.StatusCode)
 		}
-		
+
 		log.Printf("URL command executed successfully")
 		return body, nil
 	}
-	
+
 	// 否则执行普通的shell命令
 	log.Printf("Executing shell command: %s", command)
-	
+
 	// 特殊处理 supervisorctl 命令，确保使用正确的配置文件路径
 	if strings.Contains(command, "supervisorctl") && !strings.Contains(command, "-c") {
 		// 在命令中添加配置文件路径
 		command = strings.Replace(command, "supervisorctl", "supervisorctl -c /etc/supervisor/supervisord.conf", 1)
 		log.Printf("Modified supervisorctl command: %s", command)
 	}
-	
+
 	cmd := exec.Command("sh", "-c", command)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

@@ -1,13 +1,13 @@
 """配置管理路由"""
 import os
 import json
-import copy
 import io
 from flask import request, jsonify, send_file
 
 from backend.routes import config_bp
 from backend.common.auth import require_auth, validate_token_or_jwt
 from backend.common.config import get_config, save_config
+from backend.common.config_export import prepare_config_export
 from backend.common.profile_context import resolve_profile_id
 from backend.utils.logger import get_logger
 
@@ -146,42 +146,15 @@ def export_config():
     """导出配置为 JSON"""
     config_data = get_config()
 
-    # 检查是否是脱敏导出
     desensitize = request.args.get('desensitize', 'false').lower() == 'true'
-
-    if desensitize:
-        # 脱敏导出：移除敏感信息
-        # 深拷贝配置数据，避免影响原始数据
-        desensitized_data = copy.deepcopy(config_data)
-        desensitized_data.pop('profile_id', None)
-
-        # 脱敏订阅的 URL
-        for sub in desensitized_data.get('subscriptions', []):
-            sub['url'] = '***已脱敏***'
-
-        # 脱敏节点的 proxy_string
-        for node in desensitized_data.get('nodes', []):
-            if 'proxy_string' in node:
-                node['proxy_string'] = '***已脱敏***'
-
-        payload = json.dumps(desensitized_data, ensure_ascii=False, indent=2).encode('utf-8')
-        return send_file(
-            io.BytesIO(payload),
-            as_attachment=True,
-            download_name='config_desensitized.json',
-            mimetype='application/json',
-        )
-    else:
-        # 正常导出：旧接口继续返回完整配置，但数据来源改为当前 Profile。
-        export_data = copy.deepcopy(config_data)
-        export_data.pop('profile_id', None)
-        payload = json.dumps(export_data, ensure_ascii=False, indent=2).encode('utf-8')
-        return send_file(
-            io.BytesIO(payload),
-            as_attachment=True,
-            download_name='config.json',
-            mimetype='application/json',
-        )
+    export_data = prepare_config_export(config_data, desensitize=desensitize)
+    payload = json.dumps(export_data, ensure_ascii=False, indent=2).encode('utf-8')
+    return send_file(
+        io.BytesIO(payload),
+        as_attachment=True,
+        download_name='config_desensitized.json' if desensitize else 'config.json',
+        mimetype='application/json',
+    )
 
 
 @config_bp.route('/import', methods=['POST'])

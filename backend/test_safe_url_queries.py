@@ -17,6 +17,7 @@ def _provider_config(profile_id=None):
         "system_config": {
             "server_domain": "https://config.test",
             "config_token": SPECIAL_TOKEN,
+            "rule_proxy_token": "internal /&?",
         },
         "subscriptions": [{"id": "sub-1", "name": "Primary", "enabled": True}],
         "subscription_aggregations": [{
@@ -101,4 +102,4 @@ def test_mosdns_rule_proxy_url_round_trips_remote_url_and_special_token(profile_
 
     generated_url = get_mosdns_ruleset_downloads(config)[0]["url"]
 
-    _assert_query(generated_url, url=remote_url, token=SPECIAL_TOKEN)
+    _assert_query(generated_url, url=remote_url, token="internal /&?")

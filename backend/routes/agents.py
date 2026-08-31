@@ -2,6 +2,9 @@
 
 提供 Agent 的注册、管理、配置推送等功能
 """
+import hmac
+import json
+import math
 import os
 from flask import request, jsonify, send_file
 
@@ -16,7 +19,7 @@ from backend.converters.mihomo import generate_mihomo_config, get_mihomo_provide
 from backend.converters.mosdns import generate_mosdns_config, get_mosdns_ruleset_downloads, get_mosdns_custom_files
 from backend.converters.surge import generate_surge_config
 from backend.routes import agents_bp as bp
-from backend.common.auth import require_auth
+from backend.common.auth import is_token_within_length, parse_bearer_token, require_auth
 from backend.common.config import get_config
 from backend.common.config_repository import ProfileRepositoryError
 from backend.common.agent_manager import get_agent_manager
@@ -28,6 +31,90 @@ logger = get_logger(__name__)
 # 支持「配置落盘后由 Agent 自行重启」的最低 Agent 版本。
 # 更早的版本不认识 restart_after_update 字段，只能由服务端触发重启。
 _SELF_RESTART_MIN_VERSION = "1.1.0-go"
+_HEARTBEAT_MAX_CONTENT_LENGTH = 32 * 1024
+_HEARTBEAT_FIELDS = frozenset({'version', 'config_version', 'service_status', 'system_metrics'})
+_METRIC_FIELDS = {
+    'cpu': frozenset({'usage_percent', 'core_count'}),
+    'memory': frozenset({'total', 'used', 'available', 'used_percent'}),
+    'disk': frozenset({'total', 'used', 'free', 'used_percent'}),
+    'network': frozenset({'bytes_sent', 'bytes_recv', 'speed_sent', 'speed_recv'}),
+}
+_PERCENT_FIELDS = frozenset({'usage_percent', 'used_percent'})
+_REGISTRATION_LOG_FIELDS = ('name', 'host', 'port', 'service_type', 'version')
+_REGISTRATION_LOG_VALUE_MAX_LENGTH = 128
+
+
+def _bounded_log_value(value):
+    """Return a bounded scalar safe for a single-line registration log."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    text = str(value)
+    control_index = next(
+        (index for index, char in enumerate(text) if not char.isprintable()),
+        len(text),
+    )
+    return text[:control_index][:_REGISTRATION_LOG_VALUE_MAX_LENGTH]
+
+
+def _registration_log_fields(agent_data):
+    """Select only explicitly public, scalar registration fields for logging."""
+    safe_fields = {}
+    for field in _REGISTRATION_LOG_FIELDS:
+        if field not in agent_data:
+            continue
+        safe_value = _bounded_log_value(agent_data[field])
+        if safe_value is not None:
+            safe_fields[field] = safe_value
+    return safe_fields
+
+
+def _valid_metric_number(field, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return False
+    if field in _PERCENT_FIELDS:
+        return 0 <= value <= 100
+    if not isinstance(value, int) or value < 0:
+        return False
+    return value <= (65536 if field == 'core_count' else (2 ** 64 - 1))
+
+
+def _validate_system_metrics(metrics):
+    if not isinstance(metrics, dict) or set(metrics) - (set(_METRIC_FIELDS) | {'collected_at'}):
+        return False
+    if len(json.dumps(metrics, ensure_ascii=False).encode('utf-8')) > 16 * 1024:
+        return False
+    collected_at = metrics.get('collected_at')
+    if collected_at is not None and (not isinstance(collected_at, str) or len(collected_at) > 64):
+        return False
+    for section, allowed_fields in _METRIC_FIELDS.items():
+        if section not in metrics:
+            continue
+        values = metrics[section]
+        if not isinstance(values, dict) or set(values) - allowed_fields:
+            return False
+        if any(not _valid_metric_number(field, value) for field, value in values.items()):
+            return False
+    return True
+
+
+def _validate_heartbeat_payload(payload):
+    if not isinstance(payload, dict) or set(payload) - _HEARTBEAT_FIELDS:
+        return False
+    for field, max_length in (('version', 128), ('config_version', 128), ('service_status', 64)):
+        if field in payload:
+            value = payload[field]
+            if not isinstance(value, str) or len(value) > max_length:
+                return False
+    return 'system_metrics' not in payload or _validate_system_metrics(payload['system_metrics'])
+
+
+def _constant_time_ascii_equal(provided, expected):
+    if not isinstance(provided, str) or not isinstance(expected, str):
+        return False
+    try:
+        return hmac.compare_digest(provided.encode('ascii'), expected.encode('ascii'))
+    except UnicodeEncodeError:
+        return False
 
 
 def _supports_self_restart(agent_version: str) -> bool:
@@ -35,6 +122,11 @@ def _supports_self_restart(agent_version: str) -> bool:
     if not agent_version:
         return False
     return compare_versions(agent_version, _SELF_RESTART_MIN_VERSION) >= 0
+
+
+def _public_agent(agent):
+    """Return an API-safe copy of an Agent without its capability token."""
+    return {key: value for key, value in agent.items() if key != 'token'}
 
 
 @bp.route('/install-script', methods=['GET'])
@@ -139,10 +231,6 @@ def register_agent():
     try:
         agent_manager = get_agent_manager()
 
-        # 记录请求信息以便调试
-        logger.info("收到Agent注册请求")
-        logger.info(f"Content-Type: {request.content_type}")
-
         # 获取 JSON 数据
         agent_data = request.get_json(force=True, silent=False)
 
@@ -155,13 +243,11 @@ def register_agent():
         if registration_key:
             provided_key = agent_data.get('registration_key', '')
             if provided_key != registration_key:
-                logger.warning(f"Agent 注册被拒绝：注册密钥不匹配（来源 IP: {request.remote_addr}）")
+                logger.warning("Agent 注册被拒绝：注册密钥不匹配")
                 return jsonify({'success': False, 'message': 'Invalid registration key'}), 403
 
         # 移除注册密钥（不存入配置，并先于日志记录以防止泄露）
         agent_data.pop('registration_key', None)
-
-        logger.info(f"Agent数据: {agent_data}")
 
         # 获取客户端真实 IP（用于 Docker 容器等场景）
         agent_host = agent_data.get('host', '')
@@ -185,18 +271,26 @@ def register_agent():
 
         # 如果是 Docker 容器 IP 或没有提供 host，使用客户端 IP
         if not agent_host or is_docker_ip:
-            logger.info(f"Agent提供的host为Docker容器IP或为空({agent_host})，使用客户端IP: {client_ip}")
             agent_data['host'] = client_ip
-        else:
-            logger.info(f"保留Agent提供的host: {agent_host}")
 
-        # 注册 Agent
-        result = agent_manager.register_agent(agent_data)
+        logger.info("Agent注册字段: %s", _registration_log_fields(agent_data))
+
+        # 已有 Agent 的重注册必须使用其当前能力令牌。注册密钥仅控制首次
+        # 注册资格，不能替代已有 Agent 的令牌认证。
+        existing_token = parse_bearer_token(
+            request.headers.get('Authorization', '')
+        )
+
+        # host 已按真实客户端 IP 归一化后，才允许 Manager 做 name/host 匹配。
+        result = agent_manager.register_agent(agent_data, existing_token=existing_token)
 
         response_data = {'success': True, **result}
         logger.info(f"注册成功: {result.get('id')}")
 
         return jsonify(response_data), 200
+
+    except PermissionError:
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 401
 
     except Exception as e:
         import traceback
@@ -211,14 +305,37 @@ def agent_heartbeat(agent_id):
     """Agent 心跳"""
     try:
         agent_manager = get_agent_manager()
-        heartbeat_data = request.json or {}
+        agent = agent_manager.get_agent_by_id(agent_id)
+        provided_token = parse_bearer_token(
+            request.headers.get('Authorization', '')
+        )
+        expected_token = agent.get('token', '') if agent else ''
+        if (
+            provided_token is None
+            or not isinstance(expected_token, str)
+            or not expected_token
+            or not _constant_time_ascii_equal(provided_token, expected_token)
+        ):
+            return jsonify({'success': False, 'message': 'Unauthorized'}), 401
+
+        if request.content_length is not None and request.content_length > _HEARTBEAT_MAX_CONTENT_LENGTH:
+            return jsonify({'success': False, 'message': 'Request body too large'}), 413
+        raw_body = request.stream.read(_HEARTBEAT_MAX_CONTENT_LENGTH + 1)
+        if len(raw_body) > _HEARTBEAT_MAX_CONTENT_LENGTH:
+            return jsonify({'success': False, 'message': 'Request body too large'}), 413
+        if not request.is_json:
+            return jsonify({'success': False, 'message': 'Invalid heartbeat data'}), 400
+        try:
+            heartbeat_data = json.loads(raw_body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return jsonify({'success': False, 'message': 'Invalid heartbeat data'}), 400
+        if not _validate_heartbeat_payload(heartbeat_data):
+            return jsonify({'success': False, 'message': 'Invalid heartbeat data'}), 400
+
         result = agent_manager.update_heartbeat(agent_id, heartbeat_data)
         if result:
-            # 心跳信息是临时状态，不需要持久化到配置文件
-            # 只在内存中更新即可
             return jsonify({'success': True}), 200
-        else:
-            return jsonify({'success': False, 'message': 'Agent not found'}), 404
+        return jsonify({'success': False, 'message': 'Agent not found'}), 404
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -229,7 +346,7 @@ def get_agent_config(agent_id):
     try:
         # 从查询参数获取 token
         token = request.args.get('token')
-        if not token:
+        if not is_token_within_length(token):
             return jsonify({'success': False, 'message': 'Token required'}), 401
 
         agent_manager = get_agent_manager()
@@ -293,7 +410,7 @@ def handle_agents():
     agent_manager = get_agent_manager()
 
     if request.method == 'GET':
-        agents = agent_manager.get_all_agents()
+        agents = [_public_agent(agent) for agent in agent_manager.get_all_agents()]
         # 为每个 agent 添加 has_update 字段
         for agent in agents:
             current_version = agent.get('version', '0.0.0')
@@ -319,7 +436,7 @@ def handle_agent_item(agent_id):
     if request.method == 'GET':
         agent = agent_manager.get_agent_by_id(agent_id)
         if agent:
-            return jsonify(agent), 200
+            return jsonify(_public_agent(agent)), 200
         else:
             return jsonify({'success': False, 'message': 'Agent not found'}), 404
 

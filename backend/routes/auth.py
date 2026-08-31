@@ -3,7 +3,7 @@ import re
 from flask import request, jsonify
 from backend.routes import auth_bp
 from backend.common.internal_call import is_internal_call
-from backend.common.auth import is_auth_enabled, generate_token, verify_token, require_auth, ADMIN_USERNAME, ADMIN_PASSWORD, JWT_EXPIRATION_HOURS
+from backend.common.auth import is_auth_enabled, generate_token, parse_bearer_token, verify_token, require_auth, ADMIN_USERNAME, ADMIN_PASSWORD, JWT_EXPIRATION_HOURS
 
 @auth_bp.route('/status', methods=['GET'])
 def auth_status():
@@ -51,10 +51,10 @@ def setup_before_request(app):
         is_public = is_public or any(re.match(pattern, request.path) for pattern in profile_public_patterns)
         if is_public:
             return None
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
+        token = parse_bearer_token(request.headers.get('Authorization'))
+        if token is None:
             return jsonify({'success': False, 'message': 'Unauthorized'}), 401
-        payload = verify_token(auth_header.split(' ', 1)[1])
+        payload = verify_token(token)
         if not payload or (isinstance(payload, dict) and 'error' in payload):
             return jsonify({'success': False, 'message': 'Invalid or expired token'}), 401
         return None

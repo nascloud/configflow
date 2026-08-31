@@ -67,6 +67,38 @@ def install_profile_context(app) -> None:
         g.configflow_profile_id = resolve_profile_id()
 
     @app.after_request
+    def _sanitize_external_json(response):
+        """Scrub ordinary JSON responses without touching internal return objects."""
+        from backend.common.config_export import sanitize_external_payload
+
+        endpoint = request.endpoint or ""
+        if (
+            response.is_json
+            and not response.direct_passthrough
+        ):
+            try:
+                payload = response.get_json(silent=True)
+            except RecursionError:
+                # The standard decoder can overflow before the iterative
+                # sanitizer sees an adversarially deep raw JSON response.
+                response.set_data(app.json.dumps("[REDACTED]"))
+                return response
+            if payload is not None:
+                sanitized = sanitize_external_payload(payload)
+                # A successful self-registration may disclose exactly one top-level
+                # credential. Nested Agent records and every other API stay scrubbed.
+                if (
+                    endpoint == "agents.register_agent"
+                    and 200 <= response.status_code < 300
+                    and isinstance(payload, dict)
+                    and payload.get("success") is True
+                    and isinstance(payload.get("token"), str)
+                ):
+                    sanitized["token"] = payload["token"]
+                response.set_data(app.json.dumps(sanitized))
+        return response
+
+    @app.after_request
     def _add_profile_header(response):
         from backend.common.config import reset_config_context
 

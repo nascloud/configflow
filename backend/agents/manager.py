@@ -1,10 +1,21 @@
 """Agent 管理器"""
 import secrets
 import hashlib
+import hmac
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 import requests
 from .metrics_history import MetricsHistory
+
+
+def _constant_time_ascii_equal(provided: Any, expected: Any) -> bool:
+    """Compare credentials without timing leaks; non-ASCII is simply invalid."""
+    if not isinstance(provided, str) or not isinstance(expected, str):
+        return False
+    try:
+        return hmac.compare_digest(provided.encode('ascii'), expected.encode('ascii'))
+    except UnicodeEncodeError:
+        return False
 
 
 class AgentManager:
@@ -36,7 +47,11 @@ class AgentManager:
         self.repository.update_system_transaction(update)
         return result.get('value')
 
-    def register_agent(self, agent_data: Dict[str, Any]) -> Dict[str, Any]:
+    def register_agent(
+        self,
+        agent_data: Dict[str, Any],
+        existing_token: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         注册新的 Agent
 
@@ -47,7 +62,7 @@ class AgentManager:
             agent_data: Agent 信息，包含 name, host, port, service_type
 
         Returns:
-            Dict: 包含 id 和 token 的注册信息
+            Dict: 新 Agent 包含一次性返回的 token；已有 Agent 只返回非敏感状态
         """
         agent_name = agent_data.get('name', 'Unnamed Agent')
         agent_host = agent_data.get('host', '')
@@ -62,6 +77,8 @@ class AgentManager:
                 None,
             )
             if existing_agent:
+                if not _constant_time_ascii_equal(existing_token, existing_agent.get('token')):
+                    raise PermissionError('Unauthorized')
                 agent_id = existing_agent['id']
                 token = existing_agent['token']
                 updated_agent = {
@@ -82,7 +99,7 @@ class AgentManager:
                     'updated_at': datetime.now().isoformat(),
                 }
                 agents[agents.index(existing_agent)] = updated_agent
-                return {'id': agent_id, 'token': token, 'agent': updated_agent}
+                return {'id': agent_id, 'status': 'online', 'is_new': False}
 
             agent_id = f"agent_{int(datetime.now().timestamp() * 1000)}_{secrets.token_hex(3)}"
             token = secrets.token_urlsafe(24)
@@ -103,7 +120,12 @@ class AgentManager:
                 'created_at': datetime.now().isoformat(),
             }
             agents.append(agent)
-            return {'id': agent_id, 'token': token, 'agent': agent}
+            return {
+                'id': agent_id,
+                'status': 'online',
+                'is_new': True,
+                'token': token,
+            }
 
         return self._update_agents(register, requested_profile_id)
 

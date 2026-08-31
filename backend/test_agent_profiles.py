@@ -21,10 +21,12 @@ def test_agents_are_system_scoped_and_bind_profiles(tmp_path, monkeypatch):
     app, repository = setup_agent_app(tmp_path, monkeypatch)
     manager = init_agent_manager()
 
-    legacy = manager.register_agent({"name": "legacy", "host": "127.0.0.1"})["agent"]
-    bound = manager.register_agent(
+    legacy_result = manager.register_agent({"name": "legacy", "host": "127.0.0.1"})
+    legacy = next(agent for agent in repository.get_system()["agents"] if agent["id"] == legacy_result["id"])
+    bound_result = manager.register_agent(
         {"name": "bound", "host": "127.0.0.2", "profile_id": "alpha"}
-    )["agent"]
+    )
+    bound = next(agent for agent in repository.get_system()["agents"] if agent["id"] == bound_result["id"])
     config_module.save_config()
 
     agents = repository.get_system()["agents"]

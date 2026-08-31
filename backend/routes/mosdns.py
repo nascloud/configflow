@@ -450,14 +450,30 @@ def _fetch_remote_content(url: str) -> str:
 
 
 def _require_rule_proxy_auth():
-    from backend.common.auth import verify_token
-    config_token = config_data.get('system_config', {}).get('config_token', '')
+    from backend.common.auth import is_token_within_length, parse_bearer_token, verify_token
+    from backend.common.config import get_repository
+    system_config = config_data.get('system_config', {})
+    config_token = system_config.get('config_token', '')
+    rule_proxy_token = system_config.get('rule_proxy_token', '')
     header = request.headers.get('Authorization', '')
-    if header.startswith('Bearer '):
-        payload = verify_token(header.split(' ', 1)[1])
+    bearer = parse_bearer_token(header) or ''
+    internal_tokens = get_repository().rule_proxy_tokens_for_sanitization()
+    retired_tokens = internal_tokens - {rule_proxy_token}
+    if bearer in retired_tokens:
+        return False
+    if bearer:
+        payload = verify_token(bearer)
         if payload and not (isinstance(payload, dict) and 'error' in payload):
             return True
-    return bool(config_token and request.args.get('token') == config_token)
+    url_token = request.args.get('token', '')
+    if not is_token_within_length(url_token):
+        url_token = ''
+    if url_token in retired_tokens:
+        return False
+    return bool(
+        (rule_proxy_token and url_token == rule_proxy_token)
+        or (config_token and url_token == config_token)
+    )
 
 
 @bp.route('/rule-proxy', methods=['GET'])

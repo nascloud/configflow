@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import copy
+import errno
 import json
+import math
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -170,6 +174,11 @@ class ProfileRepository:
     )
     SYSTEM_FIELDS = frozenset({"schema_version", "active_profile_id", "profiles", "agents", "system_config", "backup", "profile_id"})
     DERIVED_DIRS = ("subscribes", "providers", "rules", "generated")
+    LOCK_TIMEOUT_ENV = "CONFIGFLOW_LOCK_TIMEOUT_SECONDS"
+    DEFAULT_LOCK_TIMEOUT_SECONDS = 300.0
+    MIN_LOCK_TIMEOUT_SECONDS = 0.1
+    MAX_LOCK_TIMEOUT_SECONDS = 3600.0
+    LOCK_POLL_INTERVAL_SECONDS = 0.05
 
     def __init__(
         self,
@@ -182,6 +191,7 @@ class ProfileRepository:
         self.system_file = self.data_dir / self.SYSTEM_FILE_NAME
         self.legacy_file = self.data_dir / self.LEGACY_FILE_NAME
         self.migrations_dir = self.data_dir / "migrations"
+        self.initialization_lock_file = self.data_dir / ".profile-repository.initialize.lock"
         self._default_config_factory = default_config_factory
         self._initial_config_factory = initial_config_factory
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -210,11 +220,63 @@ class ProfileRepository:
                 }
             ],
             "agents": [],
-            "system_config": {"server_domain": "", "github_proxy_domain": ""},
+            "system_config": {
+                "server_domain": "",
+                "github_proxy_domain": "",
+                "retired_rule_proxy_tokens": [],
+            },
             "backup": {},
         }
 
+    def _ensure_rule_proxy_token(self, system: Dict[str, Any]) -> bool:
+        system_config = system.setdefault("system_config", {})
+        retired = system_config.get("retired_rule_proxy_tokens")
+        normalized_retired = []
+        if isinstance(retired, list):
+            for value in retired:
+                if isinstance(value, str) and value and value not in normalized_retired:
+                    normalized_retired.append(value)
+        if retired != normalized_retired:
+            system_config["retired_rule_proxy_tokens"] = normalized_retired
+            changed = True
+        else:
+            changed = False
+        token = system_config.get("rule_proxy_token")
+        config_token = system_config.get("config_token")
+        if isinstance(token, str) and token:
+            if token != config_token:
+                return changed
+            if token not in normalized_retired:
+                normalized_retired.append(token)
+                system_config["retired_rule_proxy_tokens"] = normalized_retired
+                changed = True
+        while True:
+            new_token = secrets.token_urlsafe(32)
+            if new_token and new_token != config_token:
+                break
+        system_config["rule_proxy_token"] = new_token
+        return True
+
+    def rule_proxy_tokens_for_sanitization(self) -> set[str]:
+        """Return persisted current and retired tokens for output sanitization only."""
+        system_config = self.get_system().get("system_config", {})
+        if not isinstance(system_config, dict):
+            return set()
+        values = [system_config.get("rule_proxy_token")]
+        retired = system_config.get("retired_rule_proxy_tokens", [])
+        if isinstance(retired, list):
+            values.extend(retired)
+        return {value for value in values if isinstance(value, str) and value}
+
     def _initialize(self) -> None:
+        # Initialization is one transaction across system detection, legacy
+        # snapshotting, profile staging/rename, and the system.json commit.
+        # A waiter deliberately re-runs every state check after acquiring the
+        # lock instead of acting on observations made before another process.
+        with self._lock(self.initialization_lock_file):
+            self._initialize_locked()
+
+    def _initialize_locked(self) -> None:
         if self.system_file.exists():
             system = self._read_json(self.system_file)
             self._normalize_system(system)
@@ -245,6 +307,7 @@ class ProfileRepository:
         for agent in system.get("agents", []):
             if isinstance(agent, dict):
                 agent.setdefault("profile_id", self.DEFAULT_PROFILE_ID)
+        self._ensure_rule_proxy_token(system)
         initial_config = {
             key: copy.deepcopy(value)
             for key, value in initial_config.items()
@@ -309,6 +372,8 @@ class ProfileRepository:
         if not isinstance(system.get("system_config"), dict):
             system["system_config"] = {}
             changed = True
+        if self._ensure_rule_proxy_token(system):
+            changed = True
         if not isinstance(system.get("backup"), dict):
             system["backup"] = {}
             changed = True
@@ -337,10 +402,7 @@ class ProfileRepository:
 
     def _migrate_legacy(self) -> None:
         legacy_data = self._read_json(self.legacy_file)
-        migration_dir = self.migrations_dir / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        while migration_dir.exists():
-            migration_dir = self.migrations_dir / f"{migration_dir.name}-{uuid.uuid4().hex[:8]}"
-        migration_dir.mkdir(parents=True, exist_ok=False)
+        migration_dir = self._create_migration_snapshot_dir()
         shutil.copy2(self.legacy_file, migration_dir / self.LEGACY_FILE_NAME)
 
         profile_data = {
@@ -356,15 +418,59 @@ class ProfileRepository:
         for agent in system.get("agents", []):
             if isinstance(agent, dict):
                 agent.setdefault("profile_id", self.DEFAULT_PROFILE_ID)
+        self._ensure_rule_proxy_token(system)
 
-        self._ensure_profile_layout(self.DEFAULT_PROFILE_ID)
-        self._write_profile_file(self.DEFAULT_PROFILE_ID, profile_data)
-        self._copy_legacy_derived_data()
-        # system.json is the migration commit marker. Legacy files remain recoverable.
-        self._write_system(system)
-
-    def _copy_legacy_derived_data(self) -> None:
         profile_dir = self.profile_dir(self.DEFAULT_PROFILE_ID)
+        staging_dir = self.profiles_dir / f".{self.DEFAULT_PROFILE_ID}.migration-staging-{uuid.uuid4().hex}"
+        backup_dir: Optional[Path] = None
+        previous_system = self.system_file.read_bytes() if self.system_file.exists() else None
+        installed_staging = False
+        try:
+            staging_dir.mkdir(parents=False, exist_ok=False)
+            for dirname in self.DERIVED_DIRS:
+                (staging_dir / dirname).mkdir()
+            self._write_json(staging_dir / "config.json", profile_data)
+            self._copy_legacy_derived_data(staging_dir)
+
+            if profile_dir.exists():
+                backup_dir = self.profiles_dir / f".{self.DEFAULT_PROFILE_ID}.migration-backup-{uuid.uuid4().hex}"
+                os.replace(profile_dir, backup_dir)
+            os.replace(staging_dir, profile_dir)
+            installed_staging = True
+            # system.json is the migration commit marker. Legacy files remain recoverable.
+            self._write_system(system)
+        except Exception:
+            if installed_staging and profile_dir.exists():
+                shutil.rmtree(profile_dir)
+            if backup_dir is not None and backup_dir.exists():
+                os.replace(backup_dir, profile_dir)
+            if previous_system is None:
+                if self.system_file.exists():
+                    self.system_file.unlink()
+            else:
+                self.system_file.write_bytes(previous_system)
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir)
+            raise
+        else:
+            if backup_dir is not None and backup_dir.exists():
+                shutil.rmtree(backup_dir)
+
+    def _create_migration_snapshot_dir(self) -> Path:
+        """Create a unique snapshot directory, retrying an actual mkdir race."""
+        self.migrations_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        for _ in range(16):
+            candidate = self.migrations_dir / f"{timestamp}-{uuid.uuid4().hex}"
+            try:
+                candidate.mkdir(exist_ok=False)
+            except FileExistsError:
+                continue
+            return candidate
+        raise ProfileRepositoryError("Unable to allocate a unique migration snapshot directory")
+
+    def _copy_legacy_derived_data(self, profile_dir: Optional[Path] = None) -> None:
+        profile_dir = profile_dir or self.profile_dir(self.DEFAULT_PROFILE_ID)
         for dirname in self.DERIVED_DIRS[:-1]:
             source = self.data_dir / dirname
             if source.is_dir():
@@ -426,6 +532,47 @@ class ProfileRepository:
         with _THREAD_LOCKS_GUARD:
             return _THREAD_LOCKS.setdefault(key, threading.RLock())
 
+    @classmethod
+    def _lock_timeout_seconds(cls) -> float:
+        raw_timeout = os.environ.get(cls.LOCK_TIMEOUT_ENV)
+        if raw_timeout is None:
+            return cls.DEFAULT_LOCK_TIMEOUT_SECONDS
+        try:
+            timeout = float(raw_timeout)
+        except (TypeError, ValueError):
+            return cls.DEFAULT_LOCK_TIMEOUT_SECONDS
+        if not math.isfinite(timeout):
+            return cls.DEFAULT_LOCK_TIMEOUT_SECONDS
+        return min(cls.MAX_LOCK_TIMEOUT_SECONDS, max(cls.MIN_LOCK_TIMEOUT_SECONDS, timeout))
+
+    @staticmethod
+    def _lock_is_contended(exc: OSError) -> bool:
+        return exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}
+
+    def _acquire_file_lock(self, handle: Any) -> None:
+        deadline = time.monotonic() + self._lock_timeout_seconds()
+        while True:
+            handle.seek(0)
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except OSError as exc:
+                if not self._lock_is_contended(exc):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ProfileRepositoryError(
+                        "Timed out waiting for profile repository lock"
+                    ) from None
+                time.sleep(min(self.LOCK_POLL_INTERVAL_SECONDS, remaining))
+
     @contextmanager
     def _lock(self, path: Path) -> Iterator[None]:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -435,15 +582,7 @@ class ProfileRepository:
                 if handle.seek(0, os.SEEK_END) == 0:
                     handle.write(b"0")
                     handle.flush()
-                handle.seek(0)
-                if os.name == "nt":
-                    import msvcrt
-
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                self._acquire_file_lock(handle)
                 try:
                     yield
                 finally:
@@ -496,6 +635,7 @@ class ProfileRepository:
                 system = self._read_json(self.system_file)
                 self._normalize_system(system, persist=False)
                 yield system
+                self._normalize_system(system, persist=False)
                 self._write_json(self.system_file, system)
             except Exception:
                 self.system_file.write_bytes(previous)
@@ -542,8 +682,7 @@ class ProfileRepository:
                 system.clear()
                 system.update(copy.deepcopy(replacement))
                 self._normalize_system(system, persist=False)
-            result = copy.deepcopy(system)
-        return result
+        return copy.deepcopy(system)
 
     def list_profiles(self) -> List[Dict[str, Any]]:
         return [copy.deepcopy(profile) for profile in self.get_system()["profiles"]]

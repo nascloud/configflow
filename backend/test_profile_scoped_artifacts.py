@@ -1,5 +1,8 @@
+import json
 from flask import Flask
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
 
 from backend.common import config as config_module
 from backend.common.config_repository import ProfileRepository
@@ -96,13 +99,17 @@ def test_generated_provider_urls_include_the_selected_profile(tmp_path, monkeypa
     assert downloads[0]["url"] == "http://configflow.test/api/profiles/alpha/subscriptions/sub-1/proxies"
 
 
-def test_mosdns_rule_proxy_urls_include_url_encoded_config_token_for_profile_and_legacy():
+def test_mosdns_rule_proxy_urls_use_url_encoded_internal_token_for_profile_and_legacy():
     rule_set = {
         "id": "rules-1", "name": "Rules", "itemType": "ruleset",
         "url": "https://rules.test/list?a=1&b=2",
     }
     common = {
-        "system_config": {"server_domain": "https://config.test", "config_token": "token /&?"},
+        "system_config": {
+            "server_domain": "https://config.test",
+            "config_token": "legacy-public-token",
+            "rule_proxy_token": "internal /&?",
+        },
         "mosdns": {"direct_rulesets": ["rules-1"], "proxy_rulesets": []},
         "rule_configs": [rule_set],
     }
@@ -112,12 +119,64 @@ def test_mosdns_rule_proxy_urls_include_url_encoded_config_token_for_profile_and
 
     assert profile_url == (
         "https://config.test/api/profiles/alpha/mosdns/rule-proxy"
-        "?url=https%3A%2F%2Frules.test%2Flist%3Fa%3D1%26b%3D2&token=token%20%2F%26%3F"
+        "?url=https%3A%2F%2Frules.test%2Flist%3Fa%3D1%26b%3D2&token=internal%20%2F%26%3F"
     )
     assert legacy_url == (
         "https://config.test/api/mosdns/rule-proxy"
-        "?url=https%3A%2F%2Frules.test%2Flist%3Fa%3D1%26b%3D2&token=token%20%2F%26%3F"
+        "?url=https%3A%2F%2Frules.test%2Flist%3Fa%3D1%26b%3D2&token=internal%20%2F%26%3F"
     )
+
+
+def test_mosdns_refuses_to_generate_rule_proxy_url_without_internal_token():
+    config = {
+        "system_config": {"server_domain": "https://config.test", "config_token": ""},
+        "mosdns": {"direct_rulesets": ["rules-1"], "proxy_rulesets": []},
+        "rule_configs": [{
+            "id": "rules-1", "name": "Rules", "itemType": "ruleset",
+            "url": "https://rules.test/list",
+        }],
+    }
+
+    with pytest.raises(ValueError, match="rule proxy token"):
+        get_mosdns_ruleset_downloads(config)
+
+
+def _assert_generated_default_url_authenticates(repository, monkeypatch):
+    repository.save_profile("default", {
+        "system_config": {"server_domain": "https://config.test"},
+        "mosdns": {"direct_rulesets": ["rules-1"], "proxy_rulesets": []},
+        "rule_configs": [{
+            "id": "rules-1", "name": "Rules", "itemType": "ruleset",
+            "url": "https://rules.test/list",
+        }],
+    })
+    config_module.set_repository(repository)
+    token = repository.get_system()["system_config"]["rule_proxy_token"]
+    generated_url = get_mosdns_ruleset_downloads(repository.get_compat_config("default"))[0]["url"]
+    parsed = urlsplit(generated_url)
+    assert parse_qs(parsed.query)["token"] == [token]
+    monkeypatch.setattr("backend.routes.mosdns._fetch_remote_content", lambda url: "domain:example.com")
+    monkeypatch.setattr(
+        "backend.routes.mosdns.socket.getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    app = Flask(__name__)
+    register_blueprints(app)
+    response = app.test_client().get(f"{parsed.path}?{parsed.query}")
+    assert response.status_code == 200
+    assert response.get_data(as_text=True) == "domain:example.com"
+
+
+def test_empty_data_directory_generates_mosdns_url_accepted_by_rule_proxy(tmp_path, monkeypatch):
+    _assert_generated_default_url_authenticates(ProfileRepository(tmp_path), monkeypatch)
+
+
+def test_legacy_empty_token_generates_mosdns_url_accepted_by_rule_proxy(tmp_path, monkeypatch):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"system_config": {"config_token": ""}}),
+        encoding="utf-8",
+    )
+    _assert_generated_default_url_authenticates(ProfileRepository(tmp_path), monkeypatch)
 
 
 def test_generated_profile_rule_proxy_url_downloads_with_auth_enabled(tmp_path, monkeypatch):

@@ -5,7 +5,7 @@ import pytest
 from flask import Flask
 
 from backend.common import config as config_module
-from backend.common.auth import generate_token
+from backend.common.auth import MAX_AUTH_TOKEN_LENGTH, generate_token
 from backend.common.config_repository import ProfileRepository
 from backend.routes import register_blueprints
 from backend.routes.auth import setup_before_request
@@ -58,14 +58,17 @@ def test_profile_provider_rejects_anonymous_when_auth_enabled_and_config_token_e
     assert response.status_code == 401
 
 
-def _config_endpoint_app(monkeypatch, tmp_path, *, auth_enabled, config_token=""):
+def _config_endpoint_app(monkeypatch, tmp_path, *, auth_enabled, config_token=None):
     repository = ProfileRepository(tmp_path)
     repository.create_profile({"id": "alpha", "name": "Alpha"})
-    repository.save_profile("default", {"system_config": {"config_token": config_token}})
+    if config_token is not None:
+        repository.save_profile("default", {"system_config": {"config_token": config_token}})
     config_module.set_repository(repository)
     monkeypatch.setattr("backend.common.auth.is_auth_enabled", lambda: auth_enabled)
     monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: auth_enabled)
     app = Flask(__name__)
+    app.config["TEST_CONFIG_TOKEN"] = repository.get_system()["system_config"].get("config_token", "")
+    app.config["TEST_RULE_PROXY_TOKEN"] = repository.get_system()["system_config"]["rule_proxy_token"]
     register_blueprints(app)
     setup_before_request(app)
     return app
@@ -81,7 +84,7 @@ def _config_endpoint_app(monkeypatch, tmp_path, *, auth_enabled, config_token=""
 def test_public_config_endpoints_require_valid_jwt_when_auth_enabled_and_config_token_empty(
     monkeypatch, tmp_path, target, path, headers
 ):
-    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=True)
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=True, config_token="")
 
     response = app.test_client().get(path.format(target=target), headers=headers)
 
@@ -90,7 +93,7 @@ def test_public_config_endpoints_require_valid_jwt_when_auth_enabled_and_config_
 
 @pytest.mark.parametrize("path", ["/api/config/mihomo", "/api/config/alpha/mihomo"])
 def test_public_config_endpoints_accept_valid_jwt_when_config_token_empty(monkeypatch, tmp_path, path):
-    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=True)
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=True, config_token="")
 
     response = app.test_client().get(
         path,
@@ -100,11 +103,150 @@ def test_public_config_endpoints_accept_valid_jwt_when_config_token_empty(monkey
     assert response.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "authorization",
+    [
+        lambda token: f"Bearer {token} extra",
+        lambda token: f"Bearer  {token}",
+        lambda token: f"Bearer\t{token}",
+        lambda token: "Bearer café",
+        lambda token: f"Bearer {'x' * (MAX_AUTH_TOKEN_LENGTH + 1)}",
+    ],
+    ids=["trailing-field", "double-space", "tab", "unicode", "oversized"],
+)
+def test_public_config_endpoint_rejects_malformed_bearer(monkeypatch, tmp_path, authorization):
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=True, config_token="")
+    token = generate_token("admin")
+
+    response = app.test_client().get(
+        "/api/config/mihomo",
+        headers={"Authorization": authorization(token)},
+    )
+
+    assert response.status_code == 401
+
+
+def test_public_config_endpoint_rejects_oversized_query_token(monkeypatch, tmp_path):
+    token = "x" * (MAX_AUTH_TOKEN_LENGTH + 1)
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=True, config_token=token)
+
+    response = app.test_client().get("/api/config/mihomo", query_string={"token": token})
+
+    assert response.status_code == 401
+
+
 @pytest.mark.parametrize("path", ["/api/config/mihomo", "/api/config/alpha/mihomo"])
 def test_public_config_endpoints_remain_anonymous_when_auth_disabled(monkeypatch, tmp_path, path):
     app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=False)
 
     assert app.test_client().get(path).status_code == 200
+
+
+def test_anonymous_config_token_response_does_not_expose_internal_rule_proxy_token(monkeypatch, tmp_path):
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=False, config_token="")
+
+    response = app.test_client().get("/api/config-token")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"config_token": ""}
+    assert app.config["TEST_RULE_PROXY_TOKEN"] not in response.get_data(as_text=True)
+
+
+def test_config_token_post_rejects_internal_rule_proxy_token(monkeypatch, tmp_path):
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=False, config_token="public-token")
+    repository = config_module.get_repository()
+    before = repository.get_system()["system_config"]
+    internal_token = app.config["TEST_RULE_PROXY_TOKEN"]
+
+    response = app.test_client().post("/api/config-token", json={"token": internal_token})
+
+    assert response.status_code == 400
+    assert response.get_json()["success"] is False
+    assert repository.get_system()["system_config"] == before
+
+
+@pytest.mark.parametrize("layers", [0, 1, 2, 8, 20])
+def test_config_token_post_rejects_embedded_encoded_current_or_retired_internal_token(
+    monkeypatch, tmp_path, layers
+):
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=False, config_token="public-token")
+    repository = config_module.get_repository()
+    system = repository.get_system()
+    current = system["system_config"]["rule_proxy_token"]
+    retired = "retired-internal-token"
+    system["system_config"]["retired_rule_proxy_tokens"] = [retired]
+    repository._write_system(system)
+    before = repository.get_system()["system_config"]
+
+    for internal in (current, retired):
+        encoded = internal
+        for index in range(layers):
+            encoded = (
+                __import__("urllib.parse", fromlist=["quote"]).quote(encoded, safe="")
+                if index % 2 == 0
+                else __import__("urllib.parse", fromlist=["quote_plus"]).quote_plus(encoded, safe="")
+            )
+        response = app.test_client().post(
+            "/api/config-token", json={"token": f"managed::{encoded}::suffix"}
+        )
+        assert response.status_code == 400
+        assert repository.get_system()["system_config"] == before
+
+
+def test_config_token_get_scrubs_legacy_embedded_internal_token(monkeypatch, tmp_path):
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=False, config_token="public-token")
+    repository = config_module.get_repository()
+    system = repository.get_system()
+    internal = system["system_config"]["rule_proxy_token"]
+    system["system_config"]["config_token"] = f"legacy::{internal}::embedded"
+    repository._write_system(system)
+
+    response = app.test_client().get("/api/config-token")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"config_token": "[REDACTED]"}
+    assert internal not in response.get_data(as_text=True)
+
+
+def test_retired_rule_proxy_token_never_authorizes_config_rule_proxy_or_mcp(monkeypatch, tmp_path):
+    repository = ProfileRepository(tmp_path)
+    repository.save_profile("default", {"system_config": {"config_token": "public-token"}})
+    system = repository.get_system()
+    retired = "retired-internal-token"
+    system["system_config"]["retired_rule_proxy_tokens"] = [retired]
+    system["system_config"]["config_token"] = retired
+    repository._write_system(system)
+    config_module.set_repository(repository)
+    monkeypatch.setattr("backend.common.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr(mosdns, "_fetch_remote_content", lambda url: "must-not-fetch")
+    from backend.mcp_server import mcp_bp
+
+    app = Flask(__name__)
+    register_blueprints(app)
+    app.register_blueprint(mcp_bp)
+    setup_before_request(app)
+    client = app.test_client()
+
+    assert client.get("/api/config/mihomo", query_string={"token": retired}).status_code == 401
+    assert client.get(
+        "/api/mosdns/rule-proxy",
+        query_string={"url": "https://example.com/rules", "token": retired},
+    ).status_code == 401
+    monkeypatch.setattr(
+        "backend.common.auth.verify_token",
+        lambda token: {"username": "admin"} if token == retired else None,
+    )
+    assert client.get(
+        "/api/mosdns/rule-proxy",
+        query_string={"url": "https://example.com/rules"},
+        headers={"Authorization": f"Bearer {retired}"},
+    ).status_code == 401
+    assert client.post(
+        "/mcp",
+        headers={"Authorization": f"Bearer {retired}"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+    ).status_code == 401
 
 
 @pytest.mark.parametrize("path", ["/api/config/mihomo", "/api/config/alpha/mihomo"])
@@ -115,6 +257,21 @@ def test_public_config_endpoints_accept_encoded_query_token(monkeypatch, tmp_pat
     response = app.test_client().get(path, query_string={"token": token})
 
     assert response.status_code == 200
+
+
+def test_config_endpoint_rejects_rule_proxy_token_before_equal_config_token(monkeypatch, tmp_path):
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=True, config_token="public-token")
+    shared_token = app.config["TEST_RULE_PROXY_TOKEN"]
+    equal_config = config_module.get_repository().get_compat_config("default")
+    equal_config["system_config"]["config_token"] = shared_token
+    monkeypatch.setattr("backend.routes.config.get_config", lambda profile_id=None: equal_config)
+
+    response = app.test_client().get(
+        "/api/config/mihomo",
+        query_string={"token": shared_token},
+    )
+
+    assert response.status_code == 401
 
 
 def test_rule_proxy_requires_auth_even_when_global_auth_is_disabled(monkeypatch, tmp_path):
@@ -148,6 +305,70 @@ def test_auth_enabled_rule_proxy_accepts_valid_config_token(monkeypatch, tmp_pat
 
     assert response.status_code == 200
     assert response.get_data(as_text=True) == "domain:example.com"
+
+
+def test_rule_proxy_rejects_oversized_query_token(monkeypatch, tmp_path):
+    token = "x" * (MAX_AUTH_TOKEN_LENGTH + 1)
+    repository = ProfileRepository(tmp_path)
+    repository.save_profile("default", {"system_config": {"config_token": token}})
+    config_module.set_repository(repository)
+    monkeypatch.setattr(mosdns, "_fetch_remote_content", lambda url: "must-not-fetch")
+    app = Flask(__name__)
+    register_blueprints(app)
+
+    response = app.test_client().get(
+        "/api/mosdns/rule-proxy",
+        query_string={"url": "https://example.com/rules.txt", "token": token},
+    )
+
+    assert response.status_code == 401
+
+
+def test_auth_enabled_rule_proxy_accepts_valid_jwt(monkeypatch, tmp_path):
+    repository = ProfileRepository(tmp_path)
+    config_module.set_repository(repository)
+    monkeypatch.setattr("backend.common.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr(mosdns, "_fetch_remote_content", lambda url: "domain:example.com")
+    app = Flask(__name__)
+    register_blueprints(app)
+    setup_before_request(app)
+
+    response = app.test_client().get(
+        "/api/mosdns/rule-proxy",
+        query_string={"url": "https://example.com/rules.txt"},
+        headers={"Authorization": f"Bearer {generate_token('admin')}"},
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    [
+        lambda token: f"Bearer {token} extra",
+        lambda token: f"Bearer  {token}",
+        lambda token: f"Bearer\t{token}",
+        lambda token: "Bearer café",
+        lambda token: f"Bearer {'x' * (MAX_AUTH_TOKEN_LENGTH + 1)}",
+    ],
+    ids=["trailing-field", "double-space", "tab", "unicode", "oversized"],
+)
+def test_rule_proxy_rejects_malformed_bearer(monkeypatch, tmp_path, authorization):
+    repository = ProfileRepository(tmp_path)
+    config_module.set_repository(repository)
+    monkeypatch.setattr(mosdns, "_fetch_remote_content", lambda url: "must-not-fetch")
+    app = Flask(__name__)
+    register_blueprints(app)
+    token = generate_token("admin")
+
+    response = app.test_client().get(
+        "/api/mosdns/rule-proxy",
+        query_string={"url": "https://example.com/rules.txt"},
+        headers={"Authorization": authorization(token)},
+    )
+
+    assert response.status_code == 401
 
 
 @pytest.mark.parametrize("token", [None, "wrong"], ids=["missing-token", "wrong-token"])

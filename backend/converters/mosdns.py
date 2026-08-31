@@ -174,9 +174,10 @@ def _build_rule_proxy_url(config_data: Dict[str, Any], effective_base_url: str, 
     if endpoint == '/mosdns/rule-proxy':
         endpoint = f'/api{endpoint}'
     query = {'url': url}
-    config_token = config_data.get('system_config', {}).get('config_token', '')
-    if config_token:
-        query['token'] = config_token
+    rule_proxy_token = config_data.get('system_config', {}).get('rule_proxy_token', '')
+    if not isinstance(rule_proxy_token, str) or not rule_proxy_token:
+        raise ValueError('MosDNS rule proxy requires a rule proxy token')
+    query['token'] = rule_proxy_token
     return append_url_query(f"{effective_base_url}{endpoint}", query)
 
 
