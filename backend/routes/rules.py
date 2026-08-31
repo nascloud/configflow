@@ -6,7 +6,14 @@ from urllib.parse import urlparse
 from flask import request, jsonify, make_response
 from backend.routes import rules_bp as bp, rule_sets_bp as rule_sets_bp
 from backend.common.auth import require_auth
-from backend.common.config import config_data, save_config, get_config
+from backend.common.config import (
+    config_data,
+    save_config,
+    update_config_transaction,
+    get_config,
+    get_repository,
+)
+from backend.common.profile_context import profile_api_path, resolve_profile_id
 from backend.utils.rule_matcher import parse_rule_line, match_query, is_valid_domain, is_valid_ip
 from backend.utils.rule_utils import get_rules_dir, sanitize_rule_name
 from backend.utils.logger import get_logger
@@ -56,7 +63,10 @@ def normalize_rule_config_url(rule_item: dict) -> None:
 
         source_type = library_rule.get('source_type', 'url')
         if source_type == 'content':
-            rule_item['url'] = f"/api/rule-library/content/{library_rule_id}"
+            rule_item['url'] = profile_api_path(
+                config_data,
+                f'/rule-library/content/{library_rule_id}',
+            )
         else:
             rule_item['url'] = library_rule.get('url', '')
         return
@@ -106,9 +116,9 @@ def handle_rules():
         if 'itemType' not in rule:
             rule['itemType'] = 'rule' if 'rule_type' in rule else 'ruleset'
         normalize_rule_config_url(rule)
-        rule_configs = config_data.setdefault('rule_configs', [])
-        rule_configs.insert(0, rule)  # 新规则添加到第一位
-        save_config()
+        update_config_transaction(
+            lambda profile: profile.setdefault('rule_configs', []).insert(0, rule)
+        )
         return jsonify({'success': True, 'data': rule})
 
 
@@ -192,9 +202,9 @@ def batch_add_rules():
         }
         new_rules.append(rule)
 
-    rule_configs = config_data.setdefault('rule_configs', [])
-    rule_configs[:0] = new_rules  # 新规则添加到最前面
-    save_config()
+    update_config_transaction(
+        lambda profile: profile.setdefault('rule_configs', []).__setitem__(slice(0, 0), new_rules)
+    )
     return jsonify({'success': True, 'count': len(new_rules), 'rules': new_rules})
 
 
@@ -212,7 +222,8 @@ def get_local_rule(name):
     """
     import os
     from flask import send_file
-    from backend.common.config import DATA_DIR
+    from backend.common.config import get_repository
+    from backend.common.profile_context import resolve_profile_id
     from backend.utils.logger import get_logger
 
     logger = get_logger(__name__)
@@ -221,8 +232,10 @@ def get_local_rule(name):
         # 对规则名称进行清理，确保与文件名匹配
         from backend.utils.rule_utils import sanitize_rule_name, get_rules_dir, save_rule_to_local
 
+        profile_id = resolve_profile_id()
+        repository = get_repository()
         filename = f"{sanitize_rule_name(name)}.list"
-        filepath = os.path.join(get_rules_dir(), filename)
+        filepath = repository.profile_path(profile_id, os.path.join('rules', filename))
 
         logger.info(f"Requesting local rule: {name}, filepath: {filepath}")
 
@@ -260,9 +273,11 @@ def get_local_rule(name):
                 if response.status_code == 200:
                     logger.info(f"Successfully fetched latest data for rule '{name}'")
                     # 更新本地缓存
-                    os.makedirs(get_rules_dir(), exist_ok=True)
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        f.write(response.text)
+                    repository.write_profile_text(
+                        profile_id,
+                        os.path.join('rules', filename),
+                        response.text,
+                    )
                     # 返回响应并添加 Content-Length 头
                     content = response.text.encode('utf-8')
                     resp = make_response(content, 200)
@@ -289,7 +304,7 @@ def get_local_rule(name):
             # 缓存文件不存在，尝试重新生成
             logger.warning(f"Cache file not found for rule '{name}', regenerating...")
             try:
-                save_rule_to_local(rule)
+                save_rule_to_local(rule, profile_id=profile_id)
                 if os.path.exists(filepath):
                     logger.info(f"Successfully regenerated cache for rule '{name}'")
                     with open(filepath, 'rb') as f:
@@ -337,9 +352,9 @@ def handle_rule_sets():
         # 确保有 itemType 字段
         rule_set['itemType'] = 'ruleset'
         normalize_rule_config_url(rule_set)
-        rule_configs = config_data.setdefault('rule_configs', [])
-        rule_configs.insert(0, rule_set)  # 新规则集添加到第一位
-        save_config()
+        update_config_transaction(
+            lambda profile: profile.setdefault('rule_configs', []).insert(0, rule_set)
+        )
         return jsonify({'success': True, 'data': rule_set})
 
 
@@ -399,6 +414,8 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
     rule_content = ''
     rule_name = ''
     filepath = ''
+    profile_id = resolve_profile_id()
+    repository = get_repository()
 
     # 获取规则名称和缓存路径
     if library_rule:
@@ -408,7 +425,7 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
 
     if rule_name:
         filename = f"{sanitize_rule_name(rule_name)}.list"
-        filepath = os.path.join(get_rules_dir(), filename)
+        filepath = str(repository.profile_path(profile_id, os.path.join('rules', filename)))
 
     # 1. 优先尝试从本地缓存读取
     if filepath and os.path.exists(filepath):
@@ -441,9 +458,11 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
                         # 保存到本地缓存
                         if filepath:
                             try:
-                                os.makedirs(get_rules_dir(), exist_ok=True)
-                                with open(filepath, 'w', encoding='utf-8') as f:
-                                    f.write(rule_content)
+                                repository.write_profile_text(
+                                    profile_id,
+                                    os.path.join('rules', filename),
+                                    rule_content,
+                                )
                                 logger.info(f"Cached rule content to: {filepath}")
                             except Exception as cache_error:
                                 logger.warning(f"Failed to cache rule content to {filepath}: {cache_error}")
@@ -471,9 +490,11 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
                     # 保存到本地缓存
                     if filepath:
                         try:
-                            os.makedirs(get_rules_dir(), exist_ok=True)
-                            with open(filepath, 'w', encoding='utf-8') as f:
-                                f.write(rule_content)
+                            repository.write_profile_text(
+                                profile_id,
+                                os.path.join('rules', filename),
+                                rule_content,
+                            )
                             logger.info(f"Cached rule content to: {filepath}")
                         except Exception as cache_error:
                             logger.warning(f"Failed to cache rule content to {filepath}: {cache_error}")

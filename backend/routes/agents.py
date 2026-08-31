@@ -17,7 +17,8 @@ from backend.converters.mosdns import generate_mosdns_config, get_mosdns_ruleset
 from backend.converters.surge import generate_surge_config
 from backend.routes import agents_bp as bp
 from backend.common.auth import require_auth
-from backend.common.config import config_data, save_config
+from backend.common.config import get_config
+from backend.common.config_repository import ProfileRepositoryError
 from backend.common.agent_manager import get_agent_manager
 from backend.common.utils import str_to_bool
 from backend.utils.logger import get_logger
@@ -191,7 +192,6 @@ def register_agent():
 
         # 注册 Agent
         result = agent_manager.register_agent(agent_data)
-        save_config()
 
         response_data = {'success': True, **result}
         logger.info(f"注册成功: {result.get('id')}")
@@ -239,10 +239,12 @@ def get_agent_config(agent_id):
             return jsonify({'success': False, 'message': 'Invalid token'}), 401
 
         # 生成配置
-        config_result = generate_agent_config(config_data, agent)
+        profile_id = agent.get('profile_id', 'default')
+        config_result = generate_agent_config(get_config(profile_id), agent)
 
         return jsonify({
             'success': True,
+            'profile_id': profile_id,
             'content': config_result['content'],
             'md5': config_result['md5'],
             'version': config_result['version']
@@ -303,7 +305,6 @@ def handle_agents():
         try:
             agent_data = request.json
             result = agent_manager.register_agent(agent_data)
-            save_config()
             return jsonify({'success': True, 'data': result}), 200
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
@@ -327,7 +328,6 @@ def handle_agent_item(agent_id):
             agent_data = request.json
             result = agent_manager.update_agent(agent_id, agent_data)
             if result:
-                save_config()
                 return jsonify({'success': True, 'data': result}), 200
             else:
                 return jsonify({'success': False, 'message': 'Agent not found'}), 404
@@ -338,7 +338,6 @@ def handle_agent_item(agent_id):
         try:
             result = agent_manager.delete_agent(agent_id)
             if result:
-                save_config()
                 return jsonify({'success': True}), 200
             else:
                 return jsonify({'success': False, 'message': 'Agent not found'}), 404
@@ -444,9 +443,6 @@ def set_logging_config(agent_id):
         agent_manager = get_agent_manager()
         result = agent_manager.set_logging_config(agent_id, enabled)
 
-        if result.get('success'):
-            save_config()
-
         return jsonify(result), 200 if result.get('success') else 500
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -462,7 +458,6 @@ def uninstall_agent(agent_id):
         if result.get('success'):
             # 卸载成功后从数据库删除
             agent_manager.delete_agent(agent_id)
-            save_config()
         return jsonify(result), 200 if result.get('success') else 500
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -614,6 +609,12 @@ def push_config_to_agent(agent_id):
 
         logger.info(f"Agent: {agent.get('name')}, Service Type: {agent.get('service_type')}, Base URL: {base_url}")
 
+        profile_id = agent.get('profile_id', 'default')
+        try:
+            config_data = get_config(profile_id)
+        except ProfileRepositoryError as exc:
+            return jsonify({'success': False, 'message': f'Agent profile unavailable: {exc}'}), 409
+
         # 根据 service_type 生成配置
         service_type = agent.get('service_type', 'mihomo')
         provider_downloads = []  # Provider 下载信息（Mihomo 需要）
@@ -725,6 +726,7 @@ def push_config_to_agent(agent_id):
 
         # 处理推送结果
         if result['success']:
+            result['profile_id'] = profile_id
             logger.info(f"配置推送成功: {agent_id}")
             if service_type == 'mihomo':
                 # 在返回结果中包含下载信息（用于前端显示）
@@ -739,7 +741,6 @@ def push_config_to_agent(agent_id):
                 result['directories'] = ['rules']
                 if ruleset_downloads:
                     result['ruleset_downloads'] = ruleset_downloads
-            save_config()
 
             # 重启由 Agent 在配置落盘后自行完成（见 restart_after_update）。
             # 旧版 Agent 不认识该字段，只能退回服务端触发重启——那样存在竞态，

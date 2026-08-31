@@ -121,6 +121,27 @@
           <div class="section-value">{{ agent.version || 'N/A' }}</div>
         </div>
 
+        <div class="card-section profile-binding">
+          <div class="section-label">
+            <el-icon><Setting /></el-icon>
+            配置 Profile
+          </div>
+          <el-select
+            :model-value="agent.profile_id || 'default'"
+            size="small"
+            :teleported="false"
+            :disabled="bindingAgentId === agent.id"
+            @change="bindAgentProfile(agent, $event)"
+          >
+            <el-option
+              v-for="profile in profileStore.profiles"
+              :key="profile.id"
+              :label="profile.name"
+              :value="profile.id"
+            />
+          </el-select>
+        </div>
+
         <!-- 系统监控指标 -->
         <div v-if="agent.system_metrics" class="metrics-section">
           <div class="metrics-header">
@@ -862,10 +883,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
-import { Document, Refresh, Monitor, SuccessFilled, WarningFilled, DocumentCopy, QuestionFilled, Connection, Clock, InfoFilled, Upload, RefreshRight, View, Delete, Close, Download, TrendCharts } from '@element-plus/icons-vue'
+import { Document, Refresh, Monitor, SuccessFilled, WarningFilled, DocumentCopy, QuestionFilled, Connection, Clock, InfoFilled, Upload, RefreshRight, View, Delete, Close, Download, TrendCharts, Setting } from '@element-plus/icons-vue'
 import { agentApi } from '@/api'
 import api from '@/api'
 import type { Agent } from '@/types'
+import { useProfileStore } from '@/stores/profile'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, TitleComponent } from 'echarts/components'
@@ -876,6 +898,8 @@ import VChart from 'vue-echarts'
 use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent, CanvasRenderer])
 
 const agents = ref<Agent[]>([])
+const profileStore = useProfileStore()
+const bindingAgentId = ref<string | null>(null)
 const scriptDialogVisible = ref(false)
 const logsDialogVisible = ref(false)
 const metricsDialogVisible = ref(false)
@@ -1306,6 +1330,21 @@ const loadAgents = async () => {
     agents.value = data
   } catch (error) {
     ElMessage.error('加载 Agent 列表失败')
+  }
+}
+
+const bindAgentProfile = async (agent: Agent, profileId: string) => {
+  const previousProfileId = agent.profile_id || 'default'
+  if (profileId === previousProfileId) return
+  bindingAgentId.value = agent.id
+  try {
+    await agentApi.bindProfile(agent.id, profileId)
+    agent.profile_id = profileId
+    ElMessage.success('Agent 配置 Profile 已更新')
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.message || 'Agent 配置 Profile 更新失败')
+  } finally {
+    bindingAgentId.value = null
   }
 }
 
@@ -2096,6 +2135,7 @@ const stopAutoRefresh = () => {
 
 onMounted(() => {
   loadAgents()
+  profileStore.refreshProfiles().catch(() => undefined)
   startAutoRefresh()
 })
 

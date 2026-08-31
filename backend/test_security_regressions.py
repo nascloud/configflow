@@ -1,0 +1,325 @@
+import json
+import socket
+
+import pytest
+from flask import Flask
+
+from backend.common import config as config_module
+from backend.common.auth import generate_token
+from backend.common.config_repository import ProfileRepository
+from backend.routes import register_blueprints
+from backend.routes.auth import setup_before_request
+from backend.routes import mosdns
+
+
+def auth_app(monkeypatch):
+    monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: True)
+    app = Flask(__name__)
+    setup_before_request(app)
+    return app
+
+
+def test_auth_public_paths_are_exact_and_stats_is_protected(monkeypatch):
+    app = auth_app(monkeypatch)
+    client = app.test_client()
+
+    assert client.get("/").status_code == 404  # public matching, route absent
+    assert client.get("/anything").status_code == 401
+    assert client.get("/api/auth/status-extra").status_code == 401
+    assert client.get("/api/stats/overview").status_code == 401
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Authorization": "Bearer not-a-valid-jwt"},
+    ],
+    ids=["missing-jwt", "invalid-jwt"],
+)
+def test_profile_provider_rejects_anonymous_when_auth_enabled_and_config_token_empty(
+    monkeypatch, tmp_path, headers
+):
+    repository = ProfileRepository(tmp_path)
+    repository.create_profile({"id": "alpha", "name": "Alpha"})
+    repository.save_profile("default", {"system_config": {"config_token": ""}})
+    config_module.set_repository(repository)
+    monkeypatch.setattr("backend.common.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: True)
+    app = Flask(__name__)
+    register_blueprints(app)
+    setup_before_request(app)
+
+    response = app.test_client().get(
+        "/api/profiles/alpha/aggregations/missing/provider",
+        headers=headers,
+    )
+
+    assert response.status_code == 401
+
+
+def _config_endpoint_app(monkeypatch, tmp_path, *, auth_enabled, config_token=""):
+    repository = ProfileRepository(tmp_path)
+    repository.create_profile({"id": "alpha", "name": "Alpha"})
+    repository.save_profile("default", {"system_config": {"config_token": config_token}})
+    config_module.set_repository(repository)
+    monkeypatch.setattr("backend.common.auth.is_auth_enabled", lambda: auth_enabled)
+    monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: auth_enabled)
+    app = Flask(__name__)
+    register_blueprints(app)
+    setup_before_request(app)
+    return app
+
+
+@pytest.mark.parametrize("target", ["mihomo", "surge", "mosdns"])
+@pytest.mark.parametrize("path", ["/api/config/{target}", "/api/config/alpha/{target}"])
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"Authorization": "Bearer not-a-valid-jwt"}],
+    ids=["missing-jwt", "invalid-jwt"],
+)
+def test_public_config_endpoints_require_valid_jwt_when_auth_enabled_and_config_token_empty(
+    monkeypatch, tmp_path, target, path, headers
+):
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=True)
+
+    response = app.test_client().get(path.format(target=target), headers=headers)
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("path", ["/api/config/mihomo", "/api/config/alpha/mihomo"])
+def test_public_config_endpoints_accept_valid_jwt_when_config_token_empty(monkeypatch, tmp_path, path):
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=True)
+
+    response = app.test_client().get(
+        path,
+        headers={"Authorization": f"Bearer {generate_token('admin')}"},
+    )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/api/config/mihomo", "/api/config/alpha/mihomo"])
+def test_public_config_endpoints_remain_anonymous_when_auth_disabled(monkeypatch, tmp_path, path):
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=False)
+
+    assert app.test_client().get(path).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/api/config/mihomo", "/api/config/alpha/mihomo"])
+def test_public_config_endpoints_accept_encoded_query_token(monkeypatch, tmp_path, path):
+    token = "token /&?"
+    app = _config_endpoint_app(monkeypatch, tmp_path, auth_enabled=True, config_token=token)
+
+    response = app.test_client().get(path, query_string={"token": token})
+
+    assert response.status_code == 200
+
+
+def test_rule_proxy_requires_auth_even_when_global_auth_is_disabled(monkeypatch, tmp_path):
+    repository = ProfileRepository(tmp_path)
+    config_module.set_repository(repository)
+    monkeypatch.setattr("backend.common.auth.is_auth_enabled", lambda: False)
+    monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: False)
+    app = Flask(__name__)
+    register_blueprints(app)
+    setup_before_request(app)
+
+    response = app.test_client().get("/api/mosdns/rule-proxy?url=https://example.com/rules.txt")
+    assert response.status_code == 401
+
+
+def test_auth_enabled_rule_proxy_accepts_valid_config_token(monkeypatch, tmp_path):
+    repository = ProfileRepository(tmp_path)
+    repository.save_profile("default", {"system_config": {"config_token": "valid /&?"}})
+    config_module.set_repository(repository)
+    monkeypatch.setattr("backend.common.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr(mosdns, "_fetch_remote_content", lambda url: "domain:example.com")
+    app = Flask(__name__)
+    register_blueprints(app)
+    setup_before_request(app)
+
+    response = app.test_client().get(
+        "/api/mosdns/rule-proxy",
+        query_string={"url": "https://example.com/rules.txt", "token": "valid /&?"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_data(as_text=True) == "domain:example.com"
+
+
+@pytest.mark.parametrize("token", [None, "wrong"], ids=["missing-token", "wrong-token"])
+def test_auth_enabled_rule_proxy_rejects_invalid_config_token(monkeypatch, tmp_path, token):
+    repository = ProfileRepository(tmp_path)
+    repository.save_profile("default", {"system_config": {"config_token": "valid"}})
+    config_module.set_repository(repository)
+    monkeypatch.setattr("backend.common.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr("backend.routes.auth.is_auth_enabled", lambda: True)
+    monkeypatch.setattr(mosdns, "_fetch_remote_content", lambda url: "must-not-download")
+    app = Flask(__name__)
+    register_blueprints(app)
+    setup_before_request(app)
+    query = {"url": "https://example.com/rules.txt"}
+    if token is not None:
+        query["token"] = token
+
+    response = app.test_client().get("/api/mosdns/rule-proxy", query_string=query)
+
+    assert response.status_code == 401
+
+
+def test_rule_proxy_rejects_non_http_and_private_targets():
+    for url in (
+        "ftp://example.com/rules.txt",
+        "file:///etc/passwd",
+        "http://127.0.0.1/rules.txt",
+        "http://localhost/rules.txt",
+        "http://169.254.169.254/latest/meta-data/",
+    ):
+        with pytest.raises(ValueError):
+            mosdns._validate_remote_url(url)
+
+
+def test_rule_proxy_pins_validated_ip_and_preserves_https_identity(monkeypatch):
+    resolutions = iter([
+        [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))],
+        [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))],
+    ])
+    monkeypatch.setattr(mosdns.socket, "getaddrinfo", lambda *args, **kwargs: next(resolutions))
+    observed = {}
+
+    class Response:
+        status = 200
+        headers = {}
+
+        def stream(self, chunk_size):
+            yield b"domain:example.com"
+
+        def release_conn(self):
+            observed["released"] = True
+
+    class Pool:
+        def __init__(self, host, port, **kwargs):
+            observed.update(host=host, port=port, pool_kwargs=kwargs)
+
+        def urlopen(self, method, path, **kwargs):
+            observed.update(method=method, path=path, request_kwargs=kwargs)
+            return Response()
+
+        def close(self):
+            observed["closed"] = True
+
+    monkeypatch.setattr("urllib3.HTTPSConnectionPool", Pool)
+
+    assert mosdns._fetch_remote_content("https://rules.example/path/list?format=txt") == "domain:example.com"
+    assert observed["host"] == "93.184.216.34"
+    assert observed["port"] == 443
+    assert observed["pool_kwargs"]["assert_hostname"] == "rules.example"
+    assert observed["pool_kwargs"]["server_hostname"] == "rules.example"
+    assert observed["request_kwargs"]["headers"]["Host"] == "rules.example"
+    assert observed["path"] == "/path/list?format=txt"
+    assert observed["released"] and observed["closed"]
+
+
+def _install_fake_http_pool(monkeypatch, responses, observed=None):
+    observed = observed if observed is not None else []
+
+    class Pool:
+        def __init__(self, host, port, **kwargs):
+            self.host = host
+            observed.append((host, port, kwargs))
+
+        def urlopen(self, method, path, **kwargs):
+            response = responses.pop(0)
+            response.request_host = self.host
+            return response
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("urllib3.HTTPConnectionPool", Pool)
+    return observed
+
+
+class _FakePoolResponse:
+    def __init__(self, status=200, headers=None, chunks=()):
+        self.status = status
+        self.headers = headers or {}
+        self._chunks = chunks
+        self.released = False
+
+    def stream(self, chunk_size):
+        yield from self._chunks
+
+    def release_conn(self):
+        self.released = True
+
+
+def test_rule_proxy_revalidates_and_pins_each_redirect_hop(monkeypatch):
+    resolutions = iter([
+        [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+        [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80))],
+    ])
+    monkeypatch.setattr(mosdns.socket, "getaddrinfo", lambda *args, **kwargs: next(resolutions))
+    redirect = _FakePoolResponse(302, {"Location": "http://private.example/rules"})
+    observed = _install_fake_http_pool(monkeypatch, [redirect])
+
+    with pytest.raises(ValueError, match="Private network"):
+        mosdns._fetch_remote_content("http://public.example/rules")
+
+    assert [entry[0] for entry in observed] == ["93.184.216.34"]
+    assert redirect.released
+
+
+def test_rule_proxy_rejects_non_2xx_response(monkeypatch):
+    import requests
+
+    monkeypatch.setattr(
+        mosdns.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+    )
+    response = _FakePoolResponse(503)
+    _install_fake_http_pool(monkeypatch, [response])
+
+    with pytest.raises(requests.exceptions.HTTPError, match="503"):
+        mosdns._fetch_remote_content("http://public.example/rules")
+    assert response.released
+
+
+def test_rule_proxy_enforces_streamed_response_limit(monkeypatch):
+    monkeypatch.setattr(mosdns, "_MAX_RULE_PROXY_BYTES", 5)
+    monkeypatch.setattr(
+        mosdns.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))],
+    )
+    response = _FakePoolResponse(200, chunks=[b"123", b"456"])
+    _install_fake_http_pool(monkeypatch, [response])
+
+    with pytest.raises(ValueError, match="size limit"):
+        mosdns._fetch_remote_content("http://public.example/rules")
+    assert response.released
+
+
+def test_repository_without_factory_uses_string_github_proxy_default(tmp_path):
+    repository = ProfileRepository(tmp_path)
+    system = repository.get_system()
+    profile = repository.get_profile("default")
+
+    assert isinstance(system["system_config"]["github_proxy_domain"], str)
+    assert "github_proxy_domain" not in profile or isinstance(
+        profile["github_proxy_domain"], str
+    )
+
+
+def test_gitignore_does_not_hide_source_lock_or_backup_files():
+    gitignore = open(".gitignore", encoding="utf-8").read()
+    assert "*.lock" not in gitignore
+    assert "*.bak" not in gitignore
+    assert "*.tmp" not in gitignore
+    assert "/profiles/" in gitignore
+    assert "/cache/" in gitignore
+    assert "/generated/" in gitignore

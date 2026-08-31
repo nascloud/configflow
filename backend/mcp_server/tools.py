@@ -12,7 +12,12 @@
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from backend.mcp_server.invoker import ApiError, call_api
+from backend.mcp_server.invoker import (
+    ApiError,
+    call_api,
+    reset_profile_context,
+    set_profile_context,
+)
 
 # 工具注册表：name -> {'definition': {...}, 'handler': callable}
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
@@ -47,12 +52,26 @@ def has_tool(name: str) -> bool:
 
 def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     """执行一个工具（tools/call）"""
-    return _REGISTRY[name]['handler'](arguments or {})
+    arguments = arguments or {}
+    selected_profile_id = arguments.get('profile_id') or 'default'
+    token = set_profile_context(selected_profile_id)
+    try:
+        result = _REGISTRY[name]['handler'](arguments)
+        if isinstance(result, dict):
+            result.setdefault('profile_id', selected_profile_id)
+        return result
+    finally:
+        reset_profile_context(token)
 
 
 # ---------------------------------------------------------------- schema 助手
 
 def obj(properties: Dict[str, Any], required: Optional[List[str]] = None) -> Dict[str, Any]:
+    properties = dict(properties)
+    properties.setdefault(
+        'profile_id',
+        {'type': 'string', 'description': '目标 profile id；留空使用 active/default profile'},
+    )
     return {
         'type': 'object',
         'properties': properties,
@@ -166,6 +185,86 @@ def _unwrap(result: Any, fallback: Any) -> Any:
     if isinstance(result, dict) and 'data' in result:
         return result['data']
     return fallback
+
+
+# ================================================================ Profiles
+
+@tool(
+    'list_profiles',
+    '列出所有配置 profile。',
+    NO_ARGS,
+)
+def _list_profiles(args):
+    return call_api('GET', '/api/profiles')
+
+
+@tool(
+    'get_profile',
+    '获取一个 profile 的元数据。',
+    obj({'id': string('profile id')}, ['id']),
+)
+def _get_profile(args):
+    profile_id = _require(args, 'id')
+    return call_api('GET', f'/api/profiles/{profile_id}')
+
+
+@tool(
+    'manage_profile',
+    '创建、更新、激活或删除 profile。默认 profile 不可删除。',
+    obj(
+        {
+            'action': string('操作类型', ['create', 'update', 'activate', 'delete']),
+            'id': string('profile id，update / activate / delete 时必填'),
+            'data': free_object('profile 元数据；create 时至少包含 id 或 name'),
+        },
+        ['action'],
+    ),
+)
+def _manage_profile(args):
+    action = _require(args, 'action')
+    profile_id = args.get('id')
+    if action == 'create':
+        return call_api('POST', '/api/profiles', body=args.get('data') or {})
+    profile_id = _require(args, 'id')
+    if action == 'update':
+        return call_api('PUT', f'/api/profiles/{profile_id}', body=args.get('data') or {})
+    if action == 'activate':
+        return call_api('POST', f'/api/profiles/{profile_id}/activate', body={})
+    if action == 'delete':
+        call_api('DELETE', f'/api/profiles/{profile_id}')
+        return {'success': True, 'profile_id': profile_id}
+    raise ApiError(400, f'不支持的 action: {action}')
+
+
+@tool(
+    'clone_profile',
+    '从一个 profile 克隆出新的 profile。',
+    obj(
+        {
+            'source_profile_id': string('源 profile id'),
+            'data': free_object('目标 profile 元数据，至少包含 id 或 name'),
+        },
+        ['source_profile_id', 'data'],
+    ),
+)
+def _clone_profile(args):
+    source_id = _require(args, 'source_profile_id')
+    return call_api('POST', f'/api/profiles/{source_id}/clone', body=args['data'])
+
+
+@tool(
+    'bind_agent_profile',
+    '把 Agent 绑定到指定 profile；后续配置读取和推送都使用该 profile。',
+    obj(
+        {'id': string('Agent id'), 'profile_id': string('目标 profile id')},
+        ['id', 'profile_id'],
+    ),
+)
+def _bind_agent_profile(args):
+    agent_id = _require(args, 'id')
+    profile_id = _require(args, 'profile_id')
+    current = call_api('GET', f'/api/agents/{agent_id}') or {}
+    return call_api('PUT', f'/api/agents/{agent_id}', body={**current, 'profile_id': profile_id})
 
 
 # ================================================================ 订阅

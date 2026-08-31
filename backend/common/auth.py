@@ -46,7 +46,7 @@ def verify_token(token):
         return {'error': 'invalid', 'detail': str(e)}
 
 
-def validate_token_or_jwt(request_obj):
+def validate_token_or_jwt(request_obj, config=None):
     """验证 JWT token（前端）或 URL query token（外部客户端）
 
     Args:
@@ -60,8 +60,10 @@ def validate_token_or_jwt(request_obj):
         return {'valid': True}
 
     # 2. 检查 URL query token（用于外部客户端）
-    from backend.common.config import config_data
-    config_token = config_data.get('system_config', {}).get('config_token', '')
+    if config is None:
+        from backend.common.config import config_data
+        config = config_data
+    config_token = config.get('system_config', {}).get('config_token', '')
 
     # 如果没有启用认证，直接通过
     if not is_auth_enabled() and not config_token:
@@ -75,10 +77,6 @@ def validate_token_or_jwt(request_obj):
         # 如果 payload 不为 None 且不包含 error 键，说明验证成功
         if payload and not (isinstance(payload, dict) and 'error' in payload):
             return {'valid': True}
-
-    # 如果没有配置 config_token，允许无 token 访问（外部客户端）
-    if not config_token:
-        return {'valid': True}
 
     # 如果配置了 config_token，检查 URL query 参数中的 token
     url_token = request_obj.args.get('token', '')
