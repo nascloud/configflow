@@ -129,6 +129,7 @@
           <el-select
             :model-value="agent.profile_id || 'default'"
             size="small"
+            popper-class="agent-profile-select-popper"
             :disabled="bindingAgentId === agent.id"
             @change="bindAgentProfile(agent, $event)"
           >
@@ -2792,6 +2793,26 @@ onUnmounted(() => {
 
 :deep(.el-select .el-select__suffix) {
   color: #909399 !important;
+}
+
+:global(.agent-profile-select-popper.el-popper),
+:global(.agent-profile-select-popper .el-select-dropdown) {
+  background: #fff !important;
+}
+
+:global(.agent-profile-select-popper .el-select-dropdown__item),
+:global(.agent-profile-select-popper .el-select-dropdown__item span) {
+  color: #30354d !important;
+}
+
+:global(.agent-profile-select-popper .el-select-dropdown__item.is-hovering) {
+  background: rgba(107, 115, 255, 0.08) !important;
+}
+
+:global(.agent-profile-select-popper .el-select-dropdown__item.is-selected),
+:global(.agent-profile-select-popper .el-select-dropdown__item.is-selected span) {
+  color: #000dff !important;
+  font-weight: 600;
 }
 
 :deep(.el-input-number) {
