@@ -129,7 +129,6 @@
           <el-select
             :model-value="agent.profile_id || 'default'"
             size="small"
-            :teleported="false"
             :disabled="bindingAgentId === agent.id"
             @change="bindAgentProfile(agent, $event)"
           >
@@ -2794,8 +2793,6 @@ onUnmounted(() => {
 :deep(.el-select .el-select__suffix) {
   color: #909399 !important;
 }
-
-/* Agent select popper 样式已移除（使用 teleported=false） */
 
 :deep(.el-input-number) {
   width: 100%;
