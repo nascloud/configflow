@@ -73,9 +73,14 @@ def handle_proxy_groups():
 
     elif request.method == 'POST':
         group = request.json
-        update_config_transaction(
-            lambda profile: profile.setdefault('proxy_groups', []).append(group)
-        )
+        from backend.utils.dialer_references import validate_dialers, DialerReferenceError
+        def create(profile):
+            profile.setdefault('proxy_groups', []).append(group)
+            validate_dialers(profile)
+        try:
+            update_config_transaction(create)
+        except DialerReferenceError as exc:
+            return jsonify({'success': False, 'message': str(exc)}), 400
         return jsonify({'success': True, 'data': group})
 
 
@@ -84,6 +89,7 @@ def handle_proxy_groups():
 def handle_proxy_group(group_id):
     """Single-profile transaction: validate references before any write."""
     from werkzeug.exceptions import Conflict, NotFound
+    from backend.utils.dialer_references import validate_dialers, incoming_dialers, DialerReferenceError
 
     group_data = request.get_json() if request.method == 'PUT' else None
 
@@ -104,7 +110,7 @@ def handle_proxy_group(group_id):
                      if r.get('enabled', True) and r.get('policy') == original.get('name')]
             dependents = [g for g in groups if g.get('id') != group_id and
                           (group_id in g.get('include_groups', []) or g.get('follow_group') == group_id)]
-            if rules or dependents:
+            if rules or dependents or incoming_dialers(profile, 'group', group_id):
                 raise Conflict('策略组仍被规则或其他策略组引用，请先修改引用后再删除或禁用')
         if request.method == 'DELETE':
             groups.remove(original)
@@ -117,9 +123,12 @@ def handle_proxy_group(group_id):
                     if rule.get('policy') == old_name:
                         rule['policy'] = new_name
             groups[groups.index(original)] = group_data
+        validate_dialers(profile)
 
     try:
         update_config_transaction(mutate)
+    except DialerReferenceError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
     except (Conflict, NotFound) as exc:
         return jsonify({'success': False, 'message': exc.description}), exc.code
     return jsonify({'success': True, **({'data': group_data} if group_data is not None else {})})
@@ -218,14 +227,23 @@ def reorder_proxy_groups():
     按 id 排序时传 {'ids': [...], 'position': 'top'|'bottom'}；
     传完整对象数组的旧格式仍然兼容。
     """
-    try:
-        config_data = get_config()
-        body = request.json or {}
-        new_order, missing = resolve_new_order(config_data.get('proxy_groups', []), body, 'groups')
+    from backend.utils.dialer_references import validate_dialers, DialerReferenceError
+    from werkzeug.exceptions import NotFound
+    order = []
+    body = request.get_json() or {}
+    def mutate(profile):
+        new_order, missing = resolve_new_order(profile.get('proxy_groups', []), body, 'groups')
         if missing:
-            return jsonify({'success': False, 'message': f'以下策略组 id 不存在: {missing}'}), 404
-        config_data['proxy_groups'] = new_order
-        save_config()
-        return jsonify({'success': True, 'order': [g.get('id') for g in new_order]})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+            raise NotFound(f'以下策略组 id 不存在: {missing}')
+        profile['proxy_groups'] = new_order
+        validate_dialers(profile)
+        order.extend(item.get('id') for item in new_order)
+    try:
+        update_config_transaction(mutate)
+        return jsonify({'success': True, 'order': order})
+    except DialerReferenceError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    except NotFound as exc:
+        return jsonify({'success': False, 'message': exc.description}), 404
+    except Exception as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 500

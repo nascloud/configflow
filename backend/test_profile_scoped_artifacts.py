@@ -243,7 +243,7 @@ def test_aggregation_workers_keep_the_selected_profile_context(tmp_path, monkeyp
     seen_profiles = []
     monkeypatch.setattr(
         "backend.routes.aggregations.get_subscription_proxies_yaml",
-        lambda sub_id, url: ("ignored", "test"),
+        lambda sub_id, url: ('proxies: [{name: node-1}]', 'test'),
     )
     monkeypatch.setattr(
         "backend.routes.aggregations.parse_proxies_from_yaml",
