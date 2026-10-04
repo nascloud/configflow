@@ -26,6 +26,7 @@ from backend.common.agent_manager import get_agent_manager
 from backend.common.utils import str_to_bool
 from backend.utils.logger import get_logger
 from backend.utils.url_utils import safe_url_for_log
+from backend.utils.strategy_references import StrategyReferenceError
 
 logger = get_logger(__name__)
 
@@ -368,6 +369,8 @@ def get_agent_config(agent_id):
             'version': config_result['version']
         }), 200
 
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -773,6 +776,8 @@ def push_config_to_agent(agent_id):
                 return jsonify({'success': False, 'message': f'Unsupported service type: {service_type}'}), 400
 
             logger.info(f"配置生成成功，长度: {len(config_content)} 字符")
+        except StrategyReferenceError as gen_error:
+            return jsonify({'success': False, 'message': str(gen_error)}), 400
         except Exception as gen_error:
             import traceback
             error_detail = traceback.format_exc()

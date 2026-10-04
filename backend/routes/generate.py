@@ -9,6 +9,7 @@ from backend.routes import generate_bp
 from backend.common.auth import require_auth
 from backend.common.config import get_config, get_repository
 from backend.common.profile_context import resolve_profile_id
+from backend.utils.strategy_references import StrategyReferenceError
 from backend.converters.mihomo import generate_mihomo_config
 from backend.converters.surge import generate_surge_config
 from backend.converters.mosdns import (
@@ -37,6 +38,8 @@ def generate_mihomo():
         )
 
         return send_file(output_file, as_attachment=True, download_name='mihomo.yaml')
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -60,6 +63,8 @@ def generate_surge():
         )
 
         return send_file(output_file, as_attachment=True, download_name='surge.conf')
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -149,6 +154,8 @@ def preview_mihomo():
         # 传递 base_url 给生成器
         yaml_content = generate_mihomo_config(config_data, base_url=base_url)
         return jsonify({'content': yaml_content})
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -166,6 +173,8 @@ def preview_surge():
         # 传递 base_url 给生成器
         config_content = generate_surge_config(config_data, base_url=base_url)
         return jsonify({'content': config_content})
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 

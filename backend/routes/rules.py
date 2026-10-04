@@ -205,25 +205,29 @@ def batch_add_rules():
     domains = data.get('domains', [])  # 域名列表
     policy = data.get('policy')
 
-    # 获取现有规则数量（只计算 itemType 为 'rule' 的项目）
-    rule_configs = config_data.get('rule_configs', [])
-    existing_rules_count = len([r for r in rule_configs if r.get('itemType') == 'rule'])
-
     new_rules = []
-    for domain in domains:
-        rule = {
-            'id': f"rule_{existing_rules_count + len(new_rules) + 1}",
-            'rule_type': rule_type,
-            'value': domain.strip(),
-            'policy': policy,
-            'enabled': True,
-            'itemType': 'rule'
-        }
-        new_rules.append(rule)
 
-    update_config_transaction(
-        lambda profile: profile.setdefault('rule_configs', []).__setitem__(slice(0, 0), new_rules)
-    )
+    def add_rules(profile):
+        # Allocate under the repository transaction lock; never renumber stored IDs.
+        rules = profile.setdefault('rule_configs', [])
+        used_ids = {r.get('id') for r in rules}
+        next_id = 1
+        for domain in domains:
+            while f'rule_{next_id}' in used_ids:
+                next_id += 1
+            rule_id = f'rule_{next_id}'
+            used_ids.add(rule_id)
+            new_rules.append({
+                'id': rule_id,
+                'rule_type': rule_type,
+                'value': domain.strip(),
+                'policy': policy,
+                'enabled': True,
+                'itemType': 'rule',
+            })
+        rules[0:0] = new_rules
+
+    update_config_transaction(add_rules)
     return jsonify({'success': True, 'count': len(new_rules), 'rules': new_rules})
 
 

@@ -10,6 +10,7 @@ from backend.common.config import get_config, save_config
 from backend.common.config_export import prepare_config_export
 from backend.common.profile_context import resolve_profile_id
 from backend.utils.logger import get_logger
+from backend.utils.strategy_references import StrategyReferenceError
 
 logger = get_logger(__name__)
 from backend.converters.mihomo import generate_mihomo_config
@@ -57,6 +58,8 @@ def get_mihomo_config():
             'Content-Type': 'text/plain; charset=utf-8',
             'Content-Disposition': 'inline'
         }
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -89,6 +92,8 @@ def get_surge_config():
             'Content-Type': 'text/plain; charset=utf-8',
             'Content-Disposition': 'inline'
         }
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -121,6 +126,8 @@ def get_mosdns_config():
             'Content-Type': 'text/plain; charset=utf-8',
             'Content-Disposition': 'inline'
         }
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 

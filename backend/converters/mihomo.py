@@ -984,6 +984,13 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
 
     mihomo_config['rules'] = rules
 
+    from backend.utils.strategy_references import validate_rule_policies
+    validate_rule_policies(
+        config_data,
+        [p['name'] for p in mihomo_config['proxies']] + [g['name'] for g in mihomo_config['proxy-groups']],
+        'mihomo',
+    )
+
     # 转换为 YAML
     return yaml.dump(
         mihomo_config,

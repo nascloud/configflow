@@ -666,6 +666,10 @@ const INTERVAL_MIN = 60
 const INTERVAL_MAX = 604800
 
 const saveSubscription = async () => {
+  if (!form.value.name?.trim() || !form.value.url?.trim()) {
+    notify.warning('请输入订阅名称和 URL')
+    return
+  }
   // 原生 number 输入不像 el-input-number 那样钳制越界值，也允许留空，
   // 这里在提交前兜底，避免把越界值或空串写进订阅配置
   const interval = Number(form.value.interval)
