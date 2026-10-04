@@ -20,6 +20,15 @@ from backend.utils.sub_store_client import (
 from backend.utils.url_utils import safe_exception_details
 
 
+def validate_subscription_fields(data):
+    """Validate required text only; keep supported URL protocols unchanged."""
+    for field in ('name', 'url'):
+        value = data.get(field) if isinstance(data, dict) else None
+        if not isinstance(value, str) or not value.strip():
+            return jsonify({'success': False, 'message': f'订阅 {field} 不能为空'}), 400
+    return None
+
+
 def clean_aggregations_subscription(sub_id):
     """从所有聚合中移除指定的订阅，如果聚合变空则禁用并从策略组中移除"""
     config_data = get_config()
@@ -84,6 +93,9 @@ def handle_subscriptions():
 
     elif request.method == 'POST':
         sub = request.json
+        error = validate_subscription_fields(sub)
+        if error:
+            return error
         update_config_transaction(
             lambda profile: profile.setdefault('subscriptions', []).append(sub)
         )
@@ -109,6 +121,9 @@ def handle_subscription(sub_id):
             if s['id'] == sub_id:
                 old_enabled = s.get('enabled', True)
                 new_data = request.json
+                error = validate_subscription_fields(new_data)
+                if error:
+                    return error
                 new_enabled = new_data.get('enabled', True)
 
                 config_data['subscriptions'][i] = new_data

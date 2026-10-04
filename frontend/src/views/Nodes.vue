@@ -472,7 +472,7 @@ const batchForm = ref({
 // 批量删除相关
 const selectedNodeIds = ref<Set<string>>(new Set())
 const isAllSelected = computed(() => {
-  return nodes.value.length > 0 && selectedNodeIds.value.size === nodes.value.length
+  return visibleNodes.value.length > 0 && visibleNodes.value.every(n => selectedNodeIds.value.has(n.id))
 })
 const isSomeSelected = computed(() => {
   return selectedNodeIds.value.size > 0 && selectedNodeIds.value.size < nodes.value.length
@@ -663,11 +663,14 @@ const toggleNodeExpand = (nodeId: string) => {
 
 // 全选/取消全选
 const toggleSelectAll = () => {
-  if (isAllSelected.value) {
-    selectedNodeIds.value.clear()
-  } else {
-    selectedNodeIds.value = new Set(nodes.value.map(n => n.id))
+  // Only toggle visible rows; keep selections made before filtering.
+  const next = new Set(selectedNodeIds.value)
+  const deselect = isAllSelected.value
+  for (const node of visibleNodes.value) {
+    if (deselect) next.delete(node.id)
+    else next.add(node.id)
   }
+  selectedNodeIds.value = next
 }
 
 // 批量删除

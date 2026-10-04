@@ -408,6 +408,13 @@ def generate_surge_config(config_data: Dict[str, Any], base_url: str = '') -> st
         if section_name not in auto_sections:
             sections.append(section_content)
 
+    from backend.utils.strategy_references import validate_rule_policies
+    validate_rule_policies(
+        config_data,
+        [line.split('=', 1)[0].strip() for line in proxies[1:] + proxy_groups[1:] if '=' in line],
+        'surge',
+    )
+
     # 组合所有部分
     config_output = '\n\n'.join(sections)
 

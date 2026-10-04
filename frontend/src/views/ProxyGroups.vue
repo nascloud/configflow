@@ -1435,8 +1435,8 @@ const toggleGroupEnabled = async (group: ProxyGroup) => {
   try {
     await proxyGroupApi.update(group.id, group)
     notify.success(group.enabled ? '已启用' : '已禁用')
-  } catch (error) {
-    notify.error('更新状态失败')
+  } catch (error: any) {
+    notify.error(error?.response?.data?.message || '更新状态失败')
     group.enabled = previous
     loadProxyGroups()
   } finally {
@@ -1665,41 +1665,7 @@ const saveGroup = async () => {
     }
 
     if (isEdit.value) {
-      // 检查策略组名称是否发生变化
-      const nameChanged = originalGroupName.value !== form.value.name
-
-      if (nameChanged) {
-        // 名称发生变化，需要同步更新所有引用该策略的规则配置
-        try {
-          // 获取所有规则配置
-          const { data: allRules } = await api.get('/rules')
-
-          // 找到所有引用该策略的规则（单条规则和规则集）
-          const relatedRules = allRules.filter(
-            (item: any) => item.policy === originalGroupName.value
-          )
-
-          if (relatedRules.length > 0) {
-            // 批量更新规则的 policy 字段
-            const updatePromises = relatedRules.map((rule: any) => {
-              const updatedRule = { ...rule, policy: form.value.name }
-              if (rule.itemType === 'rule') {
-                return api.put(`/rules/${rule.id}`, updatedRule)
-              } else if (rule.itemType === 'ruleset') {
-                return api.put(`/rule-sets/${rule.id}`, updatedRule)
-              }
-              return Promise.resolve()
-            })
-
-            await Promise.all(updatePromises)
-            console.log(`已同步更新 ${relatedRules.length} 个规则配置的策略引用`)
-          }
-        } catch (error) {
-          console.error('同步更新规则配置失败:', error)
-          notify.warning('策略组名称已更新，但部分规则配置同步失败，请手动检查')
-        }
-      }
-
+      // Server atomically updates the group and all policy references.
       // 使用 id 进行API调用
       await proxyGroupApi.update(saveData.id!, saveData)
       notify.success('更新成功')
@@ -1709,8 +1675,8 @@ const saveGroup = async () => {
     }
     dialogVisible.value = false
     loadProxyGroups()
-  } catch (error) {
-    notify.error('保存失败')
+  } catch (error: any) {
+    notify.error(error?.response?.data?.message || '保存失败')
   }
 }
 
@@ -1722,57 +1688,13 @@ const deleteGroup = async (row: ProxyGroup) => {
   }
 
   try {
-    // 先检查是否有规则配置引用了这个策略组
-    const { data: allRules } = await api.get('/rules')
-    const relatedRules = allRules.filter(
-      (item: any) => item.policy === row.name
-    )
-
-    if (relatedRules.length > 0) {
-      // 有关联的规则配置：一起删 / 仅删策略组 / 取消，三选一
-      const choice = await choose(
-        `该策略组被 ${relatedRules.length} 个规则配置引用，是否一起删除这些规则配置？`,
-        {
-          title: '删除策略组',
-          confirmText: '一起删除',
-          altText: '仅删除策略组',
-          cancelText: '取消',
-          danger: true
-        }
-      )
-      if (choice === 'cancel') return
-
-      if (choice === 'confirm') {
-        // 先删除关联的规则配置
-        for (const rule of relatedRules) {
-          try {
-            if (rule.itemType === 'rule') {
-              await api.delete(`/rules/${rule.id}`)
-            } else if (rule.itemType === 'ruleset') {
-              await api.delete(`/rule-sets/${rule.id}`)
-            }
-          } catch (error) {
-            console.error('删除规则配置失败:', error)
-          }
-        }
-        await proxyGroupApi.delete(row.id)
-        notify.success(`已删除策略组及 ${relatedRules.length} 个关联的规则配置`)
-      } else {
-        await proxyGroupApi.delete(row.id)
-        notify.success('已删除策略组，关联的规则配置保留')
-      }
-      loadProxyGroups()
-    } else {
-      const ok = await confirmDanger('确定要删除该策略组吗？', { title: '删除策略组' })
-      if (!ok) return
-
-      await proxyGroupApi.delete(row.id)
-      notify.success('删除成功')
-      loadProxyGroups()
-    }
-  } catch (error) {
-    notify.error('删除失败')
-    console.error('删除策略组失败:', error)
+    const ok = await confirmDanger('确定要删除该策略组吗？被引用的策略组需先修改引用。', { title: '删除策略组' })
+    if (!ok) return
+    await proxyGroupApi.delete(row.id)
+    notify.success('删除成功')
+    loadProxyGroups()
+  } catch (error: any) {
+    notify.error(error?.response?.data?.message || '删除失败')
   }
 }
 
