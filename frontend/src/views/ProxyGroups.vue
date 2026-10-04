@@ -755,6 +755,17 @@ const availableAggregations = computed(() => {
     .map(a => ({ id: a.id, name: a.name, regex_filter: a.regex_filter }))
 })
 
+// MultiSelect 使用 value/label，复用现有候选列表以保留内置节点及过滤规则。
+const nodeOptions = computed(() =>
+  availableNodes.value.map(node => ({ value: node.id, label: node.name }))
+)
+const aggregationOptions = computed(() =>
+  availableAggregations.value.map(aggregation => ({ value: aggregation.id, label: aggregation.name }))
+)
+const strategyOptions = computed(() =>
+  availableStrategies.value.map(strategy => ({ value: strategy.id, label: strategy.name }))
+)
+
 const needsUrl = computed(() => {
   return ['url-test', 'fallback', 'load-balance'].includes(form.value.type || '')
 })
