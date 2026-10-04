@@ -45,11 +45,72 @@ def _initialize_repository_rounds_worker(data_dirs, barrier, results):
     results.put(rounds)
 
 
-def _hold_repository_lock_worker(lock_path, hold_seconds, ready):
+def _hold_repository_lock_worker(lock_path, hold_seconds, ready, release=None):
     repository = ProfileRepository.__new__(ProfileRepository)
     with repository._lock(Path(lock_path)):
         ready.set()
-        time.sleep(hold_seconds)
+        if release is None:
+            time.sleep(hold_seconds)
+        else:
+            assert release.wait(timeout=10), "parent did not release holder"
+
+
+def _synchronized_lock_contender_worker(
+    lock_path, results, ready, start, acquired, release, blocked=None
+):
+    repository = ProfileRepository.__new__(ProfileRepository)
+    ready.set()
+    assert start.wait(timeout=10), "parent did not start contender"
+    started = time.monotonic()
+    try:
+        identity = None
+        if blocked is not None:
+            # A real failed OS syscall proves contention, without replacing the
+            # repository's flock/retry implementation or inferring it from time.
+            import fcntl
+
+            with open(lock_path, "a+b") as probe:
+                stat = os.fstat(probe.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                try:
+                    fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    blocked.set()
+                else:
+                    fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+                    raise AssertionError("holder did not exclude OS lock probe")
+        with repository._lock(Path(lock_path)):
+            elapsed = time.monotonic() - started
+            after_release = release.is_set()
+            acquired.set()
+        results.put({
+            "ok": True,
+            "elapsed": elapsed,
+            "after_release": after_release,
+            "identity": identity,
+        })
+    except BaseException as exc:  # pragma: no cover - parent reports exact failure
+        results.put({
+            "ok": False,
+            "elapsed": time.monotonic() - started,
+            "type": type(exc).__name__,
+            "error": str(exc),
+        })
+
+
+def _finish_lock_workers(workers, start, release, results):
+    # Release every gate even when an assertion/queue timeout fails. Never leave
+    # a blocked spawned worker behind to hang pytest or a subsequent test.
+    start.set()
+    release.set()
+    for worker in workers:
+        if worker.pid is not None:
+            worker.join(timeout=2)
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(timeout=2)
+    results.close()
+    results.join_thread()
 
 
 def _acquire_repository_lock_worker(lock_path, results, raise_inside=False):
@@ -108,60 +169,97 @@ def test_windows_cross_process_lock_waits_beyond_msvcrt_implicit_retry_window(tm
 
 
 @pytest.mark.skipif(os.name == "nt", reason="exercises the POSIX flock retry path")
-def test_posix_cross_process_lock_waits_then_succeeds(tmp_path):
+@pytest.mark.parametrize("start_method", ["spawn", "fork"])
+def test_posix_cross_process_lock_waits_then_succeeds(tmp_path, start_method):
     lock_path = tmp_path / "posix-held.lock"
-    context = multiprocessing.get_context("spawn")
+    context = multiprocessing.get_context(start_method)
     ready = context.Event()
+    contender_ready = context.Event()
+    start = context.Event()
+    release = context.Event()
+    blocked = context.Event()
+    acquired = context.Event()
     results = context.Queue()
     holder = context.Process(
         target=_hold_repository_lock_worker,
-        args=(str(lock_path), 0.4, ready),
+        args=(str(lock_path), None, ready, release),
     )
     contender = context.Process(
-        target=_acquire_repository_lock_worker,
-        args=(str(lock_path), results),
+        target=_synchronized_lock_contender_worker,
+        args=(str(lock_path), results, contender_ready, start, acquired, release, blocked),
     )
 
-    holder.start()
-    assert ready.wait(timeout=10)
-    contender.start()
-    result = results.get(timeout=10)
-    contender.join(timeout=10)
-    holder.join(timeout=10)
+    try:
+        holder.start()
+        assert ready.wait(timeout=10)
+        stat = lock_path.stat()
+        contender.start()
+        assert contender_ready.wait(timeout=10)
+        start.set()
+        assert blocked.wait(timeout=5), "contender never observed real OS contention"
+        # Startup/import time cannot consume this interval: the holder remains
+        # gated until the contender's timer and actual EAGAIN have occurred.
+        assert not acquired.wait(timeout=0.4), "contender entered while holder owned lock"
+        release.set()
+        result = results.get(timeout=10)
+        contender.join(timeout=2)
+        holder.join(timeout=2)
 
-    assert holder.exitcode == contender.exitcode == 0
-    assert result["ok"], result
-    assert 0.2 <= result["elapsed"] < 5
+        assert holder.exitcode == contender.exitcode == 0
+        assert result["ok"], result
+        assert acquired.is_set()
+        assert result["after_release"], result
+        assert result["identity"] == (stat.st_dev, stat.st_ino)
+        assert 0.2 <= result["elapsed"] < 5
+    finally:
+        _finish_lock_workers((holder, contender), start, release, results)
 
 
-def test_cross_process_lock_timeout_is_short_configurable_and_path_safe(tmp_path, monkeypatch):
+@pytest.mark.parametrize("start_method", ["spawn"] if os.name == "nt" else ["spawn", "fork"])
+def test_cross_process_lock_timeout_is_short_configurable_and_path_safe(
+    tmp_path, monkeypatch, start_method
+):
     lock_path = tmp_path / "sensitive-profile-name.lock"
     monkeypatch.setenv("CONFIGFLOW_LOCK_TIMEOUT_SECONDS", "0.2")
-    context = multiprocessing.get_context("spawn")
+    context = multiprocessing.get_context(start_method)
     ready = context.Event()
+    contender_ready = context.Event()
+    start = context.Event()
+    release = context.Event()
+    acquired = context.Event()
     results = context.Queue()
     holder = context.Process(
         target=_hold_repository_lock_worker,
-        args=(str(lock_path), 1.0, ready),
+        args=(str(lock_path), None, ready, release),
     )
     contender = context.Process(
-        target=_acquire_repository_lock_worker,
-        args=(str(lock_path), results),
+        target=_synchronized_lock_contender_worker,
+        args=(str(lock_path), results, contender_ready, start, acquired, release),
     )
 
-    holder.start()
-    assert ready.wait(timeout=10)
-    contender.start()
-    result = results.get(timeout=10)
-    contender.join(timeout=10)
-    holder.join(timeout=10)
+    try:
+        holder.start()
+        assert ready.wait(timeout=10)
+        contender.start()
+        assert contender_ready.wait(timeout=10)
+        start.set()
+        # Keep ownership through the error, regardless of contender startup.
+        result = results.get(timeout=10)
+        contender.join(timeout=2)
+        assert not acquired.is_set()
+        assert holder.is_alive()
+        assert not release.is_set()
+        release.set()
+        holder.join(timeout=2)
 
-    assert holder.exitcode == contender.exitcode == 0
-    assert not result["ok"]
-    assert result["type"] == ProfileRepositoryError.__name__
-    assert 0.1 <= result["elapsed"] < 0.9
-    assert "Timed out waiting for profile repository lock" in result["error"]
-    assert str(lock_path) not in result["error"]
+        assert holder.exitcode == contender.exitcode == 0
+        assert not result["ok"]
+        assert result["type"] == ProfileRepositoryError.__name__
+        assert 0.1 <= result["elapsed"] < 0.9
+        assert "Timed out waiting for profile repository lock" in result["error"]
+        assert str(lock_path) not in result["error"]
+    finally:
+        _finish_lock_workers((holder, contender), start, release, results)
 
 
 @pytest.mark.parametrize("configured", ["-1", "0", "nan", "inf", "999999", "not-a-number"])

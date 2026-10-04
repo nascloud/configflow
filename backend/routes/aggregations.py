@@ -31,6 +31,7 @@ from backend.utils.sub_store_client import (
     parse_proxies_from_yaml,
     proxies_to_nodes,
 )
+from backend.utils.strategy_references import StrategyReferenceError
 from backend.utils.logger import get_logger
 from backend.utils.url_utils import safe_exception_details
 from backend.utils.reorder import resolve_new_order
@@ -46,7 +47,8 @@ AGGREGATION_PROVIDERS_DIR = os.path.join(DATA_DIR, 'providers')
 # 业务逻辑函数
 # ============================================================================
 
-def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]:
+def generate_aggregation_provider(aggregation: Dict[str, Any], *, config=None,
+                                  main_config=None, persist=True) -> Dict[str, Any]:
     """生成订阅聚合的 provider YAML 文件
 
     Args:
@@ -67,8 +69,23 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
     4. 转换为 mihomo 格式
     5. 生成并保存 YAML 文件
     """
-    profile_id = resolve_profile_id()
-    config_data = get_config(profile_id)
+    # Dry rendering accepts explicit profile-scoped snapshots without requiring
+    # that a pure converter fixture has already been persisted in a repository.
+    profile_id = (config.get('profile_id') or 'default') if config is not None and not persist else resolve_profile_id(
+        config.get('profile_id') if config is not None else None)
+    config_data = config if config is not None else get_config(profile_id)
+    from backend.utils.dialer_references import validate_dialers
+    # Known stored graph errors must fail before fetch or cache mutation.
+    validate_dialers(config_data)
+    # Standalone delivery must discover opaque main-node conversion results too.
+    # Capture once before fetching; a supplied main is already materialized by
+    # main preflight/Agent delivery. Disable provider preflight to avoid recursion
+    # and unrelated provider fetches or cache/artifact publication.
+    from backend.converters.mihomo import generate_mihomo_config
+    from backend.utils.provider_delivery import DeliverySnapshot
+    main = main_config if main_config is not None else yaml.safe_load(
+        generate_mihomo_config(config_data, preflight_providers=False))
+    snapshot = DeliverySnapshot.capture(profile_id, main)
     agg_id = aggregation['id']
     agg_name = aggregation['name']
 
@@ -81,6 +98,7 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
     # 1. 从选择的订阅中获取节点 - 优先通过 Sub-Store 获取
     # sub_proxies_map: sub_id -> proxies list（mihomo 格式，用于最终输出）
     sub_proxies_map = {}
+    pending_cache_updates = []
     subscription_ids = aggregation.get('subscriptions', [])
     if subscription_ids:
         subscriptions = config_data.get('subscriptions', [])
@@ -98,7 +116,8 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
             try:
                 logger.info(f"尝试通过 Sub-Store 获取订阅最新数据: '{sub['name']}'")
                 yaml_text, source = get_subscription_proxies_yaml(sub_id, sub['url'])
-                proxies = parse_proxies_from_yaml(yaml_text)
+                from backend.utils.provider_delivery import parse_provider_proxies
+                proxies = parse_provider_proxies(yaml_text)
 
                 # 转换为 node 格式用于缓存和过滤
                 nodes_list = proxies_to_nodes(proxies)
@@ -108,16 +127,8 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
                     if 'id' not in node:
                         node['id'] = f"node_{uuid.uuid4().hex[:8]}"
 
-                # 保存到本地缓存
-                save_subscription_nodes(
-                    sub_id,
-                    nodes_list,
-                    {
-                        'subscription_name': sub['name'],
-                        'url': sub.get('url')
-                    },
-                    profile_id=profile_id,
-                )
+                # Cache updates are deferred until the entire provider passes
+                # final topology validation; dry preflight never commits them.
                 if source == 'rendered_yaml':
                     logger.info(f"成功直接复用订阅 URL 返回的 Sub-Store YAML 并更新缓存: '{sub['name']}', 节点数: {len(nodes_list)}")
                 elif source == 'sub_store':
@@ -126,6 +137,8 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
                     logger.info(f"Sub-Store 获取失败后，成功直接拉取原始订阅并更新缓存: '{sub['name']}', 节点数: {len(nodes_list)}")
                 else:
                     logger.info(f"成功获取订阅并更新缓存: '{sub['name']}', 节点数: {len(nodes_list)}")
+            except StrategyReferenceError:
+                raise
             except Exception as e:
                 proxies = None
                 nodes_list = None
@@ -164,6 +177,8 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
                     try:
                         fetched_id, proxies, nodes_list = future.result()
                         results[fetched_id] = (proxies, nodes_list)
+                    except StrategyReferenceError:
+                        raise
                     except Exception as e:
                         # 兜底：单个订阅的任何未预期异常都不影响其他订阅
                         logger.error("订阅拉取任务异常: %s", safe_exception_details(e))
@@ -173,7 +188,11 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
             proxies, nodes_list = results.get(sub_id, (None, []))
             if proxies is not None:
                 sub_proxies_map[sub_id] = proxies
+                pending_cache_updates.append((sub_id, nodes_list, _sub))
 
+            # Validate cache/remote metadata before hashing names or converting.
+            from backend.utils.dialer_references import validate_shapes
+            validate_shapes({'nodes': nodes_list}, require_ids=False)
             # 记录该订阅的节点数（在过滤前）
             subscription_node_counts[sub_id] = len(nodes_list)
 
@@ -212,6 +231,8 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
         for p in proxies_list:
             sub_store_proxy_by_name[p.get('name', '')] = p
 
+    from backend.utils.dialer_references import validate_dialers, overlay_dialer
+    validate_dialers(config_data)
     proxies = []
     for node in all_nodes:
         node_name = node.get('name', '')
@@ -220,10 +241,18 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
             proxies.append(sub_store_proxy_by_name[node_name])
         else:
             # 手动节点或缓存降级节点，使用 convert_node_to_mihomo
-            proxy = convert_node_to_mihomo(node)
+            proxy = overlay_dialer(config_data, node, convert_node_to_mihomo(node))
             if proxy:
                 proxies.append(proxy)
 
+    # Activation belongs to the actual immutable main, not stored metadata.
+    # Validate every collection before replacing any last-known-good artifact.
+    snapshot.validate(proxies)
+    if snapshot.has_chains or any(p.get('dialer-proxy') is not None for p in proxies):
+        from backend.utils.dialer_references import DialerReferenceError
+        from flask import has_request_context
+        if has_request_context() and request.args.get('format') == 'surge':
+            raise DialerReferenceError('Surge 暂不支持 dialer-proxy，请使用 Mihomo')
     # 5. 生成 YAML 内容（使用 IndentDumper 确保正确的缩进）
     from backend.converters.mihomo import IndentDumper
     provider_data = {'proxies': proxies}
@@ -237,17 +266,25 @@ def generate_aggregation_provider(aggregation: Dict[str, Any]) -> Dict[str, Any]
     )
 
     # 6. 保存到当前 profile 的文件
+    if persist:
+        for sub_id, nodes_list, sub in pending_cache_updates:
+            save_subscription_nodes(sub_id, nodes_list,
+                                    {'subscription_name': sub['name'], 'url': sub.get('url')},
+                                    profile_id=profile_id)
     file_path = get_repository().write_profile_text(
         profile_id,
         os.path.join('providers', f"{agg_id}.yaml"),
         yaml_content,
-    )
+    ) if persist else None
 
     logger.info(f"生成聚合 provider: {agg_name}, {len(proxies)} 个节点")
 
     # 7. 返回文件路径和统计数据（不保存到配置文件）
     return {
-        'file_path': str(file_path),
+        'file_path': str(file_path) if file_path is not None else None,
+        'content': yaml_content,
+        'cache_updates': [(sub_id, nodes, {'subscription_name': sub['name'], 'url': sub.get('url')})
+                          for sub_id, nodes, sub in pending_cache_updates],
         'subscription_node_counts': subscription_node_counts,
         'total_count': len(proxies)
     }
@@ -473,6 +510,8 @@ def preview_aggregation_nodes(agg_id):
             'subscription_node_counts': subscription_node_counts
         })
 
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         logger.error("聚合操作失败: %s", safe_exception_details(e))
         return jsonify({'success': False, 'message': '聚合操作失败'}), 500
@@ -534,6 +573,8 @@ def get_aggregation_provider(agg_id):
             download_name=f"{aggregation['name']}.yaml"
         )
 
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         logger.error("聚合操作失败: %s", safe_exception_details(e))
         return jsonify({'success': False, 'message': '聚合操作失败'}), 500
@@ -554,6 +595,8 @@ def reorder_aggregations():
         config_data['subscription_aggregations'] = new_order
         save_config()
         return jsonify({'success': True, 'order': [a.get('id') for a in new_order]})
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         logger.error("聚合操作失败: %s", safe_exception_details(e))
         return jsonify({'success': False, 'message': '聚合操作失败'}), 500

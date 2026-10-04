@@ -335,6 +335,22 @@
               placeholder="支持 URI、JSON、YAML 等格式"
             />
           </div>
+          <div v-if="!form.subscription_id" class="flex flex-col gap-1.5">
+            <Label>拨号代理（仅 Mihomo）</Label>
+            <Input v-model="dialerSearch" placeholder="搜索节点或静态策略组" aria-label="搜索拨号代理" />
+            <Select v-model="dialerSelection">
+              <SelectTrigger data-testid="dialer-trigger"><SelectValue>{{ dialerLabel }}</SelectValue></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">不覆盖（保留原始值）</SelectItem>
+                <SelectItem v-for="candidate in dialerCandidates" :key="candidate.value" :value="candidate.value">{{ candidate.label }}</SelectItem>
+              </SelectContent>
+            </Select>
+            <p v-if="dialerUnavailable" role="alert" class="text-xs text-destructive-accent">当前稳定引用目标不可用，请重新选择或清除覆盖；不会自动清除。</p>
+            <p v-if="legacyDialer" class="text-xs text-muted-foreground">原始 dialer-proxy：{{ legacyDialer }}；{{ form.dialer_ref ? '当前由稳定引用覆盖' : '将保留原始值' }}</p>
+            <Button v-if="form.dialer_ref" variant="outline" @click="form.dialer_ref = null">清除覆盖（恢复原始值）</Button>
+            <p class="text-xs text-muted-foreground">清除只移除稳定引用覆盖，不删除节点字符串/params 的原始值；如需关闭原始拨号，请显式编辑原始配置。</p>
+            <p class="text-xs text-muted-foreground">只支持当前配置空间已启用的手动节点和静态策略组；订阅、聚合、跟随组不支持。后端校验全部分支以防循环。</p>
+          </div>
           <div class="flex items-center gap-2.5">
             <Switch id="node-enabled" v-model="form.enabled" />
             <Label for="node-enabled" class="text-[13px] text-muted-foreground">
@@ -457,6 +473,68 @@ const form = ref<Partial<ProxyNode>>({
   proxy_string: '',
   enabled: true,
   remark: ''
+})
+
+const legacyDialer = computed(() => {
+  if (!form.value.proxy_string) return form.value.params?.['dialer-proxy']
+  try {
+    let parsed: any = yaml.load(form.value.proxy_string)
+    if (Array.isArray(parsed)) parsed = parsed[0]
+    if (parsed?.proxies) parsed = parsed.proxies[0]
+    return parsed && typeof parsed === 'object' ? parsed['dialer-proxy'] : undefined
+  } catch { return undefined }
+})
+const dialerSearch = ref('')
+const dialerGroups = ref<any[]>([])
+const dialerGroupsLoading = ref(false)
+const dialerSelection = computed({
+  // Reference identity must not depend on the API object's JSON property order.
+  get: () => form.value.dialer_ref ? JSON.stringify({ type: form.value.dialer_ref.type, id: form.value.dialer_ref.id }) : 'none',
+  set: (value: string) => { form.value.dialer_ref = value === 'none' ? null : JSON.parse(value) }
+})
+const eligibleDialerCandidates = computed(() => {
+  const staticGroup = (id: string, seen = new Set<string>()): boolean => {
+    if (seen.has(id)) return false
+    const group = dialerGroups.value.find(g => g.id === id)
+    if (!group || group.enabled === false || ['subscriptions', 'aggregations', 'use', 'follow_group', 'include_all', 'include-all'].some(k => group[k]?.length || group[k] === true)) return false
+    if (group.proxies_order?.some((i: any) => !['node', 'strategy'].includes(i.type))) return false
+    const next = new Set(seen).add(id)
+    const members = group.proxies_order?.length ? group.proxies_order : [
+      ...(group.manual_nodes || (group.source === 'node' ? group.proxies : []) || []).map((id: string) => ({ type: 'node', id })),
+      ...(group.include_groups || (group.source === 'strategy' ? group.proxies : []) || []).map((id: string) => ({ type: 'strategy', id }))
+    ]
+    return members.every((member: any) => member.type === 'strategy'
+      ? staticGroup(member.id, next)
+      : ['DIRECT', 'REJECT'].includes(member.id) || nodes.value.some(n => n.id === member.id && n.enabled !== false && !n.subscription_id))
+  }
+  return [
+    ...nodes.value.filter(n => n.enabled !== false && !n.subscription_id && n.id !== form.value.id).map(n => ({ value: JSON.stringify({ type: 'node', id: n.id }), label: `节点 · ${n.name}` })),
+    ...dialerGroups.value.filter(g => staticGroup(g.id)).map(g => ({ value: JSON.stringify({ type: 'group', id: g.id }), label: `策略组 · ${g.name}` }))
+  ]
+})
+const dialerCandidates = computed(() => eligibleDialerCandidates.value.filter(c => c.label.toLowerCase().includes(dialerSearch.value.toLowerCase())))
+const selectedDialerCandidate = computed(() => eligibleDialerCandidates.value.find(c => c.value === dialerSelection.value))
+const dialerLoading = computed(() => form.value.dialer_ref?.type === 'group' && dialerGroupsLoading.value)
+const dialerUnavailable = computed(() => !!form.value.dialer_ref && !dialerLoading.value && !selectedDialerCandidate.value)
+// Resolve the trigger from resource identity, never from mounted/search-filtered items.
+const dialerLabel = computed(() => {
+  const reference = form.value.dialer_ref
+  if (!reference) return '不覆盖（保留原始值）'
+  if (dialerLoading.value) return `策略组 · ${reference.id}（加载中）`
+  if (selectedDialerCandidate.value) return selectedDialerCandidate.value.label
+  const target = reference.type === 'node'
+    ? nodes.value.find(n => n.id === reference.id)
+    : dialerGroups.value.find(g => g.id === reference.id)
+  return `${reference.type === 'node' ? '节点' : '策略组'} · ${target?.name || reference.id}（不可用）`
+})
+watch(dialogVisible, async open => {
+  if (!open) return
+  dialerSearch.value = ''
+  dialerGroups.value = []
+  dialerGroupsLoading.value = true
+  try { dialerGroups.value = (await api.get('/proxy-groups')).data }
+  catch { notify.error('加载拨号代理策略组失败') }
+  finally { dialerGroupsLoading.value = false }
 })
 
 // 节点字符串展开/收起状态
@@ -696,64 +774,14 @@ const batchDeleteNodes = async () => {
       try {
         await nodeApi.delete(nodeId)
         successCount++
-      } catch (error) {
+      } catch (error: any) {
         failCount++
-        console.error(`删除节点 ${nodeId} 失败:`, error)
+        notify.error(error?.response?.data?.message || '删除节点失败')
       }
     }
 
-    // 获取所有策略组，清理引用
-    try {
-      const { data: proxyGroups } = await api.get('/proxy-groups')
-      let updatedGroupCount = 0
-
-      for (const group of proxyGroups) {
-        let groupModified = false
-
-        if (group.manual_nodes && group.manual_nodes.length > 0) {
-          const originalLength = group.manual_nodes.length
-          group.manual_nodes = group.manual_nodes.filter(
-            (id: string) => !nodeIdsToDelete.includes(id)
-          )
-          if (group.manual_nodes.length !== originalLength) {
-            groupModified = true
-          }
-        }
-
-        if (group.proxies_order && group.proxies_order.length > 0) {
-          const originalLength = group.proxies_order.length
-          group.proxies_order = group.proxies_order.filter(
-            (item: any) => !(item.type === 'node' && nodeIdsToDelete.includes(item.id))
-          )
-          if (group.proxies_order.length !== originalLength) {
-            groupModified = true
-          }
-        }
-
-        if (groupModified) {
-          try {
-            await api.put(`/proxy-groups/${group.id}`, group)
-            updatedGroupCount++
-          } catch (error) {
-            console.error(`更新策略组 ${group.name} 失败:`, error)
-          }
-        }
-      }
-
-      // 显示结果
-      if (failCount === 0) {
-        if (updatedGroupCount > 0) {
-          notify.success(`批量删除成功！已删除 ${successCount} 个节点，清理了 ${updatedGroupCount} 个策略组中的引用`)
-        } else {
-          notify.success(`批量删除成功！已删除 ${successCount} 个节点`)
-        }
-      } else {
-        notify.warning(`批量删除完成！成功 ${successCount} 个，失败 ${failCount} 个`)
-      }
-    } catch (error) {
-      console.error('清理策略组引用失败:', error)
-      notify.warning(`已删除 ${successCount} 个节点，但清理策略组引用时出现错误`)
-    }
+    if (failCount === 0) notify.success(`批量删除成功！已删除 ${successCount} 个节点`)
+    else notify.warning(`批量删除完成！成功 ${successCount} 个，失败 ${failCount} 个`)
 
     // 清空选择并刷新列表
     selectedNodeIds.value.clear()
@@ -777,8 +805,8 @@ const toggleNodeEnabled = async (node: ProxyNode) => {
   try {
     await nodeApi.update(node.id, node)
     notify.success(node.enabled ? '已启用' : '已禁用')
-  } catch (error) {
-    notify.error('更新状态失败')
+  } catch (error: any) {
+    notify.error(error?.response?.data?.message || '更新状态失败')
     node.enabled = previous
     loadNodes()
   } finally {
@@ -925,8 +953,8 @@ const saveNode = async () => {
     }
     dialogVisible.value = false
     loadNodes()
-  } catch (error) {
-    notify.error('保存失败')
+  } catch (error: any) {
+    notify.error(error?.response?.data?.message || '保存失败')
   }
 }
 
@@ -1130,41 +1158,11 @@ const deleteNode = async (row: ProxyNode) => {
     // 先删除节点
     await nodeApi.delete(row.id)
 
-    // 获取所有策略组，清理引用
-    const { data: proxyGroups } = await api.get('/proxy-groups')
-    let updatedCount = 0
-
-    // 查找引用了该节点的策略组
-    for (const group of proxyGroups) {
-      if (group.manual_nodes && group.manual_nodes.includes(row.id)) {
-        // 从节点列表中移除该节点ID
-        group.manual_nodes = group.manual_nodes.filter((id: string) => id !== row.id)
-
-        // 同步更新 proxies_order
-        if (group.proxies_order && group.proxies_order.length > 0) {
-          group.proxies_order = group.proxies_order.filter(
-            (item: any) => !(item.type === 'node' && item.id === row.id)
-          )
-        }
-
-        try {
-          await api.put(`/proxy-groups/${group.id}`, group)
-          updatedCount++
-        } catch (error) {
-          console.error(`更新策略组 ${group.name} 失败:`, error)
-        }
-      }
-    }
-
-    if (updatedCount > 0) {
-      notify.success(`删除成功，已同步清理 ${updatedCount} 个策略组中的引用`)
-    } else {
-      notify.success('删除成功')
-    }
+    notify.success('删除成功')
     loadNodes()
   } catch (error: any) {
     if (error !== 'cancel' && error !== 'close') {
-      notify.error('删除失败')
+      notify.error(error?.response?.data?.message || '删除失败')
       console.error('删除节点失败:', error)
     }
   }

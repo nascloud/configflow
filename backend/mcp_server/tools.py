@@ -492,7 +492,10 @@ def _list_nodes(args):
             'id': string('节点 id，update / delete 时必填'),
             'data': free_object(
                 '节点字段：name（节点名）、proxy_string（节点链接或结构化 proxy 文本）、'
-                'enabled、remark（备注）'
+                'enabled、remark（备注）、dialer_ref（{type: "node"|"group", id: 稳定ID}，'
+                '仅当前配置空间已启用手动节点/静态策略组，Mihomo 专用；'
+                'null 或省略保留 proxy_string/params 原始 dialer-proxy，有值时覆盖；'
+                'Surge 暂不支持，循环/缺失引用返回400，被引用资源删除/禁用返回409）'
             ),
         },
         ['action'],

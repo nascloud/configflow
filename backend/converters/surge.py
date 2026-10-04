@@ -78,6 +78,9 @@ def generate_surge_config(config_data: Dict[str, Any], base_url: str = '') -> st
         str: Surge 格式的配置字符串
     """
 
+    from backend.utils.dialer_references import validate_dialers, reject_surge_dialers
+    validate_dialers(config_data)
+    reject_surge_dialers(config_data)
     # 从合并数组中分离规则和规则集
     rules_list, rule_sets_list = split_rules_and_rulesets(config_data)
 
@@ -440,6 +443,9 @@ def convert_proxies_to_surge_text(proxies: List[Dict[str, Any]]) -> str:
         str: Surge 格式纯文本，每行一个节点
     """
     from backend.utils.sub_store_client import proxies_to_nodes
+    from backend.utils.dialer_references import DialerReferenceError
+    if any(proxy.get('dialer-proxy') is not None for proxy in proxies):
+        raise DialerReferenceError('Surge policy-path 暂不支持 dialer-proxy，不能静默移除拨号配置')
 
     nodes = proxies_to_nodes(proxies)
     lines = []

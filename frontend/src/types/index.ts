@@ -19,6 +19,8 @@ export interface ProxyNode {
   remark?: string  // 备注
   subscription_id?: string
   subscription_name?: string
+  dialer_ref?: { type: 'node' | 'group'; id: string } | null
+  params?: Record<string, unknown>
 }
 
 export interface Rule {
