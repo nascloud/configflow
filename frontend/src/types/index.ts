@@ -19,6 +19,8 @@ export interface ProxyNode {
   remark?: string  // 备注
   subscription_id?: string
   subscription_name?: string
+  dialer_ref?: { type: 'node' | 'group'; id: string } | null
+  params?: Record<string, unknown>
 }
 
 export interface Rule {
@@ -78,6 +80,7 @@ export interface Agent {
   version: string
   config_version: string
   enabled: boolean
+  profile_id?: string
   has_update?: boolean
   created_at?: string
   updated_at?: string

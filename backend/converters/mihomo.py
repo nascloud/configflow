@@ -4,6 +4,8 @@ import yaml
 from typing import Dict, Any, List, Optional
 from backend.utils.logger import get_logger
 from backend.utils.proxy_utils import fix_proxy_fields
+from backend.common.profile_context import append_url_query, profile_api_path
+from backend.utils.url_utils import safe_url_for_log
 
 # 获取当前模块的日志记录器
 logger = get_logger(__name__)
@@ -35,7 +37,9 @@ def apply_github_proxy_domain(url: str, config_data: Dict[str, Any]) -> str:
     if not config_data:
         return url
 
-    proxy_url = config_data.get('system_config', {}).get('github_proxy_domain', '').strip()
+    configured_proxy = config_data.get('system_config', {}).get('github_proxy_domain', '')
+    proxy_url = configured_proxy.strip() if isinstance(configured_proxy, str) else ''
+
     if not proxy_url:
         return url
 
@@ -216,7 +220,7 @@ def sync_mosdns_hosts(mihomo_config: Dict[str, Any], config_data: Dict[str, Any]
 
 
 def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
-                           sync_lan_hosts: bool = False) -> str:
+                           sync_lan_hosts: bool = False, *, preflight_providers: bool = True) -> str:
     """生成 Mihomo YAML 配置
 
     Args:
@@ -225,6 +229,8 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
             配置保持 False，避免漫游设备在外网解析到内网 IP。
     """
 
+    from backend.utils.dialer_references import validate_dialers
+    validate_dialers(config_data)
     # 从合并数组中分离规则和规则集
     rules_list, rule_sets_list = split_rules_and_rulesets(config_data)
 
@@ -397,7 +403,19 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
 
     logger.debug(f"仅通过聚合使用的节点ID（将被排除）: {nodes_only_in_aggregations}")
 
-    # 添加代理节点（只添加被策略组直接使用且启用的节点，排除聚合中的节点）
+    from backend.utils.dialer_references import dependency_node_ids, overlay_dialer, group_members
+    for group in config_data.get('proxy_groups', []):
+        if group.get('enabled', True):
+            legacy_nodes = {id for kind, id in group_members(group) if kind == 'node' and id not in ('DIRECT', 'REJECT')}
+            used_node_ids.update(legacy_nodes)
+            directly_selected_node_ids.update(legacy_nodes)
+    aggregation_roots = {id for agg in config_data.get('subscription_aggregations', [])
+                         if agg.get('enabled', True) and agg.get('id') in used_aggregation_ids
+                         for id in agg.get('nodes', [])}
+    required_dependencies = dependency_node_ids(config_data, used_node_ids | aggregation_roots, include_roots=False)
+    nodes_only_in_aggregations -= required_dependencies | directly_selected_node_ids
+    used_node_ids = dependency_node_ids(config_data, used_node_ids | aggregation_roots)
+    # 添加代理节点（包括拨号依赖）
     proxies = []
     logger.debug(f"收集到的被使用节点ID: {used_node_ids}")
     logger.debug(f"开始生成 proxies，总节点数: {len(config_data.get('nodes', []))}")
@@ -415,7 +433,7 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
         if node.get('id') in nodes_only_in_aggregations:
             logger.debug(f"跳过仅通过聚合使用的节点: {node.get('name')} (id: {node.get('id')})")
             continue
-        proxy = convert_node_to_mihomo(node)
+        proxy = overlay_dialer(config_data, node, convert_node_to_mihomo(node))
         if proxy:
             proxies.append(proxy)
             logger.debug(f"添加节点到 proxies: {node.get('name')}")
@@ -435,20 +453,20 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
     # 使用本地接口而不是原始订阅 URL
     proxy_providers = {}
     logger.info(f"开始生成订阅 proxy-providers，使用本地接口")
-    logger.info(f"Server domain: {effective_base_url}")
+    logger.info(f"Server domain: {safe_url_for_log(effective_base_url)}")
     logger.info(f"Config token: {'已配置' if config_token else '未配置'}")
 
     for sub in config_data.get('subscriptions', []):
         if sub.get('enabled', True) and sub.get('id') in used_subscription_ids:
             # 构建订阅 provider 的 URL（使用本地接口）
             sub_id = sub['id']
-            sub_url = f"{effective_base_url}/api/subscriptions/{sub_id}/proxies"
+            sub_url = f"{effective_base_url}{profile_api_path(config_data, f'/subscriptions/{sub_id}/proxies')}"
 
             # 如果配置了令牌，添加到 URL
             if config_token:
-                sub_url += f"?token={config_token}"
+                sub_url = append_url_query(sub_url, {'token': config_token})
 
-            logger.info(f"订阅 '{sub['name']}' 使用本地接口: {sub_url}")
+            logger.info(f"订阅 '{sub['name']}' 使用本地接口: {safe_url_for_log(sub_url)}")
 
             proxy_providers[sub['name']] = {
                 'type': 'http',
@@ -464,11 +482,11 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
         if agg.get('enabled', True) and agg.get('id') in used_aggregation_ids:
             # 构建聚合 provider 的 URL（使用服务域名配置）
             agg_id = agg['id']
-            agg_url = f"{effective_base_url}/api/aggregations/{agg_id}/provider"
+            agg_url = f"{effective_base_url}{profile_api_path(config_data, f'/aggregations/{agg_id}/provider')}"
 
             # 如果配置了令牌，添加到 URL
             if config_token:
-                agg_url += f"?token={config_token}"
+                agg_url = append_url_query(agg_url, {'token': config_token})
 
             proxy_providers[agg['name']] = {
                 'type': 'http',
@@ -899,7 +917,7 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
                     # 这样所有规则都从本地获取，避免外部网络请求
                     rule_name = library_rule.get('name', '')
                     if rule_name:
-                        url = f"/api/rules/local/{rule_name}"
+                        url = profile_api_path(config_data, f"/rules/local/{rule_name}")
 
             # 如果 URL 是相对路径，动态拼接 server_domain
             if url and url.startswith('/') and effective_base_url:
@@ -980,6 +998,60 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
 
     mihomo_config['rules'] = rules
 
+    from backend.utils.strategy_references import validate_rule_policies
+    validate_rule_policies(
+        config_data,
+        [p['name'] for p in mihomo_config['proxies']] + [g['name'] for g in mihomo_config['proxy-groups']],
+        'mihomo',
+    )
+
+    from backend.utils.dialer_references import validate_emitted
+    validate_emitted(mihomo_config)
+    # Render used aggregation providers before any consumer can publish a main
+    # artifact or deliver it. Reuse this exact main graph; never recurse or write.
+    if preflight_providers:
+        from backend.routes.aggregations import generate_aggregation_provider
+        from backend.utils.dialer_references import dependency_graph
+        chains_known = (bool(dependency_graph(config_data)) or
+                        any(p.get('dialer-proxy') is not None for p in mihomo_config['proxies']))
+        opaque_node_ids = {n['id'] for n in config_data.get('nodes', [])
+                           if n.get('proxy_string') and
+                           _parse_structured_proxy_string(n['proxy_string']) is None}
+        used_aggregations = [a for a in config_data.get('subscription_aggregations', [])
+                             if a.get('enabled', True) and a.get('id') in used_aggregation_ids]
+        pending = [a for a in used_aggregations
+                   if chains_known or opaque_node_ids.intersection(a.get('nodes', []))]
+        queued = {a['id'] for a in pending}
+        from backend.utils.provider_delivery import (DeliverySnapshot,
+            prepare_subscription_provider, validate_rendered_bundle)
+        snapshot = DeliverySnapshot.capture(config_data.get('profile_id') or 'default', mihomo_config)
+        rendered_bundle = []
+        index = 0
+        while index < len(pending):
+            aggregation = pending[index]
+            index += 1
+            rendered = generate_aggregation_provider(aggregation, config=config_data,
+                                                     main_config=mihomo_config, persist=False)
+            rendered_bundle.append(rendered)
+            if not chains_known and any(p.get('dialer-proxy') is not None for p in
+                                        yaml.safe_load(rendered['content']).get('proxies', [])):
+                # A chain first discovered in a provider activates preflight of
+                # every remaining used provider, regardless of list order.
+                chains_known = True
+                pending.extend(a for a in used_aggregations if a['id'] not in queued)
+                queued.update(a['id'] for a in used_aggregations)
+        if chains_known:
+            # Direct subscriptions are providers too. Reuse the same dry renderer
+            # and raw-proxy validation, without publishing synthetic artifacts.
+            from backend.routes.subscriptions import get_subscription_proxies_yaml
+            for subscription in config_data.get('subscriptions', []):
+                if subscription.get('enabled', True) and subscription.get('id') in used_subscription_ids:
+                    rendered_bundle.append(prepare_subscription_provider(
+                        subscription, config_data, snapshot, fetch=get_subscription_proxies_yaml))
+        # Discovery flags only schedule materialization. The publication gate
+        # recomputes global activation from every exact rendered collection and
+        # revisits early providers without fetching or converting them again.
+        validate_rendered_bundle(snapshot, rendered_bundle)
     # 转换为 YAML
     return yaml.dump(
         mihomo_config,
@@ -1059,11 +1131,11 @@ def get_mihomo_provider_downloads(config_data: Dict[str, Any], base_url: str = '
     for sub in config_data.get('subscriptions', []):
         if sub.get('enabled', True) and sub.get('id') in used_subscription_ids:
             sub_id = sub['id']
-            sub_url = f"{effective_base_url}/api/subscriptions/{sub_id}/proxies"
+            sub_url = f"{effective_base_url}{profile_api_path(config_data, f'/subscriptions/{sub_id}/proxies')}"
 
             # 如果配置了令牌，添加到 URL
             if config_token:
-                sub_url += f"?token={config_token}"
+                sub_url = append_url_query(sub_url, {'token': config_token})
 
             downloads.append({
                 'name': sub['name'],
@@ -1075,11 +1147,11 @@ def get_mihomo_provider_downloads(config_data: Dict[str, Any], base_url: str = '
     for agg in config_data.get('subscription_aggregations', []):
         if agg.get('enabled', True) and agg.get('id') in used_aggregation_ids:
             agg_id = agg['id']
-            agg_url = f"{effective_base_url}/api/aggregations/{agg_id}/provider"
+            agg_url = f"{effective_base_url}{profile_api_path(config_data, f'/aggregations/{agg_id}/provider')}"
 
             # 如果配置了令牌，添加到 URL
             if config_token:
-                agg_url += f"?token={config_token}"
+                agg_url = append_url_query(agg_url, {'token': config_token})
 
             downloads.append({
                 'name': agg['name'],
@@ -1129,7 +1201,7 @@ def get_mihomo_ruleset_downloads(config_data: Dict[str, Any], base_url: str = ''
                     # 使用本地缓存的规则文件接口
                     rule_name = library_rule.get('name', '')
                     if rule_name:
-                        url = f"/api/rules/local/{rule_name}"
+                        url = profile_api_path(config_data, f"/rules/local/{rule_name}")
 
             # 如果 URL 是相对路径，动态拼接 server_domain
             if url and url.startswith('/') and effective_base_url:
