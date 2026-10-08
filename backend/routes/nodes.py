@@ -26,7 +26,7 @@ def handle_nodes():
         if 'id' not in node:
             node['id'] = f"node_{uuid.uuid4().hex[:8]}"
         if 'dialer_ref' in node:
-            return jsonify({'success': False, 'message': '拨号引用属于独立配置，请使用 node-dialers 接口'}), 400
+            return jsonify({'success': False, 'message': '共享节点不保存拨号引用，请在策略组中创建代理链'}), 400
         update_shared_config_transaction(
             lambda shared: shared.setdefault('nodes', []).append(node)
         )
@@ -44,7 +44,7 @@ def handle_node(node_id):
     if not deleting and not isinstance(new_data, dict):
         return jsonify({'success': False, 'message': '节点请求必须为非 null JSON 对象'}), 400
     if isinstance(new_data, dict) and 'dialer_ref' in new_data:
-        return jsonify({'success': False, 'message': '拨号引用属于独立配置，请使用 node-dialers 接口'}), 400
+        return jsonify({'success': False, 'message': '共享节点不保存拨号引用，请在策略组中创建代理链'}), 400
     def mutate(profile):
         nodes = profile.setdefault('nodes', [])
         original = next((n for n in nodes if n.get('id') == node_id), None)

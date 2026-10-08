@@ -39,27 +39,6 @@ def clone_profile(profile_id):
     return jsonify(get_repository().clone_profile(profile_id, data)), 201
 
 
-@profiles_bp.route('/<profile_id>/resources', methods=['GET', 'PUT'])
-@require_auth
-def profile_resources(profile_id):
-    repository = get_repository()
-    if request.method == 'GET':
-        return jsonify(repository.get_resource_refs(profile_id))
-    refs = request.get_json()
-    repository.set_resource_refs(profile_id, refs)
-    return jsonify(repository.get_resource_refs(profile_id))
-
-
-@profiles_bp.route('/<profile_id>/node-dialers', methods=['GET', 'PUT'])
-@require_auth
-def profile_node_dialers(profile_id):
-    repository = get_repository()
-    if request.method == 'GET':
-        return jsonify(repository.get_node_dialers(profile_id))
-    repository.set_node_dialers(profile_id, request.get_json())
-    return jsonify(repository.get_node_dialers(profile_id))
-
-
 @profiles_bp.route('/<profile_id>/export', methods=['GET'])
 @require_auth
 def export_profile(profile_id):

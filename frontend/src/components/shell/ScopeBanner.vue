@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 const props = defineProps<{
   /**
    * resource = 所有配置共用的订阅/节点/聚合/规则库
-   * profile  = 独立的资源选择、策略、规则与生成参数
+   * profile  = 独立的策略、代理链、规则与生成参数
    * system   = 全局服务、备份、Agent 与配置空间管理
    */
   scope: 'resource' | 'profile' | 'system'

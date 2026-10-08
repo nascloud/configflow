@@ -71,4 +71,6 @@ def test_legacy_object_reorder_preserves_shared_definitions(tmp_path):
     items = client.get('/api/aggregations').get_json()
     assert [item['id'] for item in items] == [second, first]
     assert {item['id']: item for item in items} == before
-    assert config_module.get_repository().get_profile('default')['resource_refs']['subscription_aggregations'] == []
+    profile = config_module.get_repository().get_profile('default')
+    assert profile['proxy_groups'] == []
+    assert 'resource_refs' not in profile

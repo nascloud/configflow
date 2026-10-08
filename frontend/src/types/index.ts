@@ -53,6 +53,15 @@ export interface ProxyGroup {
   name: string
   type: string
   enabled: boolean
+  chain?: { entry: { type: 'node' | 'group'; id: string }; exit: { type: 'node' | 'group'; id: string } }
+  aggregations?: string[]
+  aggregation_regex?: string
+  follow_group?: string
+  proxies_order?: { type: string; id: string }[]
+  proxy_order?: string
+  use?: string[]
+  include_all?: boolean
+  'include-all'?: boolean
   url?: string
   interval?: number
   subscriptions?: string[]    // 订阅来源

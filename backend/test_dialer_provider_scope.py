@@ -1,7 +1,6 @@
-"""Phase-one raw provider dialers cannot enter dynamic group membership."""
+"""Dynamic provider dialers must reject membership cycles before delivery."""
 from unittest.mock import Mock
 import pytest
-import yaml
 from backend.test_qa_integrity import make_app
 from backend.test_dialer_delivery_snapshot import seed_profile, agent_manager
 from backend.utils.subscription_cache import load_subscription_cache
@@ -10,7 +9,7 @@ from backend.utils.dialer_references import DialerReferenceError, validate_emitt
 
 @pytest.mark.parametrize('direct', [True, False])
 @pytest.mark.parametrize('consumer', ['preview', 'generate', 'download', 'provider', 'push'])
-def test_provider_dynamic_group_rejected_before_side_effects(tmp_path, monkeypatch, direct, consumer):
+def test_provider_membership_cycle_rejected_before_side_effects(tmp_path, monkeypatch, direct, consumer):
     app, repo = make_app(tmp_path)
     seed_profile(repo, direct=direct)
     content = 'proxies: [{name: Remote, type: http, server: fixture.test, port: 80, dialer-proxy: Entry}]'
@@ -32,21 +31,32 @@ def test_provider_dynamic_group_rejected_before_side_effects(tmp_path, monkeypat
     assert all(p.read_text() == 'last-good' for p in artifacts)
 
 
-@pytest.mark.parametrize('field,value', [('use', ['Feed']), ('subscriptions', ['s']), ('aggregations', ['agg']), ('follow_group', 'other'), ('include-all', True), ('include_all', True)])
 @pytest.mark.parametrize('nested', [False, True])
-def test_raw_dialer_rejects_transitive_dynamic_membership(field, value, nested):
-    groups = [{'name': 'Dynamic', 'proxies': ['DIRECT'], field: value}]
+@pytest.mark.parametrize('cycle', [False, True])
+def test_raw_dialer_dynamic_group_checks_real_candidate_edges(nested, cycle):
+    # These are emitted groups: subscription/aggregation/follow configuration
+    # has already been lowered to providers and concrete candidate edges.
+    groups = [{'name': 'Dynamic', 'use': ['Feed']}]
     if nested:
-        groups.append({'name': 'Static', 'proxies': ['Dynamic']})
-    main = {'proxies': [{'name': 'Remote', 'dialer-proxy': 'Static' if nested else 'Dynamic'}], 'proxy-groups': groups}
-    with pytest.raises(DialerReferenceError, match='静态'):
-        validate_emitted(main)
+        groups.append({'name': 'Outer', 'proxies': ['Dynamic']})
+    target = 'Outer' if nested else 'Dynamic'
+    main = {'proxies': [{'name': 'Exit', 'dialer-proxy': target}],
+            'proxy-groups': groups, 'proxy-providers': {'Feed': {}}}
+    candidate = {'name': 'Remote'}
+    if cycle:
+        candidate['dialer-proxy'] = target
+    candidates = {'Feed': [candidate]}
+    if cycle:
+        with pytest.raises(DialerReferenceError):
+            validate_emitted(main, provider_proxies=candidates, require_providers=True)
+    else:
+        validate_emitted(main, provider_proxies=candidates, require_providers=True)
 
 
 @pytest.mark.parametrize('target', ['DIRECT', 'Relay'])
 def test_static_provider_dialer_and_builtin_allowed(target):
-    validate_emitted({'proxies': [{'name': 'Remote', 'dialer-proxy': target}], 'proxy-groups': [{'name': 'Relay', 'proxies': ['DIRECT']}, {'name': 'UnrelatedDynamic', 'use': ['Feed']}]})
+    validate_emitted({'proxies': [{'name': 'Remote', 'dialer-proxy': target}], 'proxy-groups': [{'name': 'Relay', 'proxies': ['DIRECT']}, {'name': 'UnrelatedDynamic', 'use': ['Feed']}], 'proxy-providers': {'Feed': {}}})
 
 
 def test_no_chain_dynamic_group_legacy_allowed():
-    validate_emitted({'proxies': [{'name': 'Remote'}], 'proxy-groups': [{'name': 'Entry', 'use': ['Feed']}]})
+    validate_emitted({'proxies': [{'name': 'Remote'}], 'proxy-groups': [{'name': 'Entry', 'use': ['Feed']}], 'proxy-providers': {'Feed': {}}})

@@ -1,4 +1,4 @@
-"""Shared catalog ownership, protected mutations and profile-local dialers."""
+"""Shared catalog ownership, protected mutations and profile-local chains."""
 import copy
 
 import pytest
@@ -22,7 +22,6 @@ def catalog(tmp_path):
         'rule_library': [{'id': 'library', 'name': 'Library', 'source_type': 'content',
                           'content': 'DOMAIN,example.test', 'behavior': 'classical', 'enabled': True}],
     })
-    repository.set_resource_refs('default', {'subscriptions': ['sub'], 'nodes': ['node'], 'subscription_aggregations': ['agg']})
     repository.save_profile('default', {
         'proxy_groups': [{'id': 'group', 'name': 'Proxy', 'type': 'select', 'manual_nodes': ['node'], 'subscriptions': ['sub'], 'aggregations': ['agg']}],
         'rule_configs': [{'id': 'rule', 'itemType': 'ruleset', 'library_rule_id': 'library', 'policy': 'Proxy', 'enabled': True}],
@@ -75,25 +74,32 @@ def test_library_changes_resolve_without_overwriting_composition(catalog):
         assert rule['policy'] == profile['rule_configs'][0]['policy']
 
 
-def test_shared_dialer_fields_rejected_and_bindings_are_profile_local(catalog):
+def test_shared_dialer_fields_rejected_and_chains_are_profile_local(catalog):
     client, repository = catalog
     node = repository.get_shared()['nodes'][0]
+    before = repository.export_all()
     assert client.put('/api/nodes/node', json={**node, 'dialer_ref': {'type': 'group', 'id': 'group'}}).status_code == 400
-    # A separate outbound group avoids a node -> own containing group cycle.
+    assert repository.export_all() == before
     assert client.post('/api/proxy-groups', json={'id': 'out', 'name': 'Outbound', 'type': 'select', 'manual_nodes': ['DIRECT']}).status_code == 200
-    mapping = {'node': {'type': 'group', 'id': 'out'}}
-    assert client.put('/api/profiles/default/node-dialers', json=mapping).status_code == 200
-    assert client.get('/api/profiles/default/node-dialers').json == mapping
-    assert repository.get_profile('other')['node_dialers'] == {}
-    assert 'dialer_ref' not in repository.get_shared()['nodes'][0]
-    assert repository.get_compat_config('default')['nodes'][0]['dialer_ref'] == mapping['node']
+    chain = {'id': 'via-node', 'name': 'Via Node', 'type': 'chain',
+             'chain': {'entry': {'type': 'group', 'id': 'out'}, 'exit': {'type': 'node', 'id': 'node'}}}
+    other = repository.get_profile('other')
+    shared = repository.get_shared()
+    assert client.post('/api/proxy-groups', json=chain).status_code == 200
+    stored = next(group for group in client.get('/api/proxy-groups').json if group['id'] == 'via-node')
+    assert stored['type'] == 'chain'
+    assert stored['chain'] == chain['chain']
+    assert repository.get_profile('other') == other
+    assert repository.get_shared() == shared
+    assert 'node_dialers' not in repository.get_profile('default')
     before = repository.export_all()
     disabled = client.put('/api/nodes/node', json={**node, 'enabled': False})
     assert disabled.status_code == 409
     assert repository.export_all() == before
 
 
-def test_shared_aggregation_dependencies_block_unselected_source_deletion(catalog):
+
+def test_shared_aggregation_dependencies_block_source_deletion_from_empty_profile(catalog):
     client, repository = catalog
     repository.create_profile({'id': 'empty', 'name': 'Empty'})
     response = client.delete('/api/subscriptions/sub', headers={'X-ConfigFlow-Profile': 'empty'})
@@ -132,9 +138,9 @@ def test_shared_node_rename_validates_other_profiles_raw_dialers(catalog):
     source = {'id': 'source', 'name': 'Chained', 'type': 'http', 'enabled': True,
               'proxy_string': '{"type":"http","server":"source.test","port":80,"dialer-proxy":"Node"}'}
     assert client.post('/api/nodes', json=source).status_code == 200
-    refs = repository.get_resource_refs('other')
-    refs['nodes'].append('source')
-    assert client.put('/api/profiles/other/resources', json=refs).status_code == 200
+    assert client.post('/api/proxy-groups', headers={'X-ConfigFlow-Profile': 'other'}, json={
+        'id': 'raw-chain', 'name': 'Raw Chain', 'type': 'select', 'manual_nodes': ['source'],
+    }).status_code == 200
     before = repository.export_all()
     node = repository.get_shared()['nodes'][0]
     response = client.put('/api/nodes/node', headers={'X-ConfigFlow-Profile': 'default'}, json={**node, 'name': 'Renamed'})

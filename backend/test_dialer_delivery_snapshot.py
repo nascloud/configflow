@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 import yaml
 from backend.test_qa_integrity import make_app
-from backend.test_dialer_proxy import node, save_fixture
+from backend.test_dialer_proxy import node, save_fixture, chain_group
 from backend.utils.subscription_cache import save_subscription_nodes, load_subscription_cache
 
 GOOD = 'proxies: [{name: Remote, type: http, server: example.test, port: 80, dialer-proxy: relay}]'
@@ -23,7 +23,9 @@ def seed_profile(repo, direct=True, chain='managed'):
     shared['subscriptions'] = [{'id': 's', 'name': 'Feed', 'enabled': True, 'url': 'https://fixture.invalid/feed'}]
     shared['subscription_aggregations'] = [] if direct else [{'id': 'agg', 'name': 'Agg', 'subscriptions': ['s'], 'nodes': []}]
     p['proxy_groups'] = [{'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit', 'relay'], 'subscriptions': ['s'] if direct else [], 'aggregations': [] if direct else ['agg']}]
-    p['node_dialers'] = {'exit': {'type': 'node', 'id': 'relay'}} if chain == 'managed' else {}
+    if chain == 'managed':
+        p['proxy_groups'][0]['include_groups'] = ['chain-exit']
+        p['proxy_groups'].append(chain_group('exit', {'type': 'node', 'id': 'relay'}))
     save_fixture(repo, shared, p)
     save_subscription_nodes('s', [node('old')])
 
@@ -97,12 +99,12 @@ def test_snapshot_is_not_redirected_by_profile_or_main_mutation(tmp_path, monkey
     def fetch(*_args):
         calls.append(1)
         if len(calls) == 1:
-            def change_selection(p):
-                p['node_dialers'] = {}
-                p['resource_refs']['nodes'] = ['exit']
+            def change_groups(p):
+                p['proxy_groups'] = [p['proxy_groups'][0]]
+                p['proxy_groups'][0].pop('include_groups', None)
                 p['proxy_groups'][0]['manual_nodes'] = ['exit']
                 p['proxy_groups'][0]['name'] = 'Changed'
-            repo.update_profile_transaction('default', change_selection)
+            repo.update_profile_transaction('default', change_groups)
             repo.update_profile_transaction('other', lambda p: p['proxy_groups'][0].update(name='Other'))
         return GOOD, 'rendered_yaml'
     monkeypatch.setattr('backend.routes.subscriptions.get_subscription_proxies_yaml', fetch)
@@ -110,8 +112,12 @@ def test_snapshot_is_not_redirected_by_profile_or_main_mutation(tmp_path, monkey
     assert response.status_code == 200, response.get_data(as_text=True)
     main = yaml.safe_load(manager.push_config_to_agent.call_args.args[1])
     assert any(p['name'] == 'relay' for p in main['proxies'])
+    proxies = {p['name']: p for p in main['proxies']}
+    assert proxies['Via exit']['dialer-proxy'] == 'relay'
+    assert 'dialer-proxy' not in proxies['exit']
     assert load_subscription_cache('s')['nodes'][0]['name'] == 'Remote'
     assert main['proxy-groups'][0]['name'] == 'Entry'
-    assert repo.get_profile('default')['resource_refs']['nodes'] == ['exit']
+    assert repo.get_profile('default')['proxy_groups'][0]['manual_nodes'] == ['exit']
+    assert len(repo.get_profile('default')['proxy_groups']) == 1
     assert repo.get_profile('other')['proxy_groups'][0]['name'] == 'Other'
     assert manager.push_config_to_agent.call_args.kwargs['extra_data']['provider_downloads'][0]['url'].find('/profiles/default/') != -1

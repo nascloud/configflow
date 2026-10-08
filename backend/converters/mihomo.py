@@ -231,8 +231,9 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
             配置保持 False，避免漫游设备在外网解析到内网 IP。
     """
 
-    from backend.utils.dialer_references import validate_dialers
-    validate_dialers(config_data)
+    from backend.utils.proxy_chains import lower_proxy_chains
+    logical_config = config_data
+    config_data = lower_proxy_chains(config_data)
     # 从合并数组中分离规则和规则集
     rules_list, rule_sets_list = split_rules_and_rulesets(config_data)
 
@@ -288,7 +289,10 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
         sync_mosdns_hosts(mihomo_config, config_data)
 
     # 收集被策略组使用的节点ID、订阅ID和聚合ID
-    used_node_ids = set()
+    # Logical chains are policies in their own right, even without a parent group.
+    used_node_ids = {n['id'] for n in config_data.get('nodes', []) if n.get('_proxy_chain_id')}
+    used_node_ids.update(g['_chain_dialer']['id'] for g in config_data.get('proxy_groups', [])
+                         if g.get('_chain_dialer', {}).get('type') == 'node')
     used_subscription_ids = set()
     used_aggregation_ids = set()
 
@@ -864,11 +868,16 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
                 proxy_group['strategy'] = group['strategy']
             if group.get('lazy') is not None:
                 proxy_group['lazy'] = group['lazy']
+        settings = followed_group if follow_group_id else group
+        for key in ('url', 'interval', 'tolerance', 'lazy', 'strategy', 'timeout', 'max-failed-times',
+                    'expected-status', 'disable-udp', 'hidden', 'icon', 'exclude-filter', 'exclude-type'):
+            if key in settings:
+                proxy_group[key] = settings[key]
 
         proxy_groups.append(proxy_group)
 
     # 添加默认策略组
-    if not proxy_groups:
+    if not proxy_groups and not any(n.get('_proxy_chain_id') for n in config_data.get('nodes', [])):
         all_proxy_names = [p['name'] for p in proxies]
         if all_proxy_names:
             proxy_groups = [
@@ -999,6 +1008,8 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
                 rules.append(f"RULE-SET,{ruleset_name},{policy}")
 
     mihomo_config['rules'] = rules
+    from backend.utils.proxy_chains import lower_chain_providers
+    lower_chain_providers(config_data, mihomo_config)
 
     from backend.utils.strategy_references import validate_rule_policies
     validate_rule_policies(
@@ -1009,51 +1020,9 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
 
     from backend.utils.dialer_references import validate_emitted
     validate_emitted(mihomo_config)
-    # Render used aggregation providers before any consumer can publish a main
-    # artifact or deliver it. Reuse this exact main graph; never recurse or write.
     if preflight_providers:
-        from backend.routes.aggregations import generate_aggregation_provider
-        from backend.utils.dialer_references import dependency_graph
-        chains_known = (bool(dependency_graph(config_data)) or
-                        any(p.get('dialer-proxy') is not None for p in mihomo_config['proxies']))
-        opaque_node_ids = {n['id'] for n in config_data.get('nodes', [])
-                           if n.get('proxy_string') and
-                           _parse_structured_proxy_string(n['proxy_string']) is None}
-        used_aggregations = [a for a in config_data.get('subscription_aggregations', [])
-                             if a.get('enabled', True) and a.get('id') in used_aggregation_ids]
-        pending = [a for a in used_aggregations
-                   if chains_known or opaque_node_ids.intersection(a.get('nodes', []))]
-        queued = {a['id'] for a in pending}
-        from backend.utils.provider_delivery import (DeliverySnapshot,
-            prepare_subscription_provider, validate_rendered_bundle)
-        snapshot = DeliverySnapshot.capture(config_data.get('profile_id') or 'default', mihomo_config)
-        rendered_bundle = []
-        index = 0
-        while index < len(pending):
-            aggregation = pending[index]
-            index += 1
-            rendered = generate_aggregation_provider(aggregation, config=config_data,
-                                                     main_config=mihomo_config, persist=False)
-            rendered_bundle.append(rendered)
-            if not chains_known and any(p.get('dialer-proxy') is not None for p in
-                                        yaml.safe_load(rendered['content']).get('proxies', [])):
-                # A chain first discovered in a provider activates preflight of
-                # every remaining used provider, regardless of list order.
-                chains_known = True
-                pending.extend(a for a in used_aggregations if a['id'] not in queued)
-                queued.update(a['id'] for a in used_aggregations)
-        if chains_known:
-            # Direct subscriptions are providers too. Reuse the same dry renderer
-            # and raw-proxy validation, without publishing synthetic artifacts.
-            from backend.routes.subscriptions import get_subscription_proxies_yaml
-            for subscription in config_data.get('subscriptions', []):
-                if subscription.get('enabled', True) and subscription.get('id') in used_subscription_ids:
-                    rendered_bundle.append(prepare_subscription_provider(
-                        subscription, config_data, snapshot, fetch=get_subscription_proxies_yaml))
-        # Discovery flags only schedule materialization. The publication gate
-        # recomputes global activation from every exact rendered collection and
-        # revisits early providers without fetching or converting them again.
-        validate_rendered_bundle(snapshot, rendered_bundle)
+        from backend.utils.provider_delivery import prepare_provider_bundle
+        prepare_provider_bundle(logical_config, mihomo_config)
     # 转换为 YAML
     return yaml.dump(
         mihomo_config,
@@ -1065,103 +1034,12 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
     )
 
 
-def get_mihomo_provider_downloads(config_data: Dict[str, Any], base_url: str = '') -> List[Dict[str, str]]:
-    """
-    获取 Mihomo 需要下载的 proxy provider 文件列表
-
-    Args:
-        config_data: 配置数据字典
-        base_url: 基础 URL
-
-    Returns:
-        下载列表，格式：[{'name': 'provider名称', 'url': 'URL', 'local_path': './providers/xxx.yaml'}]
-    """
-    downloads = []
-
-    # 获取系统配置
-    server_domain = config_data.get('system_config', {}).get('server_domain', '').strip()
-    effective_base_url = server_domain or base_url
-    config_token = config_data.get('system_config', {}).get('config_token', '')
-
-    # 首先找出所有被策略组使用的订阅和聚合 ID
-    used_subscription_ids = set()
-    used_aggregation_ids = set()
-
-    for group in config_data.get('proxy_groups', []):
-        if not group.get('enabled', True):
-            continue
-
-        # 处理跟随模式
-        follow_group_id = group.get('follow_group')
-        if follow_group_id:
-            # 查找被跟随的策略组
-            followed_group = next((g for g in config_data.get('proxy_groups', []) if g.get('id') == follow_group_id),
-                                  None)
-            if followed_group:
-                # 使用被跟随策略组的设置
-                aggregation_ids = followed_group.get('aggregations', [])
-                subscriptions = followed_group.get('subscriptions', [])
-            else:
-                continue
-        else:
-            # 使用自己的设置
-            aggregation_ids = group.get('aggregations', [])
-            subscriptions = group.get('subscriptions', [])
-
-        # 收集聚合ID（聚合本身作为 provider）
-        if aggregation_ids:
-            for agg_id in aggregation_ids:
-                used_aggregation_ids.add(agg_id)
-
-        # 收集该策略组所有聚合中包含的订阅ID
-        subscriptions_in_group_aggregations = set()
-        if aggregation_ids:
-            aggregations = config_data.get('subscription_aggregations', [])
-            for agg_id in aggregation_ids:
-                agg = next((a for a in aggregations if a['id'] == agg_id and a.get('enabled', True)), None)
-                if agg:
-                    agg_subs = agg.get('subscriptions', [])
-                    subscriptions_in_group_aggregations.update(agg_subs)
-
-        # 收集直接引用的订阅（跳过已在聚合中的订阅）
-        for sub_id in subscriptions:
-            # 如果该订阅已经在某个聚合中，不需要单独添加到 proxy-providers
-            if sub_id not in subscriptions_in_group_aggregations:
-                used_subscription_ids.add(sub_id)
-
-    # 处理订阅 providers
-    for sub in config_data.get('subscriptions', []):
-        if sub.get('enabled', True) and sub.get('id') in used_subscription_ids:
-            sub_id = sub['id']
-            sub_url = f"{effective_base_url}{profile_api_path(config_data, f'/subscriptions/{sub_id}/proxies')}"
-
-            # 如果配置了令牌，添加到 URL
-            if config_token:
-                sub_url = append_url_query(sub_url, {'token': config_token})
-
-            downloads.append({
-                'name': sub['name'],
-                'url': sub_url,
-                'local_path': f"./providers/{sub['name']}.yaml"
-            })
-
-    # 处理聚合 providers
-    for agg in config_data.get('subscription_aggregations', []):
-        if agg.get('enabled', True) and agg.get('id') in used_aggregation_ids:
-            agg_id = agg['id']
-            agg_url = f"{effective_base_url}{profile_api_path(config_data, f'/aggregations/{agg_id}/provider')}"
-
-            # 如果配置了令牌，添加到 URL
-            if config_token:
-                agg_url = append_url_query(agg_url, {'token': config_token})
-
-            downloads.append({
-                'name': agg['name'],
-                'url': agg_url,
-                'local_path': f"./providers/{agg['name']}.yaml"
-            })
-
-    return downloads
+def get_mihomo_provider_downloads(config_data: Dict[str, Any], base_url: str = '', *, main_config=None) -> List[Dict[str, str]]:
+    """Return every native provider artifact, including independent chain copies."""
+    main = main_config if main_config is not None else yaml.safe_load(
+        generate_mihomo_config(config_data, base_url, preflight_providers=False))
+    return [{'name': name, 'url': provider['url'], 'local_path': provider['path']}
+            for name, provider in main.get('proxy-providers', {}).items() if provider.get('url')]
 
 
 def get_mihomo_ruleset_downloads(config_data: Dict[str, Any], base_url: str = '') -> List[Dict[str, str]]:

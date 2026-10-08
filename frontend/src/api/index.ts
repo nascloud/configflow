@@ -14,7 +14,7 @@ declare module 'axios' {
   }
 }
 
-const scopedPath = /^\/(?:profiles\/[^/]+\/(?:resources|node-dialers|generate)|proxy-groups(?:\/|$)|rules(?:\/|$)|rule-sets(?:\/|$)|rule-configs(?:\/|$)|custom-config(?:\/|$)|mosdns(?:\/|$)|stats(?:\/|$))/
+const scopedPath = /^\/(?:profiles\/[^/]+\/generate|proxy-groups(?:\/|$)|rules(?:\/|$)|rule-sets(?:\/|$)|rule-configs(?:\/|$)|custom-config(?:\/|$)|mosdns(?:\/|$)|stats(?:\/|$))/
 const profileOptions = (profileId = getActiveProfileId()) => ({
   headers: { 'X-ConfigFlow-Profile': profileId }
 })
@@ -139,10 +139,6 @@ export const profileApi = {
   clone: (id: string, data: any) => api.post(profilePath(id, '/clone'), data),
   export: (id: string) => api.get(profilePath(id, '/export'), { responseType: 'blob' }),
   import: (id: string, data: any) => api.post(profilePath(id, '/import'), data),
-  getResources: (id: string) => api.get(profilePath(id, '/resources')),
-  saveResources: (id: string, data: unknown) => api.put(profilePath(id, '/resources'), data),
-  getNodeDialers: (id: string) => api.get(profilePath(id, '/node-dialers')),
-  saveNodeDialers: (id: string, data: unknown) => api.put(profilePath(id, '/node-dialers'), data),
 }
 
 // 配置生成

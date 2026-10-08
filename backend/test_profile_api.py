@@ -58,17 +58,19 @@ def test_profile_crud_clone_import_export_and_delete_rules(tmp_path, monkeypatch
     repository.save_shared({"subscriptions": [{"id": "sub-1", "name": "Shared", "url": "https://sub.test/list"}]})
     client = make_app(repository, monkeypatch).test_client()
     assert client.post("/api/profiles", json={"id": "alpha", "name": "Alpha"}).status_code == 201
-    refs = {"subscriptions": ["sub-1"], "nodes": [], "subscription_aggregations": []}
-    repository.set_resource_refs("alpha", refs)
+    groups = [{"id": "shared", "name": "Shared", "type": "select", "subscriptions": ["sub-1"]}]
+    repository.save_profile("alpha", {"proxy_groups": groups})
 
     assert client.post("/api/profiles/alpha/clone", json={"id": "beta", "name": "Beta"}).status_code == 201
     exported = client.get("/api/profiles/beta/export")
     assert exported.status_code == 200
-    assert exported.get_json()["resource_refs"] == refs
+    assert exported.get_json()["proxy_groups"] == groups
+    assert "resource_refs" not in exported.get_json()
+    assert "node_dialers" not in exported.get_json()
     assert "subscriptions" not in exported.get_json()
 
     imported = client.post("/api/profiles/beta/import", json={
-        "resource_refs": refs, "mihomo": {"custom_config": "port: 12345\n"},
+        "proxy_groups": groups, "mihomo": {"custom_config": "port: 12345\n"},
     })
     assert imported.status_code == 200
     assert repository.get_profile("beta")["mihomo"]["custom_config"] == "port: 12345\n"
@@ -94,7 +96,7 @@ def test_stale_profile_selection_does_not_block_global_operations(tmp_path, monk
         response = client.get(path, headers=headers, query_string={"profile": "../outside"})
         assert response.status_code == 200, (path, response.get_json())
         assert "X-ConfigFlow-Profile" not in response.headers
-    assert client.get("/api/profiles/deleted-profile/resources", headers=headers).status_code == 404
+    assert client.get("/api/profiles/deleted-profile/proxy-groups", headers=headers).status_code == 404
 
 
 def test_profile_config_and_generated_artifact_use_the_explicit_profile(tmp_path, monkeypatch):
@@ -148,7 +150,7 @@ def test_full_backup_contains_shared_data_and_all_profiles(tmp_path, monkeypatch
     response = make_app(repository, monkeypatch).test_client().get("/api/config/export", headers={"X-ConfigFlow-Profile": "alpha"})
     assert response.status_code == 200
     exported = json.loads(response.get_data())
-    assert exported["schema_version"] == 3
+    assert exported["schema_version"] == 5
     assert exported["shared"]["subscriptions"][0]["id"] == "exported"
     assert set(exported["profiles"]) == {"default", "alpha"}
 
@@ -203,7 +205,19 @@ def test_new_repository_keeps_existing_template_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(config_module, "get_backend_resource", lambda _: str(template))
     monkeypatch.setattr(config_module, "_repository", None)
     repository = config_module.get_repository()
-    assert repository.get_profile("default")["resource_refs"]["subscriptions"] == ["template-sub"]
+    assert repository.get_shared()["subscriptions"][0]["id"] == "template-sub"
+    assert "resource_refs" not in repository.get_profile("default")
     assert repository.get_profile("default")["mihomo"]["custom_config"] == "port: 12345\n"
     assert "system_config" not in repository.get_profile("default")
     assert repository.get_system()["system_config"]["server_domain"] == "http://template.test"
+
+
+@pytest.mark.parametrize("endpoint", ["resources", "node-dialers"])
+@pytest.mark.parametrize("method", ["get", "put"])
+def test_obsolete_profile_resource_and_node_dialer_routes_are_absent(tmp_path, monkeypatch, endpoint, method):
+    repository = ProfileRepository(tmp_path)
+    client = make_app(repository, monkeypatch).test_client()
+    before = repository.export_all()
+    response = getattr(client, method)(f"/api/profiles/default/{endpoint}", json={})
+    assert response.status_code == 404
+    assert repository.export_all() == before

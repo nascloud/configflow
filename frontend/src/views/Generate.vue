@@ -1092,7 +1092,7 @@ const showSurgeSmartDialog = async () => {
       return false
     }
     proxyGroupOptions.value = allGroups
-      .filter((g: any) => !hasStrategyRef(g))
+      .filter((g: any) => g.type !== 'chain' && !hasStrategyRef(g))
       .map((g: any) => ({ id: g.id, name: g.name }))
     surgeSmartGroups.value = (surgeRes.data.smart_groups || []).map((sg: any) => ({
       group_id: sg.group_id || '',

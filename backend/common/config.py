@@ -138,6 +138,13 @@ def get_config(profile_id: Optional[str] = None) -> Dict[str, Any]:
     return cache[resolved_id]
 
 
+def get_resource_config(kind, resource_id=None, profile_id=None):
+    """Resolve an explicit shared-resource request without persisting selection."""
+    from backend.common.profile_context import resolve_profile_id
+    return get_repository().get_compat_config(resolve_profile_id(profile_id),
+        resource_roots={kind: [resource_id] if resource_id is not None else None})
+
+
 def load_config() -> Dict[str, Any]:
     """Initialize global settings without silently rewriting resource references."""
     reset_config_context()

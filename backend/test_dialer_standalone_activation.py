@@ -63,7 +63,7 @@ def test_uri_main_chain_rejects_plain_provider_before_any_publication(tmp_path, 
     artifacts = [repo.write_profile_text(p, 'providers/agg.yaml', 'last-good') for p in {'default', profile}]
     writes = Mock(side_effect=AssertionError('Must validate before cache/artifact publication'))
     monkeypatch.setattr(repo, 'write_profile_text', writes)
-    for target in ('backend.routes.aggregations.save_subscription_nodes',
+    for target in ('backend.utils.subscription_cache.save_subscription_nodes',
                    'backend.routes.subscriptions.save_subscription_nodes',
                    'backend.utils.provider_delivery.commit_cache_updates'):
         monkeypatch.setattr(target, writes)

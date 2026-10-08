@@ -136,7 +136,7 @@ def test_authenticated_global_backup_preserves_secrets_for_recovery(tmp_path, mo
         "id": "sub-1", "name": "Shared", "url": "https://example.test/sub?token=subscription-secret",
     }]})
     repository.save_profile("alpha", {
-        "resource_refs": {"subscriptions": ["sub-1"], "nodes": [], "subscription_aggregations": []},
+        "proxy_groups": [{"id": "shared", "name": "Shared", "type": "select", "subscriptions": ["sub-1"]}],
         "mihomo": {"custom_config": "log-level: debug"},
     })
     backup_settings = {
@@ -170,10 +170,12 @@ def test_authenticated_global_backup_preserves_secrets_for_recovery(tmp_path, mo
     assert response.mimetype == "application/json"
     assert response.headers["Content-Disposition"].startswith("attachment;")
     exported = response.get_json()
-    assert exported["schema_version"] == 3
+    assert exported["schema_version"] == 5
     assert set(exported["profiles"]) == {"default", "alpha", "beta"}
     assert exported["shared"]["subscriptions"] == repository.get_shared()["subscriptions"]
-    assert exported["profiles"]["alpha"]["resource_refs"]["subscriptions"] == ["sub-1"]
+    assert exported["profiles"]["alpha"]["proxy_groups"][0]["subscriptions"] == ["sub-1"]
+    assert "resource_refs" not in exported["profiles"]["alpha"]
+    assert "node_dialers" not in exported["profiles"]["alpha"]
     assert "subscriptions" not in exported["profiles"]["alpha"]
     assert exported["system"]["agents"][0]["token"] == registered["token"]
     assert exported["system"]["backup"] == backup_settings
@@ -193,7 +195,7 @@ def test_authenticated_global_backup_preserves_secrets_for_recovery(tmp_path, mo
     assert restored.get_system()["agents"] == repository.get_system()["agents"]
     assert restored.get_system()["backup"] == backup_settings
     assert restored.get_shared()["subscriptions"] == exported["shared"]["subscriptions"]
-    assert restored.get_profile("alpha")["resource_refs"] == exported["profiles"]["alpha"]["resource_refs"]
+    assert restored.get_profile("alpha")["proxy_groups"] == exported["profiles"]["alpha"]["proxy_groups"]
     assert restored.get_profile("alpha")["mihomo"]["custom_config"] == "log-level: debug"
     config_module.set_repository(restored)
     init_agent_manager()

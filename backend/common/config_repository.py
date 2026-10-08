@@ -158,7 +158,7 @@ def _default_profile_config() -> Dict[str, Any]:
 
 SHARED_FIELDS = ('subscriptions', 'nodes', 'subscription_aggregations', 'rule_library')
 RESOURCE_FIELDS = SHARED_FIELDS[:3]
-PROFILE_FIELDS = ('resource_refs', 'proxy_groups', 'rule_configs', 'mihomo', 'surge', 'mosdns', 'node_dialers')
+PROFILE_FIELDS = ('proxy_groups', 'rule_configs', 'mihomo', 'surge', 'mosdns')
 BUILTIN_POLICIES = {'DIRECT', 'REJECT'}
 RULE_SOURCE_FIELDS = ('name', 'url', 'behavior', 'content', 'source_type', 'format')
 
@@ -181,10 +181,108 @@ def _id_list(values, label):
         raise ProfileValidationError(f'{label} 含有重复引用')
     return values
 
+
+def _collect_resource_refs(profile, catalogs, resource_roots=None):
+    """Derive the resource closure from composition, never a second allowlist."""
+    selected = {field: set() for field in RESOURCE_FIELDS}
+    groups = _items_by_id(profile.get('proxy_groups', []), '策略组')
+
+    def select(kind, value, *, allow_builtin=False):
+        if not isinstance(value, str) or not value.strip():
+            raise ProfileValidationError('资源引用必须是非空 ID')
+        if allow_builtin and kind == 'nodes' and value in BUILTIN_POLICIES:
+            return
+        if value not in catalogs[kind]:
+            raise ProfileInUse(f'引用的共享资源不存在：{kind}/{value}')
+        selected[kind].add(value)
+
+    for group in groups.values():
+        if group.get('type') == 'chain':
+            chain = group.get('chain')
+            if not isinstance(chain, dict) or set(chain) != {'entry', 'exit'}:
+                raise ProfileValidationError('代理链必须指定前置和落地引用')
+            for field in ('entry', 'exit'):
+                reference = chain[field]
+                if (not isinstance(reference, dict) or set(reference) != {'type', 'id'} or
+                        reference.get('type') not in ('node', 'group') or
+                        not isinstance(reference.get('id'), str) or not reference['id'].strip()):
+                    raise ProfileValidationError('代理链引用必须是 node/group type 与非空 id')
+                if reference['type'] == 'node':
+                    select('nodes', reference['id'])
+                elif reference['id'] not in groups:
+                    raise ProfileInUse(f'代理链引用的策略组不存在：{reference["id"]}')
+            continue
+        for field, kind in (('subscriptions', 'subscriptions'), ('manual_nodes', 'nodes'),
+                            ('aggregations', 'subscription_aggregations')):
+            for value in _id_list(group.get(field, []), field):
+                select(kind, value, allow_builtin=field == 'manual_nodes')
+        if group.get('source') is not None and not isinstance(group['source'], str):
+            raise ProfileValidationError('策略组 source 必须是字符串')
+        legacy_kind = {'node': 'nodes', 'subscription': 'subscriptions',
+                       'aggregation': 'subscription_aggregations'}.get(group.get('source'))
+        if legacy_kind:
+            for value in _id_list(group.get('proxies', []), 'proxies'):
+                select(legacy_kind, value, allow_builtin=legacy_kind == 'nodes')
+        order = group.get('proxies_order', [])
+        if not isinstance(order, list):
+            raise ProfileValidationError('策略组排序必须是数组')
+        for item in order:
+            if not isinstance(item, dict):
+                raise ProfileValidationError('策略组排序项必须是 type/id 对象')
+            kind = {'node': 'nodes', 'subscription': 'subscriptions',
+                    'aggregation': 'subscription_aggregations'}.get(item.get('type'))
+            if kind:
+                select(kind, item.get('id'), allow_builtin=kind == 'nodes')
+
+    for kind, roots in (resource_roots or {}).items():
+        for value in (catalogs[kind] if roots is None else roots):
+            if value in catalogs[kind]:
+                select(kind, value)
+
+    for aggregation_id in selected['subscription_aggregations']:
+        aggregation = catalogs['subscription_aggregations'][aggregation_id]
+        for kind in ('nodes', 'subscriptions'):
+            for value in _id_list(aggregation.get(kind, []), f'聚合 {aggregation_id} 的 {kind}'):
+                select(kind, value)
+
+    from backend.utils.dialer_references import raw_dialer
+    nodes_by_name = {}
+    for node in catalogs['nodes'].values():
+        nodes_by_name.setdefault(node.get('name'), []).append(node['id'])
+    groups_by_name = {}
+    for group in groups.values():
+        groups_by_name.setdefault(group.get('name'), []).append(group['id'])
+    pending = list(selected['nodes'])
+    visited = set()
+    while pending:
+        node_id = pending.pop()
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        node = catalogs['nodes'][node_id]
+        if node.get('subscription_id'):
+            select('subscriptions', node['subscription_id'])
+        if not node.get('enabled', True):
+            continue
+        target = raw_dialer(node)
+        if target is None:
+            continue
+        if not isinstance(target, str) or not target.strip():
+            raise ProfileValidationError('原始 dialer-proxy 必须是非空名称')
+        if target in BUILTIN_POLICIES:
+            continue
+        node_targets = nodes_by_name.get(target, [])
+        if len(node_targets) + len(groups_by_name.get(target, [])) != 1:
+            raise ProfileInUse(f'原始拨号代理目标不存在或名称不唯一：{target}')
+        if node_targets:
+            select('nodes', node_targets[0])
+            pending.append(node_targets[0])
+    return selected
+
 class ProfileRepository:
     """One locked atomic document; only derived artifacts are profile-local."""
     DEFAULT_PROFILE_ID = 'default'
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 5
     SHARED_FIELDS = SHARED_FIELDS
     PROFILE_FIELDS = frozenset(PROFILE_FIELDS)
     SYSTEM_FIELDS = frozenset({'system_config', 'backup', 'agents', '_revision'})
@@ -199,7 +297,6 @@ class ProfileRepository:
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.profiles_dir = self.data_dir / 'profiles'
         self.path = self.data_dir / 'config.json'
-        self.system_file = self.data_dir / 'system.json'
         self.migrations_dir = self.data_dir / 'migrations'
         self.initialization_lock_file = self.data_dir / '.config.lock'
         self._default_config_factory = default_config_factory
@@ -215,10 +312,9 @@ class ProfileRepository:
 
     def _empty_profile(self, profile_id, name, description=''):
         defaults = self._legacy_defaults()
-        result = {key: copy.deepcopy(defaults.get(key, {} if key in ('mihomo', 'surge', 'mosdns', 'node_dialers') else []))
-                  for key in PROFILE_FIELDS if key != 'resource_refs'}
-        result.update(id=profile_id, name=name, description=description,
-                      resource_refs={key: [] for key in RESOURCE_FIELDS}, _revision=0,
+        result = {key: copy.deepcopy(defaults.get(key, {} if key in ('mihomo', 'surge', 'mosdns') else []))
+                  for key in PROFILE_FIELDS}
+        result.update(id=profile_id, name=name, description=description, _revision=0,
                       created_at=_now(), updated_at=_now())
         return result
 
@@ -260,22 +356,12 @@ class ProfileRepository:
                     temporary.unlink()
             return recovered
 
-    def _normalize_document(self, document):
-        if document.get('schema_version') != self.SCHEMA_VERSION:
-            raise ProfileValidationError('配置存储版本不匹配')
-        if isinstance(document.get('profiles'), dict):
-            for profile in document['profiles'].values():
-                if isinstance(profile, dict):
-                    profile.setdefault('node_dialers', {})
-        self._validate_document(document)
 
     def _initialize_locked(self):
         if self.path.exists() and not self.path.is_file():
             raise ProfileValidationError('config.json must be a regular file')
         current = None
         if self.path.exists() or self.path.with_name('config.json.bak').exists():
-            # A v2 installation can leave a stale legacy config.json. Its system
-            # index remains authoritative until the schema3 commit exists.
             try:
                 current = self._read_json(self.path)
             except ProfileRepositoryError:
@@ -288,64 +374,35 @@ class ProfileRepository:
                 if self._ensure_rule_proxy_token(current['system']):
                     self._write_json(self.path, current)
                 return
-        if self.system_file.exists() or self.system_file.with_name('system.json.bak').exists():
-            source = self._read_profile_layout()
-        else:
-            source = current if current is not None else (self._initial_config_factory or self._legacy_defaults)()
+        source = current if current is not None else (self._initial_config_factory or self._legacy_defaults)()
         document = self._convert_import(source)
         self._ensure_rule_proxy_token(document['system'])
         self._validate_document(document)
-        if current is not None or self.system_file.exists():
+        if current is not None:
             self._snapshot('migration')
         self._migrate_raw_cache()
         with self._commit_guard():
             self._write_json(self.path, document)
 
-    def _read_profile_layout(self):
-        def validate_index(system):
-            if system.get('schema_version') != 2 or not isinstance(system.get('profiles'), list):
-                raise ProfileValidationError('Invalid schema2 system index')
-            _items_by_id(system['profiles'], 'profiles')
-            for metadata in system['profiles']:
-                self.validate_profile_id(metadata['id'])
-        system = self._read_recoverable(self.system_file, validate_index)
-        profiles = {}
-        for metadata in system['profiles']:
-            profile_id = self.validate_profile_id(metadata['id'])
-            path = self.profile_path(profile_id, 'config.json')
-            data = self._read_recoverable(path, lambda value: None)
-            profiles[profile_id] = {**data, **metadata}
-        return {'schema_version': 2, 'system': system, 'profiles': profiles}
 
     def _snapshot(self, reason):
         destination = self._create_migration_snapshot_dir() / reason
         destination.mkdir()
-        for name in ('config.json', 'config.json.bak', 'system.json', 'system.json.bak'):
+        for name in ('config.json', 'config.json.bak'):
             source = self.data_dir / name
             if source.is_file():
                 shutil.copy2(source, destination / name)
-        if reason == 'migration' and self.system_file.exists():
-            for metadata in self._read_json(self.system_file).get('profiles', []):
-                profile_id = self.validate_profile_id(metadata['id'])
-                source = self.profile_path(profile_id, 'config.json')
-                target = destination / 'profiles' / profile_id
-                target.mkdir(parents=True)
-                shutil.copy2(source, target / 'config.json')
         return destination
 
     def _migrate_raw_cache(self):
         for kind in ('subscribes', 'rules'):
-            sources = [self.data_dir / kind]
-            if self.system_file.exists():
-                sources += [self.profile_path(p['id'], kind) for p in self._read_json(self.system_file).get('profiles', [])]
+            source = self.data_dir / kind
             target = self.shared_path(kind)
             target.mkdir(parents=True, exist_ok=True)
-            for source in sources:
-                if source.is_dir():
-                    # Cache collisions are expendable; persistent definitions are not.
-                    for item in source.iterdir():
-                        if item.is_file() and not (target / item.name).exists():
-                            shutil.copy2(item, target / item.name)
+            if source.is_dir():
+                for item in source.iterdir():
+                    if item.is_file() and not (target / item.name).exists():
+                        shutil.copy2(item, target / item.name)
 
     @contextmanager
     def _commit_guard(self):
@@ -375,7 +432,7 @@ class ProfileRepository:
             yield nested
             return
         with self._lock(self.initialization_lock_file):
-            document = self._read_recoverable(self.path, self._normalize_document)
+            document = self._read_recoverable(self.path, self._validate_document)
             self._local.document = document
             try:
                 yield document
@@ -501,6 +558,8 @@ class ProfileRepository:
     def update_profile_fields(self, profile_id, fields, baseline=None):
         if not isinstance(fields, dict) or (baseline is not None and not isinstance(baseline, dict)):
             raise ProfileValidationError('Profile fields and baseline must be objects')
+        if set(fields) & {'resource_refs', 'node_dialers'}:
+            raise ProfileValidationError('资源由策略组直接引用，拨号组合请使用代理链类型')
         def update(current):
             if baseline is None and '_revision' in fields and fields['_revision'] != current['_revision']:
                 raise ProfileInUse('配置已更新，请刷新后重试')
@@ -512,36 +571,6 @@ class ProfileRepository:
     def save_profile(self, profile_id, data, baseline=None):
         return self.update_profile_fields(profile_id, data, baseline)
 
-    def get_resource_refs(self, profile_id):
-        return self.get_profile(profile_id)['resource_refs']
-
-    def set_resource_refs(self, profile_id, refs):
-        return self.update_profile_fields(profile_id, {'resource_refs': refs})['resource_refs']
-
-    def get_node_dialers(self, profile_id):
-        return self.get_profile(profile_id)['node_dialers']
-
-    def set_node_dialers(self, profile_id, mapping):
-        from backend.utils.dialer_references import validate_dialers, DialerReferenceError
-        if not isinstance(mapping, dict):
-            raise ProfileValidationError('node_dialers 必须是对象')
-        def update(profile):
-            available = {node['id'] for node in profile['nodes']}
-            if any(node_id not in available for node_id in mapping):
-                raise ProfileValidationError('拨号源节点不在当前配置资源中')
-            for reference in mapping.values():
-                if not isinstance(reference, dict) or set(reference) != {'type', 'id'}:
-                    raise ProfileValidationError('拨号引用必须是 type/id 对象')
-            for node in profile['nodes']:
-                node.pop('dialer_ref', None)
-                if node['id'] in mapping:
-                    node['dialer_ref'] = copy.deepcopy(mapping[node['id']])
-            try:
-                validate_dialers(profile)
-            except DialerReferenceError as error:
-                raise ProfileValidationError(str(error)) from error
-            profile['node_dialers'] = copy.deepcopy(mapping)
-        return self.update_profile_transaction(profile_id, update)['node_dialers']
 
     def get_shared(self):
         with self._document() as document:
@@ -611,23 +640,17 @@ class ProfileRepository:
         with self._document() as document:
             return self._resource_usage(document, resource_type, resource_id)
 
-    def _resolve_profile(self, document, profile_id):
+    def _resolve_profile(self, document, profile_id, resource_roots=None):
         profile = self._profile(document, profile_id)
         shared = document['shared']
         result = copy.deepcopy(profile)
         result['profile_id'] = profile_id
         for key in ('system_config', 'backup', 'agents'):
             result[key] = copy.deepcopy(document['system'][key])
-        selected = {field: set(profile['resource_refs'][field]) for field in RESOURCE_FIELDS}
-        for aggregation in shared['subscription_aggregations']:
-            if aggregation['id'] in selected['subscription_aggregations']:
-                selected['subscriptions'].update(aggregation.get('subscriptions', []))
-                selected['nodes'].update(aggregation.get('nodes', []))
+        catalogs = {field: _items_by_id(shared[field], field) for field in RESOURCE_FIELDS}
+        selected = _collect_resource_refs(profile, catalogs, resource_roots)
         for field in RESOURCE_FIELDS:
             result[field] = [copy.deepcopy(item) for item in shared[field] if item['id'] in selected[field]]
-        for node in result['nodes']:
-            if node['id'] in profile['node_dialers']:
-                node['dialer_ref'] = copy.deepcopy(profile['node_dialers'][node['id']])
         result['rule_library'] = copy.deepcopy(shared['rule_library'])
         library = {item['id']: item for item in shared['rule_library']}
         for rule in result['rule_configs']:
@@ -642,9 +665,9 @@ class ProfileRepository:
                 rule['library_enabled'] = resource.get('enabled', True)
         return result
 
-    def get_compat_config(self, profile_id):
+    def get_compat_config(self, profile_id, *, resource_roots=None):
         with self._document() as document:
-            return self._resolve_profile(document, profile_id)
+            return self._resolve_profile(document, profile_id, resource_roots)
 
     def export_profile(self, profile_id):
         return self.get_profile(profile_id)
@@ -655,6 +678,8 @@ class ProfileRepository:
         data = data.get('config', data)
         if not isinstance(data, dict) or any(key in data for key in SHARED_FIELDS):
             raise ProfileValidationError('独立配置导入只接受引用，不接受共享资源副本')
+        if set(data) & {'resource_refs', 'node_dialers'}:
+            raise ProfileValidationError('独立配置导入仅支持当前格式')
         return self.save_profile(profile_id, data)
 
     def export_all(self, desensitize=False):
@@ -1020,24 +1045,18 @@ class ProfileRepository:
         version = source.get('schema_version')
         if version == self.SCHEMA_VERSION:
             document = copy.deepcopy(source)
-            self._normalize_document(document)
+            self._validate_document(document)
             return document
-        if version not in (None, 1, 2):
-            raise ProfileValidationError(f'不支持的配置版本：{version}')
-        if version == 2:
-            old_profiles = source.get('profiles')
-            if not isinstance(old_profiles, dict):
-                raise ProfileValidationError('旧多配置导入必须包含完整 profiles 数据，不能仅导入索引')
-            old_system = source.get('system', {})
-        else:
-            old_profiles = {'default': source}
-            old_system = source
-        if not isinstance(old_system, dict):
-            raise ProfileValidationError('旧系统配置必须是对象')
-        document = {'schema_version': self.SCHEMA_VERSION,
-                    'system': {key: copy.deepcopy(old_system.get(key, [] if key == 'agents' else {}))
-                               for key in ('system_config', 'backup', 'agents')},
-                    'shared': {key: [] for key in SHARED_FIELDS}, 'profiles': {}}
+        if version is not None or set(source) & {'profiles', 'shared', 'resource_refs', 'node_dialers'}:
+            raise ProfileValidationError('仅支持作者原版单配置或当前格式的完整备份')
+        old = _deep_merge(self._legacy_defaults(), source)
+        document = {
+            'schema_version': self.SCHEMA_VERSION,
+            'system': {key: copy.deepcopy(old.get(key, [] if key == 'agents' else {}))
+                       for key in ('system_config', 'backup', 'agents')},
+            'shared': {key: copy.deepcopy(old.get(key, [])) for key in SHARED_FIELDS},
+            'profiles': {},
+        }
         document['system']['_revision'] = 0
         document['shared']['_revision'] = 0
         settings = document['system']['system_config']
@@ -1045,86 +1064,46 @@ class ProfileRepository:
             raise ProfileValidationError('系统设置必须是对象')
         settings.setdefault('server_domain', '')
         settings.setdefault('github_proxy_domain', '')
-        if not isinstance(settings.get('github_proxy_domain', ''), str):
+        if not isinstance(settings['github_proxy_domain'], str):
             settings['github_proxy_domain'] = ''
-        for profile_id, old in old_profiles.items():
-            self.validate_profile_id(profile_id)
-            if not isinstance(old, dict):
-                raise ProfileValidationError('旧配置内容必须是对象')
-            old = _deep_merge(self._legacy_defaults(), old)
-            dialers = {}
-            remaps = {key: {} for key in SHARED_FIELDS}
-            # Source identity includes its definition, not just a colliding old ID.
-            for kind in ('subscriptions', 'nodes', 'subscription_aggregations', 'rule_library'):
-                for raw in old.get(kind, []):
-                    resource = copy.deepcopy(raw)
-                    old_id = resource.setdefault('id', f'{kind}_{uuid.uuid4().hex[:12]}')
-                    if kind == 'nodes' and 'dialer_ref' in resource:
-                        reference = resource.pop('dialer_ref')
-                        if reference is not None:
-                            dialers[old_id] = reference
-                    if kind == 'nodes' and resource.get('subscription_id'):
-                        resource['subscription_id'] = remaps['subscriptions'].get(resource['subscription_id'], resource['subscription_id'])
-                    if kind == 'subscription_aggregations':
-                        for field, resource_kind in (('subscriptions', 'subscriptions'), ('nodes', 'nodes')):
-                            resource[field] = [remaps[resource_kind].get(value, value) for value in resource.get(field, [])]
-                    existing = next((item for item in document['shared'][kind] if item['id'] == old_id), None)
-                    if existing is not None and existing != resource:
-                        resource['id'] = f'{old_id[:40]}_{uuid.uuid4().hex[:10]}'
-                    if existing != resource:
-                        # Rule/provider names are emitted as map keys and local filenames.
-                        if kind != 'nodes' and any(item.get('name') == resource.get('name') for item in document['shared'][kind]):
-                            resource['name'] = f'{resource.get("name", kind)} ({profile_id})'
-                        document['shared'][kind].append(resource)
-                    remaps[kind][old_id] = resource['id']
-            profile = self._empty_profile(profile_id, old.get('name', '默认配置' if profile_id == 'default' else profile_id), old.get('description', ''))
-            for key in PROFILE_FIELDS:
-                if key != 'resource_refs' and key in old:
-                    profile[key] = copy.deepcopy(old[key])
-            profile['resource_refs'] = {kind: list(remaps[kind].values()) for kind in RESOURCE_FIELDS}
-            profile['node_dialers'] = {}
-            for old_id, reference in dialers.items():
-                if isinstance(reference, dict) and reference.get('type') == 'node':
-                    reference['id'] = remaps['nodes'].get(reference.get('id'), reference.get('id'))
-                profile['node_dialers'][remaps['nodes'][old_id]] = reference
-            for key in ('created_at', 'updated_at'):
-                if key in old:
-                    profile[key] = old[key]
-            for group in profile['proxy_groups']:
-                for field, kind in (('subscriptions', 'subscriptions'), ('manual_nodes', 'nodes'), ('aggregations', 'subscription_aggregations')):
-                    if field in group:
-                        group[field] = [remaps[kind].get(value, value) for value in group[field]]
-                legacy_kind = {'node': 'nodes', 'subscription': 'subscriptions', 'aggregation': 'subscription_aggregations'}.get(group.get('source'))
-                if legacy_kind and 'proxies' in group:
-                    group['proxies'] = [remaps[legacy_kind].get(value, value) for value in group['proxies']]
-                for item in group.get('proxies_order', []):
-                    kind = {'node': 'nodes', 'aggregation': 'subscription_aggregations', 'subscription': 'subscriptions'}.get(item.get('type'))
-                    if kind:
-                        item['id'] = remaps[kind].get(item.get('id'), item.get('id'))
-            if not profile['rule_configs']:
-                profile['rule_configs'] = [{**item, 'itemType': 'rule'} for item in old.get('rules', [])] + [{**item, 'itemType': 'ruleset'} for item in old.get('rule_sets', [])]
-            for rule in profile['rule_configs']:
-                rule.setdefault('id', f'rule_{uuid.uuid4().hex[:12]}')
-                if rule.get('itemType') != 'ruleset':
-                    continue
-                library_id = remaps['rule_library'].get(rule.get('library_rule_id'))
-                if not library_id:
-                    library_id = f'lib_{uuid.uuid4().hex[:12]}'
-                    library = {key: copy.deepcopy(rule[key]) for key in RULE_SOURCE_FIELDS if key in rule}
-                    library.update(id=library_id, enabled=True)
-                    library.setdefault('name', rule.get('name') or library_id)
-                    library.setdefault('source_type', 'content' if library.get('content') else 'url')
-                    if any(item.get('name') == library['name'] for item in document['shared']['rule_library']):
-                        library['name'] += f' ({profile_id}-{library_id[-6:]})'
-                    document['shared']['rule_library'].append(library)
-                rule['library_rule_id'] = library_id
-                for key in RULE_SOURCE_FIELDS:
-                    rule.pop(key, None)
-            document['profiles'][profile_id] = profile
-        if 'default' not in document['profiles']:
-            document['profiles']['default'] = self._empty_profile('default', '默认配置')
+        for kind in SHARED_FIELDS:
+            resources = document['shared'][kind]
+            if not isinstance(resources, list) or any(not isinstance(item, dict) for item in resources):
+                raise ProfileValidationError(f'{kind} 必须是资源对象数组')
+            for resource in resources:
+                resource.setdefault('id', f'{kind}_{uuid.uuid4().hex[:12]}')
+        profile = self._empty_profile('default', old.get('name', '默认配置'), old.get('description', ''))
+        for key in PROFILE_FIELDS:
+            if key in old:
+                profile[key] = copy.deepcopy(old[key])
+        if not profile['rule_configs']:
+            profile['rule_configs'] = [{**item, 'itemType': 'rule'} for item in old.get('rules', [])] + [
+                {**item, 'itemType': 'ruleset'} for item in old.get('rule_sets', [])]
+        library = document['shared']['rule_library']
+        library_ids = {item['id'] for item in library}
+        library_names = {item.get('name') for item in library}
+        for rule in profile['rule_configs']:
+            rule.setdefault('id', f'rule_{uuid.uuid4().hex[:12]}')
+            if rule.get('itemType') != 'ruleset':
+                continue
+            library_id = rule.get('library_rule_id')
+            if library_id not in library_ids:
+                library_id = f'lib_{uuid.uuid4().hex[:12]}'
+                resource = {key: copy.deepcopy(rule[key]) for key in RULE_SOURCE_FIELDS if key in rule}
+                resource.update(id=library_id, enabled=True)
+                resource.setdefault('name', rule.get('name') or library_id)
+                resource.setdefault('source_type', 'content' if resource.get('content') else 'url')
+                if resource['name'] in library_names:
+                    resource['name'] += f' ({library_id[-6:]})'
+                library.append(resource)
+                library_ids.add(library_id)
+                library_names.add(resource['name'])
+            rule['library_rule_id'] = library_id
+            for key in RULE_SOURCE_FIELDS:
+                rule.pop(key, None)
+        document['profiles']['default'] = profile
         for agent in document['system']['agents']:
-            agent.setdefault('profile_id', 'default')
+            agent['profile_id'] = 'default'
         return document
 
     @staticmethod
@@ -1138,17 +1117,9 @@ class ProfileRepository:
             for node in document['shared']['nodes']:
                 if node.get('subscription_id') == resource_id:
                     usages.append({'kind': 'node', 'id': node['id'], 'name': node.get('name', node['id'])})
+        catalogs = {field: _items_by_id(document['shared'][field], field) for field in RESOURCE_FIELDS}
         for profile in document['profiles'].values():
-            referenced = resource_id in profile['resource_refs'].get(kind, [])
-            if kind in ('subscriptions', 'nodes'):
-                selected_aggregations = set(profile['resource_refs']['subscription_aggregations'])
-                referenced = referenced or any(
-                    aggregation['id'] in selected_aggregations and resource_id in aggregation.get(kind, [])
-                    for aggregation in document['shared']['subscription_aggregations'])
-            if kind == 'subscriptions':
-                referenced = referenced or any(
-                    node['id'] in profile['resource_refs']['nodes'] and node.get('subscription_id') == resource_id
-                    for node in document['shared']['nodes'])
+            referenced = resource_id in _collect_resource_refs(profile, catalogs).get(kind, set())
             if kind == 'rule_library':
                 referenced = any(rule.get('library_rule_id') == resource_id for rule in profile['rule_configs'])
             if referenced:
@@ -1179,7 +1150,7 @@ class ProfileRepository:
             raise ProfileValidationError(str(error)) from error
         for node in catalogs['nodes'].values():
             if 'dialer_ref' in node:
-                raise ProfileValidationError('dialer_ref 是独立配置字段，请使用 node_dialers')
+                raise ProfileValidationError('共享节点不能保存拨号引用，请在策略组中创建代理链')
             if node.get('subscription_id') and node['subscription_id'] not in catalogs['subscriptions']:
                 raise ProfileValidationError('节点引用的订阅不存在')
         for resource in catalogs['rule_library'].values():
@@ -1199,19 +1170,12 @@ class ProfileRepository:
                 raise ProfileValidationError('配置内容与 ID 不一致')
             try:
                 self._validate_profile(profile, catalogs)
-                dialers = profile.get('node_dialers')
-                if not isinstance(dialers, dict):
-                    raise ProfileValidationError('node_dialers 必须是对象')
                 resolved = self._resolve_profile(document, profile_id)
-                available = {node['id'] for node in resolved['nodes']}
-                if any(node_id not in available for node_id in dialers):
-                    raise ProfileInUse('拨号源节点不在当前配置资源中')
-                if dialers or any(node.get('params', {}).get('dialer-proxy') is not None or node.get('proxy_string') for node in resolved['nodes']):
-                    from backend.utils.dialer_references import validate_dialers, DialerReferenceError
-                    try:
-                        validate_dialers(resolved)
-                    except DialerReferenceError as error:
-                        raise ProfileInUse(str(error)) from error
+                from backend.utils.dialer_references import validate_dialers, DialerReferenceError
+                try:
+                    validate_dialers(resolved)
+                except DialerReferenceError as error:
+                    raise ProfileInUse(str(error)) from error
             except ProfileInUse as error:
                 usages = error.usages or [{'kind': 'profile', 'id': profile_id, 'name': profile['name'],
                                            'profile_id': profile_id, 'profile_name': profile['name']}]
@@ -1229,21 +1193,14 @@ class ProfileRepository:
             raise ProfileValidationError('独立配置不能保存共享资源副本')
         if not isinstance(profile.get('name'), str) or not profile['name'].strip():
             raise ProfileValidationError('配置名称不能为空')
-        dialers = profile.get('node_dialers')
-        if not isinstance(dialers, dict):
-            raise ProfileValidationError('node_dialers 必须是对象')
-        for node_id, reference in dialers.items():
-            if (not isinstance(node_id, str) or not isinstance(reference, dict)
-                    or set(reference) != {'type', 'id'} or reference['type'] not in ('node', 'group')
-                    or not isinstance(reference['id'], str) or not reference['id']):
-                raise ProfileValidationError('拨号引用必须是 node/group type 和非空 id 对象')
-        refs = profile.get('resource_refs')
-        if not isinstance(refs, dict) or set(refs) != set(RESOURCE_FIELDS):
-            raise ProfileValidationError('资源引用必须包含订阅、节点、聚合的 ID 列表')
-        for field in RESOURCE_FIELDS:
-            for value in _id_list(refs[field], field):
-                if value not in catalogs[field]:
-                    raise ProfileValidationError(f'配置 {profile["name"]} 引用了不存在的 {field}：{value}')
+        if set(profile) & {'resource_refs', 'node_dialers'}:
+            raise ProfileValidationError('独立配置不接受资源白名单或节点拨号覆盖字段')
+        from backend.utils.dialer_references import validate_shapes, DialerReferenceError
+        try:
+            validate_shapes(profile)
+        except DialerReferenceError as error:
+            raise ProfileValidationError(str(error)) from error
+        _collect_resource_refs(profile, catalogs)
         groups = _items_by_id(profile.get('proxy_groups'), '策略组')
         names = [group.get('name') for group in groups.values()]
         if any(not isinstance(name, str) or not name for name in names):
@@ -1255,25 +1212,27 @@ class ProfileRepository:
             label = f'策略组“{group.get("name")}”'
             for field, kind in (('subscriptions', 'subscriptions'), ('manual_nodes', 'nodes'), ('aggregations', 'subscription_aggregations')):
                 for value in _id_list(group.get(field, []), label + field):
-                    if value not in refs[kind] and not (kind == 'nodes' and value in BUILTIN_POLICIES):
-                        raise ProfileInUse(f'{label} 使用了未引用的资源 {value}，请先调整策略组或资源引用')
+                    if value not in catalogs[kind] and not (kind == 'nodes' and value in BUILTIN_POLICIES):
+                        raise ProfileInUse(f'{label} 引用了不存在的资源：{value}')
             legacy_kind = {'node': 'nodes', 'subscription': 'subscriptions', 'aggregation': 'subscription_aggregations'}.get(group.get('source'))
             if legacy_kind:
                 for value in _id_list(group.get('proxies', []), label + 'proxies'):
-                    if value not in refs[legacy_kind] and not (legacy_kind == 'nodes' and value in BUILTIN_POLICIES):
-                        raise ProfileInUse(f'{label} 使用了未引用的资源 {value}')
+                    if value not in catalogs[legacy_kind] and not (legacy_kind == 'nodes' and value in BUILTIN_POLICIES):
+                        raise ProfileInUse(f'{label} 引用了不存在的资源：{value}')
             targets = list(group.get('include_groups', []))
             if group.get('follow_group'):
                 targets.append(group['follow_group'])
             for target in targets:
                 if target not in groups or target == group['id']:
                     raise ProfileInUse(f'{label} 引用了无效的策略组：{target}')
+            if group.get('follow_group') and groups[group['follow_group']].get('type') == 'chain':
+                raise ProfileValidationError('代理链请通过引用策略使用，不能作为跟随目标')
             for item in group.get('proxies_order', []):
                 kind = item.get('type')
                 value = item.get('id')
-                available = {'node': set(refs['nodes']) | BUILTIN_POLICIES,
-                             'strategy': set(groups), 'aggregation': set(refs['subscription_aggregations']),
-                             'subscription': set(refs['subscriptions'])}.get(kind)
+                available = {'node': set(catalogs['nodes']) | BUILTIN_POLICIES,
+                             'strategy': set(groups), 'aggregation': set(catalogs['subscription_aggregations']),
+                             'subscription': set(catalogs['subscriptions'])}.get(kind)
                 if available is None or value not in available or (kind == 'strategy' and value == group['id']):
                     raise ProfileInUse(f'{label} 的排序列表包含无效引用：{value}')
         rules = _items_by_id(profile.get('rule_configs'), '规则配置')

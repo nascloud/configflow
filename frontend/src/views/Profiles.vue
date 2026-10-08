@@ -24,7 +24,7 @@
       <EmptyState
         :icon="Boxes"
         title="还没有配置空间"
-        description="配置空间用于隔离不同场景的资源选择与策略，先创建一个开始使用。"
+        description="配置空间用于隔离不同场景的策略与代理链，先创建一个开始使用。"
       >
         <Button @click="openCreate">
           <Plus class="size-4" />

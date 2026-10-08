@@ -309,48 +309,6 @@ def _clone_profile(args):
 
 
 @tool(
-    'get_profile_resources',
-    '获取配置选择的共享订阅、节点和聚合 ID。共享目录本身不随配置切换。',
-    obj({'id': string('profile id')}, ['id']),
-)
-def _get_profile_resources(args):
-    return call_api('GET', f"/api/profiles/{_require(args, 'id')}/resources")
-
-
-@tool(
-    'set_profile_resources',
-    '替换配置的资源引用，不复制或修改共享源。仍被策略组或拨号链使用的资源不能移除。',
-    obj({
-        'id': string('profile id'),
-        'resources': free_object('subscriptions、nodes、subscription_aggregations 三个 ID 数组'),
-    }, ['id', 'resources']),
-)
-def _set_profile_resources(args):
-    return call_api('PUT', f"/api/profiles/{_require(args, 'id')}/resources", body=args['resources'])
-
-
-@tool(
-    'get_profile_node_dialers',
-    '获取配置独立的 Mihomo 节点拨号链绑定。',
-    obj({'id': string('profile id')}, ['id']),
-)
-def _get_profile_node_dialers(args):
-    return call_api('GET', f"/api/profiles/{_require(args, 'id')}/node-dialers")
-
-
-@tool(
-    'set_profile_node_dialers',
-    '替换配置的拨号链；键是共享节点 ID，值为 {type: node 或 group, id: 目标 ID}。不改变其他配置。',
-    obj({
-        'id': string('profile id'),
-        'dialers': free_object('节点 ID 到本配置节点或策略组引用的映射；空对象清除绑定'),
-    }, ['id', 'dialers']),
-)
-def _set_profile_node_dialers(args):
-    return call_api('PUT', f"/api/profiles/{_require(args, 'id')}/node-dialers", body=args['dialers'])
-
-
-@tool(
     'bind_agent_profile',
     '把 Agent 绑定到指定 profile；后续配置读取和推送都使用该 profile。',
     obj(
@@ -531,10 +489,8 @@ def _list_nodes(args):
             'id': string('节点 id，update / delete 时必填'),
             'data': free_object(
                 '节点字段：name（节点名）、proxy_string（节点链接或结构化 proxy 文本）、'
-                'enabled、remark（备注）、dialer_ref（{type: "node"|"group", id: 稳定ID}，'
-                '仅当前配置空间已启用手动节点/静态策略组，Mihomo 专用；'
-                'null 或省略保留 proxy_string/params 原始 dialer-proxy，有值时覆盖；'
-                'Surge 暂不支持，循环/缺失引用返回400，被引用资源删除/禁用返回409）'
+                'enabled、remark（备注）。共享节点不能保存 dialer_ref；'
+                '配置独立代理链请使用 manage_proxy_group 的 chain 类型。'
             ),
         },
         ['action'],
@@ -712,10 +668,13 @@ def _list_proxy_groups(args):
     'manage_proxy_group',
     '创建、更新或删除策略组。create 时 data 至少包含 name 和 type；'
     'type 支持 select（手动选择）、url-test（自动测速）、fallback（故障转移）、'
-    'load-balance（负载均衡）、relay。'
-    '节点来源可以是订阅（subscriptions + regex）、聚合（aggregations + aggregation_regex）、'
-    '手动节点（manual_nodes）或引用其他策略组（include_groups），可组合使用；'
-    'follow_group 则表示整体跟随另一个策略组。'
+    'load-balance（负载均衡）、chain（Mihomo 代理链）。'
+    '普通组可直接引用共享订阅（subscriptions + regex）、聚合（aggregations + aggregation_regex）、'
+    '手动节点（manual_nodes）或当前配置其它策略组/代理链（include_groups），无需资源预选；'
+    'follow_group 可整体跟随普通策略组，不能跟随代理链。'
+    'chain 类型使用 chain={entry:{type:"node"|"group",id:稳定ID},exit:{type:"node"|"group",id:稳定ID}}。'
+    '节点引用仅支持手动节点；订阅和聚合通过策略组使用。前置直接引用原组，落地生成独立的链内节点/组，'
+    '保留来源、筛选、测速和选路参数，不改变原资源；Provider 刷新可更新候选。Surge 拒绝启用链。'
     '引用类字段填的都是 id，不是名称。',
     obj(
         {
@@ -730,7 +689,7 @@ def _list_proxy_groups(args):
                 'follow_group（跟随的策略组 id）、proxies_order（节点顺序）、'
                 'url（测试地址）、interval（测试间隔秒）、'
                 'strategy（load-balance 的 round-robin / consistent-hashing / sticky-sessions）、'
-                'lazy（懒加载）'
+                'lazy（懒加载）、chain（代理链的 entry 与 exit；不与普通来源字段混用）'
             ),
         },
         ['action'],

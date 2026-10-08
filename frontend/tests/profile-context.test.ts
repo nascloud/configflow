@@ -95,7 +95,7 @@ describe('local profile switching and request ownership', () => {
 
   it('releases a rejected scoped request rather than locking selection', async () => {
     api.defaults.adapter = async config => { throw { config, response: { status: 409, data: { message: 'Referenced resource' } } } }
-    await expect(profileApi.saveResources('default', { nodes: [] })).rejects.toMatchObject({ response: { status: 409 } })
+    await expect(proxyGroupApi.update('group', { name: 'Updated' }, 'default')).rejects.toMatchObject({ response: { status: 409 } })
     expect(scopedRequests.value).toBe(0)
   })
 

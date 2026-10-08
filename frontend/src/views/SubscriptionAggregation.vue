@@ -9,7 +9,7 @@
     <PageHeader
       eyebrow="Resource"
       title="订阅聚合"
-      description="共享聚合统一维护订阅与节点的组合；在资源选择页选中后，当前配置的策略组即可引用。"
+      description="共享聚合统一维护订阅与节点的组合；当前配置的策略组可直接引用，无需预选资源。"
     >
       <template #actions>
         <Button

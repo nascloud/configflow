@@ -24,7 +24,7 @@ vi.mock('@/api', () => ({
   { id: 'group-one', name: 'Synthetic strategy', type: 'select', enabled: true, manual_nodes: ['DIRECT'] }
  ] })), create: vi.fn(async () => ({})), update: vi.fn(async () => ({})) },
  nodeApi: { getAll: vi.fn(async () => ({ data: [{ id: 'node-one', name: 'Synthetic manual node' }] })) },
- profileApi: { list: vi.fn(), delete: vi.fn(), getResources: vi.fn(async () => ({ data: { subscriptions: ['sub-one'], nodes: ['node-one'], subscription_aggregations: ['agg-on', 'agg-off'] } })) }
+ profileApi: { list: vi.fn(), delete: vi.fn() }
 }))
 const wrappers: ReturnType<typeof mount>[] = []
 // jsdom has no layout/scrolling; replace only that absent browser primitive.
@@ -125,16 +125,6 @@ describe('real view regressions with synthetic API data', () => {
   ;(options[0] as HTMLElement).click()
   await flushPromises()
   expect(select.props('modelValue')).toEqual(['sub-one'])
- })
- it('unselected shared resources never appear as strategy source choices', async () => {
-  vi.mocked(profileApi.getResources).mockResolvedValueOnce({ data: { subscriptions: [], nodes: [], subscription_aggregations: [] } })
-  const w = render(ProxyGroups)
-  await flushPromises()
-  const select = await addSource(w, '节点')
-  expect(select.props('options')).toEqual([
-   { value: 'DIRECT', label: 'DIRECT' }, { value: 'REJECT', label: 'REJECT' }
-  ])
-  expect(profileApi.getResources).toHaveBeenCalledWith('default')
  })
  it.each([
   ['节点', '手动选择节点', [

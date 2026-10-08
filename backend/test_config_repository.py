@@ -49,27 +49,34 @@ class ProfileRepositoryTest(unittest.TestCase):
         reopened = ProfileRepository(self.root, get_default_config)
         self.assertEqual(reopened.export_all(), repository.export_all())
 
-    def test_multi_profile_migration_remaps_colliding_resource_ids_and_dependencies(self):
-        first, second = self.legacy('one.example'), self.legacy('two.example')
-        system = {'schema_version': 2, 'profiles': [{'id': 'default', 'name': 'First'}, {'id': 'second', 'name': 'Second'}],
-                  'agents': [{'id': 'agent', 'profile_id': 'second'}], 'system_config': {}, 'backup': {}}
-        (self.root / 'system.json').write_text(json.dumps(system))
-        # A stale legacy file must not win over the existing multi-profile store.
-        (self.root / 'config.json').write_text(json.dumps(self.legacy('stale.example')))
-        for profile_id, profile in (('default', first), ('second', second)):
-            target = self.root / 'profiles' / profile_id
-            target.mkdir(parents=True)
-            (target / 'config.json').write_text(json.dumps(profile))
+
+    def test_original_inline_rules_become_shared_sources_without_changing_policies(self):
+        legacy = self.legacy()
+        legacy['rule_configs'].append({
+            'id': 'inline', 'itemType': 'ruleset', 'name': 'Domains',
+            'content': 'private.example', 'behavior': 'domain',
+            'policy': 'Proxy', 'enabled': False,
+        })
         repository = ProfileRepository(self.root, get_default_config)
-        one, two = repository.get_compat_config('default'), repository.get_compat_config('second')
-        self.assertNotEqual(one['subscriptions'][0]['id'], two['subscriptions'][0]['id'])
-        self.assertEqual(one['subscriptions'][0]['url'], 'https://one.example/subscription')
-        self.assertEqual(two['subscriptions'][0]['url'], 'https://two.example/subscription')
-        self.assertEqual(two['proxy_groups'][0]['subscriptions'], [two['subscriptions'][0]['id']])
-        self.assertEqual(two['subscription_aggregations'][0]['nodes'], [two['nodes'][0]['id']])
-        self.assertEqual(one['rule_configs'][0]['content'], 'one.example')
-        self.assertEqual(two['rule_configs'][0]['content'], 'two.example')
-        self.assertEqual(repository.get_system()['agents'][0]['profile_id'], 'second')
+        repository.import_all(legacy)
+        resolved = repository.get_compat_config('default')
+        rules = {rule['id']: rule for rule in resolved['rule_configs']}
+        self.assertEqual(rules['r1']['content'], 'one.example')
+        self.assertEqual(rules['inline']['content'], 'private.example')
+        self.assertEqual(rules['inline']['policy'], 'Proxy')
+        self.assertFalse(rules['inline']['enabled'])
+        self.assertNotEqual(rules['inline']['library_rule_id'], rules['r1']['library_rule_id'])
+        self.assertNotIn('content', repository.get_profile('default')['rule_configs'][-1])
+
+    def test_unsupported_import_preserves_existing_data_and_original_file(self):
+        repository = ProfileRepository(self.root, get_default_config)
+        repository.import_all(self.legacy())
+        before = repository.path.read_bytes()
+        invalid = repository.export_all()
+        invalid['schema_version'] = 2
+        with self.assertRaises(ProfileValidationError):
+            repository.import_all(invalid)
+        self.assertEqual(repository.path.read_bytes(), before)
 
     def test_independent_concurrent_profile_writes_and_shared_updates_survive(self):
         repository = ProfileRepository(self.root, get_default_config)
@@ -107,9 +114,9 @@ class ProfileRepositoryTest(unittest.TestCase):
         changed['mihomo']['custom_config'] = 'mixed-port: 9900'
         repository.save_profile('second', changed)
         invalid = copy.deepcopy(backup)
-        invalid['profiles']['second']['resource_refs']['nodes'] = ['missing']
+        invalid['profiles']['second']['proxy_groups'][0]['manual_nodes'] = ['missing']
         before = repository.export_all()
-        with self.assertRaises(ProfileValidationError):
+        with self.assertRaises(ProfileInUse):
             repository.import_all(invalid)
         self.assertEqual(repository.export_all(), before)
         repository.import_all(backup)
@@ -132,47 +139,19 @@ class ProfileRepositoryTest(unittest.TestCase):
         raw = repository.get_profile('default')
         self.assertNotIn('nodes', raw)
         self.assertNotIn('content', raw['rule_configs'][0])
-        raw['resource_refs']['nodes'] = [{'id': 'node', 'server': 'override.example'}]
+        raw['proxy_groups'][0]['manual_nodes'] = [{'id': 'node', 'server': 'override.example'}]
         with self.assertRaises(ProfileValidationError):
             repository.save_profile('default', raw)
 
 
-def test_v2_dialers_are_extracted_remapped_and_hydrated(tmp_path):
-    import pytest
-    first = {'nodes': [{'id': 'source', 'name': 'Source', 'server': 'one'},
-                       {'id': 'target', 'name': 'Target', 'server': 'one-target'}]}
-    second = copy.deepcopy(first)
-    second['nodes'][0]['server'] = 'two'
-    second['nodes'][0]['dialer_ref'] = {'type': 'node', 'id': 'target'}
-    second['nodes'][1]['server'] = 'two-target'
-    system = {'schema_version': 2, 'profiles': [{'id': 'default'}, {'id': 'second'}],
-              'system_config': {}, 'backup': {}, 'agents': []}
-    (tmp_path / 'system.json').write_text(json.dumps(system))
-    for profile_id, data in [('default', first), ('second', second)]:
-        directory = tmp_path / 'profiles' / profile_id
-        directory.mkdir(parents=True)
-        (directory / 'config.json').write_text(json.dumps(data))
-    repository = ProfileRepository(tmp_path)
-    resolved = repository.get_compat_config('second')
-    source, target = resolved['nodes']
-    assert source['id'] != 'source' and target['id'] != 'target'
-    assert source['dialer_ref'] == {'type': 'node', 'id': target['id']}
-    assert repository.get_node_dialers('second') == {source['id']: source['dialer_ref']}
-    assert all('dialer_ref' not in node for node in repository.get_shared()['nodes'])
-    before = repository.export_all()
-    with pytest.raises(ProfileInUse) as error:
-        repository.set_resource_refs('second', {'subscriptions': [], 'nodes': [source['id']], 'subscription_aggregations': []})
-    assert error.value.usages[0]['name'] == 'second'
-    assert repository.export_all() == before
-    with pytest.raises(ProfileValidationError):
-        repository.set_node_dialers('second', {source['id']: {'type': 'node', 'id': source['id']}})
 
 
 def test_shared_deletion_and_disable_reports_all_profile_usage(tmp_path):
     import pytest
     repository = ProfileRepository(tmp_path)
     repository.update_shared_transaction(lambda shared: shared['nodes'].append({'id': 'n', 'name': 'Node'}))
-    repository.set_resource_refs('default', {'nodes': ['n'], 'subscriptions': [], 'subscription_aggregations': []})
+    repository.update_profile_fields('default', {'proxy_groups': [
+        {'id': 'choice', 'name': 'Choice', 'type': 'select', 'manual_nodes': ['n']} ]})
     repository.clone_profile('default', {'id': 'other', 'name': 'Other'})
     for updater in (lambda shared: shared['nodes'].clear(),
                     lambda shared: shared['nodes'][0].update(enabled=False)):
@@ -210,13 +189,6 @@ def test_shared_cache_paths_are_atomic_and_reject_escape(tmp_path):
             repository.write_shared_json(path, {})
 
 
-def test_schema3_without_node_dialers_remains_restorable(tmp_path):
-    repository = ProfileRepository(tmp_path)
-    backup = repository.export_all()
-    del backup['profiles']['default']['node_dialers']
-    repository.import_all(backup)
-    assert repository.get_node_dialers('default') == {}
-    assert ProfileRepository(tmp_path).get_node_dialers('default') == {}
 
 
 def test_global_settings_three_way_merge_preserves_concurrent_agent_updates(tmp_path):

@@ -140,3 +140,24 @@ def test_mcp_rejects_rule_proxy_token_before_equal_config_token(tmp_path, monkey
     ]
 
     assert [response.status_code for response in responses] == [401, 401]
+
+
+def test_mcp_exposes_proxy_groups_without_resource_selection_or_node_dialer_tools(tmp_path):
+    repository = ProfileRepository(tmp_path)
+    repository.save_system({"system_config": {"config_token": "mcp-admin-token"}})
+    config_module.set_repository(repository)
+    app = Flask(__name__)
+    from backend.mcp_server import mcp_bp
+    app.register_blueprint(mcp_bp)
+    response = app.test_client().post(
+        "/mcp",
+        headers={"Authorization": "Bearer mcp-admin-token"},
+        json={"jsonrpc": "2.0", "id": "tools", "method": "tools/list"},
+    )
+    assert response.status_code == 200
+    names = {tool["name"] for tool in response.get_json()["result"]["tools"]}
+    assert {"list_proxy_groups", "manage_proxy_group"} <= names
+    for name in ("get_profile_resources", "set_profile_resources",
+                 "get_profile_node_dialers", "set_profile_node_dialers"):
+        assert name not in names
+        assert not tools.has_tool(name)

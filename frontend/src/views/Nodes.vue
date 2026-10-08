@@ -2,7 +2,7 @@
   <div :class="reorder.active.value && 'cf-reordering'">
     <ScopeBanner
       scope="resource"
-      description="共享节点库；编辑会影响所有引用它的配置，拨号代理覆盖请在当前配置资源中设置。"
+      description="共享节点库；编辑会影响所有引用它的配置。独立前置与落地组合请在策略组中创建代理链，不修改原节点。"
     />
 
     <PageHeader eyebrow="Resource" title="节点库" description="订阅拉取与手动录入的节点集中在此。">

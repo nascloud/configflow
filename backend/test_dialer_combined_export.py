@@ -67,6 +67,7 @@ def test_combined_invalid_cache_rejected_on_transport_failure(tmp_path, monkeypa
 
 def add_second_feed(repo):
     add_subscription(repo, {'id': 's2', 'name': 'Second', 'enabled': True, 'url': 'https://fixture.invalid/second'})
+    repo.update_profile_transaction('default', lambda p: p['proxy_groups'][0].setdefault('subscriptions', []).append('s2'))
 
 
 @pytest.mark.parametrize('chain', ['none', 'managed'])
@@ -169,12 +170,12 @@ def test_combined_profile_selection_isolated_and_context_cleared(tmp_path, monke
     seed_profile(repo, chain='none')
     repo.create_profile({'id': 'other', 'name': 'Other'}, clone_from='default')
     repo.update_shared_transaction(lambda shared: shared['nodes'].append(node('other-relay')))
-    def select_other(p):
-        p['resource_refs']['nodes'] = ['exit', 'other-relay']
-        p['proxy_groups'][0]['manual_nodes'] = ['exit', 'other-relay']
-    repo.update_profile_transaction('other', select_other)
+    def add_other_group(p):
+        p['proxy_groups'].append({'id': 'other-entry', 'name': 'Other entry', 'type': 'select',
+                                  'manual_nodes': ['other-relay']})
+    repo.update_profile_transaction('other', add_other_group)
     monkeypatch.setattr('backend.routes.subscriptions.get_subscription_proxies_yaml',
-                        Mock(return_value=(provider(**{'dialer-proxy': 'other-relay'}), 'rendered_yaml')))
+                        Mock(return_value=(provider(**{'dialer-proxy': 'Other entry'}), 'rendered_yaml')))
     kwargs = {'headers': {'X-ConfigFlow-Profile': 'other'}} if selector == 'header' else {'query_string': {'profile': 'other'}}
     client = app.test_client()
     assert client.get('/api/subscriptions/proxies', **kwargs).status_code == 200
@@ -193,10 +194,9 @@ def test_combined_snapshot_and_cache_stay_bound_when_fetch_changes_context(tmp_p
         calls.append(1)
         if len(calls) == 1:
             get_config()['nodes'][0]['name'] = 'mutated-relay'
-            def change_selection(p):
-                p['resource_refs']['nodes'] = ['exit']
+            def change_group(p):
                 p['proxy_groups'][0]['manual_nodes'] = ['exit']
-            repo.update_profile_transaction('default', change_selection)
+            repo.update_profile_transaction('default', change_group)
             get_config('other')['proxy_groups'][0]['name'] = 'Other snapshot'
             return provider(), 'rendered_yaml'
         raise ConnectionError('transport failure')
@@ -208,4 +208,4 @@ def test_combined_snapshot_and_cache_stay_bound_when_fetch_changes_context(tmp_p
     assert [p['name'] for p in yaml.safe_load(response.data)['proxies']] == ['Remote', 'Bound']
     cache_read.assert_called_once_with('s2')
     assert load_subscription_cache('s2')['nodes'][0]['name'] == 'Bound'
-    assert repo.get_profile('default')['resource_refs']['nodes'] == ['exit']
+    assert repo.get_profile('default')['proxy_groups'][0]['manual_nodes'] == ['exit']

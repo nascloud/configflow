@@ -6,7 +6,7 @@ import yaml
 
 from backend.routes import subscriptions_bp
 from backend.common.auth import require_auth, validate_token_or_jwt
-from backend.common.config import get_config, get_shared_config, save_shared_config, update_shared_config_transaction
+from backend.common.config import get_resource_config, get_shared_config, save_shared_config, update_shared_config_transaction
 from backend.common.config_repository import ProfileRepositoryError
 from backend.utils.reorder import resolve_new_order
 from backend.utils.subscription_cache import (
@@ -264,18 +264,19 @@ def get_all_subscription_proxies():
         }), 401
 
     try:
-        config_data = get_config()
+        config_data = get_resource_config('subscriptions')
         subscriptions = config_data.get('subscriptions', [])
         from backend.utils.provider_delivery import DeliverySnapshot, parse_provider_proxies
         from backend.converters.mihomo import generate_mihomo_config
         from backend.utils.strategy_references import StrategyReferenceError
         # Bind both topology and fallback caches before any remote fetch.
         snapshot = DeliverySnapshot.capture(config_data.get('profile_id') or 'default',
-            yaml.safe_load(generate_mihomo_config(config_data, preflight_providers=False)))
+            yaml.safe_load(generate_mihomo_config(config_data, preflight_providers=False)), profile=config_data)
 
         # 收集所有订阅的代理列表
         all_proxies = []
         subscription_info = []
+        prepared = {}
 
         for sub in subscriptions:
             if not sub.get('enabled', True):
@@ -315,6 +316,7 @@ def get_all_subscription_proxies():
                 current_app.logger.warning(f"订阅 '{sub_name}' (id: {sub_id}) 没有可用节点")
                 continue
 
+            prepared[sub_name] = {'content': yaml.safe_dump({'proxies': proxies}), 'cache_updates': []}
             all_proxies.extend(proxies)
             subscription_info.append({
                 'name': sub_name,
@@ -327,6 +329,13 @@ def get_all_subscription_proxies():
         # Resolve cross-feed references against the final combined collection,
         # not a partial per-source graph. This also rejects cross-feed collisions.
         snapshot.validate(all_proxies)
+        if snapshot.has_chains or any(p.get('dialer-proxy') is not None for p in all_proxies):
+            import json
+            from backend.utils.provider_delivery import prepare_provider_bundle
+            combined_main = json.loads(snapshot.main_json)
+            names = {p['name'] for p in all_proxies}
+            combined_main['proxies'] = [p for p in combined_main.get('proxies', []) if p['name'] not in names] + all_proxies
+            prepare_provider_bundle(config_data, combined_main, prepared=prepared)
 
         # 构建 YAML 响应
         yaml_data = {
@@ -392,7 +401,7 @@ def get_subscription_proxies(sub_id):
         }), 401
 
     try:
-        config_data = get_config()
+        config_data = get_resource_config('subscriptions', sub_id)
         subscriptions = config_data.get('subscriptions', [])
         sub = next((s for s in subscriptions if s['id'] == sub_id), None)
 
@@ -403,12 +412,31 @@ def get_subscription_proxies(sub_id):
         from backend.converters.mihomo import generate_mihomo_config
         # Capture the originating graph before a remote fetch can change state.
         snapshot = DeliverySnapshot.capture(config_data.get('profile_id') or 'default',
-            yaml.safe_load(generate_mihomo_config(config_data, preflight_providers=False)))
+            yaml.safe_load(generate_mihomo_config(config_data, preflight_providers=False)), profile=config_data)
+        if snapshot.has_chains:
+            from backend.utils.provider_delivery import prepare_provider_bundle, commit_provider_bundle
+            import json
+            bundle = prepare_provider_bundle(config_data, json.loads(snapshot.main_json), requested=('subscription', sub))
+            rendered = next(item for item in bundle if item['name'] == sub['name'])
+            if request.args.get('format') == 'surge':
+                from backend.utils.dialer_references import DialerReferenceError
+                raise DialerReferenceError('Surge 暂不支持代理链，请使用 Mihomo')
+            commit_provider_bundle(snapshot.profile_id, bundle)
+            return Response(rendered['content'], mimetype='text/yaml; charset=utf-8')
         sub_name = sub.get('name', 'Unknown')
         sub_url = sub.get('url')
         proxies = None
         cache_updated = False
         fetch_error = None
+
+        def validate_subscription_delivery(proxies):
+            snapshot.validate(proxies, provider_name=sub_name)
+            if any(p.get('dialer-proxy') is not None for p in proxies):
+                import json
+                from backend.utils.provider_delivery import prepare_provider_bundle
+                prepare_provider_bundle(config_data, json.loads(snapshot.main_json), requested=('subscription', sub),
+                    prepared={sub_name: {'content': yaml.safe_dump({'proxies': proxies}), 'cache_updates': []}})
+
 
         # 优先通过 Sub-Store 获取
         if sub_url:
@@ -421,7 +449,7 @@ def get_subscription_proxies(sub_id):
                 if request.args.get('format') == 'surge':
                     from backend.converters.surge import convert_proxies_to_surge_text
                     convert_proxies_to_surge_text(proxies)
-                snapshot.validate(proxies)
+                validate_subscription_delivery(proxies)
 
                 if proxies:
                     # 更新本地缓存（转换为 node 格式存储）
@@ -487,9 +515,11 @@ def get_subscription_proxies(sub_id):
         if request.args.get('format') == 'surge':
             from backend.converters.surge import convert_proxies_to_surge_text
             surge_text = convert_proxies_to_surge_text(proxies)
-            snapshot.validate(proxies)
+            if not cache_updated:
+                validate_subscription_delivery(proxies)
             return Response(surge_text, mimetype='text/plain')
-        snapshot.validate(proxies)
+        if not cache_updated:
+            validate_subscription_delivery(proxies)
 
         # 构建 YAML 响应
         yaml_data = {

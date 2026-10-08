@@ -5,7 +5,7 @@
     <PageHeader
       eyebrow="Profile"
       title="策略组"
-      description="分组、筛选与节点引用，仅属于当前配置空间。"
+      description="直接引用共享订阅、节点与聚合，或组合仅属于当前配置的代理链。"
     >
       <template #actions>
         <Button
@@ -97,8 +97,13 @@
             <component :is="group.enabled ? Eye : EyeOff" class="size-4" />
           </Button>
         </header>
+        <div v-if="group.type === 'chain'" class="min-w-0 text-xs text-muted-foreground">
+          <Badge variant="outline">仅 Mihomo</Badge>
+          <p class="mt-2 whitespace-normal break-all">{{ chainSummary(group) }}</p>
+        </div>
 
         <Collapsible
+          v-if="group.type !== 'chain'"
           class="cf-reorder-mute"
           :open="isCardExpanded(group.id || group.name)"
           @update:open="toggleCardExpand(group.id || group.name)"
@@ -288,7 +293,7 @@
       <DialogContent class="glass-strong hairline max-w-[720px] border-border/50">
         <DialogHeader>
           <DialogTitle>{{ isEdit ? '编辑策略组' : '添加策略组' }}</DialogTitle>
-          <DialogDescription>选择节点来源并设置测试参数，顺序可拖拽调整。</DialogDescription>
+          <DialogDescription>直接选择共享资源，或创建独立命名出口的代理链；不会修改共享节点。</DialogDescription>
         </DialogHeader>
 
         <div class="flex max-h-[64dvh] flex-col gap-4 overflow-y-auto pr-1">
@@ -299,8 +304,8 @@
 
           <div v-if="!enabledSources.includes('follow')" class="flex flex-col gap-1.5">
             <Label>类型</Label>
-            <Select v-model="form.type">
-              <SelectTrigger class="w-full bg-background/50">
+            <Select :model-value="form.type" @update:model-value="changeGroupType">
+              <SelectTrigger data-testid="group-type" class="w-full bg-background/50">
                 <SelectValue placeholder="请选择策略组类型" />
               </SelectTrigger>
               <SelectContent class="glass-strong">
@@ -308,10 +313,38 @@
                 <SelectItem value="url-test">自动测速 (URL-Test)</SelectItem>
                 <SelectItem value="fallback">故障转移 (Fallback)</SelectItem>
                 <SelectItem value="load-balance">负载均衡 (Load-Balance)</SelectItem>
+                <SelectItem value="chain">代理链（仅 Mihomo）</SelectItem>
               </SelectContent>
             </Select>
           </div>
 
+          <template v-if="form.type === 'chain' && form.chain">
+            <p class="text-xs leading-relaxed text-muted-foreground">前置 → 落地，链名即独立出口名。前置沿用原策略组的当前选择，落地策略组生成独立链组；订阅和聚合成员动态刷新。原节点和策略组仍可单独使用；仅支持 Mihomo，不能导出为 Surge。</p>
+            <div class="flex min-w-0 flex-col gap-1.5">
+              <Label for="chain-search">搜索节点或策略组</Label>
+              <Input id="chain-search" v-model="chainSearch" placeholder="搜索名称" />
+              <Label>前置引用</Label>
+              <Select v-model="chainEntrySelection">
+                <SelectTrigger data-testid="chain-entry" class="data-[size=default]:h-auto min-h-9 w-full min-w-0 [&_[data-slot=select-value]]:line-clamp-none"><SelectValue class="min-w-0 whitespace-normal break-all text-left">{{ chainEntryLabel }}</SelectValue></SelectTrigger>
+                <SelectContent class="max-w-[calc(100vw-32px)]">
+                  <SelectItem v-for="candidate in chainEntryOptions" :key="candidate.value" :value="candidate.value" class="whitespace-normal break-all">{{ candidate.label }}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="flex min-w-0 flex-col gap-1.5">
+              <Label>落地引用</Label>
+              <Select v-model="chainExitSelection">
+                <SelectTrigger data-testid="chain-exit" class="data-[size=default]:h-auto min-h-9 w-full min-w-0 [&_[data-slot=select-value]]:line-clamp-none"><SelectValue class="min-w-0 whitespace-normal break-all text-left">{{ chainExitLabel }}</SelectValue></SelectTrigger>
+                <SelectContent class="max-w-[calc(100vw-32px)]">
+                  <SelectItem v-for="candidate in chainExitOptions" :key="candidate.value" :value="candidate.value" class="whitespace-normal break-all">{{ candidate.label }}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <p v-if="chainUnavailable" role="alert" class="text-xs text-destructive-accent">引用目标缺失、已禁用或存在依赖环，请重新选择；不会自动清除已有引用。</p>
+            <p class="text-xs text-muted-foreground">两端支持手动节点、策略组（含订阅、聚合、跟随）或无环代理链。前置必须启用；禁用链可保留禁用的落地节点或策略组，启用链时落地也必须启用。</p>
+          </template>
+
+          <template v-if="form.type !== 'chain'">
           <div class="flex flex-col gap-2">
             <Label>节点来源</Label>
             <!-- 「跟随」与其它来源互斥，勾选后其余选项隐藏 -->
@@ -343,7 +376,7 @@
                 <SelectValue placeholder="选择要跟随的策略组" />
               </SelectTrigger>
               <SelectContent class="glass-strong">
-                <SelectItem v-for="group in availableStrategies" :key="group.id" :value="group.id">
+                <SelectItem v-for="group in followStrategies" :key="group.id" :value="group.id">
                   {{ group.name }}
                 </SelectItem>
               </SelectContent>
@@ -531,6 +564,9 @@
               </SelectContent>
             </Select>
           </div>
+          </template>
+
+          <p v-if="formError" role="alert" class="break-all text-sm text-destructive-accent">{{ formError }}</p>
 
           <div class="flex items-center gap-2.5">
             <Switch id="group-enabled" v-model="form.enabled" />
@@ -644,7 +680,7 @@ import MultiSelect from '@/components/common/MultiSelect.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
 import { choose, confirmDanger, notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
-import { proxyGroupApi, nodeApi, profileApi } from '@/api'
+import { proxyGroupApi, nodeApi } from '@/api'
 import { getActiveProfileId } from '@/profileContext'
 import type { ProxyGroup, ProxyNode, Subscription } from '@/types'
 import api from '@/api'
@@ -665,6 +701,8 @@ const savingStatus = ref<Record<string, boolean>>({})
 const dialogVisible = ref(false)
 const isEdit = ref(false)
 const enabledSources = ref<string[]>([])
+const formError = ref('')
+const chainSearch = ref('')
 const regexPreviewVisible = ref(false)
 const regexPreviewLoading = ref(false)
 const regexPreviewSource = ref<'subscription' | 'aggregation' | ''>('')
@@ -750,6 +788,87 @@ const availableStrategies = computed(() => {
     .filter(g => g.id !== form.value.id)
     .map(g => ({ id: g.id, name: g.name }))
 })
+const followStrategies = computed(() => proxyGroups.value.filter(group => group.id !== form.value.id && group.type !== 'chain'))
+type ChainEndpoint = NonNullable<ProxyGroup['chain']>['entry']
+const entryValue = (entry: ChainEndpoint) => JSON.stringify({ type: entry.type, id: entry.id })
+const entryLabel = (entry: ChainEndpoint) => {
+  const target = entry.type === 'node' ? nodes.value.find(node => node.id === entry.id) : proxyGroups.value.find(group => group.id === entry.id)
+  return `${entry.type === 'node' ? '节点' : '策略组'} · ${target?.name || `${entry.id}（不可用）`}`
+}
+const chainSummary = (group: ProxyGroup) => group.chain
+  ? `${entryLabel(group.chain.entry)} → ${entryLabel(group.chain.exit)}`
+  : '链配置不可用'
+const validChainEndpoint = (endpoint: ChainEndpoint, allowDisabled = false, seen = new Set<string>()): boolean => {
+  if (endpoint.type === 'node') {
+    return nodes.value.some(node => node.id === endpoint.id && !node.subscription_id && (allowDisabled || node.enabled !== false))
+  }
+  if (endpoint.id === form.value.id || seen.has(endpoint.id)) return false
+  const group = proxyGroups.value.find(group => group.id === endpoint.id)
+  if (!group || (!allowDisabled && group.enabled === false)) return false
+  const next = new Set(seen).add(endpoint.id)
+  if (group.type === 'chain') {
+    return !!group.chain && validChainEndpoint(group.chain.entry, false, next) && validChainEndpoint(group.chain.exit, allowDisabled && group.enabled === false, next)
+  }
+  const groupIds = new Set([
+    ...(group.include_groups || []),
+    ...(group.follow_group ? [group.follow_group] : []),
+    ...(group.proxies_order || []).filter(member => member.type === 'strategy').map(member => member.id)
+  ])
+  const nodeIds = new Set([
+    ...(group.manual_nodes || []),
+    ...(group.proxies_order || []).filter(member => member.type === 'node').map(member => member.id)
+  ])
+  return [...groupIds].every(id => validChainEndpoint({ type: 'group', id }, allowDisabled, next)) &&
+    [...nodeIds].every(id => ['DIRECT', 'REJECT'].includes(id) || validChainEndpoint({ type: 'node', id }, allowDisabled, next))
+}
+const chainCandidates = (side: 'entry' | 'exit') => {
+  const allowDisabled = side === 'exit' && form.value.enabled === false
+  const other = form.value.chain?.[side === 'entry' ? 'exit' : 'entry']
+  const endpoints: ChainEndpoint[] = [
+    ...nodes.value.map(node => ({ type: 'node' as const, id: node.id })),
+    ...proxyGroups.value.map(group => ({ type: 'group' as const, id: group.id }))
+  ]
+  return endpoints.filter(endpoint => validChainEndpoint(endpoint, allowDisabled) &&
+    !(endpoint.type === 'node' && other?.type === 'node' && endpoint.id === other.id))
+    .map(endpoint => ({ value: entryValue(endpoint), label: entryLabel(endpoint) }))
+}
+const chainEntryCandidates = computed(() => chainCandidates('entry'))
+const chainExitCandidates = computed(() => chainCandidates('exit'))
+const matchesChainSearch = (candidate: { label: string }) => candidate.label.toLocaleLowerCase().includes(chainSearch.value.trim().toLocaleLowerCase())
+const chainEntryOptions = computed(() => chainEntryCandidates.value.filter(matchesChainSearch))
+const chainExitOptions = computed(() => chainExitCandidates.value.filter(matchesChainSearch))
+const chainEntrySelection = computed({
+  get: () => form.value.chain?.entry.id ? entryValue(form.value.chain.entry) : '',
+  set: (value: string) => { if (form.value.chain) form.value.chain.entry = JSON.parse(value) }
+})
+const chainExitSelection = computed({
+  get: () => form.value.chain?.exit.id ? entryValue(form.value.chain.exit) : '',
+  set: (value: string) => { if (form.value.chain) form.value.chain.exit = JSON.parse(value) }
+})
+const chainEntryLabel = computed(() => form.value.chain?.entry.id ? entryLabel(form.value.chain.entry) : '选择前置引用')
+const chainExitLabel = computed(() => form.value.chain?.exit.id ? entryLabel(form.value.chain.exit) : '选择落地引用')
+const chainUnavailable = computed(() => !!form.value.chain && (
+  (!!form.value.chain.entry.id && !chainEntryCandidates.value.some(candidate => candidate.value === chainEntrySelection.value)) ||
+  (!!form.value.chain.exit.id && !chainExitCandidates.value.some(candidate => candidate.value === chainExitSelection.value))
+))
+const changeGroupType = (value: unknown) => {
+  if (typeof value !== 'string' || value === form.value.type) return
+  formError.value = ''
+  const oldType = form.value.type
+  if (value === 'chain') {
+    const { id, name, enabled } = form.value
+    form.value = { id, name, enabled, type: 'chain', chain: { entry: { type: 'node', id: '' }, exit: { type: 'node', id: '' } } }
+    enabledSources.value = []
+  } else if (oldType === 'chain') {
+    const { id, name, enabled } = form.value
+    form.value = { id, name, enabled, type: value, subscriptions: [], manual_nodes: [], aggregations: [], include_groups: [], proxies_order: [] }
+    updateTypeDefaults(value, oldType)
+  } else {
+    delete form.value.chain
+    form.value.type = value
+    updateTypeDefaults(value, oldType)
+  }
+}
 
 const availableAggregations = computed(() => {
   // 只返回已开启的聚合,包含正则过滤器信息
@@ -848,9 +967,14 @@ const findPreviousSameTypeConfig = (type: string) => {
   }
 }
 
-// 监听策略组类型变化
-watch(() => form.value.type, (newType, oldType) => {
+// 仅用户切换类型时调整默认参数，编辑回填不改写已保存值。
+const updateTypeDefaults = (newType: string, oldType?: string) => {
   if (!oldType) return
+  if (newType === 'chain') return
+  if (oldType === 'chain') {
+    if (newType && ['url-test', 'fallback', 'load-balance'].includes(newType)) Object.assign(form.value, findPreviousSameTypeConfig(newType))
+    return
+  }
 
   const needsUrlTypes = ['url-test', 'fallback', 'load-balance']
   const oldNeedsUrl = needsUrlTypes.includes(oldType)
@@ -879,7 +1003,7 @@ watch(() => form.value.type, (newType, oldType) => {
     delete form.value.strategy
     delete form.value.lazy
   }
-})
+}
 
 // 处理跟随模式切换
 const handleFollowChange = (checked: boolean) => {
@@ -899,6 +1023,7 @@ const handleFollowChange = (checked: boolean) => {
 
 // 监听节点来源勾选状态变化
 watch(enabledSources, (newSources) => {
+  if (form.value.type === 'chain') return
   // 如果取消勾选"节点"，清空手动节点列表
   if (!newSources.includes('node')) {
     form.value.manual_nodes = []
@@ -925,6 +1050,7 @@ watch(enabledSources, (newSources) => {
 
 // 监听节点、聚合和策略组选择变化，自动同步排序列表
 watch([() => form.value.manual_nodes, () => form.value.aggregations, () => form.value.include_groups], ([newNodes, newAggregations, newGroups]) => {
+  if (form.value.type === 'chain') return
   const currentOrder = form.value.proxies_order || []
   const newOrder: Array<{type: string, id: string}> = []
 
@@ -965,6 +1091,7 @@ watch([() => form.value.manual_nodes, () => form.value.aggregations, () => form.
 
 const getGroupTypeLabel = (type: string) => {
   const labels: Record<string, string> = {
+    'chain': '代理链',
     'select': '手动选择',
     'url-test': '自动测速',
     'fallback': '故障转移',
@@ -1381,18 +1508,20 @@ const loadProxyGroups = async () => {
 
 const loadResources = async () => {
   try {
-    const [refs, nodeRows, subscriptionRows, aggregationRows] = await Promise.all([
-      profileApi.getResources(profileId), nodeApi.getAll(), api.get('/subscriptions'), api.get('/aggregations')
+    const [nodeRows, subscriptionRows, aggregationRows] = await Promise.all([
+      nodeApi.getAll(), api.get('/subscriptions'), api.get('/aggregations')
     ])
-    nodes.value = nodeRows.data.filter((node: ProxyNode) => refs.data.nodes.includes(node.id))
-    subscriptions.value = subscriptionRows.data.filter((sub: Subscription) => refs.data.subscriptions.includes(sub.id))
-    aggregations.value = aggregationRows.data.filter((aggregation: { id: string }) => refs.data.subscription_aggregations.includes(aggregation.id))
+    nodes.value = nodeRows.data
+    subscriptions.value = subscriptionRows.data
+    aggregations.value = aggregationRows.data
   } catch {
-    notify.error('加载当前配置资源失败')
+    notify.error('加载共享资源失败')
   }
 }
 
 const showAddDialog = () => {
+  formError.value = ''
+  chainSearch.value = ''
   isEdit.value = false
   enabledSources.value = []
   // select 类型不需要 url 和 interval
@@ -1434,6 +1563,15 @@ const toggleGroupEnabled = async (group: ProxyGroup) => {
 }
 
 const editGroup = (row: ProxyGroup) => {
+  formError.value = ''
+  chainSearch.value = ''
+  if (row.type === 'chain') {
+    isEdit.value = true
+    enabledSources.value = []
+    form.value = { id: row.id, name: row.name, type: 'chain', enabled: row.enabled, chain: row.chain ? { entry: { ...row.chain.entry }, exit: { ...row.chain.exit } } : { entry: { type: 'node', id: '' }, exit: { type: 'node', id: '' } } }
+    dialogVisible.value = true
+    return
+  }
   isEdit.value = true
 
   // 保存原始策略组名称，用于检测名称变化
@@ -1508,7 +1646,7 @@ const editGroup = (row: ProxyGroup) => {
   enabledSources.value = sources
 
   // 修复 proxies_order：确保包含所有已选择的节点、聚合和策略组
-  let proxies_order = row.proxies_order || []
+  let proxies_order = row.proxies_order ? row.proxies_order.map(item => ({ ...item })) : []
   const existingIds = new Set(proxies_order.map((item: any) => `${item.type}:${item.id}`))
 
   // 添加缺失的节点
@@ -1580,8 +1718,14 @@ const editGroup = (row: ProxyGroup) => {
 }
 
 const saveGroup = async () => {
-  if (!form.value.name) {
-    notify.warning('请输入策略组名称')
+  formError.value = ''
+  if (!form.value.name?.trim()) {
+    formError.value = '请输入策略组名称'
+    notify.warning(formError.value)
+    return
+  }
+  if (form.value.type === 'chain' && (!form.value.chain?.entry.id || !form.value.chain.exit.id || chainUnavailable.value)) {
+    formError.value = '请选择可用且无依赖环的前置引用和落地引用'
     return
   }
 
@@ -1592,8 +1736,9 @@ const saveGroup = async () => {
   const hasIncludeGroups = form.value.include_groups && form.value.include_groups.length > 0
   const hasFollowGroup = form.value.follow_group !== undefined && form.value.follow_group !== null && form.value.follow_group !== ''
 
-  if (!hasSubscriptions && !hasManualNodes && !hasAggregations && !hasIncludeGroups && !hasFollowGroup) {
-    notify.warning('请至少选择一种节点来源（订阅、节点、聚合、策略或跟随）')
+  if (form.value.type !== 'chain' && !hasSubscriptions && !hasManualNodes && !hasAggregations && !hasIncludeGroups && !hasFollowGroup) {
+    formError.value = '请至少选择一种节点来源（订阅、节点、聚合、策略或跟随）'
+    notify.warning(formError.value)
     return
   }
 
@@ -1605,7 +1750,10 @@ const saveGroup = async () => {
 
   try {
     // 准备保存的数据
-    const saveData = { ...form.value }
+    const saveData = { ...form.value, name: form.value.name.trim() }
+
+    if (saveData.type !== 'chain') {
+      delete saveData.chain
 
     // 根据 enabledSources 清理未选中来源的数据，避免产生脏数据
     if (!enabledSources.value.includes('subscription')) {
@@ -1626,16 +1774,6 @@ const saveGroup = async () => {
       delete saveData.follow_group
     }
 
-    // 调试日志
-    console.log('[策略组保存] 保存数据:', {
-      name: saveData.name,
-      enabledSources: enabledSources.value,
-      subscriptions: saveData.subscriptions,
-      aggregations: saveData.aggregations,
-      manual_nodes: saveData.manual_nodes,
-      include_groups: saveData.include_groups,
-      proxies_order: saveData.proxies_order
-    })
 
     // select 类型不需要 url 和 interval
     if (saveData.type === 'select') {
@@ -1652,6 +1790,7 @@ const saveGroup = async () => {
         delete saveData.lazy
       }
     }
+    }
 
     if (isEdit.value) {
       // Server atomically updates the group and all policy references.
@@ -1665,7 +1804,8 @@ const saveGroup = async () => {
     dialogVisible.value = false
     loadProxyGroups()
   } catch (error: any) {
-    notify.error(error?.response?.data?.message || '保存失败')
+    formError.value = error?.response?.data?.message || '保存失败'
+    notify.error(formError.value)
   }
 }
 

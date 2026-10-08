@@ -51,7 +51,7 @@ def test_aggregation_provider_is_profile_scoped(tmp_path, monkeypatch):
     repository.save_shared({"subscription_aggregations": [aggregation]})
     for profile_id in ("alpha", "beta"):
         repository.save_profile(profile_id, {
-            "resource_refs": {"subscriptions": [], "nodes": [], "subscription_aggregations": ["agg-same"]},
+            "proxy_groups": [{"id": "shared", "name": "Shared", "type": "select", "aggregations": ["agg-same"]}],
         })
 
     beta_path = repository.write_profile_text("beta", "providers/agg-same.yaml", "last-known-good-beta")
@@ -105,7 +105,6 @@ def test_generated_provider_urls_include_the_selected_profile(tmp_path, monkeypa
         "enabled": True,
     }]})
     repository.save_profile("alpha", {
-        "resource_refs": {"subscriptions": ["sub-1"], "nodes": [], "subscription_aggregations": []},
         "proxy_groups": [{
             "id": "group-1",
             "name": "Proxy",
@@ -285,7 +284,7 @@ def test_aggregation_workers_share_raw_cache_and_scope_generated_provider(tmp_pa
         }],
     })
     repository.save_profile("alpha", {
-        "resource_refs": {"subscriptions": [], "nodes": [], "subscription_aggregations": ["agg-1"]},
+        "proxy_groups": [{"id": "shared", "name": "Shared", "type": "select", "aggregations": ["agg-1"]}],
     })
     app = Flask(__name__)
     register_blueprints(app)
@@ -307,21 +306,21 @@ def test_aggregation_workers_share_raw_cache_and_scope_generated_provider(tmp_pa
     assert alpha_path.read_bytes() == response.data
     assert "node-1" in response.get_data(as_text=True)
     cache_path = repository.shared_cache_dir() / "sub-1.json"
-    raw_cache = cache_path.read_bytes()
 
     with app.test_request_context("/", headers={"X-ConfigFlow-Profile": "beta"}):
         cached = subscription_cache.load_subscription_cache("sub-1")
         assert cached["nodes"][0]["name"] == "node-1"
         assert subscription_cache._get_cache_path("sub-1") == str(cache_path)
         assert config_module.get_config("beta")["subscriptions"] == []
-    denied = client.get(
+    beta_profile = repository.get_profile("beta")
+    beta = client.get(
         "/api/profiles/beta/aggregations/agg-1/provider",
         headers={"X-ConfigFlow-Profile": "alpha"},
     )
-    assert denied.status_code == 404
-    assert cache_path.read_bytes() == raw_cache
+    assert beta.status_code == 200, beta.get_data(as_text=True)
     assert alpha_path.read_bytes() == response.data
-    assert not (repository.providers_dir("beta") / "agg-1.yaml").exists()
+    assert (repository.providers_dir("beta") / "agg-1.yaml").read_bytes() == beta.data
+    assert repository.get_profile("beta") == beta_profile
     assert not (repository.providers_dir("default") / "agg-1.yaml").exists()
 
 

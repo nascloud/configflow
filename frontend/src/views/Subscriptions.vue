@@ -1,6 +1,6 @@
 <template>
   <div :class="reorder.active.value && 'cf-reordering'">
-    <ScopeBanner scope="resource" :profile-name="cfProfileName" description="订阅源由所有配置共享；在当前配置的资源选择页决定使用哪些订阅" />
+    <ScopeBanner scope="resource" :profile-name="cfProfileName" description="订阅源由所有配置共享；在当前配置的策略组中直接引用订阅" />
 
     <PageHeader
       eyebrow="Resource"

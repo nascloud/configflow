@@ -72,8 +72,8 @@ const profileName = computed(
 /* ---------- KPI：与概念图一致的四项 ---------- */
 const kpis = computed<KpiItem[]>(() => [
   { label: '配置空间', value: profileCount.value, icon: 'Setting', scope: 'system', route: '/profiles' },
-  { label: '已选订阅', value: counts.value.subscriptions, icon: 'Link', scope: 'profile', route: '/resources' },
-  { label: '已选节点', value: counts.value.nodes, icon: 'Connection', scope: 'profile', route: '/resources' },
+  { label: '引用订阅', value: counts.value.subscriptions, icon: 'Link', scope: 'profile', route: '/proxy-groups' },
+  { label: '引用节点', value: counts.value.nodes, icon: 'Connection', scope: 'profile', route: '/proxy-groups' },
   { label: 'Agent', value: agents.value.length, icon: 'Monitor', scope: 'system', route: '/agents' }
 ])
 
@@ -90,7 +90,7 @@ const healthRows = computed<HealthRow[]>(() => {
   })
 
   rows.push({
-    label: '已选节点',
+    label: '引用节点',
     value: `${counts.value.nodes} 个节点`,
     level: counts.value.nodes > 0 ? 'ok' : 'warn'
   })

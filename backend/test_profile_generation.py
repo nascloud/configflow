@@ -29,7 +29,6 @@ def generation_app(tmp_path):
     })
     for profile_id, port in (('default', 7890), ('office', 7891)):
         repository.save_profile(profile_id, {
-            'resource_refs': {'subscriptions': ['sub'], 'nodes': [], 'subscription_aggregations': []},
             'proxy_groups': [{'id': 'group', 'name': 'Proxy', 'type': 'select',
                               'manual_nodes': ['DIRECT'], 'subscriptions': ['sub']}],
             'rule_configs': [{'id': 'ruleset', 'itemType': 'ruleset', 'library_rule_id': 'library',
@@ -179,7 +178,7 @@ def test_global_backup_attachment_roundtrips_all_profiles_and_secrets(generation
     assert 'attachment' in exported.headers['Content-Disposition']
     document = json.loads(exported.data)
     assert document == repository.export_all()
-    assert document['schema_version'] == 3
+    assert document['schema_version'] == 5
     assert set(document['profiles']) == {'default', 'office'}
     assert document['system']['agents'][0]['token'] == 'agent-secret'
     assert document['system']['backup']['webdav']['password'] == 'backup-secret'

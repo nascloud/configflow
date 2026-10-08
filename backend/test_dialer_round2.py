@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 import yaml
 from backend.test_qa_integrity import make_app
-from backend.test_dialer_proxy import node, save_fixture, add_subscription, seed_nodes
+from backend.test_dialer_proxy import node, save_fixture, chain_group, add_subscription, seed_nodes
 
 
 @pytest.mark.parametrize('path', ['/api/generate/mihomo/preview', '/api/generate/mihomo', '/api/config/mihomo', '/api/agents/a/push-config'])
@@ -20,7 +20,7 @@ def test_converted_main_chain_preflights_subscription_only_provider(tmp_path, mo
     fetch = Mock(return_value=('proxies: [{name: Bad, type: http, server: example.test, port: 80, dialer-proxy: gone}]', 'rendered_yaml'))
     monkeypatch.setattr('backend.routes.aggregations.get_subscription_proxies_yaml', fetch)
     cache_write = Mock()
-    monkeypatch.setattr('backend.routes.aggregations.save_subscription_nodes', cache_write)
+    monkeypatch.setattr('backend.utils.subscription_cache.save_subscription_nodes', cache_write)
     manager = Mock()
     manager.get_agent_by_id.return_value = {'id': 'a', 'service_type': 'mihomo', 'profile_id': 'default'}
     monkeypatch.setattr('backend.routes.agents.get_agent_manager', lambda: manager)
@@ -55,7 +55,7 @@ def test_duplicate_emitted_provider_dialers_rejected_before_commit(tmp_path, mon
         text = text.replace(', dialer-proxy: DIRECT', '')
     monkeypatch.setattr('backend.routes.aggregations.get_subscription_proxies_yaml', Mock(return_value=(text, 'rendered_yaml')))
     cache_write = Mock()
-    monkeypatch.setattr('backend.routes.aggregations.save_subscription_nodes', cache_write)
+    monkeypatch.setattr('backend.utils.subscription_cache.save_subscription_nodes', cache_write)
     provider = repo.write_profile_text('default', 'providers/agg.yaml', 'known good provider')
     output = repo.write_generated('default', 'config.yaml', 'known good')
     response = app.test_client().get(path) if '/provider' in path else app.test_client().post(path, json={})
@@ -133,20 +133,30 @@ def test_good_converted_main_and_raw_provider_graph_still_exports(tmp_path, monk
     assert next(p for p in proxies if p['name'] == ('Good' if '/provider' in path else 'exit'))['dialer-proxy'] == 'relay'
 
 
-def test_subscription_name_priority_over_manual_node_is_preserved(tmp_path, monkeypatch):
+@pytest.mark.parametrize('subscription_overlap', [False, True])
+def test_named_chain_keeps_provider_manual_exit_direct_and_subscription_priority(tmp_path, monkeypatch, subscription_overlap):
     app, repo = make_app(tmp_path)
     shared = repo.get_shared()
     p = repo.get_profile('default')
     shared['nodes'] = [node('relay'), node('exit')]
     shared['subscriptions'] = [{'id': 's', 'name': 'S', 'enabled': True, 'url': 'https://fixture.invalid/feed'}]
     shared['subscription_aggregations'] = [{'id': 'agg', 'name': 'Agg', 'nodes': ['exit'], 'subscriptions': ['s']}]
-    p['proxy_groups'] = [{'id': 'g', 'name': 'Entry', 'type': 'select', 'aggregations': ['agg']}]
-    p['node_dialers'] = {'exit': {'type': 'node', 'id': 'relay'}}
+    p['proxy_groups'] = [{'id': 'g', 'name': 'Entry', 'type': 'select', 'aggregations': ['agg'],
+                          'include_groups': ['chain-exit']}]
+    p['proxy_groups'].append(chain_group('exit', {'type': 'node', 'id': 'relay'}))
     save_fixture(repo, shared, p)
-    monkeypatch.setattr('backend.routes.aggregations.get_subscription_proxies_yaml', Mock(return_value=('proxies: [{name: exit, type: http, server: other.test, port: 81}]', 'rendered_yaml')))
+    remote = [{'name': 'exit', 'type': 'http', 'server': 'other.test', 'port': 81}] if subscription_overlap else []
+    monkeypatch.setattr('backend.routes.aggregations.get_subscription_proxies_yaml',
+                        Mock(return_value=(yaml.safe_dump({'proxies': remote}), 'rendered_yaml')))
     response = app.test_client().get('/api/aggregations/agg/provider')
     assert response.status_code == 200
-    assert yaml.safe_load(response.data)['proxies'] == [{'name': 'exit', 'type': 'http', 'server': 'other.test', 'port': 81}]
+    proxies = yaml.safe_load(response.data)['proxies']
+    assert len(proxies) == 1
+    assert proxies[0]['name'] == 'exit'
+    assert 'dialer-proxy' not in proxies[0]
+    assert proxies[0]['server'] == ('other.test' if subscription_overlap else 'example.test')
+    if subscription_overlap:
+        assert proxies == remote
 
 
 def test_disabled_managed_source_keeps_manual_only_closure_contract():
@@ -181,24 +191,27 @@ def test_deep_graph_validation_and_closure_are_stack_safe(cycle):
 
 @pytest.mark.parametrize('cycle', [False, True])
 @pytest.mark.parametrize('path', ['/api/generate/mihomo/preview', '/api/nodes'])
-def test_deep_graph_api_never_returns_500(tmp_path, monkeypatch, cycle, path):
+def test_deep_group_chain_api_never_returns_500(tmp_path, monkeypatch, cycle, path):
     from backend.converters import mihomo
     app, repo = make_app(tmp_path)
-    nodes = deep_nodes(False)
-    mapping = {n['id']: n.pop('dialer_ref') for n in nodes if 'dialer_ref' in n}
-    seed_nodes(repo, nodes, dialers=mapping,
-               groups=[{'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['0']}])
+    groups = [{'id': f'g{i}', 'name': f'G{i}', 'type': 'select', 'manual_nodes': [str(i)],
+               'include_groups': [f'g{i + 1}'] if i < 1099 else []} for i in range(1100)]
+    seed_nodes(repo, [node(str(i)) for i in range(1100)], groups=groups,
+               chains=[chain_group('1099', {'type': 'group', 'id': 'g0'})])
     before = repo.path.read_bytes()
     convert = Mock(wraps=mihomo.convert_node_to_mihomo)
     monkeypatch.setattr(mihomo, 'convert_node_to_mihomo', convert)
     if cycle:
-        mapping['1099'] = {'type': 'node', 'id': '0'}
-        response = app.test_client().put('/api/profiles/default/node-dialers', json=mapping)
+        response = app.test_client().put('/api/proxy-groups/g1099',
+            json={**groups[-1], 'include_groups': ['chain-1099']})
     else:
         response = app.test_client().post(path, json={} if 'preview' in path else node('new'))
-    assert response.status_code == (400 if cycle else 200), response.get_data(as_text=True)
+    assert response.status_code == (409 if cycle else 200), response.get_data(as_text=True)
     if cycle or 'preview' in path:
         assert repo.path.read_bytes() == before
     if not cycle and 'preview' in path:
-        assert len(yaml.safe_load(response.get_json()['content'])['proxies']) == 1100
-        assert convert.call_count == 1100
+        proxies = yaml.safe_load(response.get_json()['content'])['proxies']
+        assert len(proxies) == 1101
+        assert next(p for p in proxies if p['name'] == 'Via 1099')['dialer-proxy'] == 'G0'
+        assert 'dialer-proxy' not in next(p for p in proxies if p['name'] == '1099')
+        assert convert.call_count == 1101

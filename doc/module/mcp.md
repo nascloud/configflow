@@ -74,16 +74,14 @@ claude mcp add --transport http configflow http://<你的地址>/mcp \
 ## 可用工具
 
 工具按功能域组织，读操作以 `list_` / `get_` 开头，写操作以 `manage_` 开头（通过 `action` 参数区分增删改）。
-独立配置工具接受 `profile_id`，省略使用 `default`，不跟随浏览器选择。共享订阅、节点、聚合、规则库、系统设置和全量备份始终是全局操作。以 `id` 指定配置路径的资源/拨号管理工具以该 `id` 为准。
+独立配置工具接受 `profile_id`，省略使用 `default`，不跟随浏览器选择。共享订阅、节点、聚合、规则库、系统设置和全量备份始终是全局操作。策略组直接引用共享资源，不另设资源白名单。
 
-### 配置空间与资源引用
+### 配置空间
 
 | 工具 | 说明 |
 |------|------|
 | `list_profiles` / `get_profile` | 查看配置列表与元数据 |
 | `manage_profile` / `clone_profile` | 创建、改名、删除或克隆；默认配置与绑定 Agent 的配置不能删除 |
-| `get_profile_resources` / `set_profile_resources` | 按 `id` 读取或替换订阅、节点、聚合 ID 引用；不复制共享资源 |
-| `get_profile_node_dialers` / `set_profile_node_dialers` | 按 `id` 读取或替换本配置的节点拨号覆盖 |
 | `bind_agent_profile` | 将 Agent 绑定到指定配置；推送和拉取不受当前浏览器选择影响 |
 
 ### 订阅与节点
@@ -115,13 +113,15 @@ claude mcp add --transport http configflow http://<你的地址>/mcp \
 
 | 工具 | 说明 |
 |------|------|
-| `list_proxy_groups` / `manage_proxy_group` | 策略组的查询与增删改 |
+| `list_proxy_groups` / `manage_proxy_group` | 策略组与命名代理链的查询、增删改；直接引用共享资源 ID |
 | `preview_proxy_group_regex` | 预览筛选正则会匹配到哪些节点 |
 | `preview_config` | 生成配置内容并返回，不写盘 |
 | `generate_config` | 生成配置并保存（MosDNS 为打包下载，不落盘） |
 | `manage_custom_config` | 读写自定义配置片段 |
 | `manage_config_backup` | 默认 `scope=system` 导出/导入/重置整个系统；`scope=profile` 仅导入/导出资源引用与独立参数，不支持重置 |
 | `reorder_items` | 调整订阅 / 节点 / 规则 / 规则仓库 / 策略组的顺序 |
+
+`manage_proxy_group` 创建代理链示例：`{"action":"create","profile_id":"home","data":{"name":"经 A 的 B","type":"chain","chain":{"entry":{"type":"node","id":"a"},"exit":{"type":"node","id":"b"}}}}`。两端均可用 `{"type":"group","id":"group-id"}` 引用策略组；订阅和聚合通过组使用。前置沿用原组，落地生成独立链组；原节点和原组不变，链仅用于 Mihomo。
 
 ### MosDNS、Agent 与系统
 

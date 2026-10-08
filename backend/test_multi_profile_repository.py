@@ -339,10 +339,13 @@ def test_repository_creates_isolated_default_profile(tmp_path):
     assert repository.list_profiles()[0]['id'] == 'default'
     assert repository.profile_dir('default') == tmp_path / 'profiles' / 'default'
     assert repository.path == tmp_path / 'config.json'
-    assert repository.export_all()['schema_version'] == 3
+    assert repository.export_all()['schema_version'] == 5
     assert not (tmp_path / 'system.json').exists()
     assert not (repository.profile_dir('default') / 'config.json').exists()
-    assert repository.get_profile('default')['resource_refs'] == {'subscriptions': [], 'nodes': [], 'subscription_aggregations': []}
+    profile = repository.get_profile('default')
+    assert profile['proxy_groups'] == []
+    assert 'resource_refs' not in profile
+    assert 'node_dialers' not in profile
     assert repository.shared_cache_dir() == tmp_path / 'shared' / 'subscribes'
 
 

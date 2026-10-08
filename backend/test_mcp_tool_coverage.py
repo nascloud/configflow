@@ -22,9 +22,8 @@ def app_with_config(tmp_path):
         ],
     })
     repository.save_profile("default", {
-            "resource_refs": {"subscriptions": ["sub-1", "sub-2"], "nodes": [], "subscription_aggregations": []},
             "proxy_groups": [
-                {"id": "group-1", "name": "PROXY"},
+                {"id": "group-1", "name": "PROXY", "type": "select", "subscriptions": ["sub-1", "sub-2"]},
                 {"id": "group-2", "name": "AUTO"},
                 {"id": "group-3", "name": "Fallback"},
             ],
@@ -131,13 +130,16 @@ def test_rule_library_content_and_settings_section(app_with_config):
 def test_profile_scoped_backup_export_and_import(app_with_config):
     app, repository = app_with_config
     repository.create_profile({"id": "alpha", "name": "Alpha"})
-    refs = {"subscriptions": ["sub-1"], "nodes": [], "subscription_aggregations": []}
-    repository.set_resource_refs("alpha", refs)
+    group = {"id": "shared", "name": "Shared", "type": "select", "subscriptions": ["sub-1"]}
+    repository.save_profile("alpha", {"proxy_groups": [group]})
+    default = repository.get_profile("default")
     with app.app_context():
         exported = tools.call_tool(
             "manage_config_backup", {"action": "export", "scope": "profile", "profile_id": "alpha"}
         )
-        assert exported["resource_refs"] == refs
+        assert exported["proxy_groups"] == [group]
+        assert "resource_refs" not in exported
+        assert "node_dialers" not in exported
         assert "subscriptions" not in exported
         tools.call_tool(
             "manage_config_backup",
@@ -145,10 +147,11 @@ def test_profile_scoped_backup_export_and_import(app_with_config):
                 "action": "import",
                 "scope": "profile",
                 "profile_id": "alpha",
-                "data": {"resource_refs": {**refs, "subscriptions": ["sub-2"]}},
+                "data": {"proxy_groups": [{**group, "subscriptions": ["sub-2"]}]},
             },
         )
-    assert repository.get_resource_refs("alpha")["subscriptions"] == ["sub-2"]
+    assert repository.get_profile("alpha")["proxy_groups"] == [{**group, "subscriptions": ["sub-2"]}]
+    assert repository.get_profile("default") == default
     assert _ids(repository, "subscriptions") == ["sub-1", "sub-2"]
 
 
@@ -250,3 +253,43 @@ def test_node_create_uses_proxy_string(app_with_config):
         )
     stored = {n["id"]: n for n in repository.get_shared().get("nodes", [])}
     assert stored[created["item"]["id"]]["proxy_string"] == "ss://abc@1.2.3.4:443"
+
+
+def test_named_chain_roundtrip_uses_proxy_group_tools_and_stays_profile_local(app_with_config):
+    app, repository = app_with_config
+    repository.create_profile({"id": "alpha", "name": "Alpha"})
+    default = repository.get_profile("default")
+    with app.app_context():
+        node = tools.call_tool("manage_node", {
+            "action": "create", "data": {"name": "Exit", "type": "http", "enabled": True,
+            "proxy_string": '{"type":"http","server":"exit.test","port":80}'},
+        })["item"]
+        shared = repository.get_shared()
+        entry = tools.call_tool("manage_proxy_group", {
+            "action": "create", "profile_id": "alpha",
+            "data": {"name": "Entry", "type": "select", "manual_nodes": ["DIRECT"]},
+        })["item"]
+        chain = {"entry": {"type": "group", "id": entry["id"]}, "exit": {"type": "node", "id": node["id"]}}
+        created = tools.call_tool("manage_proxy_group", {
+            "action": "create", "profile_id": "alpha",
+            "data": {"name": "Via Exit", "type": "chain", "chain": chain},
+        })["item"]
+        tools.call_tool("manage_proxy_group", {
+            "action": "update", "id": created["id"], "profile_id": "alpha",
+            "data": {"name": "Renamed Chain"},
+        })
+        listed = tools.call_tool("list_proxy_groups", {"profile_id": "alpha"})
+        stored = next(group for group in listed if group["id"] == created["id"])
+        assert stored["name"] == "Renamed Chain"
+        assert stored["type"] == "chain"
+        assert stored["chain"] == chain
+        assert next(group for group in repository.get_profile("alpha")["proxy_groups"]
+                    if group["id"] == created["id"])["chain"] == chain
+        assert repository.get_profile("default") == default
+        assert repository.get_shared() == shared
+        tools.call_tool("manage_proxy_group", {
+            "action": "delete", "id": created["id"], "profile_id": "alpha",
+        })
+    assert [group["id"] for group in repository.get_profile("alpha")["proxy_groups"]] == [entry["id"]]
+    assert repository.get_profile("default") == default
+    assert repository.get_shared() == shared

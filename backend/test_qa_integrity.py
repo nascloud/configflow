@@ -146,15 +146,13 @@ def test_generation_rejects_dangling_policy_without_writing(tmp_path, format, pr
     ('mihomo', 'PROXY'), ('surge', 'Proxy'), ('mihomo', 'Auto'), ('surge', 'Auto'),
     ('mihomo', 'Node'), ('surge', 'Node'), ('mihomo', 'Old'), ('surge', 'Old'),
 ])
-def test_generation_accepts_builtins_real_nodes_groups_and_generated_defaults(tmp_path, format, policy):
+def test_generation_accepts_builtins_referenced_nodes_and_groups(tmp_path, format, policy):
     app, _ = make_app(tmp_path)
     client = app.test_client()
     client.post('/api/nodes', json={'id': 'n1', 'name': 'Node', 'type': 'http', 'server': 'example.test', 'port': 80, 'enabled': True, 'proxy_string': '{"type":"http","server":"example.test","port":80}'})
-    assert client.put('/api/profiles/default/resources', json={
-        'subscriptions': [], 'nodes': ['n1'], 'subscription_aggregations': []}).status_code == 200
     if policy == 'Node':
         client.post('/api/proxy-groups', json={'id': 'source', 'name': 'Source', 'type': 'select', 'enabled': True, 'manual_nodes': ['n1']})
-    if format == 'mihomo' and policy in ('PROXY', 'Auto'):
+    if policy in ('PROXY', 'Proxy', 'Auto'):
         client.post('/api/proxy-groups', json={'id': 'default', 'name': policy, 'type': 'select', 'enabled': True, 'manual_nodes': ['n1']})
     if policy == 'Old':
         seed_strategy(client)

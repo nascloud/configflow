@@ -15,7 +15,6 @@ def compositions(tmp_path):
         'subscription_aggregations': [{'id': 'aggregation', 'name': 'Aggregate', 'subscriptions': ['subscription'], 'nodes': []}],
         'rule_library': [{'id': 'library', 'name': 'Shared Rules', 'source_type': 'content', 'content': 'DOMAIN,example.test', 'behavior': 'classical', 'enabled': True}],
     })
-    repository.set_resource_refs('default', {'subscriptions': [], 'nodes': [], 'subscription_aggregations': ['aggregation']})
     repository.save_profile('default', {
         'proxy_groups': [
             {'id': 'group', 'name': 'Proxy', 'type': 'select', 'aggregations': ['aggregation'], 'manual_nodes': ['DIRECT']},
@@ -80,15 +79,18 @@ def test_group_rename_preserves_id_references_and_profile_isolation(compositions
     assert repository.export_all() == snapshot
 
 
-def test_aggregation_closure_is_not_directly_selectable(compositions):
+def test_any_profile_can_reference_shared_aggregation_sources_directly(compositions):
     client, repository, headers = compositions
-    before = repository.get_profile('other')
+    default = repository.get_profile('default')
+    shared = repository.get_shared()
     response = client.put('/api/proxy-groups/group', headers=headers, json={'subscriptions': ['subscription']})
-    assert response.status_code == 409
-    assert repository.get_profile('other') == before
-    response = client.post('/api/proxy-groups/preview-regex', headers=headers, json={'source': 'subscription', 'subscriptions': ['subscription'], 'regex': '.*'})
-    assert response.status_code == 200
-    assert response.json['count'] == 0
+    assert response.status_code == 200, response.get_data(as_text=True)
+    assert repository.get_profile('other')['proxy_groups'][0]['subscriptions'] == ['subscription']
+    assert repository.get_compat_config('other')['subscriptions'][0]['id'] == 'subscription'
+    assert repository.get_profile('default') == default
+    assert repository.get_shared() == shared
+    assert 'resource_refs' not in repository.get_profile('other')
+
 
 
 def test_mosdns_selection_protects_rule_deletion(compositions):

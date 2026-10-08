@@ -12,7 +12,7 @@ import {notify,settleConfirm} from '@/lib/feedback'
 import {setActiveProfileId} from '@/profileContext'
 vi.mock('@/api',()=>{
  const crud=()=>({getAll:vi.fn(),list:vi.fn(),create:vi.fn(),update:vi.fn(),delete:vi.fn(),fetch:vi.fn()})
- return {default:{get:vi.fn(),put:vi.fn(),post:vi.fn(),delete:vi.fn()},nodeApi:crud(),subscriptionApi:crud(),ruleApi:crud(),ruleSetApi:crud(),profileApi:{...crud(),getResources:vi.fn()},proxyGroupApi:crud(),subStoreUrlApi:{get:vi.fn()}}
+ return {default:{get:vi.fn(),put:vi.fn(),post:vi.fn(),delete:vi.fn()},nodeApi:crud(),subscriptionApi:crud(),ruleApi:crud(),ruleSetApi:crud(),profileApi:crud(),proxyGroupApi:crud(),subStoreUrlApi:{get:vi.fn()}}
 })
 let nodes:any[],groups:any[],rules:any[],subs:any[],profiles:any[]
 const wrappers:any[]=[]
@@ -27,7 +27,6 @@ beforeEach(()=>{
  profiles=[{id:'default',name:'Default'},{id:'target',name:'Target'}]
  for(const [obj,data] of [[nodeApi,()=>nodes],[proxyGroupApi,()=>groups],[ruleApi,()=>rules],[ruleSetApi,()=>[]],[subscriptionApi,()=>subs],[profileApi,()=>profiles]] as any){obj.getAll.mockImplementation(async()=>({data:clone(data())}));obj.list.mockImplementation(async()=>({data:clone(data())}));for(const op of ['create','update','delete','fetch'])obj[op].mockResolvedValue({data:{}})}
  vi.mocked(subStoreUrlApi.get).mockResolvedValue({data:{sub_store_url:'https://synthetic.test'}} as any)
- vi.mocked(profileApi.getResources).mockResolvedValue({data:{subscriptions:['s1'],nodes:['n1','n2'],subscription_aggregations:['a1','a2']}})
  vi.mocked(api.get).mockImplementation(async(path:any)=>({data:clone(path==='/rules'?rules:path==='/proxy-groups'?groups:path==='/subscriptions'?subs:path==='/aggregations'?[{id:'a1',name:'On',enabled:true},{id:'a2',name:'Off',enabled:false}]:[])}))
  for(const op of ['put','post','delete'])vi.mocked(api[op]).mockResolvedValue({data:{}})
  vi.spyOn(notify,'error').mockImplementation(()=>0);vi.spyOn(notify,'warning').mockImplementation(()=>0);vi.spyOn(notify,'success').mockImplementation(()=>0)

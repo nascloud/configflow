@@ -50,7 +50,7 @@ def setup_bundle(tmp_path, monkeypatch, source, reverse, *, chain=True, text=DUP
     monkeypatch.setattr('backend.routes.aggregations.get_subscription_proxies_yaml', fetch)
     writes = Mock()
     monkeypatch.setattr('backend.utils.provider_delivery.commit_cache_updates', writes)
-    monkeypatch.setattr('backend.routes.aggregations.save_subscription_nodes', writes)
+    monkeypatch.setattr('backend.utils.subscription_cache.save_subscription_nodes', writes)
     monkeypatch.setattr('backend.routes.subscriptions.save_subscription_nodes', writes)
     manager = agent_manager(monkeypatch)
     output = repo.write_generated('default', 'config.yaml', 'last-good-main')

@@ -46,7 +46,7 @@ def test_truncated_system_json_recovers_from_backup(tmp_path):
     system_file = tmp_path / "config.json"
 
     # 半截 JSON，同样是磁盘满的典型产物
-    system_file.write_text('{"schema_version": 2, "profil', encoding="utf-8")
+    system_file.write_text('{"schema_version": 5, "profil', encoding="utf-8")
 
     repo = ProfileRepository(tmp_path)
     assert "alpha" in {p["id"] for p in repo.list_profiles()}
@@ -97,21 +97,27 @@ def test_both_system_and_backup_corrupt_raises_clear_error(tmp_path):
         ProfileRepository(tmp_path)
 
 
-def test_schema2_system_and_profile_backups_recover_before_migration(tmp_path):
-    system = {'schema_version': 2, 'profiles': [{'id': 'default', 'name': 'Default'}],
-              'system_config': {'config_token': 'preserved'}, 'agents': [], 'backup': {}}
-    (tmp_path / 'system.json').write_text('')
-    (tmp_path / 'system.json.bak').write_text(json.dumps(system))
-    directory = tmp_path / 'profiles' / 'default'
-    directory.mkdir(parents=True)
-    (directory / 'config.json').write_text('{')
-    (directory / 'config.json.bak').write_text(json.dumps({'subscriptions': [{'id': 's', 'name': 'Source'}]}))
-    repository = ProfileRepository(tmp_path)
-    assert repository.get_system()['system_config']['config_token'] == 'preserved'
-    assert repository.get_resource_refs('default')['subscriptions'] == ['s']
-    assert repository.export_all()['schema_version'] == 3
-    assert list(tmp_path.glob('system.json.corrupt-*'))
-    assert list(directory.glob('config.json.corrupt-*'))
+def test_current_backup_recovers_system_shared_data_and_profile_together(tmp_path):
+    repository = _bootstrap(tmp_path)
+    system = repository.get_system()
+    system['system_config']['config_token'] = 'preserved'
+    repository.save_system(system)
+    shared = repository.get_shared()
+    shared['subscriptions'] = [{'id': 's', 'name': 'Source'}]
+    repository.save_shared(shared)
+    profile = repository.get_profile('alpha')
+    profile['proxy_groups'] = [{'id': 'feed', 'name': 'Feed', 'type': 'select', 'subscriptions': ['s']}]
+    repository.save_profile('alpha', profile)
+    expected = repository.export_all()
+    # Persist another revision so the backup contains the complete fixture.
+    repository.save_profile('alpha', repository.get_profile('alpha'))
+    (tmp_path / 'config.json').write_text('')
+    recovered = ProfileRepository(tmp_path)
+    assert recovered.export_all() == expected
+    assert recovered.get_system()['system_config']['config_token'] == 'preserved'
+    assert recovered.get_shared()['subscriptions'] == shared['subscriptions']
+    assert recovered.get_profile('alpha')['proxy_groups'] == profile['proxy_groups']
+    assert list(tmp_path.glob('config.json.corrupt-*'))
 
 
 def test_legacy_backup_survives_migration_and_can_recover_after_corruption(tmp_path):
@@ -121,12 +127,13 @@ def test_legacy_backup_survives_migration_and_can_recover_after_corruption(tmp_p
     assert json.loads((tmp_path / 'config.json.bak').read_text()) == legacy
     (tmp_path / 'config.json').write_text('')
     repository = ProfileRepository(tmp_path)
-    assert repository.get_resource_refs('default')['subscriptions'] == ['s']
+    assert repository.get_shared()['subscriptions'] == legacy['subscriptions']
+    assert 'resource_refs' not in repository.get_profile('default')
 
 
 def test_semantically_corrupt_backup_is_never_committed(tmp_path):
     _bootstrap(tmp_path)
-    damaged = {'schema_version': 3, 'system': {}, 'shared': {}, 'profiles': {}}
+    damaged = {'schema_version': 5, 'system': {}, 'shared': {}, 'profiles': {}}
     (tmp_path / 'config.json').write_text('')
     (tmp_path / 'config.json.bak').write_text(json.dumps(damaged))
     with pytest.raises(ProfileRepositoryError):

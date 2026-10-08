@@ -54,7 +54,6 @@ export const NAV_GROUPS: NavGroup[] = [
     title: '当前配置',
     hint: '仅属于本配置空间',
     items: [
-      { path: '/resources', label: '资源选择', icon: 'Files' },
       { path: '/proxy-groups', label: '策略组', icon: 'Grid' },
       { path: '/rules', label: '策略规则', icon: 'Document' },
       { path: '/generate', label: '配置生成', icon: 'Download' }
