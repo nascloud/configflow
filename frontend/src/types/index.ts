@@ -19,7 +19,6 @@ export interface ProxyNode {
   remark?: string  // 备注
   subscription_id?: string
   subscription_name?: string
-  dialer_ref?: { type: 'node' | 'group'; id: string } | null
   params?: Record<string, unknown>
 }
 
@@ -73,7 +72,7 @@ export interface Agent {
   host: string
   port: number
   token: string
-  service_type: 'mihomo' | 'mosdns'
+  service_type: 'mihomo' | 'surge' | 'mosdns'
   deployment_method?: 'shell' | 'docker' | 'unknown'
   status: 'online' | 'offline'
   last_heartbeat: string

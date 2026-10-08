@@ -359,7 +359,8 @@ def get_agent_config(agent_id):
 
         # 生成配置
         profile_id = agent.get('profile_id', 'default')
-        config_result = generate_agent_config(get_config(profile_id), agent)
+        config_result = generate_agent_config(
+            get_config(profile_id), agent, base_url=request.url_root.rstrip('/'))
 
         return jsonify({
             'success': True,
@@ -371,6 +372,8 @@ def get_agent_config(agent_id):
 
     except StrategyReferenceError as e:
         return jsonify({'success': False, 'message': str(e)}), 400
+    except ProfileRepositoryError as e:
+        return jsonify({'success': False, 'message': f'Agent profile unavailable: {e}'}), 409
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -823,7 +826,7 @@ def push_config_to_agent(agent_id):
                 staged_updates.extend(rendered['cache_updates'])
             validate_rendered_bundle(snapshot, provider_downloads)
             # No cache or artifact is changed until every actual provider is valid.
-            commit_cache_updates(staged_updates, profile_id)
+            commit_cache_updates(staged_updates)
             for agg_id, content in staged_artifacts:
                 get_repository().write_profile_text(profile_id, f'providers/{agg_id}.yaml', content)
 

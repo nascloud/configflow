@@ -58,7 +58,7 @@
             {{ agent.name }}
           </p>
           <Badge :variant="agent.service_type === 'mihomo' ? 'brand' : 'info'" class="text-[10.5px]">
-            {{ agent.service_type === 'mihomo' ? 'Mihomo' : 'MosDNS' }}
+            {{ serviceTypeLabels[agent.service_type] }}
           </Badge>
           <Badge v-if="agent.deployment_method" variant="outline" class="text-[10.5px]">
             {{ agent.deployment_method === 'shell' ? 'Shell' : agent.deployment_method === 'docker' ? 'Docker' : agent.deployment_method }}
@@ -82,11 +82,11 @@
             :disabled="bindingAgentId === agent.id"
             @update:model-value="value => handleAgentProfileChange(agent, String(value))"
           >
-            <SelectTrigger class="h-8 w-full bg-background/50 text-[12.5px]">
-              <SelectValue />
+            <SelectTrigger class="data-[size=default]:h-auto min-h-8 w-full min-w-0 bg-background/50 py-1.5 text-[12.5px] [&_[data-slot=select-value]]:line-clamp-none" :aria-label="`绑定配置空间 ${agent.name}`">
+              <SelectValue class="min-w-0 whitespace-normal break-all text-left" />
             </SelectTrigger>
-            <SelectContent class="glass-strong">
-              <SelectItem v-for="profile in profiles" :key="profile.id" :value="profile.id">
+            <SelectContent class="glass-strong max-w-[calc(100vw-32px)]">
+              <SelectItem v-for="profile in profiles" :key="profile.id" :value="profile.id" class="whitespace-normal break-all">
                 {{ profile.name }}
               </SelectItem>
             </SelectContent>
@@ -648,6 +648,12 @@ const scriptForm = ref({
   mihomoAgentPort: 8080,
   mosdnsAgentPort: 8081
 })
+
+const serviceTypeLabels: Record<Agent['service_type'], string> = {
+  mihomo: 'Mihomo',
+  surge: 'Surge',
+  mosdns: 'MosDNS'
+}
 
 // 服务类型选项
 const serviceTypeOptions = [

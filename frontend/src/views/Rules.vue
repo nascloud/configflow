@@ -5,7 +5,7 @@
     <PageHeader
       eyebrow="Profile"
       title="策略规则"
-      description="单条规则与规则集按顺序匹配，命中即生效，仅属于当前配置空间。"
+      description="当前配置独立维护策略、顺序和启用状态；规则集来源由共享规则库管理。"
     >
       <template #actions>
         <Button class="shadow-glow" @click="showAddRuleDialog">
@@ -99,8 +99,8 @@
             <Badge v-if="item.groupName" variant="outline" class="num shrink-0 text-[10.5px]">
               {{ item.count }} 个
             </Badge>
-            <Badge variant="secondary" class="ml-auto shrink-0 max-w-[160px] truncate text-[10.5px]">
-              {{ item.policy }}
+            <Badge variant="secondary" class="ml-auto min-w-0 max-w-[160px] text-[10.5px]" :title="item.policy">
+              <span class="truncate">{{ item.policy }}</span>
             </Badge>
             <Button
               variant="ghost"
@@ -172,8 +172,8 @@
               </span>
             </div>
 
-            <Badge variant="secondary" class="max-w-[160px] shrink-0 truncate text-[10.5px]">
-              {{ item.policy }}
+            <Badge variant="secondary" class="min-w-0 max-w-[160px] text-[10.5px]" :title="item.policy">
+              <span class="truncate">{{ item.policy }}</span>
             </Badge>
 
             <div class="cf-reorder-mute flex shrink-0 items-center gap-0.5">
@@ -261,7 +261,7 @@
           <div class="flex flex-wrap gap-1.5">
             <Badge variant="warning" class="text-[10.5px]">{{ item.groupLabel }}</Badge>
             <Badge v-if="item.groupName" variant="outline" class="num text-[10.5px]">{{ item.count }} 个</Badge>
-            <Badge variant="secondary" class="max-w-[160px] truncate text-[10.5px]">{{ item.policy }}</Badge>
+            <Badge variant="secondary" class="min-w-0 max-w-full text-[10.5px]" :title="item.policy"><span class="truncate">{{ item.policy }}</span></Badge>
           </div>
 
           <footer class="mt-auto flex items-center gap-1 border-0 border-t border-border/50 pt-3">
@@ -338,13 +338,13 @@
                 />
               </p>
             </template>
-            <p v-if="item.remark" class="mt-1.5 mb-0 text-[11.5px] text-muted-foreground" :title="item.remark">
+            <p v-if="item.remark" class="mt-1.5 mb-0 break-all text-[11.5px] text-muted-foreground" :title="item.remark">
               {{ item.remark }}
             </p>
           </div>
 
           <footer class="cf-reorder-mute mt-auto flex items-center gap-1 border-0 border-t border-border/50 pt-3">
-            <Badge variant="secondary" class="max-w-[150px] truncate text-[10.5px]">{{ item.policy }}</Badge>
+            <Badge variant="secondary" class="min-w-0 max-w-[150px] text-[10.5px]" :title="item.policy"><span class="truncate">{{ item.policy }}</span></Badge>
             <Button variant="ghost" size="icon-sm" class="ml-auto" title="编辑" aria-label="编辑" @click="editItem(item)">
               <Pencil class="size-4" />
             </Button>
@@ -399,12 +399,12 @@
           <div class="flex flex-col gap-1.5">
             <Label>策略</Label>
             <Select v-model="ruleForm.policy">
-              <SelectTrigger class="w-full bg-background/50">
+              <SelectTrigger class="w-full min-w-0 bg-background/50 [&>span]:truncate">
                 <SelectValue placeholder="选择策略" />
               </SelectTrigger>
               <SelectContent class="glass-strong">
-                <SelectItem v-for="policy in availablePolicies" :key="policy" :value="policy">
-                  {{ policy }}
+                <SelectItem v-for="policy in availablePolicies" :key="policy" :value="policy" :title="policy">
+                  <span class="break-all">{{ policy }}</span>
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -450,16 +450,16 @@
       <DialogContent class="glass-strong hairline max-w-[520px] border-border/50">
         <DialogHeader>
           <DialogTitle>{{ isEditRuleSet ? '编辑规则集' : '添加规则集' }}</DialogTitle>
-          <DialogDescription>可从规则仓库选取，或手动填写地址与类型。</DialogDescription>
+          <DialogDescription>引用共享规则集，仅修改当前配置的策略、顺序与启用状态。</DialogDescription>
         </DialogHeader>
 
         <div class="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto pr-1">
           <div class="flex flex-col gap-1.5">
             <Label>选择规则</Label>
             <Select v-model="selectedLibraryRule" @update:model-value="value => onLibraryRuleSelect(String(value))">
-              <SelectTrigger class="w-full bg-background/50">
-                <SelectValue placeholder="从规则仓库选择（可选）">
-                  {{ selectedLibraryRuleLabel || '从规则仓库选择（可选）' }}
+              <SelectTrigger class="w-full min-w-0 bg-background/50 [&>span]:truncate">
+                <SelectValue placeholder="选择共享规则集（必选）">
+                  {{ selectedLibraryRuleLabel || '选择共享规则集（必选）' }}
                 </SelectValue>
               </SelectTrigger>
               <SelectContent class="glass-strong">
@@ -481,51 +481,22 @@
             </div>
           </div>
 
-          <div class="flex flex-col gap-1.5">
-            <Label for="ruleset-name">名称</Label>
-            <Input
-              id="ruleset-name"
-              v-model="ruleSetForm.name"
-              class="bg-background/50"
-              placeholder="规则集名称"
-              :disabled="!!selectedLibraryRule"
-            />
-          </div>
-
-          <div class="flex flex-col gap-1.5">
-            <Label for="ruleset-url">URL</Label>
-            <Input
-              id="ruleset-url"
-              v-model="ruleSetForm.url"
-              class="bg-background/50 font-mono"
-              placeholder="规则集 URL 地址"
-              :disabled="!!selectedLibraryRule"
-            />
-          </div>
-
-          <div class="flex flex-col gap-1.5">
-            <Label>类型</Label>
-            <Select v-model="ruleSetForm.behavior" :disabled="!!selectedLibraryRule">
-              <SelectTrigger class="w-full bg-background/50">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent class="glass-strong">
-                <SelectItem value="domain">Domain</SelectItem>
-                <SelectItem value="ipcidr">IP CIDR</SelectItem>
-                <SelectItem value="classical">Classical</SelectItem>
-              </SelectContent>
-            </Select>
+          <div v-if="selectedLibrarySource" class="min-w-0 rounded-lg border border-border/50 bg-background/50 p-3 text-xs text-muted-foreground">
+            <p class="m-0 break-all font-medium text-foreground">{{ selectedLibrarySource.name }}</p>
+            <p class="mt-1 mb-0">{{ selectedLibrarySource.behavior }} · {{ selectedLibrarySource.source_type === 'content' ? '共享规则内容' : '远程 URL' }}</p>
+            <p class="mt-1 mb-0 max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono">{{ selectedLibrarySource.source_type === 'content' ? selectedLibrarySource.content : selectedLibrarySource.url }}</p>
+            <p v-if="selectedLibrarySource.enabled === false" class="mt-2 mb-0 text-warning-accent">共享来源已停用；当前配置的启用状态会保留，来源重新启用后生效。</p>
           </div>
 
           <div class="flex flex-col gap-1.5">
             <Label>策略</Label>
             <Select v-model="ruleSetForm.policy">
-              <SelectTrigger class="w-full bg-background/50">
+              <SelectTrigger class="w-full min-w-0 bg-background/50 [&>span]:truncate">
                 <SelectValue placeholder="选择策略" />
               </SelectTrigger>
               <SelectContent class="glass-strong">
-                <SelectItem v-for="policy in availablePolicies" :key="policy" :value="policy">
-                  {{ policy }}
+                <SelectItem v-for="policy in availablePolicies" :key="policy" :value="policy" :title="policy">
+                  <span class="break-all">{{ policy }}</span>
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -541,7 +512,7 @@
             />
           </div>
 
-          <div v-if="ruleSetForm.behavior === 'ipcidr'" class="flex flex-col gap-1.5">
+          <div v-if="selectedLibrarySource?.behavior === 'ipcidr'" class="flex flex-col gap-1.5">
             <div class="flex items-center gap-2.5">
               <Switch id="ruleset-noresolve" v-model="ruleSetForm.no_resolve" />
               <Label for="ruleset-noresolve" class="text-[13px] text-muted-foreground">no-resolve</Label>
@@ -553,7 +524,6 @@
             <Switch
               id="ruleset-enabled"
               v-model="ruleSetForm.enabled"
-              @update:model-value="value => handleRuleSetStatusChange(Boolean(value))"
             />
             <Label for="ruleset-enabled" class="text-[13px] text-muted-foreground">
               {{ ruleSetForm.enabled ? '规则集启用中' : '规则集已停用' }}
@@ -563,7 +533,7 @@
 
         <DialogFooter>
           <Button variant="outline" @click="ruleSetDialogVisible = false">取消</Button>
-          <Button @click="saveRuleSet">保存</Button>
+          <Button :disabled="!selectedLibraryRule" @click="saveRuleSet">保存</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -771,7 +741,7 @@ import { useReorder } from '@/composables/useReorder'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import { useProfileStore } from '@/stores/profile'
-import { ref, onMounted, onUnmounted, onActivated, computed, nextTick, watch } from 'vue'
+import { ref, onMounted, onActivated, computed, watch } from 'vue'
 import { Motion } from 'motion-v'
 import {
   ArrowUpDown,
@@ -828,9 +798,15 @@ import { notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
 import { ruleApi, ruleSetApi, proxyGroupApi } from '@/api'
 import type { Rule, RuleSet, ProxyGroup } from '@/types'
-import { activeProfileId } from '@/profileContext'
-import Sortable from 'sortablejs'
 import api from '@/api'
+import { getActiveProfileId } from '@/profileContext'
+import { isAxiosError } from 'axios'
+
+const errorMessage = (error: unknown, fallback: string) =>
+  isAxiosError<{ message?: string }>(error) ? error.response?.data?.message || fallback : fallback
+
+const profileId = getActiveProfileId()
+const profileRequestConfig = { headers: { 'X-ConfigFlow-Profile': profileId } }
 
 
 const RULE_TYPES = [
@@ -863,20 +839,16 @@ const allRules = ref<any[]>([])  // 包含规则和规则集的合并数组
 const proxyGroups = ref<ProxyGroup[]>([])
 const ruleLibrary = ref<any[]>([])  // 规则仓库
 const selectedLibraryRule = ref('')  // 选中的规则仓库项ID
-const selectedLibraryRuleLabel = computed(() => {
-  if (!selectedLibraryRule.value) return ''
-
-  return ruleLibrary.value.find(rule => rule.id === selectedLibraryRule.value)?.name
-    || ruleSetForm.value.name
-    || ''
-})
+const selectedLibrarySource = computed(() =>
+  ruleLibrary.value.find(rule => rule.id === selectedLibraryRule.value)
+)
+const selectedLibraryRuleLabel = computed(() => selectedLibrarySource.value?.name || '')
 const ruleDialogVisible = ref(false)
 const ruleSetDialogVisible = ref(false)
 const isEditRule = ref(false)
 const isEditRuleSet = ref(false)
 const viewMode = ref<'list' | 'card'>('card') // 默认卡片视图
 const rulesContainer = ref<HTMLElement | null>(null)
-let sortableInstance: Sortable | null = null
 
 // 处理按钮点击
 const handleShowRuleIndex = () => {
@@ -893,9 +865,8 @@ const ruleIndexLoading = ref(false)
 const duplicateDialogVisible = ref(false)
 const duplicateResult = ref<any>(null)
 const duplicateLoading = ref(false)
-const isSavingOrder = ref(false) // 防止并发保存排序
 
-const ruleForm = ref<Partial<Rule>>({
+const ruleForm = ref<Partial<Rule> & { itemType?: string }>({
   rule_type: 'DOMAIN-SUFFIX',
   value: '',
   policy: 'DIRECT',
@@ -904,10 +875,23 @@ const ruleForm = ref<Partial<Rule>>({
   no_resolve: false
 })
 
-const ruleSetForm = ref<Partial<RuleSet>>({
-  name: '',
-  url: '',
-  behavior: 'classical',
+type RuleSetReference = Partial<Pick<RuleSet, 'id' | 'library_rule_id' | 'policy' | 'enabled' | 'order' | 'remark' | 'no_resolve' | 'group_name'>> & { itemType?: string; formats?: string[]; mosdns?: unknown }
+
+const ruleSetPayload = (item: RuleSetReference) => ({
+  id: item.id,
+  itemType: 'ruleset',
+  library_rule_id: item.library_rule_id,
+  policy: item.policy,
+  enabled: item.enabled,
+  order: item.order,
+  remark: item.remark,
+  no_resolve: item.no_resolve,
+  group_name: item.group_name,
+  formats: item.formats,
+  mosdns: item.mosdns
+})
+
+const ruleSetForm = ref<RuleSetReference>({
   policy: 'DIRECT',
   enabled: true,
   library_rule_id: '',  // 关联的规则仓库ID
@@ -1004,16 +988,16 @@ const saveGroupName = async () => {
       const updatedItem = { ...item, group_name: newGroupName }
       delete updatedItem.uniqueId // 移除前端添加的字段
       if (item.itemType === 'rule') {
-        await ruleApi.update(item.id, updatedItem)
+        await ruleApi.update(item.id, updatedItem, profileId)
       } else {
-        await ruleSetApi.update(item.id, updatedItem)
+        await ruleSetApi.update(item.id, ruleSetPayload(updatedItem), profileId)
       }
     }
     notify.success('重命名成功')
     groupRenameDialogVisible.value = false
     loadAllRules()
   } catch (error) {
-    notify.error('重命名失败')
+    notify.error(errorMessage(error, '重命名失败'))
   }
 }
 
@@ -1107,15 +1091,15 @@ const enabledLibraryRules = computed(() => {
     usedLibraryIds.delete(ruleSetForm.value.library_rule_id)
   }
 
-  // 过滤：启用的 + 未被使用的
+  // 保留正在编辑的引用，即使共享来源已停用。
   return ruleLibrary.value.filter(rule =>
-    rule.enabled && !usedLibraryIds.has(rule.id)
+    (rule.enabled !== false || rule.id === selectedLibraryRule.value) && !usedLibraryIds.has(rule.id)
   )
 })
 
 const loadAllRules = async () => {
   try {
-    const { data } = await ruleApi.getAll()
+    const { data } = await ruleApi.getAll(profileId)
     allRules.value = data
   } catch (error) {
     notify.error('加载规则列表失败')
@@ -1124,7 +1108,7 @@ const loadAllRules = async () => {
 
 const loadProxyGroups = async () => {
   try {
-    const { data } = await proxyGroupApi.getAll()
+    const { data } = await proxyGroupApi.getAll(profileId)
     proxyGroups.value = data
   } catch (error) {
     notify.error('加载策略组列表失败')
@@ -1173,26 +1157,26 @@ const saveRule = async () => {
       if (originalItem && originalItem.policy !== ruleData.policy) {
         ruleData.group_name = ''
       }
-      await ruleApi.update(ruleData.id!, ruleData)
+      await ruleApi.update(ruleData.id!, ruleData, profileId)
       notify.success('更新成功')
     } else {
-      await ruleApi.create(ruleData)
+      await ruleApi.create(ruleData, profileId)
       notify.success('添加成功')
     }
     ruleDialogVisible.value = false
     loadAllRules()
   } catch (error) {
-    notify.error('保存失败')
+    notify.error(errorMessage(error, '保存失败'))
   }
 }
 
 const deleteRule = async (row: any) => {
   try {
-    await ruleApi.delete(row.id)
+    await ruleApi.delete(row.id, profileId)
 
     // 同步更新 MosDNS 配置，移除对该规则的引用
     try {
-      const { data: mosdnsConfig } = await api.get('/mosdns/rulesets')
+      const { data: mosdnsConfig } = await api.get('/mosdns/rulesets', profileRequestConfig)
 
       // 从 direct_rules 和 proxy_rules 中移除该规则 ID
       const updatedDirectRules = mosdnsConfig.direct_rules.filter((id: string) => id !== row.id)
@@ -1206,7 +1190,7 @@ const deleteRule = async (row: any) => {
           proxy_rulesets: mosdnsConfig.proxy_rulesets,
           direct_rules: updatedDirectRules,
           proxy_rules: updatedProxyRules
-        })
+        }, profileRequestConfig)
         console.log('已同步更新 MosDNS 配置，移除了对规则的引用')
       }
     } catch (error) {
@@ -1218,7 +1202,7 @@ const deleteRule = async (row: any) => {
     notify.success('删除成功')
     loadAllRules()
   } catch (error) {
-    notify.error('删除失败')
+    notify.error(errorMessage(error, '删除失败'))
   }
 }
 
@@ -1227,9 +1211,6 @@ const showAddRuleSetDialog = () => {
   selectedLibraryRule.value = ''  // 清空选中的规则
   ruleSetForm.value = {
     id: `ruleset_${Date.now()}`,
-    name: '',
-    url: '',
-    behavior: 'classical',
     policy: 'DIRECT',
     enabled: true,
     library_rule_id: '',
@@ -1240,44 +1221,25 @@ const showAddRuleSetDialog = () => {
   ruleSetDialogVisible.value = true
 }
 
-// 规则仓库选择处理
+// 来源只从共享目录读取，不复制到当前配置。
 const onLibraryRuleSelect = (libraryRuleId: string) => {
-  const selectedRule = ruleLibrary.value.find(r => r.id === libraryRuleId)
-  if (selectedRule) {
-    ruleSetForm.value.name = selectedRule.name
-    ruleSetForm.value.behavior = selectedRule.behavior
-    ruleSetForm.value.library_rule_id = libraryRuleId  // 保存规则仓库ID
-    // 根据 behavior 自动设置 no_resolve
-    ruleSetForm.value.no_resolve = selectedRule.behavior === 'ipcidr'
-
-    // 根据规则来源类型设置 URL
-    if (selectedRule.source_type === 'content') {
-      // 规则内容类型，使用内容接口
-      const baseUrl = `${window.location.protocol}//${window.location.host}`
-      ruleSetForm.value.url = `${baseUrl}/api/profiles/${encodeURIComponent(activeProfileId.value)}/rule-library/content/${libraryRuleId}`
-    } else {
-      // URL 类型，使用原始 URL
-      ruleSetForm.value.url = selectedRule.url
-    }
-  }
+  selectedLibraryRule.value = libraryRuleId
+  ruleSetForm.value.library_rule_id = libraryRuleId
+  ruleSetForm.value.no_resolve = selectedLibrarySource.value?.behavior === 'ipcidr'
 }
 
-// 规则仓库清除处理
 const onLibraryRuleClear = () => {
-  // 清除后允许手动输入
-  ruleSetForm.value.name = ''
-  ruleSetForm.value.url = ''
-  ruleSetForm.value.behavior = 'classical'
-  ruleSetForm.value.library_rule_id = ''  // 清除关联
-  ruleSetForm.value.no_resolve = false  // classical 不需要 no-resolve
+  selectedLibraryRule.value = ''
+  ruleSetForm.value.library_rule_id = ''
+  ruleSetForm.value.no_resolve = false
 }
 
 const editRuleSet = (row: RuleSet) => {
   isEditRuleSet.value = true
-  ruleSetForm.value = { ...row }
+  ruleSetForm.value = ruleSetPayload(row)
   // 如果没有 no_resolve 字段，根据 behavior 设置默认值
   if (ruleSetForm.value.no_resolve === undefined || ruleSetForm.value.no_resolve === null) {
-    ruleSetForm.value.no_resolve = ruleSetForm.value.behavior === 'ipcidr'
+    ruleSetForm.value.no_resolve = row.behavior === 'ipcidr'
   }
 
   // 如果有关联的规则仓库ID，则反显
@@ -1291,8 +1253,12 @@ const editRuleSet = (row: RuleSet) => {
 }
 
 const saveRuleSet = async () => {
+  if (!selectedLibraryRule.value) {
+    notify.warning('请先选择共享规则库中的规则集')
+    return
+  }
   try {
-    const ruleSetData = { ...ruleSetForm.value, itemType: 'ruleset' }
+    const ruleSetData = ruleSetPayload(ruleSetForm.value)
     if (isEditRuleSet.value) {
       // 检查策略是否发生变化
       const originalItem = allRules.value.find(r => r.id === ruleSetData.id && r.itemType === 'ruleset')
@@ -1300,10 +1266,10 @@ const saveRuleSet = async () => {
         // 策略变化，清除组名称
         ruleSetData.group_name = ''
       }
-      await ruleSetApi.update(ruleSetData.id!, ruleSetData)
+      await ruleSetApi.update(ruleSetData.id!, ruleSetData, profileId)
       notify.success('更新成功')
     } else {
-      await ruleSetApi.create(ruleSetData)
+      await ruleSetApi.create(ruleSetData, profileId)
       notify.success('添加成功')
     }
     ruleSetDialogVisible.value = false
@@ -1311,17 +1277,17 @@ const saveRuleSet = async () => {
     expandedGroups.value = new Set()
     loadAllRules()
   } catch (error) {
-    notify.error('保存失败')
+    notify.error(errorMessage(error, '保存失败'))
   }
 }
 
 const deleteRuleSet = async (row: any) => {
   try {
-    await ruleSetApi.delete(row.id)
+    await ruleSetApi.delete(row.id, profileId)
 
     // 同步更新 MosDNS 配置，移除对该规则集的引用
     try {
-      const { data: mosdnsConfig } = await api.get('/mosdns/rulesets')
+      const { data: mosdnsConfig } = await api.get('/mosdns/rulesets', profileRequestConfig)
 
       // 从 direct_rulesets 和 proxy_rulesets 中移除该规则集 ID
       const updatedDirectRulesets = mosdnsConfig.direct_rulesets.filter((id: string) => id !== row.id)
@@ -1335,7 +1301,7 @@ const deleteRuleSet = async (row: any) => {
           proxy_rulesets: updatedProxyRulesets,
           direct_rules: mosdnsConfig.direct_rules,
           proxy_rules: mosdnsConfig.proxy_rules
-        })
+        }, profileRequestConfig)
         console.log('已同步更新 MosDNS 配置，移除了对规则集的引用')
       }
     } catch (error) {
@@ -1347,7 +1313,7 @@ const deleteRuleSet = async (row: any) => {
     notify.success('删除成功')
     loadAllRules()
   } catch (error) {
-    notify.error('删除失败')
+    notify.error(errorMessage(error, '删除失败'))
   }
 }
 
@@ -1369,68 +1335,6 @@ const deleteItem = (row: any) => {
   }
 }
 
-// 判断是否为完整URL（http/https开头）
-const isFullUrl = (url: string): boolean => {
-  if (!url) return false
-  return url.startsWith('http://') || url.startsWith('https://')
-}
-
-// 测试URL的连通性
-const testUrlConnectivity = async (url: string): Promise<boolean> => {
-  try {
-    // 只测试完整URL，排除相对路径
-    if (!isFullUrl(url)) {
-      return true  // 相对路径不测试，默认认为可用
-    }
-
-    // 调用后端测试接口
-    const { data } = await api.post('/rule-library/test-single', { url })
-    if (data.success) {
-      return data.available
-    }
-    return false
-  } catch (error) {
-    return false
-  }
-}
-
-// 测试单个规则库规则的连通性
-const testLibraryRuleConnectivity = async (libraryRuleId: string): Promise<boolean> => {
-  try {
-    // 查找规则库中的规则
-    const libraryRule = ruleLibrary.value.find(r => r.id === libraryRuleId)
-    if (!libraryRule) {
-      return false
-    }
-
-    // 只测试完整URL
-    return await testUrlConnectivity(libraryRule.url)
-  } catch (error) {
-    return false
-  }
-}
-
-// 处理编辑对话框中规则集状态切换
-const handleRuleSetStatusChange = async (enabled: boolean) => {
-  // 如果是关闭，直接允许
-  if (!enabled) {
-    return
-  }
-
-  // 如果是开启，需要测试连通性（仅测试完整URL）
-  if (ruleSetForm.value.url && isFullUrl(ruleSetForm.value.url)) {
-    const loadingToast = notify.loading('正在测试规则连通性…')
-    const isAvailable = await testUrlConnectivity(ruleSetForm.value.url)
-    notify.dismiss(loadingToast)
-
-    if (!isAvailable) {
-      notify.error('规则地址无法访问，无法开启')
-      // 自动关闭开关
-      ruleSetForm.value.enabled = false
-      return
-    }
-  }
-}
 
 // 切换启用/禁用状态
 const toggleItemStatus = async (item: any) => {
@@ -1448,47 +1352,16 @@ const toggleItemStatus = async (item: any) => {
   item.enabled = !item.enabled
   originalItem.enabled = !originalItem.enabled
 
-  // 如果是规则集且正在开启，需要先测试连通性（只测试完整URL）
-  if (item.itemType === 'ruleset' && item.enabled) {
-    // 如果有URL且是完整URL，进行测试
-    if (item.url && isFullUrl(item.url)) {
-      const loadingToast = notify.loading('正在测试规则连通性…')
-      const isAvailable = await testUrlConnectivity(item.url)
-      notify.dismiss(loadingToast)
-
-      if (!isAvailable) {
-        notify.error('规则地址无法访问，无法开启')
-        // 回滚状态
-        item.enabled = oldEnabled
-        originalItem.enabled = oldEnabled
-
-        // 如果关联了规则仓库，也更新规则仓库的状态
-        if (item.library_rule_id) {
-          const libraryRule = ruleLibrary.value.find(r => r.id === item.library_rule_id)
-          if (libraryRule) {
-            libraryRule.enabled = false
-            try {
-              await api.put(`/rule-library/${item.library_rule_id}`, libraryRule)
-            } catch (error) {
-              console.error('更新规则仓库状态失败:', error)
-            }
-          }
-        }
-
-        return
-      }
-    }
-  }
 
   try {
     if (item.itemType === 'rule') {
-      await ruleApi.update(item.id, originalItem)
+      await ruleApi.update(item.id, originalItem, profileId)
     } else {
-      await ruleSetApi.update(item.id, originalItem)
+      await ruleSetApi.update(item.id, ruleSetPayload(originalItem), profileId)
     }
     notify.success('状态已更新')
   } catch (error) {
-    notify.error('更新状态失败')
+    notify.error(errorMessage(error, '更新状态失败'))
     // 失败后恢复状态
     item.enabled = oldEnabled
     originalItem.enabled = oldEnabled
@@ -1526,30 +1399,6 @@ const rebuildRulesOrderFromDisplay = (displayItems: any[], orderedIds: string[])
 }
 
 
-const saveRulesOrder = async (): Promise<boolean> => {
-  // 防止并发请求
-  if (isSavingOrder.value) {
-    console.log('排序保存中，跳过本次请求')
-    return false
-  }
-
-  // 验证数据
-  if (!allRules.value || allRules.value.length === 0) {
-    console.warn('没有规则数据，跳过保存')
-    return false
-  }
-
-  try {
-    isSavingOrder.value = true
-    // 批量更新规则和规则集顺序（使用合并数组）
-    await api.post('/rules/reorder', {
-      rule_configs: allRules.value
-    })
-    return true
-  } finally {
-    isSavingOrder.value = false
-  }
-}
 
 // 规则索引相关方法
 const showRuleIndexDialog = () => {
@@ -1571,6 +1420,7 @@ const performRuleIndexQuery = async () => {
   try {
     // 规则索引需要更长的超时时间（2分钟），因为需要获取和解析规则集内容
     const { data } = await api.post('/rules/match-test', { query }, {
+      ...profileRequestConfig,
       timeout: 120000  // 2分钟超时
     })
     if (data.success) {
@@ -1604,7 +1454,7 @@ const performDuplicateScan = async () => {
 
   try {
     // 需要拉取并解析规则集内容，与规则索引一样使用较长超时
-    const { data } = await ruleApi.findDuplicates()
+    const { data } = await ruleApi.findDuplicates(profileId)
     if (data.success) {
       duplicateResult.value = data
     } else {
@@ -1634,11 +1484,6 @@ const deleteDuplicateRule = async (occ: any) => {
   performDuplicateScan()
 }
 
-// 监听视图模式切换，重新初始化拖拽
-watch(viewMode, () => {
-  nextTick(() => {
-  })
-})
 
 // 监听规则类型变化，自动设置 no_resolve 默认值
 watch(() => ruleForm.value.rule_type, (newType) => {
@@ -1647,11 +1492,6 @@ watch(() => ruleForm.value.rule_type, (newType) => {
   ruleForm.value.no_resolve = isIpType
 })
 
-// 监听规则集类型变化，自动设置 no_resolve 默认值
-watch(() => ruleSetForm.value.behavior, (newBehavior) => {
-  // 切换 behavior 时，自动设置 no_resolve（ipcidr 类型默认开启）
-  ruleSetForm.value.no_resolve = newBehavior === 'ipcidr'
-})
 
 /* ---------- 统一拖动排序 ----------
  * 可见列表是展示项（分组会折叠多条原始规则），排序结果必须展开回
@@ -1677,7 +1517,9 @@ const reorder = useReorder<any>({
         `排序重建失败：期望 ${allRules.value.length} 条，实际 ${rebuilt.length} 条`
       )
     }
-    await api.post('/rules/reorder', { rule_configs: rebuilt })
+    await api.post('/rules/reorder', {
+      rule_configs: rebuilt.map(item => item.itemType === 'ruleset' ? ruleSetPayload(item) : item)
+    }, profileRequestConfig)
     allRules.value = rebuilt
   }
 })
@@ -1695,21 +1537,14 @@ const handleSaveOrder = async () => {
     await loadAllRules()
     notify.success('顺序已保存')
   } catch (error) {
-    notify.error('保存顺序失败，顺序已还原')
+    notify.error(errorMessage(error, '保存顺序失败，顺序已还原'))
   }
 }
 
 onMounted(() => {
-  Promise.all([loadAllRules(), loadProxyGroups(), loadRuleLibrary()]).then(() => {
-  })
+  Promise.all([loadAllRules(), loadProxyGroups(), loadRuleLibrary()])
 })
 
-onUnmounted(() => {
-  if (sortableInstance) {
-    sortableInstance.destroy()
-    sortableInstance = null
-  }
-})
 
 // 页面激活时重新加载数据（从其他页面返回时）
 onActivated(() => {

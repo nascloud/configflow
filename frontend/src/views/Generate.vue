@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="min-w-0 [overflow-wrap:anywhere]">
     <ScopeBanner scope="profile" :profile-name="cfProfileName" />
 
     <PageHeader
@@ -14,7 +14,7 @@
         v-for="(target, index) in targets"
         :key="target.key"
         v-bind="listItem(index)"
-        class="hairline edge-light relative flex flex-col gap-3.5 overflow-hidden rounded-xl border border-border/35 bg-card/55 p-5 backdrop-blur-xl transition-all duration-300 hover:shadow-glow-soft max-md:p-4"
+        class="hairline edge-light relative flex min-w-0 flex-col gap-3.5 overflow-hidden rounded-xl border border-border/35 bg-card/55 p-5 backdrop-blur-xl transition-all duration-300 hover:shadow-glow-soft max-md:p-4"
       >
         <header class="flex items-center gap-2.5">
           <span
@@ -38,7 +38,7 @@
             <Input
               :model-value="target.urlDisplay"
               readonly
-              class="h-9 bg-background/50 font-mono text-[11.5px]"
+              class="h-9 min-w-0 bg-background/50 font-mono text-[11.5px]"
               placeholder="配置 URL"
               :aria-label="`${target.title} 配置 URL`"
             />
@@ -56,12 +56,13 @@
           <p class="m-0 text-[11.5px] text-muted-foreground">复制后可在客户端中直接订阅此 URL。</p>
         </div>
 
-        <div class="mt-auto flex flex-wrap items-center gap-1.5">
+        <div class="mt-auto grid grid-cols-[repeat(auto-fit,minmax(5.5rem,1fr))] gap-1.5">
           <Button
             v-for="action in target.actions"
             :key="action.label"
             :variant="action.primary ? 'default' : 'outline'"
             size="sm"
+            class="h-auto min-h-8 min-w-0 whitespace-normal py-1.5"
             :class="action.primary ? 'shadow-glow' : 'border-border/60 bg-background/40'"
             :disabled="action.loading"
             @click="action.run"
@@ -74,155 +75,12 @@
       </Motion>
     </div>
 
-    <!-- ===== 服务配置 / 配置管理 ===== -->
-    <div class="grid grid-cols-2 gap-3 max-[1100px]:grid-cols-1">
-      <SectionCard title="服务配置" :icon="Settings">
-        <div class="flex flex-col gap-4">
-          <FormField
-            label="服务域名"
-            html-for="server-domain"
-            hint="用于规则仓库内容 URL、MosDNS 规则转换接口、Agent 安装脚本与配置订阅 URL。"
-          >
-            <div class="flex items-center gap-1.5">
-              <Input
-                id="server-domain"
-                v-model="serverDomain"
-                class="bg-background/50 font-mono"
-                placeholder="http://example.com:5001"
-                @blur="onServerDomainBlur"
-              />
-              <Button
-                variant="outline"
-                size="icon"
-                class="shrink-0 border-border/60 bg-background/40"
-                title="恢复默认"
-                aria-label="恢复默认服务域名"
-                @click="resetServerDomain"
-              >
-                <RefreshCw class="size-4" />
-              </Button>
-            </div>
-          </FormField>
-
-          <FormField
-            label="Sub-Store"
-            html-for="sub-store-url"
-            hint="Sub-Store 后端 API 地址，用于订阅解析和节点格式转换。Docker 部署默认 http://sub-store:3001，留空使用环境变量或默认值。"
-          >
-            <Input
-              id="sub-store-url"
-              v-model="subStoreUrl"
-              class="bg-background/50 font-mono"
-              placeholder="http://127.0.0.1:3001"
-              @blur="onSubStoreUrlBlur"
-            />
-          </FormField>
-
-          <FormField hint="开启后将在资源分组下显示「订阅聚合」，可组合订阅和节点。">
-            <div class="flex items-center gap-2.5">
-              <Switch
-                id="agg-enabled"
-                v-model="subscriptionAggregationEnabled"
-                @update:model-value="value => onSubscriptionAggregationChange(Boolean(value))"
-              />
-              <Label for="agg-enabled" class="text-[13px] text-muted-foreground">订阅聚合</Label>
-            </div>
-          </FormField>
-
-          <FormField
-            label="令牌"
-            html-for="config-token"
-            hint="配置令牌后，外部访问配置 URL 需要添加 ?token=xxx 参数；留空表示不启用令牌保护。"
-          >
-            <div class="flex items-center gap-1.5">
-              <Input
-                id="config-token"
-                v-model="configToken"
-                class="bg-background/50 font-mono"
-                placeholder="可手动输入或点击生成"
-                @blur="onTokenBlur"
-              />
-              <Button
-                variant="outline"
-                size="icon"
-                class="shrink-0 border-border/60 bg-background/40"
-                title="生成随机令牌"
-                aria-label="生成随机令牌"
-                @click="generateToken"
-              >
-                <RefreshCw class="size-4" />
-              </Button>
-            </div>
-          </FormField>
-        </div>
-      </SectionCard>
-
-      <SectionCard title="配置管理" :icon="Archive">
-        <div class="flex flex-col gap-4">
-          <div class="grid grid-cols-2 gap-2 max-[480px]:grid-cols-1">
-            <Button variant="outline" class="border-border/60 bg-background/40" @click="exportConfig">
-              <Upload class="size-4" />
-              导出
-            </Button>
-            <Button
-              variant="outline"
-              class="border-border/60 bg-background/40"
-              @click="exportConfigDesensitized"
-            >
-              <ShieldCheck class="size-4" />
-              脱敏导出
-            </Button>
-            <Button variant="outline" class="border-border/60 bg-background/40" @click="pickImportFile">
-              <Download class="size-4" />
-              导入
-            </Button>
-            <Button variant="outline" class="border-border/60 bg-background/40" @click="handleBackup">
-              <CloudUpload class="size-4" />
-              备份
-            </Button>
-            <input
-              ref="importInput"
-              type="file"
-              accept=".json"
-              hidden
-              @change="onImportFileChange"
-            />
-          </div>
-
-          <p class="m-0 text-[12px] leading-relaxed text-muted-foreground">
-            导出保存所有订阅、节点、规则和策略组设置；脱敏导出会隐藏敏感信息；导入将覆盖当前所有设置；备份会把配置上传到远程存储（如 WebDAV）。
-          </p>
-
-          <!-- 重置会清空全部数据，与常规操作分区并降低视觉权重，避免误触 -->
-          <div
-            class="mt-auto flex flex-wrap items-center gap-3 rounded-lg border border-destructive-accent/25 bg-destructive-soft/30 p-3"
-          >
-            <div class="min-w-0 flex-1">
-              <p class="m-0 text-[13px] font-semibold text-destructive-accent">重置配置</p>
-              <p class="mt-0.5 mb-0 text-[12px] text-muted-foreground">
-                恢复默认配置并清空所有数据，不可撤销。
-              </p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              class="shrink-0 border-destructive-accent/40 bg-transparent text-destructive-accent"
-              @click="resetConfig"
-            >
-              <RotateCcw class="size-3.5" />
-              重置
-            </Button>
-          </div>
-        </div>
-      </SectionCard>
-    </div>
-
     <!-- ===== 自定义基础配置 ===== -->
     <Dialog v-model:open="customConfigDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[900px] border-border/50">
+      <DialogContent class="glass-strong hairline max-w-[900px] border-border/50 [overflow-wrap:anywhere]">
         <DialogHeader>
           <DialogTitle>{{ getCustomConfigDialogTitle() }}</DialogTitle>
-          <DialogDescription>
+          <DialogDescription class="[overflow-wrap:anywhere]">
             {{ getCustomConfigDialogDesc() }}
             留空则使用默认基础配置，{{ currentConfigType === 'surge' ? '支持 INI 格式语法' : '支持 YAML 语法高亮' }}。
           </DialogDescription>
@@ -242,7 +100,7 @@
 
     <!-- ===== 配置预览 ===== -->
     <Dialog v-model:open="previewDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[1000px] border-border/50">
+      <DialogContent class="glass-strong hairline max-w-[1000px] border-border/50 [overflow-wrap:anywhere]">
         <DialogHeader>
           <DialogTitle>{{ getPreviewDialogTitle() }}</DialogTitle>
           <DialogDescription>只读预览，可整段复制到剪贴板。</DialogDescription>
@@ -262,7 +120,7 @@
 
     <!-- ===== MosDNS 设置 ===== -->
     <Dialog v-model:open="mosdnsSettingsDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[760px] border-border/50">
+      <DialogContent class="glass-strong hairline max-w-[760px] border-border/50 [overflow-wrap:anywhere]">
         <DialogHeader>
           <DialogTitle>MosDNS 设置</DialogTitle>
           <DialogDescription>规则分流、缓存、DNS 服务器与日志等生成参数。</DialogDescription>
@@ -338,7 +196,7 @@
               </FormField>
 
               <div class="flex flex-col gap-2">
-                <div class="flex items-center gap-2">
+                <div class="flex flex-wrap items-center gap-2">
                   <Label class="flex-1">自定义 Match</Label>
                   <Button variant="outline" size="sm" class="border-border/60 bg-background/40" @click="addMosdnsCustomMatch">
                     <Plus class="size-3.5" />
@@ -505,7 +363,7 @@
               </InfoNote>
 
               <section v-for="group in dnsGroups" :key="group.kind" class="flex flex-col gap-2">
-                <div class="flex items-center gap-2">
+                <div class="flex flex-wrap items-center gap-2">
                   <Label class="flex-1">{{ group.label }}</Label>
                   <Button
                     variant="outline"
@@ -531,16 +389,17 @@
                     :key="entry.id"
                     class="flex flex-col gap-3 rounded-lg border border-border/50 bg-background/40 p-3"
                   >
-                    <div class="flex items-center gap-2">
+                    <div class="flex flex-wrap items-center gap-2">
                       <GripVertical
                         class="drag-handle size-3.5 shrink-0 cursor-grab text-muted-foreground"
                         aria-hidden="true"
                       />
                       <span class="text-[12.5px] font-semibold text-foreground">条目 {{ index + 1 }}</span>
-                      <div class="ml-auto flex items-center gap-1">
+                      <div class="ml-auto flex min-w-0 flex-wrap items-center gap-1">
                         <Button
                           variant="ghost"
                           size="sm"
+                          class="h-auto min-h-8 whitespace-normal"
                           @click="toggleDnsEntryMode(group.kind, entry.id)"
                         >
                           {{ entry.mode === 'simple' ? '切换到 YAML' : '切换到简单模式' }}
@@ -755,10 +614,10 @@
 
     <!-- ===== Surge Smart 模式 ===== -->
     <Dialog v-model:open="surgeSmartDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[680px] border-border/50">
+      <DialogContent class="glass-strong hairline max-w-[680px] border-border/50 [overflow-wrap:anywhere]">
         <DialogHeader>
           <DialogTitle>Surge Smart 模式</DialogTitle>
-          <DialogDescription>
+          <DialogDescription class="[overflow-wrap:anywhere]">
             选择要在 Surge 中以 Smart 模式输出的策略组并配置 policy-priority。
             同一策略组在 Mihomo 中仍输出原类型（如 url-test），仅 Surge 配置受影响。
           </DialogDescription>
@@ -768,10 +627,10 @@
           <div
             v-for="(item, index) in surgeSmartGroups"
             :key="index"
-            class="flex items-center gap-2"
+            class="flex min-w-0 flex-wrap items-center gap-2"
           >
             <Select v-model="item.group_id">
-              <SelectTrigger class="flex-1 bg-background/50">
+              <SelectTrigger class="min-w-0 flex-[1_1_12rem] bg-background/50">
                 <SelectValue placeholder="选择策略组" />
               </SelectTrigger>
               <SelectContent class="glass-strong">
@@ -787,7 +646,7 @@
             </Select>
             <Input
               v-model="item.policy_priority"
-              class="flex-[1.5] bg-background/50 font-mono text-[12px]"
+              class="min-w-0 flex-[1.5_1_12rem] bg-background/50 font-mono text-[12px]"
               placeholder="policy-priority，如 香港:0;美国:1"
             />
             <Button
@@ -823,94 +682,6 @@
       </DialogContent>
     </Dialog>
 
-    <!-- ===== 配置备份 ===== -->
-    <Dialog v-model:open="backupDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[620px] border-border/50">
-        <DialogHeader>
-          <DialogTitle>配置备份</DialogTitle>
-          <DialogDescription>
-            配置 WebDAV 远程备份，自动将配置文件上传到远程存储。支持坚果云、Nextcloud 等服务。
-          </DialogDescription>
-        </DialogHeader>
-
-        <div class="flex max-h-[56dvh] flex-col gap-4 overflow-y-auto pr-1">
-          <FormField
-            label="WebDAV 地址"
-            html-for="webdav-url"
-            hint="例如坚果云：https://dav.jianguoyun.com/dav/"
-          >
-            <Input
-              id="webdav-url"
-              v-model="backupForm.webdav_url"
-              class="bg-background/50 font-mono"
-              placeholder="https://dav.jianguoyun.com/dav/"
-            />
-          </FormField>
-
-          <FormField label="用户名" html-for="webdav-user">
-            <Input
-              id="webdav-user"
-              v-model="backupForm.webdav_username"
-              autocomplete="username"
-              class="bg-background/50"
-              placeholder="WebDAV 用户名 / 邮箱"
-            />
-          </FormField>
-
-          <FormField label="密码" html-for="webdav-pass" hint="坚果云需要使用应用密码，不是登录密码。">
-            <Input
-              id="webdav-pass"
-              v-model="backupForm.webdav_password"
-              type="password"
-              autocomplete="current-password"
-              class="bg-background/50"
-              placeholder="WebDAV 密码 / 应用密码"
-            />
-          </FormField>
-
-          <FormField label="备份路径" html-for="webdav-path" hint="远程存储路径，默认为 /config-flow-backup/">
-            <Input
-              id="webdav-path"
-              v-model="backupForm.webdav_path"
-              class="bg-background/50 font-mono"
-              placeholder="/config-flow-backup/"
-            />
-          </FormField>
-
-          <FormField hint="开启后每次配置变更时自动备份。">
-            <div class="flex items-center gap-2.5">
-              <Switch id="auto-backup" v-model="backupForm.auto_backup" />
-              <Label for="auto-backup" class="text-[13px] text-muted-foreground">自动备份</Label>
-            </div>
-          </FormField>
-        </div>
-
-        <DialogFooter class="sm:justify-between">
-          <div class="flex items-center gap-2">
-            <Button
-              variant="outline"
-              class="border-border/60 bg-background/40"
-              :disabled="testingConnection"
-              @click="testWebDAVConnection"
-            >
-              <Loader2 v-if="testingConnection" class="size-4 animate-spin" />
-              测试连接
-            </Button>
-            <Button variant="outline" class="border-border/60 bg-background/40" :disabled="backingUp" @click="backupNow">
-              <Loader2 v-if="backingUp" class="size-4 animate-spin" />
-              立即备份
-            </Button>
-          </div>
-          <div class="flex items-center gap-2">
-            <Button variant="outline" @click="backupDialogVisible = false">取消</Button>
-            <Button :disabled="savingBackup" @click="saveBackupConfig">
-              <Loader2 v-if="savingBackup" class="size-4 animate-spin" />
-              保存配置
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   </div>
 </template>
 
@@ -918,13 +689,11 @@
 import PageHeader from '@/components/common/PageHeader.vue'
 import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import { useProfileStore } from '@/stores/profile'
-import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
+import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { Motion } from 'motion-v'
 import {
-  Archive,
   ChevronDown,
   ChevronUp,
-  CloudUpload,
   Copy,
   Download,
   Eye,
@@ -934,13 +703,9 @@ import {
   Network,
   Pencil,
   Plus,
-  RefreshCw,
-  RotateCcw,
   Settings,
   Shield,
-  ShieldCheck,
-  Trash2,
-  Upload
+  Trash2
 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -969,10 +734,9 @@ import FormField from '@/components/common/FormField.vue'
 import InfoNote from '@/components/common/InfoNote.vue'
 import LabeledDivider from '@/components/common/LabeledDivider.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
-import SectionCard from '@/components/common/SectionCard.vue'
-import { confirm, confirmDanger, notify } from '@/lib/feedback'
+import { notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
-import { generateApi, configApi, customConfigApi, subscriptionApi, nodeApi, ruleApi, ruleSetApi, proxyGroupApi, agentApi, serverDomainApi, configTokenApi, subStoreUrlApi } from '@/api'
+import { generateApi, customConfigApi, ruleApi, ruleSetApi, proxyGroupApi, serverDomainApi, configTokenApi } from '@/api'
 import YamlEditor from '@/components/YamlEditor.vue'
 import api from '@/api'
 import type { RuleSet } from '@/types'
@@ -983,9 +747,9 @@ import Sortable from 'sortablejs'
 // DNS 条目接口定义
 
 const cfProfileStore = useProfileStore()
-const cfProfileName = computed(
-  () => cfProfileStore.activeProfile.value?.name || cfProfileStore.activeProfileId.value
-)
+const profileId = activeProfileId.value
+const profileOptions = { headers: { 'X-ConfigFlow-Profile': profileId } }
+const cfProfileName = computed(() => cfProfileStore.profileName(profileId))
 interface DnsEntry {
   id: string
   mode: 'simple' | 'yaml'
@@ -1297,30 +1061,11 @@ const availableRuleSets = ref<RuleSet[]>([])
 const availableRules = ref<any[]>([])
 const savingMosdnsSettings = ref(false)
 
-// 备份配置
-const backupDialogVisible = ref(false)
-const backupForm = ref({
-  webdav_url: '',
-  webdav_username: '',
-  webdav_password: '',
-  webdav_path: '/config-flow-backup/',
-  auto_backup: false
-})
-const testingConnection = ref(false)
-const backingUp = ref(false)
-const savingBackup = ref(false)
-
 // 服务域名配置
 const serverDomain = ref(localStorage.getItem('serverDomain') || window.location.origin)
 
 // 配置令牌
 const configToken = ref('')
-
-// Sub-Store URL
-const subStoreUrl = ref('')
-
-// 订阅聚合开关
-const subscriptionAggregationEnabled = ref(false)
 
 // Surge Smart 模式相关
 const surgeSmartDialogVisible = ref(false)
@@ -1332,8 +1077,8 @@ const showSurgeSmartDialog = async () => {
   try {
     // 并行加载策略组列表和当前 smart_groups 配置
     const [groupsRes, surgeRes] = await Promise.all([
-      proxyGroupApi.getAll(),
-      customConfigApi.getSurge()
+      proxyGroupApi.getAll(profileId),
+      customConfigApi.getSurge(profileId)
     ])
     const allGroups = groupsRes.data || []
     const groupMap = new Map(allGroups.map((g: any) => [g.id, g]))
@@ -1372,7 +1117,7 @@ const saveSurgeSmartGroups = async () => {
     savingSurgeSmartGroups.value = true
     // 过滤掉未选择策略组的空行
     const validGroups = surgeSmartGroups.value.filter(g => g.group_id)
-    await customConfigApi.saveSurge({ smart_groups: validGroups })
+    await customConfigApi.saveSurge({ smart_groups: validGroups }, profileId)
     notify.success('Smart 配置已保存')
     surgeSmartDialogVisible.value = false
   } catch (error) {
@@ -1391,83 +1136,6 @@ const handleSurgePreview = () => {
   previewConfig('surge')
 }
 
-const handleBackup = () => {
-  showBackupDialog()
-}
-
-// 重置服务域名为当前浏览器地址
-const resetServerDomain = async () => {
-  const ok = await confirm('是否将服务域名重置为当前浏览器地址？', { title: '重置服务域名' })
-  if (!ok) return
-
-  try {
-    const newDomain = window.location.origin
-
-    await serverDomainApi.update({
-      new_domain: newDomain
-    })
-
-    serverDomain.value = newDomain
-    localStorage.setItem('serverDomain', newDomain)
-
-    notify.success('服务域名已重置为当前地址')
-  } catch (error) {
-    console.error('重置服务域名失败:', error)
-    notify.error('重置失败')
-  }
-}
-
-// 输入框失去焦点时保存
-const onServerDomainBlur = async () => {
-  if (!serverDomain.value) {
-    return
-  }
-
-  // 保存到 localStorage
-  localStorage.setItem('serverDomain', serverDomain.value)
-
-  try {
-    await serverDomainApi.update({
-      new_domain: serverDomain.value
-    })
-
-    notify.success(`服务域名已更新为：${serverDomain.value}`)
-  } catch (error: any) {
-    console.error('更新服务域名失败:', error)
-    notify.error('更新失败')
-  }
-}
-
-// 监听服务域名变化并保存到 localStorage
-const saveServerDomain = () => {
-  localStorage.setItem('serverDomain', serverDomain.value)
-}
-
-// 订阅聚合开关变化处理
-const onSubscriptionAggregationChange = async (value: boolean) => {
-  try {
-    // 保存到 localStorage
-    localStorage.setItem('subscriptionAggregationEnabled', value.toString())
-
-    // 保存到后端
-    await api.post('/settings/subscription-aggregation', {
-      enabled: value
-    })
-
-    notify.success(value ? '订阅聚合已开启' : '订阅聚合已关闭')
-
-    // 触发自定义事件，通知其他组件更新
-    window.dispatchEvent(new CustomEvent('subscription-aggregation-changed', {
-      detail: { enabled: value }
-    }))
-  } catch (error: any) {
-    console.error('更新订阅聚合开关失败:', error)
-    notify.error('更新失败')
-    // 失败时恢复原值
-    subscriptionAggregationEnabled.value = !value
-  }
-}
-
 // 配置令牌相关函数
 const loadConfigToken = async () => {
   try {
@@ -1478,102 +1146,22 @@ const loadConfigToken = async () => {
   }
 }
 
-const generateToken = async () => {
-  try {
-    const response = await configTokenApi.update({ generate: true })
-    configToken.value = response.data.config_token
-    notify.success('令牌已生成并保存')
-  } catch (error: any) {
-    console.error('生成令牌失败:', error)
-    notify.error('生成令牌失败')
-  }
-}
-
-const saveToken = async () => {
-  try {
-    if (!configToken.value || configToken.value.trim() === '') {
-      notify.warning('令牌不能为空，如需清空请点击清除按钮')
-      return
-    }
-    await configTokenApi.update({ token: configToken.value })
-    notify.success('令牌已保存')
-  } catch (error: any) {
-    console.error('保存令牌失败:', error)
-    notify.error('保存令牌失败')
-  }
-}
-
-const onTokenBlur = async () => {
-  // 如果输入框为空，不保存
-  if (!configToken.value || configToken.value.trim() === '') {
-    return
-  }
-
-  try {
-    await configTokenApi.update({ token: configToken.value })
-    notify.success('令牌已保存')
-  } catch (error: any) {
-    console.error('保存令牌失败:', error)
-    notify.error('保存令牌失败')
-  }
-}
-
-const onClearToken = async () => {
-  const ok = await confirm('确定要清除配置令牌吗？清除后配置 URL 将不再需要令牌验证。', {
-    title: '清除令牌',
-    confirmText: '清除'
-  })
-  if (!ok) return
-
-  try {
-    await configTokenApi.delete()
-    configToken.value = ''
-    notify.success('令牌已清除')
-  } catch (error) {
-    console.error('清除令牌失败:', error)
-    notify.error('清除令牌失败')
-  }
-}
-
-// Sub-Store URL 相关函数
-const onSubStoreUrlBlur = async () => {
-  try {
-    await subStoreUrlApi.update({
-      sub_store_url: subStoreUrl.value
-    })
-
-    notify.success('Sub-Store URL 已保存')
-  } catch (error: any) {
-    console.error('保存 Sub-Store URL 失败:', error)
-    notify.error('保存失败')
-  }
-}
-
-const loadSubStoreUrl = async () => {
-  try {
-    const response = await subStoreUrlApi.get()
-    subStoreUrl.value = response.data.sub_store_url || ''
-  } catch (error: any) {
-    console.error('加载 Sub-Store URL 失败:', error)
-  }
-}
-
 // 计算配置 URL - 使用 serverDomain 代替固定的 window.location.origin
 const baseUrl = computed(() => {
-  return serverDomain.value
+  return serverDomain.value.replace(/\/+$/, '')
 })
 
 const mihomoUrl = computed(() => {
-  const url = `${baseUrl.value}/api/config/${encodeURIComponent(activeProfileId.value)}/mihomo`
-  return configToken.value ? `${url}?token=${configToken.value}` : url
+  const url = `${baseUrl.value}/api/config/${encodeURIComponent(profileId)}/mihomo`
+  return configToken.value ? `${url}?token=${encodeURIComponent(configToken.value)}` : url
 })
 const surgeUrl = computed(() => {
-  const url = `${baseUrl.value}/api/config/${encodeURIComponent(activeProfileId.value)}/surge`
-  return configToken.value ? `${url}?token=${configToken.value}` : url
+  const url = `${baseUrl.value}/api/config/${encodeURIComponent(profileId)}/surge`
+  return configToken.value ? `${url}?token=${encodeURIComponent(configToken.value)}` : url
 })
 const mosdnsUrl = computed(() => {
-  const url = `${baseUrl.value}/api/config/${encodeURIComponent(activeProfileId.value)}/mosdns`
-  return configToken.value ? `${url}?token=${configToken.value}` : url
+  const url = `${baseUrl.value}/api/config/${encodeURIComponent(profileId)}/mosdns`
+  return configToken.value ? `${url}?token=${encodeURIComponent(configToken.value)}` : url
 })
 
 // URL显示
@@ -1737,7 +1325,7 @@ const fallbackCopyUrl = (text: string, configType: string) => {
 const generateMihomo = async () => {
   try {
     mihomoLoading.value = true
-    const response = await generateApi.mihomo()
+    const response = await generateApi.mihomo(profileId)
 
     // 创建下载链接
     const blob = new Blob([response.data], { type: 'application/x-yaml' })
@@ -1759,7 +1347,7 @@ const generateMihomo = async () => {
 const generateSurge = async () => {
   try {
     surgeLoading.value = true
-    const response = await generateApi.surge()
+    const response = await generateApi.surge(profileId)
 
     // 创建下载链接
     const blob = new Blob([response.data], { type: 'text/plain' })
@@ -1781,7 +1369,7 @@ const generateSurge = async () => {
 const generateMosdns = async () => {
   try {
     mosdnsLoading.value = true
-    const response = await generateApi.mosdns()
+    const response = await generateApi.mosdns(profileId)
 
     // 创建下载链接
     const blob = new Blob([response.data], { type: 'application/zip' })
@@ -1797,86 +1385,6 @@ const generateMosdns = async () => {
     notify.error('生成失败')
   } finally {
     mosdnsLoading.value = false
-  }
-}
-
-const exportConfig = async () => {
-  try {
-    const response = await configApi.export()
-
-    const blob = new Blob([response.data], { type: 'application/json' })
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'config.json'
-    link.click()
-    window.URL.revokeObjectURL(url)
-
-    notify.success('配置已导出')
-  } catch (error) {
-    notify.error('导出失败')
-  }
-}
-
-const exportConfigDesensitized = async () => {
-  try {
-    const response = await configApi.exportDesensitized()
-
-    const blob = new Blob([response.data], { type: 'application/json' })
-    const url = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'config_desensitized.json'
-    link.click()
-    window.URL.revokeObjectURL(url)
-
-    notify.success('脱敏配置已导出')
-  } catch (error) {
-    notify.error('导出失败')
-  }
-}
-
-const importInput = ref<HTMLInputElement | null>(null)
-
-const pickImportFile = () => importInput.value?.click()
-
-const onImportFileChange = async (event: Event) => {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-
-  try {
-    const config = JSON.parse(await file.text())
-    await configApi.import(config)
-    notify.success('配置导入成功，请刷新页面')
-  } catch (error) {
-    console.error('导入配置失败:', error)
-    notify.error('导入失败，请检查文件格式')
-  } finally {
-    input.value = ''
-  }
-}
-
-const resetConfig = async () => {
-  const ok = await confirmDanger(
-    '重置配置将清空所有订阅、节点、规则和策略组设置，恢复为默认配置。此操作不可撤销。',
-    { title: '重置配置', confirmText: '确认重置' }
-  )
-  if (!ok) return
-
-  try {
-    await api.post('/config/reset')
-    notify.success('配置已重置为默认值，请刷新页面')
-
-    // 刷新统计
-    setTimeout(() => {
-      // 刷新页面以加载新配置
-      window.location.reload()
-    }, 500)
-  } catch (error) {
-    if (error !== 'cancel') {
-      notify.error('重置失败')
-    }
   }
 }
 
@@ -1924,7 +1432,7 @@ const showCustomConfigDialog = async (type: 'mihomo' | 'surge' | 'mosdns') => {
       surge: customConfigApi.getSurge,
       mosdns: customConfigApi.getMosdns
     }
-    const response = await apiMap[type]()
+    const response = await apiMap[type](profileId)
     customConfigContent.value = response.data.config || ''
     customConfigDialogVisible.value = true
   } catch (error) {
@@ -1940,7 +1448,7 @@ const saveCustomConfig = async () => {
       surge: customConfigApi.saveSurge,
       mosdns: customConfigApi.saveMosdns
     }
-    await apiMap[currentConfigType.value]({ config: customConfigContent.value })
+    await apiMap[currentConfigType.value]({ config: customConfigContent.value }, profileId)
     notify.success('自定义配置已保存')
     customConfigDialogVisible.value = false
   } catch (error) {
@@ -1966,7 +1474,7 @@ const previewConfig = async (type: 'mihomo' | 'surge' | 'mosdns') => {
       surge: generateApi.previewSurge,
       mosdns: generateApi.previewMosdns
     }
-    const response = await apiMap[type]()
+    const response = await apiMap[type](profileId)
     previewContent.value = response.data.content || response.data
     previewDialogVisible.value = true
   } catch (error) {
@@ -2153,7 +1661,7 @@ const initDnsSortable = () => {
 
 const loadRuleSets = async () => {
   try {
-    const response = await ruleSetApi.getAll()
+    const response = await ruleSetApi.getAll(profileId)
     availableRuleSets.value = response.data
   } catch (error) {
     console.error('加载规则集列表失败', error)
@@ -2162,7 +1670,7 @@ const loadRuleSets = async () => {
 
 const loadRules = async () => {
   try {
-    const response = await ruleApi.getAll()
+    const response = await ruleApi.getAll(profileId)
     // 筛选出单条规则（itemType 为 'rule'）
     availableRules.value = response.data.filter((item: any) => item.itemType === 'rule')
   } catch (error) {
@@ -2180,18 +1688,18 @@ const showMosdnsSettingsDialog = async () => {
     await Promise.all([loadRuleSets(), loadRules()])
 
     // 加载自定义配置
-    const customConfigResponse = await customConfigApi.getMosdns()
+    const customConfigResponse = await customConfigApi.getMosdns(profileId)
     mosdnsCustomConfig.value = customConfigResponse.data.config || ''
 
     // 加载规则集配置
-    const rulesetResponse = await api.get('/mosdns/rulesets')
+    const rulesetResponse = await api.get('/mosdns/rulesets', profileOptions)
     mosdnsDirectRulesets.value = rulesetResponse.data.direct_rulesets || []
     mosdnsProxyRulesets.value = rulesetResponse.data.proxy_rulesets || []
     mosdnsDirectRules.value = rulesetResponse.data.direct_rules || []
     mosdnsProxyRules.value = rulesetResponse.data.proxy_rules || []
 
     // 加载自定义 match 配置
-    const customMatchResponse = await api.get('/mosdns/custom-matches')
+    const customMatchResponse = await api.get('/mosdns/custom-matches', profileOptions)
     const fetchedMatches = Array.isArray(customMatchResponse.data?.custom_matches)
       ? customMatchResponse.data.custom_matches
       : []
@@ -2207,7 +1715,7 @@ const showMosdnsSettingsDialog = async () => {
     }))
 
     // 加载 DNS 服务器配置
-    const dnsResponse = await api.get('/mosdns/dns-servers')
+    const dnsResponse = await api.get('/mosdns/dns-servers', profileOptions)
     mosdnsLocalDns.value = dnsResponse.data.local_dns || ''
     mosdnsRemoteDns.value = dnsResponse.data.remote_dns || ''
     mosdnsFallbackDns.value = dnsResponse.data.fallback_dns || ''
@@ -2219,18 +1727,18 @@ const showMosdnsSettingsDialog = async () => {
     mosdnsCustomHosts.value = dnsResponse.data.custom_hosts || ''
 
     // 加载日志配置
-    const logResponse = await api.get('/mosdns/log-settings')
+    const logResponse = await api.get('/mosdns/log-settings', profileOptions)
     mosdnsLogEnabled.value = logResponse.data.log_enabled !== undefined ? logResponse.data.log_enabled : true
     mosdnsLogLevel.value = logResponse.data.log_level || 'info'
     mosdnsLogFile.value = logResponse.data.log_file || './mosdns.log'
 
     // 加载 API 配置
-    const apiResponse = await api.get('/mosdns/api-settings')
+    const apiResponse = await api.get('/mosdns/api-settings', profileOptions)
     mosdnsApiEnabled.value = apiResponse.data.api_enabled !== undefined ? apiResponse.data.api_enabled : true
     mosdnsApiAddress.value = apiResponse.data.api_address || '0.0.0.0:8338'
 
     // 加载缓存配置
-    const cacheResponse = await api.get('/mosdns/cache-settings')
+    const cacheResponse = await api.get('/mosdns/cache-settings', profileOptions)
     mosdnsCacheEnabled.value = cacheResponse.data.cache_enabled !== undefined ? Boolean(cacheResponse.data.cache_enabled) : true
     mosdnsCacheSize.value = Number(cacheResponse.data.cache_size ?? 10240)
     mosdnsCacheLazyTtl.value = Number(cacheResponse.data.cache_lazy_ttl ?? 21600)
@@ -2257,7 +1765,7 @@ const saveMosdnsSettings = async () => {
     savingMosdnsSettings.value = true
 
     // 保存自定义配置
-    await customConfigApi.saveMosdns({ config: mosdnsCustomConfig.value })
+    await customConfigApi.saveMosdns({ config: mosdnsCustomConfig.value }, profileId)
 
     // 保存规则集和规则配置
     await api.post('/mosdns/rulesets', {
@@ -2265,7 +1773,7 @@ const saveMosdnsSettings = async () => {
       proxy_rulesets: mosdnsProxyRulesets.value,
       direct_rules: mosdnsDirectRules.value,
       proxy_rules: mosdnsProxyRules.value
-    })
+    }, profileOptions)
 
     const customMatchPayload = mosdnsCustomMatches.value.map(item => ({
       id: item.id,
@@ -2277,7 +1785,7 @@ const saveMosdnsSettings = async () => {
     await api.post('/mosdns/custom-matches', {
       custom_matches: customMatchPayload,
       position: mosdnsCustomMatchPosition.value
-    })
+    }, profileOptions)
 
     // 将 DNS 条目数组转换为文本
     const localDnsText = dnsEntriesToText(mosdnsLocalDnsEntries.value)
@@ -2291,7 +1799,7 @@ const saveMosdnsSettings = async () => {
       fallback_dns: fallbackDnsText,
       default_forward: mosdnsDefaultForward.value,
       custom_hosts: mosdnsCustomHosts.value
-    })
+    }, profileOptions)
 
     // 同步更新文本字段（保持兼容性）
     mosdnsLocalDns.value = localDnsText
@@ -2303,13 +1811,13 @@ const saveMosdnsSettings = async () => {
       log_enabled: mosdnsLogEnabled.value,
       log_level: mosdnsLogLevel.value,
       log_file: mosdnsLogFile.value
-    })
+    }, profileOptions)
 
     // 保存 API 配置
     await api.post('/mosdns/api-settings', {
       api_enabled: mosdnsApiEnabled.value,
       api_address: mosdnsApiAddress.value
-    })
+    }, profileOptions)
 
     // 保存缓存配置
     await api.post('/mosdns/cache-settings', {
@@ -2319,7 +1827,7 @@ const saveMosdnsSettings = async () => {
       cache_dump_enabled: mosdnsCacheDumpEnabled.value,
       cache_dump_file: mosdnsCacheDumpFile.value,
       cache_dump_interval: mosdnsCacheDumpInterval.value
-    })
+    }, profileOptions)
 
     notify.success('MosDNS 设置已保存')
     mosdnsSettingsDialogVisible.value = false
@@ -2330,112 +1838,6 @@ const saveMosdnsSettings = async () => {
     savingMosdnsSettings.value = false
   }
 }
-
-// 备份相关方法
-const showBackupDialog = async () => {
-  try {
-    // 加载备份配置
-    const response = await api.get('/backup/config')
-    if (response.data) {
-      backupForm.value = {
-        webdav_url: response.data.webdav_url || '',
-        webdav_username: response.data.webdav_username || '',
-        webdav_password: response.data.webdav_password || '',
-        webdav_path: response.data.webdav_path || '/config-flow-backup/',
-        auto_backup: response.data.auto_backup || false
-      }
-    }
-    backupDialogVisible.value = true
-  } catch (error) {
-    console.error('加载备份配置失败', error)
-    backupDialogVisible.value = true
-  }
-}
-
-const testWebDAVConnection = async () => {
-  if (!backupForm.value.webdav_url) {
-    notify.warning('请输入 WebDAV 地址')
-    return
-  }
-  if (!backupForm.value.webdav_username) {
-    notify.warning('请输入用户名')
-    return
-  }
-  if (!backupForm.value.webdav_password) {
-    notify.warning('请输入密码')
-    return
-  }
-
-  try {
-    testingConnection.value = true
-    await api.post('/backup/test', {
-      webdav_url: backupForm.value.webdav_url,
-      webdav_username: backupForm.value.webdav_username,
-      webdav_password: backupForm.value.webdav_password,
-      webdav_path: backupForm.value.webdav_path
-    })
-    notify.success('连接测试成功')
-  } catch (error: any) {
-    console.error('测试连接失败', error)
-    const errorMsg = error.response?.data?.message || '连接测试失败，请检查配置'
-    notify.error(errorMsg)
-  } finally {
-    testingConnection.value = false
-  }
-}
-
-const backupNow = async () => {
-  if (!backupForm.value.webdav_url) {
-    notify.warning('请输入 WebDAV 地址')
-    return
-  }
-  if (!backupForm.value.webdav_username) {
-    notify.warning('请输入用户名')
-    return
-  }
-  if (!backupForm.value.webdav_password) {
-    notify.warning('请输入密码')
-    return
-  }
-
-  try {
-    backingUp.value = true
-    await api.post('/backup/now', {
-      webdav_url: backupForm.value.webdav_url,
-      webdav_username: backupForm.value.webdav_username,
-      webdav_password: backupForm.value.webdav_password,
-      webdav_path: backupForm.value.webdav_path
-    })
-    notify.success('备份成功')
-  } catch (error: any) {
-    console.error('备份失败', error)
-    const errorMsg = error.response?.data?.message || '备份失败，请检查配置'
-    notify.error(errorMsg)
-  } finally {
-    backingUp.value = false
-  }
-}
-
-const saveBackupConfig = async () => {
-  try {
-    savingBackup.value = true
-    await api.post('/backup/config', backupForm.value)
-    notify.success('备份配置已保存')
-    backupDialogVisible.value = false
-  } catch (error: any) {
-    console.error('保存备份配置失败', error)
-    notify.error('保存失败')
-  } finally {
-    savingBackup.value = false
-  }
-}
-
-// 监听服务域名变化并自动保存
-watch(serverDomain, (newValue) => {
-  if (newValue) {
-    localStorage.setItem('serverDomain', newValue)
-  }
-})
 
 onMounted(async () => {
   // 从后端加载服务域名配置
@@ -2448,9 +1850,8 @@ onMounted(async () => {
       serverDomain.value = backendDomain
       localStorage.setItem('serverDomain', backendDomain)
     } else {
-      // 后端没有配置，使用 localStorage 或当前地址
-      const localDomain = localStorage.getItem('serverDomain') || window.location.origin
-      serverDomain.value = localDomain
+      serverDomain.value = window.location.origin
+      localStorage.setItem('serverDomain', serverDomain.value)
     }
   } catch (error) {
     console.error('加载服务域名失败:', error)
@@ -2461,26 +1862,7 @@ onMounted(async () => {
 
   // 加载配置令牌
   await loadConfigToken()
-
-  // 加载 Sub-Store URL
-  await loadSubStoreUrl()
-
-  // 从后端加载订阅聚合开关配置
-  try {
-    const response = await api.get('/settings/subscription-aggregation')
-    const enabled = response.data.enabled || false
-    subscriptionAggregationEnabled.value = enabled
-    localStorage.setItem('subscriptionAggregationEnabled', enabled.toString())
-  } catch (error) {
-    console.error('加载订阅聚合开关失败:', error)
-    // 加载失败，使用 localStorage
-    const localEnabled = localStorage.getItem('subscriptionAggregationEnabled') === 'true'
-    subscriptionAggregationEnabled.value = localEnabled
-  }
-
 })
 
-onUnmounted(() => {
-})
 </script>
 

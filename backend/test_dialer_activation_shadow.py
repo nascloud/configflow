@@ -60,10 +60,10 @@ def test_shadowed_main_chain_rejects_before_any_delivery_mutation(tmp_path, monk
     manager = agent_manager(monkeypatch)
     network = Mock(side_effect=AssertionError('Rejected graph must not reach network'))
     monkeypatch.setattr('requests.get', network)
-    cache_before = load_subscription_cache('s', profile_id='default')
-    profile_before = repo._profile_path('default').read_bytes()
+    cache_before = load_subscription_cache('s')
+    profile_before = repo.path.read_bytes()
     artifacts = [repo.write_profile_text('default', name, 'last-good')
-                 for name in ('config.yaml', 'providers/agg.yaml')]
+                 for name in ('generated/config.yaml', 'providers/agg.yaml')]
     # Read-back equality alone can miss a write followed by rollback.
     cache_writes = []
     for module in ('subscriptions', 'aggregations', 'backend.utils.provider_delivery'):
@@ -74,6 +74,7 @@ def test_shadowed_main_chain_rejects_before_any_delivery_mutation(tmp_path, monk
         cache_writes.append(spy)
     artifact_write = Mock(side_effect=AssertionError('Validation must precede artifact write'))
     monkeypatch.setattr(repo, 'write_profile_text', artifact_write)
+    monkeypatch.setattr(repo, 'write_generated', artifact_write)
     path = {
         'provider': '/api/subscriptions/s/proxies' if direct else '/api/aggregations/agg/provider',
         'preview': '/api/generate/mihomo/preview', 'generate': '/api/generate/mihomo',
@@ -89,8 +90,8 @@ def test_shadowed_main_chain_rejects_before_any_delivery_mutation(tmp_path, monk
     artifact_write.assert_not_called()
     network.assert_not_called()
     manager.push_config_to_agent.assert_not_called()
-    assert load_subscription_cache('s', profile_id='default') == cache_before
-    assert repo._profile_path('default').read_bytes() == profile_before
+    assert load_subscription_cache('s') == cache_before
+    assert repo.path.read_bytes() == profile_before
     assert all(path.read_text() == 'last-good' for path in artifacts)
 
 

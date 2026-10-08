@@ -95,7 +95,7 @@ def prepare_subscription_provider(sub, config, snapshot, *, fetch=None,
         except Exception:
             proxies = None
     if proxies is None:
-        cache = load_subscription_cache(sub['id'], profile_id=snapshot.profile_id)
+        cache = load_subscription_cache(sub['id'])
         if not cache or not cache.get('nodes'):
             if allow_transport_fallback and not snapshot.has_chains:
                 return {'content': '', 'cache_updates': []}
@@ -144,7 +144,7 @@ def validate_rendered_bundle(snapshot, providers):
     return chains
 
 
-def commit_cache_updates(updates, profile_id):
+def commit_cache_updates(updates):
     from backend.utils.subscription_cache import save_subscription_nodes
     for sub_id, nodes, metadata in updates:
-        save_subscription_nodes(sub_id, nodes, metadata, profile_id=profile_id)
+        save_subscription_nodes(sub_id, nodes, metadata)

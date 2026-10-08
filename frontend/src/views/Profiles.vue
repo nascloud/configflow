@@ -3,7 +3,7 @@
     <PageHeader
       eyebrow="System"
       title="配置空间"
-      description="新建、克隆、导入导出与切换配置空间。每个配置空间拥有独立的订阅、策略与生成结果。"
+      description="资源库全局共享；每个配置空间独立选择资源、编排策略与规则并生成结果。这里导入导出独立参数和资源引用；全量备份请前往系统设置。"
     >
       <template #actions>
         <Button variant="outline" class="border-border/60 bg-background/40" @click="pickImportFile">
@@ -24,7 +24,7 @@
       <EmptyState
         :icon="Boxes"
         title="还没有配置空间"
-        description="配置空间用于隔离不同场景的订阅与策略，先创建一个开始使用。"
+        description="配置空间用于隔离不同场景的资源选择与策略，先创建一个开始使用。"
       >
         <Button @click="openCreate">
           <Plus class="size-4" />
@@ -72,15 +72,16 @@
           </Badge>
         </header>
 
-        <p class="m-0 min-h-10 text-[12.5px] leading-relaxed text-muted-foreground">
+        <p class="m-0 min-h-10 break-words text-[12.5px] leading-relaxed text-muted-foreground">
           {{ profile.description || '暂无说明' }}
         </p>
 
-        <footer class="mt-auto flex items-center gap-2 border-0 border-t border-dashed border-border/50 pt-4">
+        <footer class="mt-auto flex flex-wrap items-center gap-2 border-0 border-t border-dashed border-border/50 pt-4">
           <Button
             v-if="profile.id !== activeProfileId"
             size="sm"
-            @click="activate(profile.id)"
+            :disabled="scopedRequests > 0"
+            @click="switchProfile(profile.id)"
           >
             <CircleCheck class="size-3.5" />
             使用
@@ -205,7 +206,7 @@ import { listItem } from '@/lib/motion'
 import { useProfileStore, type Profile } from '@/stores/profile'
 
 const profileStore = useProfileStore()
-const { profiles, loading, activeProfileId, refreshProfiles, switchProfile } = profileStore
+const { profiles, loading, scopedRequests, activeProfileId, refreshProfiles, switchProfile } = profileStore
 const dialogVisible = ref(false)
 const saving = ref(false)
 const editingId = ref('')
@@ -252,15 +253,6 @@ const submit = async () => {
   }
 }
 
-const activate = async (profileId: string) => {
-  try {
-    await profileApi.activate(profileId)
-    switchProfile(profileId)
-    window.location.reload()
-  } catch (error: any) {
-    notify.error(error.response?.data?.message || '切换配置空间失败')
-  }
-}
 
 const clone = async (profile: Profile) => {
   const id = await prompt({
@@ -318,9 +310,10 @@ const importProfile = async (event: Event) => {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
+  const profileId = activeProfileId.value
   try {
     const data = JSON.parse(await file.text())
-    await profileApi.import(activeProfileId.value, data)
+    await profileApi.import(profileId, data)
     await refreshProfiles()
     notify.success('配置已导入当前配置空间')
   } catch (error: any) {

@@ -12,11 +12,11 @@
           <component v-if="icon" :is="icon" class="size-4 text-primary-accent" :stroke-width="2.2" aria-hidden="true" />
           {{ title }}
         </h2>
-        <p v-if="description" class="mt-1 mb-0 text-[12px] leading-relaxed text-muted-foreground">
+        <p v-if="description" class="mt-1 mb-0 break-words text-[12px] leading-relaxed text-muted-foreground">
           {{ description }}
         </p>
       </div>
-      <div v-if="$slots.actions" class="flex shrink-0 items-center gap-2">
+      <div v-if="$slots.actions" class="flex min-w-0 max-w-full flex-wrap items-center gap-2">
         <slot name="actions" />
       </div>
     </header>

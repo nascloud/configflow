@@ -5,7 +5,8 @@ from flask import request, jsonify
 
 from backend.routes import proxy_groups_bp
 from backend.common.auth import require_auth
-from backend.common.config import get_config, save_config, update_config_transaction
+from backend.common.config import get_config, update_config_transaction
+from backend.common.config_repository import ProfileRepositoryError
 from backend.utils.reorder import resolve_new_order
 from backend.utils.subscription_cache import load_subscription_cache
 
@@ -92,6 +93,8 @@ def handle_proxy_group(group_id):
     from backend.utils.dialer_references import validate_dialers, incoming_dialers, DialerReferenceError
 
     group_data = request.get_json() if request.method == 'PUT' else None
+    if request.method == 'PUT' and not isinstance(group_data, dict):
+        return jsonify({'success': False, 'message': '策略组请求必须是 JSON 对象'}), 400
 
     def mutate(profile):
         groups = profile.setdefault('proxy_groups', [])
@@ -101,6 +104,9 @@ def handle_proxy_group(group_id):
         if group_data is not None:
             if group_data.get('id', group_id) != group_id:
                 raise Conflict('策略组 ID 不可修改，请保留原 ID')
+            merged = {**original, **group_data}
+            group_data.clear()
+            group_data.update(merged)
             group_data['id'] = group_id
             if any(g.get('id') != group_id and g.get('name') == group_data.get('name') for g in groups):
                 raise Conflict('策略组名称已存在，请使用其他名称')
@@ -161,6 +167,8 @@ def preview_proxy_group_regex():
             subscription_ids = payload.get('subscriptions') or []
             subscriptions = config_data.get('subscriptions', [])
             for sub_id in subscription_ids:
+                if sub_id not in config_data.get('resource_refs', {}).get('subscriptions', []):
+                    continue
                 sub = next((s for s in subscriptions if s.get('id') == sub_id and s.get('enabled', True)), None)
                 if not sub:
                     continue
@@ -173,6 +181,8 @@ def preview_proxy_group_regex():
             subscriptions = config_data.get('subscriptions', [])
 
             for agg_id in aggregation_ids:
+                if agg_id not in config_data.get('resource_refs', {}).get('subscription_aggregations', []):
+                    continue
                 agg = next((a for a in aggregations if a.get('id') == agg_id and a.get('enabled', True)), None)
                 if not agg:
                     continue
@@ -245,5 +255,7 @@ def reorder_proxy_groups():
         return jsonify({'success': False, 'message': str(exc)}), 400
     except NotFound as exc:
         return jsonify({'success': False, 'message': exc.description}), 404
+    except ProfileRepositoryError:
+        raise
     except Exception as exc:
         return jsonify({'success': False, 'message': str(exc)}), 500

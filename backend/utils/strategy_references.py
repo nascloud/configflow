@@ -16,7 +16,7 @@ def validate_rule_policies(config_data, available_names, format):
     available = set(available_names) | builtins[format]
     default = 'PROXY' if format == 'mihomo' else 'Proxy'
     for rule in config_data.get('rule_configs', []):
-        if not rule.get('enabled', True) or rule.get('itemType') not in ('rule', 'ruleset'):
+        if not rule.get('enabled', True) or not rule.get('library_enabled', True) or rule.get('itemType') not in ('rule', 'ruleset'):
             continue
         policy = rule.get('policy', default if rule.get('itemType') == 'ruleset' else '')
         if policy not in available:

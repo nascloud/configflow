@@ -2,7 +2,7 @@
 from unittest.mock import Mock
 import pytest
 from backend.test_qa_integrity import make_app
-from backend.test_dialer_proxy import node
+from backend.test_dialer_proxy import node, save_fixture
 from backend.test_dialer_delivery_snapshot import agent_manager
 
 PATHS = ['/api/generate/mihomo/preview', '/api/generate/mihomo',
@@ -20,24 +20,25 @@ def no_real_network(monkeypatch):
 
 def setup_bundle(tmp_path, monkeypatch, source, reverse, *, chain=True, text=DUPLICATE):
     app, repo = make_app(tmp_path)
-    def seed(p):
-        p['nodes'] = [node('relay'), node('exit', proxy_string='http://fixture.invalid/exit'),
-                      node('plain', proxy_string='http://fixture.invalid/plain')]
-        p['subscriptions'] = [{'id': 's', 'name': 'Feed', 'enabled': True, 'url': 'https://fixture.invalid/feed'}]
-        p['subscription_aggregations'] = [
-            {'id': 'chain', 'name': 'Chain', 'nodes': ['exit'], 'subscriptions': []}]
-        group = {'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['relay'],
-                 'aggregations': ['chain']}
-        if source == 'aggregation':
-            p['subscription_aggregations'].append(
-                {'id': 'other', 'name': 'Other', 'nodes': ['plain'], 'subscriptions': ['s']})
-            group['aggregations'].append('other')
-        else:
-            group['subscriptions'] = ['s']
-        if reverse:
-            p['subscription_aggregations'].reverse()
-        p['proxy_groups'] = [group]
-    repo.update_profile_transaction('default', seed)
+    shared = repo.get_shared()
+    p = repo.get_profile('default')
+    shared['nodes'] = [node('relay'), node('exit', proxy_string='http://fixture.invalid/exit'),
+                  node('plain', proxy_string='http://fixture.invalid/plain')]
+    shared['subscriptions'] = [{'id': 's', 'name': 'Feed', 'enabled': True, 'url': 'https://fixture.invalid/feed'}]
+    shared['subscription_aggregations'] = [
+        {'id': 'chain', 'name': 'Chain', 'nodes': ['exit'], 'subscriptions': []}]
+    group = {'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['relay'],
+             'aggregations': ['chain']}
+    if source == 'aggregation':
+        shared['subscription_aggregations'].append(
+            {'id': 'other', 'name': 'Other', 'nodes': ['plain'], 'subscriptions': ['s']})
+        group['aggregations'].append('other')
+    else:
+        group['subscriptions'] = ['s']
+    if reverse:
+        shared['subscription_aggregations'].reverse()
+    p['proxy_groups'] = [group]
+    save_fixture(repo, shared, p)
     conversions = []
     def convert(uri):
         conversions.append(uri)
@@ -52,10 +53,9 @@ def setup_bundle(tmp_path, monkeypatch, source, reverse, *, chain=True, text=DUP
     monkeypatch.setattr('backend.routes.aggregations.save_subscription_nodes', writes)
     monkeypatch.setattr('backend.routes.subscriptions.save_subscription_nodes', writes)
     manager = agent_manager(monkeypatch)
-    output = repo.generated_dir('default') / 'config.yaml'
-    output.write_text('last-good-main')
+    output = repo.write_generated('default', 'config.yaml', 'last-good-main')
     provider = repo.write_profile_text('default', 'providers/other.yaml', 'last-good-provider')
-    before = repo._profile_path('default').read_bytes()
+    before = repo.path.read_bytes()
     return app, repo, fetch, writes, manager, output, provider, before, conversions
 
 
@@ -74,7 +74,7 @@ def test_provider_only_chain_globally_rejects_plain_duplicates_before_publicatio
     manager.push_config_to_agent.assert_not_called()
     assert output.read_text() == 'last-good-main'
     assert provider.read_text() == 'last-good-provider'
-    assert repo._profile_path('default').read_bytes() == before
+    assert repo.path.read_bytes() == before
 
 
 @pytest.mark.parametrize('path', PATHS)
@@ -134,4 +134,4 @@ def test_bundle_validation_does_not_weaken_reserved_names_or_content_errors(
     manager.push_config_to_agent.assert_not_called()
     assert output.read_text() == 'last-good-main'
     assert provider.read_text() == 'last-good-provider'
-    assert repo._profile_path('default').read_bytes() == before
+    assert repo.path.read_bytes() == before

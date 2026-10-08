@@ -1,11 +1,11 @@
 <template>
   <div :class="reorder.active.value && 'cf-reordering'">
-    <ScopeBanner scope="resource" :profile-name="cfProfileName" description="订阅源按配置空间隔离，切换配置空间会看到各自的列表" />
+    <ScopeBanner scope="resource" :profile-name="cfProfileName" description="订阅源由所有配置共享；在当前配置的资源选择页决定使用哪些订阅" />
 
     <PageHeader
       eyebrow="Resource"
       title="订阅来源"
-      description="订阅拉取后的节点进入本配置空间的节点库。"
+      description="统一维护订阅来源与节点缓存，修改会影响引用它的所有配置。"
     >
       <template #actions>
         <Button

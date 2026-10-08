@@ -6,13 +6,12 @@
       description="概览运行状态与资源健康，快速掌握代理配置体系情况。"
     />
 
-    <!-- 作用域说明：两类数据都按配置空间隔离，此处仅作功能归类 -->
     <div class="mb-4 flex flex-wrap gap-2">
       <Badge variant="info" class="h-7 gap-1.5 rounded-md px-2.5 text-[12.5px]">
         <Layers class="size-3.5" />
-        资源 · {{ sharedKinds }} 类
+        共享资源 · {{ sharedKinds }} 类
       </Badge>
-      <Badge variant="brand" class="h-7 gap-1.5 rounded-md px-2.5 text-[12.5px]">
+      <Badge variant="brand" class="min-h-7 max-w-full gap-1.5 whitespace-normal break-all rounded-md px-2.5 py-1 text-[12.5px]">
         <IdCard class="size-3.5" />
         当前配置 · {{ profileName }}
       </Badge>
@@ -73,8 +72,8 @@ const profileName = computed(
 /* ---------- KPI：与概念图一致的四项 ---------- */
 const kpis = computed<KpiItem[]>(() => [
   { label: '配置空间', value: profileCount.value, icon: 'Setting', scope: 'system', route: '/profiles' },
-  { label: '订阅来源', value: counts.value.subscriptions, icon: 'Link', scope: 'profile', route: '/subscriptions' },
-  { label: '节点', value: counts.value.nodes, icon: 'Connection', scope: 'profile', route: '/nodes' },
+  { label: '已选订阅', value: counts.value.subscriptions, icon: 'Link', scope: 'profile', route: '/resources' },
+  { label: '已选节点', value: counts.value.nodes, icon: 'Connection', scope: 'profile', route: '/resources' },
   { label: 'Agent', value: agents.value.length, icon: 'Monitor', scope: 'system', route: '/agents' }
 ])
 
@@ -85,13 +84,13 @@ const healthRows = computed<HealthRow[]>(() => {
   const total = subscriptions.value.length
   const enabled = subscriptions.value.filter(s => s.enabled).length
   rows.push({
-    label: '订阅来源',
+    label: '共享订阅来源',
     value: total ? `${enabled}/${total} 启用` : '未配置',
     level: total === 0 ? 'warn' : enabled === total ? 'ok' : 'warn'
   })
 
   rows.push({
-    label: '节点库',
+    label: '已选节点',
     value: `${counts.value.nodes} 个节点`,
     level: counts.value.nodes > 0 ? 'ok' : 'warn'
   })

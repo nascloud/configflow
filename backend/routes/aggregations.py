@@ -14,14 +14,15 @@ from datetime import datetime
 from flask import request, jsonify, send_file, current_app, Response
 
 from backend.common.config import (
-    config_data,
-    save_config,
-    update_config_transaction,
+    get_shared_config,
+    save_shared_config,
+    update_shared_config_transaction,
     DATA_DIR,
     get_repository,
     get_config,
 )
 from backend.common.profile_context import resolve_profile_id
+from backend.common.config_repository import ProfileRepositoryError
 from backend.common.auth import validate_token_or_jwt, require_auth
 from backend.routes import subscription_aggregations_bp as bp
 from backend.converters.mihomo import convert_node_to_mihomo
@@ -146,7 +147,7 @@ def generate_aggregation_provider(aggregation: Dict[str, Any], *, config=None,
 
             # 如果从 Sub-Store 获取失败，从本地缓存读取
             if not nodes_list:
-                cache = load_subscription_cache(sub_id, profile_id=profile_id)
+                cache = load_subscription_cache(sub_id)
                 if cache:
                     nodes_list = cache.get('nodes', [])
                     logger.info(f"从本地缓存读取订阅 '{sub['name']}', 节点数: {len(nodes_list)}")
@@ -268,9 +269,7 @@ def generate_aggregation_provider(aggregation: Dict[str, Any], *, config=None,
     # 6. 保存到当前 profile 的文件
     if persist:
         for sub_id, nodes_list, sub in pending_cache_updates:
-            save_subscription_nodes(sub_id, nodes_list,
-                                    {'subscription_name': sub['name'], 'url': sub.get('url')},
-                                    profile_id=profile_id)
+            save_subscription_nodes(sub_id, nodes_list, {'subscription_name': sub['name'], 'url': sub.get('url')})
     file_path = get_repository().write_profile_text(
         profile_id,
         os.path.join('providers', f"{agg_id}.yaml"),
@@ -290,54 +289,6 @@ def generate_aggregation_provider(aggregation: Dict[str, Any], *, config=None,
     }
 
 
-def clean_proxy_groups_aggregation(agg_id: str) -> bool:
-    """从所有策略组中移除指定的聚合引用
-
-    Args:
-        agg_id: 聚合 ID
-
-    Returns:
-        bool: 是否有策略组被修改
-    """
-    proxy_groups = config_data.get('proxy_groups', [])
-    modified = False
-
-    for group in proxy_groups:
-        aggregations = group.get('aggregations', [])
-        if agg_id in aggregations:
-            group['aggregations'] = [a for a in aggregations if a != agg_id]
-            modified = True
-            logger.info(f"从策略组 '{group.get('name')}' 中移除聚合 {agg_id}")
-
-    return modified
-
-
-def clean_invalid_proxy_group_aggregations() -> bool:
-    """清理所有策略组中对已删除或已禁用聚合的引用
-
-    Returns:
-        bool: 是否有策略组被修改
-    """
-    proxy_groups = config_data.get('proxy_groups', [])
-    if not proxy_groups:
-        return False
-
-    # 获取所有启用的聚合 ID
-    enabled_aggregation_ids = {
-        agg['id'] for agg in config_data.get('subscription_aggregations', [])
-        if agg.get('enabled', True)
-    }
-
-    modified = False
-    for group in proxy_groups:
-        old_aggs = group.get('aggregations', [])
-        new_aggs = [a for a in old_aggs if a in enabled_aggregation_ids]
-        if len(new_aggs) != len(old_aggs):
-            group['aggregations'] = new_aggs
-            modified = True
-            logger.info(f"清理策略组 '{group.get('name')}' 中的无效聚合引用")
-
-    return modified
 
 
 # ============================================================================
@@ -349,6 +300,7 @@ def clean_invalid_proxy_group_aggregations() -> bool:
 @require_auth
 def handle_subscription_aggregations():
     """订阅聚合列表"""
+    config_data = get_shared_config()
     if request.method == 'GET':
         # 获取所有聚合（快速返回，不计算节点数）
         return jsonify(config_data.get('subscription_aggregations', []))
@@ -366,7 +318,7 @@ def handle_subscription_aggregations():
         aggregation.pop('subscription_node_counts', None)
         aggregation.pop('loading_count', None)
 
-        update_config_transaction(
+        update_shared_config_transaction(
             lambda profile: profile.setdefault('subscription_aggregations', []).append(aggregation)
         )
 
@@ -377,6 +329,7 @@ def handle_subscription_aggregations():
 @require_auth
 def handle_subscription_aggregation_item(agg_id):
     """单个订阅聚合操作"""
+    config_data = get_shared_config()
     aggregations = config_data.get('subscription_aggregations', [])
 
     if request.method == 'GET':
@@ -397,10 +350,8 @@ def handle_subscription_aggregation_item(agg_id):
         try:
             for i, a in enumerate(aggregations):
                 if a['id'] == agg_id:
-                    old_enabled = a.get('enabled', True)
                     updated_aggregation = request.json
                     updated_aggregation['id'] = agg_id  # 确保ID不变
-                    new_enabled = updated_aggregation.get('enabled', True)
 
                     # 更新修改时间
                     updated_aggregation['updated_at'] = datetime.now().isoformat()
@@ -413,14 +364,13 @@ def handle_subscription_aggregation_item(agg_id):
 
                     config_data['subscription_aggregations'][i] = updated_aggregation
 
-                    # 如果聚合被禁用，从所有策略组中移除
-                    if old_enabled and not new_enabled:
-                        clean_proxy_groups_aggregation(agg_id)
 
-                    save_config()
+                    save_shared_config(config_data)
                     return jsonify({'success': True, 'data': updated_aggregation})
 
             return jsonify({'success': False, 'message': 'Aggregation not found'}), 404
+        except ProfileRepositoryError:
+            raise
         except Exception as e:
             logger.error("聚合操作失败: %s", safe_exception_details(e))
             return jsonify({'success': False, 'message': '聚合操作失败'}), 500
@@ -428,9 +378,7 @@ def handle_subscription_aggregation_item(agg_id):
     elif request.method == 'DELETE':
         # 删除聚合
         config_data['subscription_aggregations'] = [a for a in aggregations if a['id'] != agg_id]
-        # 从所有策略组中移除此聚合
-        clean_proxy_groups_aggregation(agg_id)
-        save_config()
+        save_shared_config(config_data)
         return jsonify({'success': True})
 
 
@@ -438,6 +386,7 @@ def handle_subscription_aggregation_item(agg_id):
 @require_auth
 def get_aggregation_node_count(agg_id):
     """获取聚合的节点数量（仅从本地缓存读取，不触发更新）"""
+    config_data = get_shared_config()
     try:
         # 查找聚合
         aggregations = config_data.get('subscription_aggregations', [])
@@ -481,6 +430,7 @@ def get_aggregation_node_count(agg_id):
 @require_auth
 def preview_aggregation_nodes(agg_id):
     """预览聚合的节点列表"""
+    config_data = get_config()
     try:
         # 查找聚合
         aggregations = config_data.get('subscription_aggregations', [])
@@ -537,6 +487,7 @@ def get_aggregation_provider(agg_id):
         YAML 文件内容
     """
     # 双重认证：JWT（前端） 或 URL token（外部客户端）
+    config_data = get_config()
     auth_result = validate_token_or_jwt(request)
     if not auth_result['valid']:
         return jsonify({'success': False, 'message': auth_result.get('message', 'Unauthorized')}), 401
@@ -585,7 +536,7 @@ def get_aggregation_provider(agg_id):
 def reorder_aggregations():
     """批量更新聚合顺序"""
     try:
-        config_data = get_config()
+        config_data = get_shared_config()
         body = request.json or {}
         new_order, missing = resolve_new_order(
             config_data.get('subscription_aggregations', []), body, 'aggregations'
@@ -593,10 +544,12 @@ def reorder_aggregations():
         if missing:
             return jsonify({'success': False, 'message': f'以下聚合 id 不存在: {missing}'}), 404
         config_data['subscription_aggregations'] = new_order
-        save_config()
+        save_shared_config(config_data)
         return jsonify({'success': True, 'order': [a.get('id') for a in new_order]})
     except StrategyReferenceError as e:
         return jsonify({'success': False, 'message': str(e)}), 400
+    except ProfileRepositoryError:
+        raise
     except Exception as e:
         logger.error("聚合操作失败: %s", safe_exception_details(e))
         return jsonify({'success': False, 'message': '聚合操作失败'}), 500

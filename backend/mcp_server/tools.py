@@ -53,7 +53,7 @@ def has_tool(name: str) -> bool:
 def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     """执行一个工具（tools/call）"""
     arguments = arguments or {}
-    selected_profile_id = arguments.get('profile_id') or 'default'
+    selected_profile_id = arguments.get('profile_id', 'default')
     token = set_profile_context(selected_profile_id)
     try:
         result = _REGISTRY[name]['handler'](arguments)
@@ -70,7 +70,7 @@ def obj(properties: Dict[str, Any], required: Optional[List[str]] = None) -> Dic
     properties = dict(properties)
     properties.setdefault(
         'profile_id',
-        {'type': 'string', 'description': "目标 profile id；留空使用 'default' profile（不跟随界面上激活的 profile）"},
+        {'type': 'string', 'description': "独立配置的目标 id；省略使用 'default'，不读取浏览器选择。全局资源和系统设置不受此参数限制。"},
     )
     return {
         'type': 'object',
@@ -269,11 +269,11 @@ def _get_profile(args):
 
 @tool(
     'manage_profile',
-    '创建、更新、激活或删除 profile。默认 profile 不可删除。',
+    '创建、更新或删除 profile。默认 profile 不可删除；配置选择仅保存在各浏览器会话中。',
     obj(
         {
-            'action': string('操作类型', ['create', 'update', 'activate', 'delete']),
-            'id': string('profile id，update / activate / delete 时必填'),
+            'action': string('操作类型', ['create', 'update', 'delete']),
+            'id': string('profile id，update / delete 时必填'),
             'data': free_object('profile 元数据；create 时至少包含 id 或 name'),
         },
         ['action'],
@@ -281,14 +281,11 @@ def _get_profile(args):
 )
 def _manage_profile(args):
     action = _require(args, 'action')
-    profile_id = args.get('id')
     if action == 'create':
         return call_api('POST', '/api/profiles', body=args.get('data') or {})
     profile_id = _require(args, 'id')
     if action == 'update':
         return call_api('PUT', f'/api/profiles/{profile_id}', body=args.get('data') or {})
-    if action == 'activate':
-        return call_api('POST', f'/api/profiles/{profile_id}/activate', body={})
     if action == 'delete':
         call_api('DELETE', f'/api/profiles/{profile_id}')
         return {'success': True, 'profile_id': profile_id}
@@ -309,6 +306,48 @@ def _manage_profile(args):
 def _clone_profile(args):
     source_id = _require(args, 'source_profile_id')
     return call_api('POST', f'/api/profiles/{source_id}/clone', body=args['data'])
+
+
+@tool(
+    'get_profile_resources',
+    '获取配置选择的共享订阅、节点和聚合 ID。共享目录本身不随配置切换。',
+    obj({'id': string('profile id')}, ['id']),
+)
+def _get_profile_resources(args):
+    return call_api('GET', f"/api/profiles/{_require(args, 'id')}/resources")
+
+
+@tool(
+    'set_profile_resources',
+    '替换配置的资源引用，不复制或修改共享源。仍被策略组或拨号链使用的资源不能移除。',
+    obj({
+        'id': string('profile id'),
+        'resources': free_object('subscriptions、nodes、subscription_aggregations 三个 ID 数组'),
+    }, ['id', 'resources']),
+)
+def _set_profile_resources(args):
+    return call_api('PUT', f"/api/profiles/{_require(args, 'id')}/resources", body=args['resources'])
+
+
+@tool(
+    'get_profile_node_dialers',
+    '获取配置独立的 Mihomo 节点拨号链绑定。',
+    obj({'id': string('profile id')}, ['id']),
+)
+def _get_profile_node_dialers(args):
+    return call_api('GET', f"/api/profiles/{_require(args, 'id')}/node-dialers")
+
+
+@tool(
+    'set_profile_node_dialers',
+    '替换配置的拨号链；键是共享节点 ID，值为 {type: node 或 group, id: 目标 ID}。不改变其他配置。',
+    obj({
+        'id': string('profile id'),
+        'dialers': free_object('节点 ID 到本配置节点或策略组引用的映射；空对象清除绑定'),
+    }, ['id', 'dialers']),
+)
+def _set_profile_node_dialers(args):
+    return call_api('PUT', f"/api/profiles/{_require(args, 'id')}/node-dialers", body=args['dialers'])
 
 
 @tool(
@@ -805,8 +844,8 @@ def _generate_config(args):
     'manage_config_backup',
     '导出、导入或重置 ConfigFlow 配置。'
     'export 返回配置 JSON；import 用 data 覆盖；reset 恢复出厂设置。'
-    'scope=system（默认）作用于整份配置，scope=profile 只作用于 profile_id 指定的那份 profile'
-    '（profile 粒度不支持 reset）。',
+    'scope=system（默认）作用于系统设置、共享资源及全部配置；scope=profile 只导入导出资源引用和独立参数。'
+    'MCP 返回会移除内部凭据；完整恢复备份请在系统设置下载。profile 粒度不支持 reset。',
     obj(
         {
             'action': string('操作类型', ['export', 'import', 'reset']),
@@ -824,7 +863,7 @@ def _manage_config_backup(args):
         raise ApiError(400, f"不支持的 scope: {scope}")
 
     if scope == 'profile':
-        profile_id = args.get('profile_id') or 'default'
+        profile_id = args.get('profile_id', 'default')
         if action == 'export':
             return call_api('GET', f"/api/profiles/{profile_id}/export")
         if action == 'import':

@@ -39,11 +39,25 @@ def clone_profile(profile_id):
     return jsonify(get_repository().clone_profile(profile_id, data)), 201
 
 
-@profiles_bp.route('/<profile_id>/activate', methods=['POST'])
+@profiles_bp.route('/<profile_id>/resources', methods=['GET', 'PUT'])
 @require_auth
-def activate_profile(profile_id):
-    profile = get_repository().activate_profile(profile_id)
-    return jsonify({'success': True, 'active_profile_id': profile_id, 'profile': profile})
+def profile_resources(profile_id):
+    repository = get_repository()
+    if request.method == 'GET':
+        return jsonify(repository.get_resource_refs(profile_id))
+    refs = request.get_json()
+    repository.set_resource_refs(profile_id, refs)
+    return jsonify(repository.get_resource_refs(profile_id))
+
+
+@profiles_bp.route('/<profile_id>/node-dialers', methods=['GET', 'PUT'])
+@require_auth
+def profile_node_dialers(profile_id):
+    repository = get_repository()
+    if request.method == 'GET':
+        return jsonify(repository.get_node_dialers(profile_id))
+    repository.set_node_dialers(profile_id, request.get_json())
+    return jsonify(repository.get_node_dialers(profile_id))
 
 
 @profiles_bp.route('/<profile_id>/export', methods=['GET'])
@@ -64,25 +78,6 @@ def import_profile(profile_id):
     return jsonify({'success': True, 'profile_id': profile_id})
 
 
-@profiles_bp.route('/<profile_id>/subscriptions', methods=['GET', 'POST'])
-@require_auth
-def profile_subscriptions(profile_id):
-    from backend.routes.subscriptions import handle_subscriptions
-    return handle_subscriptions()
-
-
-@profiles_bp.route('/<profile_id>/subscriptions/<sub_id>', methods=['DELETE', 'PUT'])
-@require_auth
-def profile_subscription(profile_id, sub_id):
-    from backend.routes.subscriptions import handle_subscription
-    return handle_subscription(sub_id)
-
-
-@profiles_bp.route('/<profile_id>/subscriptions/<sub_id>/nodes', methods=['GET'])
-@require_auth
-def profile_subscription_nodes(profile_id, sub_id):
-    from backend.routes.subscriptions import get_subscription_nodes
-    return get_subscription_nodes(sub_id)
 
 
 @profiles_bp.route('/<profile_id>/subscriptions/<sub_id>/proxies', methods=['GET'])
@@ -91,11 +86,6 @@ def profile_subscription_proxies(profile_id, sub_id):
     return get_subscription_proxies(sub_id)
 
 
-@profiles_bp.route('/<profile_id>/nodes', methods=['GET', 'POST'])
-@require_auth
-def profile_nodes(profile_id):
-    from backend.routes.nodes import handle_nodes
-    return handle_nodes()
 
 
 @profiles_bp.route('/<profile_id>/rules', methods=['GET', 'POST'])
@@ -111,18 +101,6 @@ def profile_local_rule(profile_id, name):
     return get_local_rule(name)
 
 
-@profiles_bp.route('/<profile_id>/rule-library', methods=['GET', 'POST'])
-@require_auth
-def profile_rule_library(profile_id):
-    from backend.routes.rule_library import handle_rule_library
-    return handle_rule_library()
-
-
-@profiles_bp.route('/<profile_id>/rule-library/<rule_id>', methods=['DELETE', 'PUT'])
-@require_auth
-def profile_rule_library_item(profile_id, rule_id):
-    from backend.routes.rule_library import handle_rule_library_item
-    return handle_rule_library_item(rule_id)
 
 
 @profiles_bp.route('/<profile_id>/rule-library/content/<rule_id>', methods=['GET'])
@@ -138,11 +116,6 @@ def profile_proxy_groups(profile_id):
     return handle_proxy_groups()
 
 
-@profiles_bp.route('/<profile_id>/aggregations', methods=['GET', 'POST'])
-@require_auth
-def profile_aggregations(profile_id):
-    from backend.routes.aggregations import handle_subscription_aggregations
-    return handle_subscription_aggregations()
 
 
 @profiles_bp.route('/<profile_id>/aggregations/<agg_id>/provider', methods=['GET'])

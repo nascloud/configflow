@@ -9,7 +9,7 @@
     <div class="tech-backdrop" aria-hidden="true" />
 
     <header
-      class="glass-strong sticky top-0 z-800 flex h-(--cf-topbar-h) shrink-0 items-center gap-3 border-b border-border/50 px-4 pt-[env(safe-area-inset-top)] max-[900px]:gap-2 max-[900px]:px-3"
+      class="glass-strong sticky top-0 z-800 flex min-h-(--cf-topbar-h) shrink-0 items-center gap-3 border-b border-border/50 px-4 py-2 pt-[max(0.5rem,env(safe-area-inset-top))] max-[900px]:gap-2 max-[900px]:px-3"
       style="box-sizing: content-box"
     >
       <router-link
@@ -23,7 +23,7 @@
           />
           <img src="/icon.png" alt="" class="relative size-6.5 rounded-[8px]" />
         </span>
-        <span class="truncate max-[360px]:hidden">ConfigFlow</span>
+        <span class="truncate max-[420px]:hidden">ConfigFlow</span>
       </router-link>
 
       <!-- 命令面板入口：桌面显示快捷键，移动端退化为图标按钮 -->
@@ -119,7 +119,7 @@
           />
           <!-- 不做整页过渡：out-in 会在两页之间留一帧空白，观感是闪一下。
                进场动效交给页面内的卡片与列表逐项播放。 -->
-          <router-view :key="`${activeProfileId}:${route.path}`" />
+          <router-view :key="pageKey" />
         </div>
       </main>
     </div>
@@ -138,7 +138,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { FileText, LogOut, Moon, Search, Sun, User } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
@@ -178,6 +178,11 @@ const showUserInfo = ref(false)
 const username = ref('')
 const palette = ref<InstanceType<typeof CommandPalette> | null>(null)
 const isLoginPage = computed(() => route.path === '/login')
+const pageKey = computed(() =>
+  scopeOfPath(route.path) === 'profile' || route.path === '/dashboard'
+    ? `${activeProfileId.value}:${route.path}`
+    : route.path
+)
 
 // 快捷键提示按平台显示，Windows/Linux 上写 ⌘ 会误导
 const metaKeyLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
@@ -267,6 +272,13 @@ const checkAuthStatus = async () => {
   }
 }
 
+watch(isLoginPage, login => {
+  if (login) return
+  checkAuthStatus()
+  profileStore.refreshProfiles().catch(() => undefined)
+  loadSubscriptionAggregationSetting()
+}, { immediate: true })
+
 const openGithub = () => {
   window.open('https://github.com/thsrite/configflow', '_blank')
 }
@@ -284,9 +296,6 @@ const handleCommand = async (command: string) => {
 
 onMounted(async () => {
   loadVersion()
-  checkAuthStatus()
-  profileStore.refreshProfiles().catch(() => undefined)
-  loadSubscriptionAggregationSetting()
   window.addEventListener(
     'subscription-aggregation-changed',
     handleSubscriptionAggregationChange as EventListener

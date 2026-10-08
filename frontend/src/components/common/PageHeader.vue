@@ -13,12 +13,12 @@
       >
         {{ title }}
       </h1>
-      <p v-if="description" class="mt-2 mb-0 max-w-[68ch] text-[13px] leading-relaxed text-muted-foreground">
+      <p v-if="description" class="mt-2 mb-0 max-w-[68ch] break-words text-[13px] leading-relaxed text-muted-foreground">
         {{ description }}
       </p>
     </div>
 
-    <div v-if="$slots.actions" class="flex shrink-0 items-center gap-2 max-md:w-full">
+    <div v-if="$slots.actions" class="flex min-w-0 max-w-full flex-wrap items-center gap-2 max-md:w-full">
       <slot name="actions" />
     </div>
   </header>

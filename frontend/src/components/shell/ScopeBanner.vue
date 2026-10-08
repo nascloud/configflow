@@ -1,7 +1,7 @@
 <template>
   <div :class="cn('mb-4 flex items-start gap-2.5 rounded-lg border px-3.5 py-3 text-[12.5px] leading-snug', tone.box)" role="note">
     <component :is="tone.icon" :class="cn('mt-px size-3.5 shrink-0', tone.icon_)" :stroke-width="2" aria-hidden="true" />
-    <div>
+    <div class="min-w-0 break-words">
       <b class="font-semibold text-foreground">{{ title }}</b>
       <span v-if="description" class="mt-px block text-muted-foreground">{{ description }}</span>
     </div>
@@ -15,9 +15,9 @@ import { cn } from '@/lib/utils'
 
 const props = defineProps<{
   /**
-   * resource = 订阅/节点/规则集等资源（按配置空间隔离）
-   * profile  = 策略与生成配置（按配置空间隔离）
-   * system   = 真正跨配置空间共有的数据，目前只有 Agent 与配置空间本身
+   * resource = 所有配置共用的订阅/节点/聚合/规则库
+   * profile  = 独立的资源选择、策略、规则与生成参数
+   * system   = 全局服务、备份、Agent 与配置空间管理
    */
   scope: 'resource' | 'profile' | 'system'
   profileName?: string
@@ -35,7 +35,7 @@ const tone = computed(() => TONES[props.scope])
 
 const title = computed(() => {
   if (props.scope === 'system') return '系统级 · 所有配置空间共有'
-  if (props.scope === 'resource') return `资源 · 当前配置「${props.profileName || '未选择'}」`
+  if (props.scope === 'resource') return '共享资源 · 所有配置空间共用'
   return `当前配置 · ${props.profileName || '未选择'}`
 })
 </script>

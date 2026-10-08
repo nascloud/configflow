@@ -137,7 +137,7 @@
                     v-for="aggName in getAggregationsList(group)"
                     :key="aggName"
                     variant="warning"
-                    class="max-w-[180px] truncate text-[10.5px]"
+                    class="max-w-full whitespace-normal break-all text-[10.5px]"
                   >
                     {{ aggName }}
                   </Badge>
@@ -223,7 +223,7 @@
                     v-for="name in getIncludeGroupsList(group)"
                     :key="name"
                     variant="info"
-                    class="max-w-[180px] truncate text-[10.5px]"
+                    class="max-w-full whitespace-normal break-all text-[10.5px]"
                   >
                     {{ name }}
                   </Badge>
@@ -567,7 +567,7 @@
           >
             <Network class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
             <span class="min-w-0 flex-1 truncate text-foreground">{{ node.name }}</span>
-            <Badge variant="outline" class="shrink-0 text-[10px]">{{ getPreviewSourceLabel(node) }}</Badge>
+            <Badge variant="outline" class="min-w-0 max-w-[45%] whitespace-normal break-all text-[10px]">{{ getPreviewSourceLabel(node) }}</Badge>
             <Badge variant="success" class="shrink-0 font-mono text-[10px]">
               {{ (node.type || 'unknown').toUpperCase() }}
             </Badge>
@@ -644,15 +644,18 @@ import MultiSelect from '@/components/common/MultiSelect.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
 import { choose, confirmDanger, notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
-import { proxyGroupApi, nodeApi } from '@/api'
+import { proxyGroupApi, nodeApi, profileApi } from '@/api'
+import { getActiveProfileId } from '@/profileContext'
 import type { ProxyGroup, ProxyNode, Subscription } from '@/types'
 import api from '@/api'
 import Sortable from 'sortablejs'
 
 
+const profileId = getActiveProfileId()
+const profileRequest = { headers: { 'X-ConfigFlow-Profile': profileId } }
 const cfProfileStore = useProfileStore()
 const cfProfileName = computed(
-  () => cfProfileStore.activeProfile.value?.name || cfProfileStore.activeProfileId.value
+  () => cfProfileStore.profiles.value.find(profile => profile.id === profileId)?.name || profileId
 )
 const proxyGroups = ref<ProxyGroup[]>([])
 const nodes = ref<ProxyNode[]>([])
@@ -1278,7 +1281,7 @@ const previewRegexMatches = async (source: 'subscription' | 'aggregation') => {
     const payload = source === 'subscription'
       ? { source, regex, subscriptions: sourceIds }
       : { source, regex, aggregations: sourceIds }
-    const { data } = await proxyGroupApi.previewRegex(payload)
+    const { data } = await proxyGroupApi.previewRegex(payload, profileId)
 
     if (data.success) {
       regexPreviewResult.value = {
@@ -1320,7 +1323,7 @@ const previewSavedRegexMatches = async (group: ProxyGroup, source: 'subscription
     const payload = source === 'subscription'
       ? { source, regex, subscriptions: sourceIds }
       : { source, regex, aggregations: sourceIds }
-    const { data } = await proxyGroupApi.previewRegex(payload)
+    const { data } = await proxyGroupApi.previewRegex(payload, profileId)
 
     if (data.success) {
       regexPreviewResult.value = {
@@ -1339,7 +1342,7 @@ const previewSavedRegexMatches = async (group: ProxyGroup, source: 'subscription
 
 const loadProxyGroups = async () => {
   try {
-    const { data } = await proxyGroupApi.getAll()
+    const { data } = await proxyGroupApi.getAll(profileId)
 
     // 修复缺少 ID 的策略组
     let needsSave = false
@@ -1365,7 +1368,7 @@ const loadProxyGroups = async () => {
     // 如果有修复的数据，保存回后端
     if (needsSave) {
       try {
-        await api.post('/proxy-groups/reorder', { groups: fixedData })
+        await api.post('/proxy-groups/reorder', { groups: fixedData }, profileRequest)
         console.log('已自动修复缺少ID的策略组')
       } catch (error) {
         console.error('保存修复后的策略组失败:', error)
@@ -1376,30 +1379,16 @@ const loadProxyGroups = async () => {
   }
 }
 
-const loadNodes = async () => {
+const loadResources = async () => {
   try {
-    const { data } = await nodeApi.getAll()
-    nodes.value = data
-  } catch (error) {
-    notify.error('加载节点列表失败')
-  }
-}
-
-const loadSubscriptions = async () => {
-  try {
-    const { data } = await api.get('/subscriptions')
-    subscriptions.value = data
-  } catch (error) {
-    notify.error('加载订阅列表失败')
-  }
-}
-
-const loadAggregations = async () => {
-  try {
-    const { data } = await api.get('/aggregations')
-    aggregations.value = data
-  } catch (error) {
-    notify.error('加载聚合列表失败')
+    const [refs, nodeRows, subscriptionRows, aggregationRows] = await Promise.all([
+      profileApi.getResources(profileId), nodeApi.getAll(), api.get('/subscriptions'), api.get('/aggregations')
+    ])
+    nodes.value = nodeRows.data.filter((node: ProxyNode) => refs.data.nodes.includes(node.id))
+    subscriptions.value = subscriptionRows.data.filter((sub: Subscription) => refs.data.subscriptions.includes(sub.id))
+    aggregations.value = aggregationRows.data.filter((aggregation: { id: string }) => refs.data.subscription_aggregations.includes(aggregation.id))
+  } catch {
+    notify.error('加载当前配置资源失败')
   }
 }
 
@@ -1433,7 +1422,7 @@ const toggleGroupEnabled = async (group: ProxyGroup) => {
   const previous = !group.enabled
   savingStatus.value[group.id] = true
   try {
-    await proxyGroupApi.update(group.id, group)
+    await proxyGroupApi.update(group.id, group, profileId)
     notify.success(group.enabled ? '已启用' : '已禁用')
   } catch (error: any) {
     notify.error(error?.response?.data?.message || '更新状态失败')
@@ -1667,10 +1656,10 @@ const saveGroup = async () => {
     if (isEdit.value) {
       // Server atomically updates the group and all policy references.
       // 使用 id 进行API调用
-      await proxyGroupApi.update(saveData.id!, saveData)
+      await proxyGroupApi.update(saveData.id!, saveData, profileId)
       notify.success('更新成功')
     } else {
-      await proxyGroupApi.create(saveData)
+      await proxyGroupApi.create(saveData, profileId)
       notify.success('添加成功')
     }
     dialogVisible.value = false
@@ -1690,7 +1679,7 @@ const deleteGroup = async (row: ProxyGroup) => {
   try {
     const ok = await confirmDanger('确定要删除该策略组吗？被引用的策略组需先修改引用。', { title: '删除策略组' })
     if (!ok) return
-    await proxyGroupApi.delete(row.id)
+    await proxyGroupApi.delete(row.id, profileId)
     notify.success('删除成功')
     loadProxyGroups()
   } catch (error: any) {
@@ -1771,7 +1760,7 @@ const reorder = useReorder<any>({
     await api.post('/proxy-groups/reorder', {
       ids: items.map(item => item.id),
       position: 'top'
-    })
+    }, profileRequest)
   }
 })
 
@@ -1784,13 +1773,9 @@ const handleSaveOrder = async () => {
   }
 }
 
-onMounted(async () => {
-  loadProxyGroups().then(() => {
-  })
-  loadNodes()
-  loadSubscriptions()
-
-  loadAggregations()
+onMounted(() => {
+  loadProxyGroups()
+  loadResources()
 })
 
 onUnmounted(() => {

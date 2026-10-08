@@ -6,7 +6,8 @@ import yaml
 
 from backend.routes import subscriptions_bp
 from backend.common.auth import require_auth, validate_token_or_jwt
-from backend.common.config import get_config, save_config, update_config_transaction
+from backend.common.config import get_config, get_shared_config, save_shared_config, update_shared_config_transaction
+from backend.common.config_repository import ProfileRepositoryError
 from backend.utils.reorder import resolve_new_order
 from backend.utils.subscription_cache import (
     load_subscription_cache,
@@ -29,53 +30,13 @@ def validate_subscription_fields(data):
     return None
 
 
-def clean_aggregations_subscription(sub_id):
-    """从所有聚合中移除指定的订阅，如果聚合变空则禁用并从策略组中移除"""
-    config_data = get_config()
-    aggregations = config_data.get('subscription_aggregations', [])
-    modified = False
-
-    for agg in aggregations:
-        if sub_id in agg.get('subscriptions', []):
-            agg['subscriptions'] = [s for s in agg['subscriptions'] if s != sub_id]
-            modified = True
-            current_app.logger.info(f"从聚合 '{agg.get('name')}' 中移除订阅 {sub_id}")
-
-            # 检查聚合是否变空（没有订阅也没有节点）
-            if not agg.get('subscriptions') and not agg.get('nodes'):
-                current_app.logger.info(f"聚合 '{agg.get('name')}' 已变空，自动禁用")
-                agg['enabled'] = False
-                # 从所有策略组中移除此聚合
-                clean_proxy_groups_aggregation(agg['id'])
-
-    if modified:
-        save_config()
-    return modified
-
-
-def clean_proxy_groups_aggregation(agg_id):
-    """从所有策略组中移除指定的聚合引用"""
-    config_data = get_config()
-    proxy_groups = config_data.get('proxy_groups', [])
-    modified = False
-
-    for group in proxy_groups:
-        aggregations = group.get('aggregations', [])
-        if agg_id in aggregations:
-            group['aggregations'] = [a for a in aggregations if a != agg_id]
-            modified = True
-            current_app.logger.info(f"从策略组 '{group.get('name')}' 中移除聚合 {agg_id}")
-
-    if modified:
-        save_config()
-    return modified
 
 
 @subscriptions_bp.route('', methods=['GET', 'POST'])
 @require_auth
 def handle_subscriptions():
     """订阅管理"""
-    config_data = get_config()
+    config_data = get_shared_config()
 
     if request.method == 'GET':
         subscriptions_with_cache = []
@@ -96,7 +57,7 @@ def handle_subscriptions():
         error = validate_subscription_fields(sub)
         if error:
             return error
-        update_config_transaction(
+        update_shared_config_transaction(
             lambda profile: profile.setdefault('subscriptions', []).append(sub)
         )
         return jsonify({'success': True, 'data': sub})
@@ -106,33 +67,26 @@ def handle_subscriptions():
 @require_auth
 def handle_subscription(sub_id):
     """单个订阅操作"""
-    config_data = get_config()
+    config_data = get_shared_config()
     subs = config_data['subscriptions']
 
     if request.method == 'DELETE':
         config_data['subscriptions'] = [s for s in subs if s['id'] != sub_id]
-        # 从所有聚合中移除此订阅
-        clean_aggregations_subscription(sub_id)
-        save_config()
+        save_shared_config(config_data)
         return jsonify({'success': True})
 
     elif request.method == 'PUT':
         for i, s in enumerate(subs):
             if s['id'] == sub_id:
-                old_enabled = s.get('enabled', True)
                 new_data = request.json
                 error = validate_subscription_fields(new_data)
                 if error:
                     return error
-                new_enabled = new_data.get('enabled', True)
+                new_data['id'] = sub_id
 
                 config_data['subscriptions'][i] = new_data
 
-                # 如果订阅被禁用，从所有聚合中移除
-                if old_enabled and not new_enabled:
-                    clean_aggregations_subscription(sub_id)
-
-                save_config()
+                save_shared_config(config_data)
                 return jsonify({'success': True, 'data': new_data})
         return jsonify({'success': False, 'message': 'Subscription not found'}), 404
 
@@ -142,14 +96,16 @@ def handle_subscription(sub_id):
 def reorder_subscriptions():
     """批量更新订阅顺序"""
     try:
-        config_data = get_config()
+        config_data = get_shared_config()
         body = request.json or {}
         new_order, missing = resolve_new_order(config_data.get('subscriptions', []), body, 'subscriptions')
         if missing:
             return jsonify({'success': False, 'message': f'以下订阅 id 不存在: {missing}'}), 404
         config_data['subscriptions'] = new_order
-        save_config()
+        save_shared_config(config_data)
         return jsonify({'success': True, 'order': [s.get('id') for s in new_order]})
+    except ProfileRepositoryError:
+        raise
     except Exception as e:
         current_app.logger.error("订阅操作失败: %s", safe_exception_details(e))
         return jsonify({'success': False, 'message': '订阅操作失败'}), 500
@@ -159,7 +115,7 @@ def reorder_subscriptions():
 @require_auth
 def get_subscription_nodes(sub_id):
     """获取订阅下的所有节点"""
-    config_data = get_config()
+    config_data = get_shared_config()
     subs = config_data['subscriptions']
     sub = next((s for s in subs if s['id'] == sub_id), None)
 
@@ -176,7 +132,7 @@ def get_subscription_nodes(sub_id):
 @require_auth
 def fetch_subscription(sub_id):
     """获取订阅节点，优先从URL获取并缓存，失败则读取本地缓存"""
-    config_data = get_config()
+    config_data = get_shared_config()
     subs = config_data['subscriptions']
     sub = next((s for s in subs if s['id'] == sub_id), None)
 
@@ -265,7 +221,7 @@ def fetch_subscription(sub_id):
                 config_data['nodes'].append(node)
                 added_count += 1
 
-        save_config()
+        save_shared_config(config_data)
         return jsonify({
             'success': True,
             'count': len(nodes),
@@ -276,6 +232,8 @@ def fetch_subscription(sub_id):
             'cached_count': cache_payload.get('count') if cache_payload else 0,
             'cached_updated_at': cache_payload.get('updated_at') if cache_payload else None
         })
+    except ProfileRepositoryError:
+        raise
     except Exception as e:
         current_app.logger.error("订阅操作失败: %s", safe_exception_details(e))
         return jsonify({'success': False, 'message': '订阅操作失败'}), 500
@@ -338,7 +296,7 @@ def get_all_subscription_proxies():
             except Exception as e:
                 current_app.logger.warning("通过 Sub-Store 获取订阅 '%s' 失败，尝试本地缓存: %s", sub_name, safe_exception_details(e))
                 # 降级：从本地缓存加载并转换
-                cache = load_subscription_cache(sub_id, profile_id=snapshot.profile_id)
+                cache = load_subscription_cache(sub_id)
                 if cache:
                     from backend.utils.dialer_references import validate_shapes
                     validate_shapes({'nodes': cache.get('nodes', [])}, require_ids=False)
@@ -473,15 +431,10 @@ def get_subscription_proxies(sub_id):
                         node['subscription_name'] = sub_name
                         if 'id' not in node:
                             node['id'] = f"node_{uuid.uuid4().hex[:8]}"
-                    save_subscription_nodes(
-                        sub_id,
-                        nodes,
-                        {
-                            'subscription_name': sub_name,
-                            'url': sub_url
-                        },
-                        profile_id=snapshot.profile_id
-                    )
+                    save_subscription_nodes(sub_id, nodes, {
+                        'subscription_name': sub_name,
+                        'url': sub_url
+                    })
                     cache_updated = True
                     if source == 'rendered_yaml':
                         current_app.logger.info(f"成功直接复用订阅 URL 返回的 Sub-Store YAML 并更新缓存: {sub_name}, 节点数: {len(proxies)}")
@@ -500,7 +453,7 @@ def get_subscription_proxies(sub_id):
 
         # 如果从 Sub-Store 获取失败或没有URL，则从本地缓存加载并转换
         if proxies is None:
-            cache = load_subscription_cache(sub_id, profile_id=snapshot.profile_id)
+            cache = load_subscription_cache(sub_id)
             if not cache:
                 return jsonify({
                     'success': False,

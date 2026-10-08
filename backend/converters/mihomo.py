@@ -78,6 +78,8 @@ def split_rules_and_rulesets(config_data: Dict[str, Any]) -> tuple:
     rule_sets = []
 
     for item in all_rules:
+        if not item.get('enabled', True) or not item.get('library_enabled', True):
+            continue
         item_type = item.get('itemType', '')
         if item_type == 'rule':
             rules.append(item)
@@ -954,7 +956,7 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
 
     # 遍历合并后的规则数组，保持用户配置的顺序
     for item in config_data.get('rule_configs', []):
-        if not item.get('enabled', True):
+        if not item.get('enabled', True) or not item.get('library_enabled', True):
             continue
 
         item_type = item.get('itemType', '')
@@ -1180,7 +1182,7 @@ def get_mihomo_ruleset_downloads(config_data: Dict[str, Any], base_url: str = ''
     effective_base_url = server_domain or base_url
 
     # 获取所有规则集
-    rule_sets_list = config_data.get('rule_sets', [])
+    _, rule_sets_list = split_rules_and_rulesets(config_data)
     rule_library = config_data.get('rule_library', [])
 
     for rule_set in rule_sets_list:

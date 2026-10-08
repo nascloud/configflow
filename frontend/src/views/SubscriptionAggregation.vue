@@ -9,7 +9,7 @@
     <PageHeader
       eyebrow="Resource"
       title="订阅聚合"
-      description="把多个订阅与节点合并成一个可引用的集合，供策略组直接引用。"
+      description="共享聚合统一维护订阅与节点的组合；在资源选择页选中后，当前配置的策略组即可引用。"
     >
       <template #actions>
         <Button
@@ -418,6 +418,7 @@ import LoadingRows from '@/components/common/LoadingRows.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
+import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import ReorderBar from '@/components/shell/ReorderBar.vue'
 import DragHandle from '@/components/shell/DragHandle.vue'
 import { useReorder } from '@/composables/useReorder'

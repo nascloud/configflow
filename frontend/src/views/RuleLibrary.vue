@@ -3,7 +3,7 @@
     <ScopeBanner
       scope="resource"
       :profile-name="cfProfileName"
-      description="规则集来源与缓存，按配置空间隔离"
+      description="规则集来源与缓存全局共享；策略、顺序和配置启用状态独立维护"
     />
 
     <PageHeader
@@ -90,6 +90,9 @@
         </template>
 
         <template #actions>
+          <Button v-if="selectedRules.length" variant="outline" size="sm" @click="showReferenceDialog(selectedRules)">
+            <Plus class="size-3.5" />加入当前配置
+          </Button>
           <Button
             v-if="selectedRules.length"
             variant="outline"
@@ -171,8 +174,8 @@
               />
             </TableCell>
             <TableCell class="num text-right text-muted-foreground">{{ cfIndex + 1 }}</TableCell>
-            <TableCell>
-              <div class="flex items-center gap-2">
+            <TableCell class="max-w-[260px]">
+              <div class="flex min-w-0 items-center gap-2">
                 <span
                   class="size-1.5 shrink-0 rounded-full"
                   :class="rule.enabled
@@ -180,7 +183,7 @@
                     : 'bg-muted-foreground'"
                   aria-hidden="true"
                 />
-                <span class="min-w-0 truncate font-medium text-foreground">{{ rule.name }}</span>
+                <span class="min-w-0 truncate font-medium text-foreground" :title="rule.name">{{ rule.name }}</span>
               </div>
             </TableCell>
             <TableCell>
@@ -190,6 +193,7 @@
               <span
                 v-if="rule.source_type === 'content'"
                 class="block truncate font-mono text-[12px] text-muted-foreground"
+                :title="getContentPreview(rule.content)"
               >
                 {{ getContentPreview(rule.content) }}
               </span>
@@ -197,6 +201,7 @@
                 v-else
                 class="block truncate font-mono text-[12px] text-info-accent hover:underline"
                 :href="rule.url"
+                :title="rule.url"
                 target="_blank"
                 rel="noreferrer"
               >
@@ -205,6 +210,9 @@
             </TableCell>
             <TableCell class="cf-reorder-mute text-right">
               <div class="flex items-center justify-end gap-0.5">
+                <Button variant="ghost" size="icon-sm" title="加入当前配置" :aria-label="`将 ${rule.name} 加入当前配置`" @click="showReferenceDialog([rule.id])">
+                  <Plus class="size-4" />
+                </Button>
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -325,12 +333,13 @@
             </p>
             <pre
               v-if="rule.source_type === 'content'"
-              class="m-0 max-h-24 overflow-auto rounded-lg border border-border/50 bg-background/50 p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-muted-foreground"
+              class="m-0 max-h-24 overflow-auto rounded-lg border border-border/50 bg-background/50 p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all text-muted-foreground"
             >{{ getContentPreview(rule.content) }}</pre>
             <a
               v-else
               class="block truncate rounded-lg border border-border/50 bg-background/50 px-2.5 py-1.5 font-mono text-[11.5px] text-info-accent hover:underline"
               :href="rule.url"
+              :title="rule.url"
               target="_blank"
               rel="noreferrer"
             >
@@ -339,6 +348,9 @@
           </div>
 
           <footer class="cf-reorder-mute mt-auto flex items-center gap-0.5 border-0 border-t border-border/50 pt-3">
+            <Button variant="ghost" size="icon-sm" title="加入当前配置" :aria-label="`将 ${rule.name} 加入当前配置`" @click="showReferenceDialog([rule.id])">
+              <Plus class="size-4" />
+            </Button>
             <Button
               v-if="rule.source_type === 'content'"
               variant="ghost"
@@ -369,12 +381,34 @@
       </div>
     </template>
 
+    <Dialog v-model:open="referenceDialogVisible">
+      <DialogContent class="glass-strong hairline max-w-[520px] border-border/50">
+        <DialogHeader>
+          <DialogTitle>加入配置</DialogTitle>
+          <DialogDescription class="break-all">将 {{ referenceRuleIds.length }} 个共享规则集引用加入「{{ referenceProfileName }}」。不复制来源，已有引用会跳过。</DialogDescription>
+        </DialogHeader>
+        <div class="flex flex-col gap-2">
+          <Label>目标策略</Label>
+          <Select v-model="referencePolicy">
+            <SelectTrigger class="w-full min-w-0 bg-background/50 [&>span]:truncate"><SelectValue /></SelectTrigger>
+            <SelectContent class="glass-strong">
+              <SelectItem v-for="policy in referencePolicies" :key="policy" :value="policy" :title="policy"><span class="break-all">{{ policy }}</span></SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" :disabled="addingReferences" @click="referenceDialogVisible = false">取消</Button>
+          <Button :disabled="addingReferences" @click="addReferences">{{ addingReferences ? '添加中…' : '加入配置' }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
     <!-- ===== 添加 / 编辑规则集 ===== -->
     <Dialog v-model:open="dialogVisible">
       <DialogContent class="glass-strong hairline max-w-[700px] border-border/50">
         <DialogHeader>
           <DialogTitle>{{ isEdit ? '编辑规则' : '添加规则' }}</DialogTitle>
-          <DialogDescription>可填写远程 URL，或直接粘贴规则内容由本机托管。</DialogDescription>
+          <DialogDescription>共享来源修改对所有引用配置生效，不修改各配置的策略、顺序或启用状态。</DialogDescription>
         </DialogHeader>
 
         <div class="flex max-h-[62dvh] flex-col gap-4 overflow-y-auto pr-1">
@@ -567,7 +601,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { Motion } from 'motion-v'
 import {
   ArrowUpDown,
@@ -629,11 +663,15 @@ import ReorderBar from '@/components/shell/ReorderBar.vue'
 import DragHandle from '@/components/shell/DragHandle.vue'
 import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import { useReorder } from '@/composables/useReorder'
-import { choose, confirm, confirmDanger, notify } from '@/lib/feedback'
+import { confirm, confirmDanger, notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
 import { useProfileStore } from '@/stores/profile'
 import api from '@/api'
-import { activeProfileId } from '@/profileContext'
+import { activeProfileId, getActiveProfileId } from '@/profileContext'
+import { isAxiosError } from 'axios'
+
+const errorMessage = (error: unknown, fallback: string) =>
+  isAxiosError<{ message?: string }>(error) ? error.response?.data?.message || fallback : fallback
 
 
 const cfProfileStore = useProfileStore()
@@ -648,6 +686,71 @@ interface RuleLibraryItem {
   enabled: boolean
   source_type?: 'url' | 'content'
   content?: string
+  format?: string
+}
+
+const libraryPayload = (item: Partial<RuleLibraryItem>): Partial<RuleLibraryItem> => ({
+  id: item.id,
+  name: item.name,
+  behavior: item.behavior,
+  format: item.format,
+  enabled: item.enabled,
+  source_type: item.source_type || 'url',
+  url: item.source_type === 'content' ? '' : item.url,
+  content: item.source_type === 'content' ? item.content : ''
+})
+
+const referenceDialogVisible = ref(false)
+const referenceRuleIds = ref<string[]>([])
+const referenceProfileId = ref('')
+const referenceProfileName = ref('')
+const referencePolicy = ref('DIRECT')
+const referencePolicies = ref<string[]>([])
+const addingReferences = ref(false)
+
+const showReferenceDialog = async (ids: string[]) => {
+  const profileId = getActiveProfileId()
+  const profileName = cfProfileName.value
+  try {
+    const { data } = await api.get<{ name: string }[]>('/proxy-groups', { headers: { 'X-ConfigFlow-Profile': profileId } })
+    referenceProfileId.value = profileId
+    referenceProfileName.value = profileName
+    referenceRuleIds.value = [...ids]
+    referencePolicy.value = 'DIRECT'
+    referencePolicies.value = ['DIRECT', 'REJECT', ...data.map(group => group.name)]
+    referenceDialogVisible.value = true
+  } catch (error) {
+    notify.error(errorMessage(error, '加载配置策略失败'))
+  }
+}
+
+const addReferences = async () => {
+  addingReferences.value = true
+  const requestConfig = { headers: { 'X-ConfigFlow-Profile': referenceProfileId.value } }
+  let added = 0
+  try {
+    const { data } = await api.get<{ itemType?: string; library_rule_id?: string }[]>('/rules', requestConfig)
+    const usedIds = new Set(data.filter(item => item.itemType === 'ruleset').map(item => item.library_rule_id))
+    for (const libraryRuleId of referenceRuleIds.value) {
+      if (usedIds.has(libraryRuleId)) continue
+      const source = ruleLibrary.value.find(item => item.id === libraryRuleId)
+      await api.post('/rule-sets', {
+        id: `ruleset_${crypto.randomUUID()}`,
+        itemType: 'ruleset',
+        library_rule_id: libraryRuleId,
+        policy: referencePolicy.value,
+        enabled: true,
+        no_resolve: source?.behavior === 'ipcidr'
+      }, requestConfig)
+      added++
+    }
+    notify.success(`已向「${referenceProfileName.value}」添加 ${added} 个引用，跳过 ${referenceRuleIds.value.length - added} 个已有引用`)
+    referenceDialogVisible.value = false
+  } catch (error) {
+    notify.error(`已添加 ${added} 个引用；${errorMessage(error, '添加失败')}`)
+  } finally {
+    addingReferences.value = false
+  }
 }
 
 const ruleLibrary = ref<RuleLibraryItem[]>([])
@@ -765,8 +868,6 @@ const loadRuleLibrary = async () => {
   try {
     const { data } = await api.get('/rule-library')
     ruleLibrary.value = data
-    nextTick(() => {
-    })
   } catch (error) {
     notify.error('加载规则仓库失败')
   }
@@ -788,11 +889,7 @@ const showAddDialog = () => {
 
 const editRule = (row: RuleLibraryItem) => {
   isEdit.value = true
-  form.value = {
-    ...row,
-    source_type: row.source_type || 'url',
-    content: row.content || ''
-  }
+  form.value = libraryPayload(row)
   dialogVisible.value = true
 }
 
@@ -872,124 +969,30 @@ const saveRule = async () => {
 
   try {
     if (isEdit.value) {
-      const { data } = await api.put(`/rule-library/${form.value.id}`, form.value)
-
-      // 显示同步信息
-      if (data.synced_count > 0) {
-        notify.success(`更新成功，并同步${form.value.enabled ? '启用' : '禁用'}了 ${data.synced_count} 个关联的规则配置`)
-      } else {
-        notify.success('更新成功')
-      }
+      await api.put(`/rule-library/${form.value.id}`, libraryPayload(form.value))
+      notify.success('共享来源已更新，各配置的策略、顺序和启用状态保持不变')
     } else {
-      await api.post('/rule-library', form.value)
+      await api.post('/rule-library', libraryPayload(form.value))
       notify.success(isAvailable ? '添加成功' : '添加成功（规则已关闭）')
     }
     dialogVisible.value = false
     loadRuleLibrary()
   } catch (error) {
-    notify.error('保存失败')
+    notify.error(errorMessage(error, '保存失败'))
   }
 }
 
-const disableRelatedRuleConfigs = async (libraryRuleId: string) => {
-  try {
-    const { data: allRules } = await api.get('/rules')
-
-    const relatedRuleSets = allRules.filter(
-      (item: any) => item.itemType === 'ruleset' && item.library_rule_id === libraryRuleId
-    )
-
-    for (const ruleSet of relatedRuleSets) {
-      if (ruleSet.enabled) {
-        ruleSet.enabled = false
-        await api.put(`/rule-sets/${ruleSet.id}`, ruleSet)
-      }
-    }
-
-    if (relatedRuleSets.length > 0) {
-      notify.info(`已同时关闭 ${relatedRuleSets.length} 个关联的规则配置`)
-    }
-  } catch (error) {
-    console.error('关闭关联规则配置失败:', error)
-  }
-}
 
 const deleteRule = async (row: RuleLibraryItem) => {
+  const ok = await confirmDanger('确定删除此共享规则集？被任何配置引用时无法删除，请先在相应配置移除引用。', { title: '删除共享规则集' })
+  if (!ok) return
   try {
-    const { data: allRules } = await api.get('/rules')
-    const relatedRuleSets = allRules.filter(
-      (item: any) => item.itemType === 'ruleset' && item.library_rule_id === row.id
-    )
-
-    if (relatedRuleSets.length > 0) {
-      const action = await choose(
-        `该规则被 ${relatedRuleSets.length} 个规则配置引用，是否一起删除这些规则配置？`,
-        {
-          title: '删除规则',
-          confirmText: '一起删除',
-          altText: '仅删除规则仓库',
-          cancelText: '取消',
-          danger: true
-        }
-      )
-      if (action === 'cancel') return
-
-      if (action === 'confirm') {
-        const deletedRuleSetIds: string[] = []
-        for (const ruleSet of relatedRuleSets) {
-          try {
-            await api.delete(`/rule-sets/${ruleSet.id}`)
-            deletedRuleSetIds.push(ruleSet.id)
-          } catch (error) {
-            console.error(`删除规则配置 ${ruleSet.name} 失败:`, error)
-          }
-        }
-
-        if (deletedRuleSetIds.length > 0) {
-          try {
-            const { data: mosdnsConfig } = await api.get('/mosdns/rulesets')
-
-            const updatedDirectRulesets = mosdnsConfig.direct_rulesets.filter(
-              (id: string) => !deletedRuleSetIds.includes(id)
-            )
-            const updatedProxyRulesets = mosdnsConfig.proxy_rulesets.filter(
-              (id: string) => !deletedRuleSetIds.includes(id)
-            )
-
-            if (updatedDirectRulesets.length !== mosdnsConfig.direct_rulesets.length ||
-                updatedProxyRulesets.length !== mosdnsConfig.proxy_rulesets.length) {
-              await api.post('/mosdns/rulesets', {
-                direct_rulesets: updatedDirectRulesets,
-                proxy_rulesets: updatedProxyRulesets,
-                direct_rules: mosdnsConfig.direct_rules,
-                proxy_rules: mosdnsConfig.proxy_rules
-              })
-              console.log('已同步更新 MosDNS 配置，移除了对已删除规则集的引用')
-            }
-          } catch (error) {
-            console.error('同步更新 MosDNS 配置失败:', error)
-            notify.warning('规则配置已删除，但 MosDNS 配置同步失败，请手动检查')
-          }
-        }
-
-        await api.delete(`/rule-library/${row.id}`)
-        notify.success(`已删除规则仓库及 ${relatedRuleSets.length} 个关联的规则配置`)
-      } else {
-        await api.delete(`/rule-library/${row.id}`)
-        notify.success('已删除规则仓库，关联的规则配置保留')
-      }
-      loadRuleLibrary()
-    } else {
-      const ok = await confirmDanger('确定要删除该规则吗？', { title: '删除规则' })
-      if (!ok) return
-
-      await api.delete(`/rule-library/${row.id}`)
-      notify.success('删除成功')
-      loadRuleLibrary()
-    }
+    await api.delete(`/rule-library/${row.id}`)
+    selectedRules.value = selectedRules.value.filter(id => id !== row.id)
+    notify.success('删除成功')
+    await loadRuleLibrary()
   } catch (error) {
-    notify.error('删除失败')
-    console.error('删除规则失败:', error)
+    notify.error(errorMessage(error, '删除失败'))
   }
 }
 
@@ -1012,16 +1015,10 @@ const toggleEnabled = async (row: RuleLibraryItem) => {
   }
 
   try {
-    const { data } = await api.put(`/rule-library/${row.id}`, row)
-
-    // 显示同步信息
-    if (data.synced_count > 0) {
-      notify.success(`${row.enabled ? '已开启' : '已关闭'}，并同步${row.enabled ? '启用' : '禁用'}了 ${data.synced_count} 个关联的规则配置`)
-    } else {
-      notify.success(row.enabled ? '已开启' : '已关闭')
-    }
+    await api.put(`/rule-library/${row.id}`, libraryPayload(row))
+    notify.success(row.enabled ? '共享来源已开启，各配置启用状态保持不变' : '共享来源已关闭，各配置启用状态保持不变')
   } catch (error) {
-    notify.error('更新失败')
+    notify.error(errorMessage(error, '更新失败'))
     row.enabled = !row.enabled
   }
 }
@@ -1108,7 +1105,7 @@ const saveRuleToSet = async () => {
 
   try {
     const updatedRule = {
-      ...currentRuleSet.value,
+      ...libraryPayload(currentRuleSet.value),
       content: updatedContent
     }
 
@@ -1117,7 +1114,7 @@ const saveRuleToSet = async () => {
     addRuleToSetDialogVisible.value = false
     loadRuleLibrary()
   } catch (error) {
-    notify.error('保存失败')
+    notify.error(errorMessage(error, '保存失败'))
   }
 }
 
@@ -1234,13 +1231,9 @@ const batchTestConnectivity = async () => {
       const totalCount = data.total_count
       const successCount = totalCount - failedCount
 
-      const failedResults = data.results.filter((result: any) => !result.available)
-      for (const failedRule of failedResults) {
-        await disableRelatedRuleConfigs(failedRule.id)
-      }
 
       if (failedCount > 0) {
-        notify.warning(`测试完成！成功: ${successCount}，失败: ${failedCount}。不可用的规则和关联的规则配置已自动关闭。`)
+        notify.warning(`测试完成！成功: ${successCount}，失败: ${failedCount}。不可用的共享来源已关闭，各配置启用状态保持不变。`)
       } else {
         notify.success(`测试完成！所有 ${totalCount} 条规则均可用。`)
       }
@@ -1280,7 +1273,7 @@ const batchCacheRules = async () => {
       selectedRules.value = []
 
       if (failedCount > 0) {
-        notify.warning(`缓存完成！成功: ${successCount}，失败: ${failedCount}。缓存失败的规则和关联的规则配置已自动关闭。`)
+        notify.warning(`缓存完成！成功: ${successCount}，失败: ${failedCount}。缓存失败的共享来源已关闭，各配置启用状态保持不变。`)
       } else {
         notify.success(`缓存完成！成功缓存 ${totalCount} 条规则。`)
       }
@@ -1390,100 +1383,30 @@ const toggleSelectAll = () => {
   }
 }
 
-// 批量删除规则
+// 共享删除由服务端检查所有配置，不级联删除配置引用。
 const batchDeleteRules = async () => {
   if (selectedRules.value.length === 0) return
-
-  try {
-    // 获取所有规则配置，检查关联
-    const { data: allRules } = await api.get('/rules')
-    const relatedRuleSets = allRules.filter(
-      (item: any) => item.itemType === 'ruleset' && selectedRules.value.includes(item.library_rule_id)
-    )
-
-    let confirmMessage = `确定要删除选中的 ${selectedRules.value.length} 条规则吗？`
-    if (relatedRuleSets.length > 0) {
-      confirmMessage = `选中的规则被 ${relatedRuleSets.length} 个规则配置引用，是否一起删除这些规则配置？`
-    }
-
-    const ok = await confirmDanger(confirmMessage, {
-      title: '批量删除规则',
-      confirmText: relatedRuleSets.length > 0 ? '一起删除' : '删除'
-    })
-    if (!ok) return
-
-    // 删除关联的规则配置
-    const deletedRuleSetIds: string[] = []
-    if (relatedRuleSets.length > 0) {
-      for (const ruleSet of relatedRuleSets) {
-        try {
-          await api.delete(`/rule-sets/${ruleSet.id}`)
-          deletedRuleSetIds.push(ruleSet.id)
-        } catch (error) {
-          console.error(`删除规则配置 ${ruleSet.name} 失败:`, error)
-        }
-      }
-
-      // 同步更新 MosDNS 配置
-      if (deletedRuleSetIds.length > 0) {
-        try {
-          const { data: mosdnsConfig } = await api.get('/mosdns/rulesets')
-          const updatedDirectRulesets = mosdnsConfig.direct_rulesets.filter(
-            (id: string) => !deletedRuleSetIds.includes(id)
-          )
-          const updatedProxyRulesets = mosdnsConfig.proxy_rulesets.filter(
-            (id: string) => !deletedRuleSetIds.includes(id)
-          )
-
-          if (updatedDirectRulesets.length !== mosdnsConfig.direct_rulesets.length ||
-              updatedProxyRulesets.length !== mosdnsConfig.proxy_rulesets.length) {
-            await api.post('/mosdns/rulesets', {
-              direct_rulesets: updatedDirectRulesets,
-              proxy_rulesets: updatedProxyRulesets,
-              direct_rules: mosdnsConfig.direct_rules,
-              proxy_rules: mosdnsConfig.proxy_rules
-            })
-          }
-        } catch (error) {
-          console.error('同步更新 MosDNS 配置失败:', error)
-        }
-      }
-    }
-
-    // 批量删除规则仓库
-    let successCount = 0
-    for (const ruleId of selectedRules.value) {
-      try {
-        await api.delete(`/rule-library/${ruleId}`)
-        successCount++
-      } catch (error) {
-        console.error(`删除规则 ${ruleId} 失败:`, error)
-      }
-    }
-
-    // 清空选择
-    selectedRules.value = []
-
-    if (relatedRuleSets.length > 0) {
-      notify.success(`已删除 ${successCount} 条规则及 ${deletedRuleSetIds.length} 个关联的规则配置`)
-    } else {
-      notify.success(`已删除 ${successCount} 条规则`)
-    }
-
-    loadRuleLibrary()
-  } catch (error: any) {
-    if (error !== 'cancel' && error !== 'close') {
-      notify.error('批量删除失败')
-      console.error('批量删除失败:', error)
+  const ok = await confirmDanger(`确定删除选中的 ${selectedRules.value.length} 个共享规则集？仍被配置引用的规则集会保留。`, { title: '批量删除共享规则集' })
+  if (!ok) return
+  const failedIds: string[] = []
+  const failures: string[] = []
+  let deleted = 0
+  for (const id of selectedRules.value) {
+    try {
+      await api.delete(`/rule-library/${id}`)
+      deleted++
+    } catch (error) {
+      failedIds.push(id)
+      const name = ruleLibrary.value.find(item => item.id === id)?.name || id
+      failures.push(`${name}: ${errorMessage(error, '删除失败')}`)
     }
   }
+  selectedRules.value = failedIds
+  if (failures.length) notify.error(`已删除 ${deleted} 个，保留 ${failedIds.length} 个。${failures.join('；')}`)
+  else notify.success(`已删除 ${deleted} 个共享规则集`)
+  await loadRuleLibrary()
 }
 
-// 监听视图模式切换，重新初始化拖拽
-watch(viewMode, () => {
-  nextTick(() => {
-  })
-})
 
 /* ---------- 窄屏视图回退与筛选 ---------- */
 // 规则集表格列多，窄屏不可读，移动端一律用卡片
@@ -1536,7 +1459,7 @@ const reorder = useReorder<any>({
 const handleSaveOrder = async () => {
   try {
     await reorder.save()
-    notify.success('顺序已保存，所有配置空间生效')
+    notify.success('共享规则库顺序已保存，各配置规则顺序保持不变')
   } catch (error) {
     notify.error('保存顺序失败，顺序已还原')
   }
