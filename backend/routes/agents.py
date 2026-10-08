@@ -359,7 +359,8 @@ def get_agent_config(agent_id):
 
         # 生成配置
         profile_id = agent.get('profile_id', 'default')
-        config_result = generate_agent_config(get_config(profile_id), agent)
+        config_result = generate_agent_config(
+            get_config(profile_id), agent, base_url=request.url_root.rstrip('/'))
 
         return jsonify({
             'success': True,
@@ -371,6 +372,8 @@ def get_agent_config(agent_id):
 
     except StrategyReferenceError as e:
         return jsonify({'success': False, 'message': str(e)}), 400
+    except ProfileRepositoryError as e:
+        return jsonify({'success': False, 'message': f'Agent profile unavailable: {e}'}), 409
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -757,7 +760,9 @@ def push_config_to_agent(agent_id):
                                                         sync_lan_hosts=True, preflight_providers=False)
 
                 # 获取 provider 下载信息
-                provider_downloads = get_mihomo_provider_downloads(config_data, base_url=base_url)
+                import yaml
+                provider_downloads = get_mihomo_provider_downloads(config_data, base_url=base_url,
+                                                                  main_config=yaml.safe_load(config_content))
                 logger.info(f"需要下载 {len(provider_downloads)} 个 provider 文件")
 
                 # 获取 ruleset 下载信息
@@ -795,37 +800,12 @@ def push_config_to_agent(agent_id):
         # Do not HTTP-refetch our own routes with an independently resolved scope.
         if service_type == 'mihomo' and provider_downloads:
             import yaml
-            from urllib.parse import urlsplit, unquote
-            from backend.common.config import get_repository
-            from backend.utils.provider_delivery import (DeliverySnapshot,
-                prepare_subscription_provider, commit_cache_updates, validate_rendered_bundle)
-            from backend.routes.aggregations import generate_aggregation_provider
-            from backend.routes.subscriptions import get_subscription_proxies_yaml
-            snapshot = DeliverySnapshot.capture(profile_id, yaml.safe_load(config_content))
-            staged_updates = []
-            staged_artifacts = []
-            for item in provider_downloads:
-                path = unquote(urlsplit(item['url']).path)
-                if '/subscriptions/' in path:
-                    sub_id = path.rsplit('/subscriptions/', 1)[1].split('/')[0]
-                    sub = next(s for s in config_data['subscriptions'] if s['id'] == sub_id)
-                    rendered = prepare_subscription_provider(sub, config_data, snapshot,
-                        fetch=get_subscription_proxies_yaml, allow_transport_fallback=True)
-                elif '/aggregations/' in path:
-                    agg_id = path.rsplit('/aggregations/', 1)[1].split('/')[0]
-                    agg = next(a for a in config_data['subscription_aggregations'] if a['id'] == agg_id)
-                    rendered = generate_aggregation_provider(agg, config=config_data,
-                        main_config=yaml.safe_load(snapshot.main_json), persist=False)
-                    staged_artifacts.append((agg_id, rendered['content']))
-                else:
-                    raise StrategyReferenceError('Unknown provider delivery source')
-                item['content'] = rendered['content']
-                staged_updates.extend(rendered['cache_updates'])
-            validate_rendered_bundle(snapshot, provider_downloads)
-            # No cache or artifact is changed until every actual provider is valid.
-            commit_cache_updates(staged_updates, profile_id)
-            for agg_id, content in staged_artifacts:
-                get_repository().write_profile_text(profile_id, f'providers/{agg_id}.yaml', content)
+            from backend.utils.provider_delivery import prepare_provider_bundle, commit_provider_bundle
+            bundle = prepare_provider_bundle(config_data, yaml.safe_load(config_content),
+                                             render_all=True, allow_transport_fallback=True)
+            commit_provider_bundle(profile_id, bundle)
+            provider_downloads = [{key: item[key] for key in ('name', 'url', 'local_path', 'content')}
+                                  for item in bundle]
 
         # 预获取所有文件内容，随配置一起推送给 Agent（避免 Agent 逐个下载）
         if ruleset_downloads:

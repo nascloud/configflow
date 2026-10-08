@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
-import { nextTick } from 'vue'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import ConfirmHost from '@/components/feedback/ConfirmHost.vue'
 import ProfileSwitcher from '@/components/ProfileSwitcher.vue'
@@ -34,31 +33,12 @@ async function clickText(text: string) {
  button!.click()
  await flushPromises()
 }
-function traceSettlements() {
- const events: string[] = []
- const original = feedback.settleConfirm
- vi.spyOn(feedback, 'settleConfirm').mockImplementation(choice => {
-   events.push(`settle:${choice}:resolver=${Boolean(feedback.confirmState.resolve)}`)
-   original(choice)
- })
- return events
-}
 describe('confirmation choices and profile switching', () => {
  it('uninstrumented confirmation click must resolve true', async () => {
   host()
   const result = feedback.confirm('Switch profile?', { confirmText: 'Switch' })
   await clickText('Switch')
   expect(await result).toBe(true)
- })
- it('confirmation click must resolve true', async () => {
-  host()
-  const events = traceSettlements()
-  const result = feedback.confirm('Switch profile?', { confirmText: 'Switch' })
-  await nextTick()
-  await clickText('Switch')
-  const actual = await result
-  console.log('CONFIRM_TRACE', JSON.stringify({ events, actual }))
-  expect(actual).toBe(true)
  })
  it('cancel click resolves false (negative control)', async () => {
   host()
@@ -68,15 +48,14 @@ describe('confirmation choices and profile switching', () => {
  })
  it('alt click must resolve alt', async () => {
   host()
-  const events = traceSettlements()
   const result = feedback.choose('Choose', { altText: 'Alternative' })
   await clickText('Alternative')
   const actual = await result
-  console.log('ALT_TRACE', JSON.stringify({ events, actual }))
   expect(actual).toBe('alt')
  })
  it('confirmed profile change must keep Target and persist target', async () => {
   setActiveProfileId('default')
+  await useProfileStore().refreshProfiles()
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })
   await router.push('/')
   await router.isReady()
@@ -84,29 +63,17 @@ describe('confirmation choices and profile switching', () => {
   wrappers.push(w)
   host()
   await flushPromises()
-  const reload = vi.fn()
-  const originalWindow = window
-  vi.stubGlobal('window', new Proxy(originalWindow, {
-   get(target, key) {
-    if (key === 'location') return { reload }
-    return Reflect.get(target, key, target)
-   }
-  }))
-  const events = traceSettlements()
   // Emit the real Select's public selection event to isolate the confirmation boundary.
   w.findComponent(Select).vm.$emit('update:modelValue', 'target')
   await flushPromises()
-  const before = w.text()
   await clickText('切换')
-  const state = { events, before, after: w.text(), active: activeProfileId.value, stored: sessionStorage.getItem('configflow.activeProfile') }
-  console.log('PROFILE_TRACE', JSON.stringify(state))
-  expect(reload).toHaveBeenCalledTimes(1)
   expect(w.text()).toContain('Target')
   expect(activeProfileId.value).toBe('target')
   expect(sessionStorage.getItem('configflow.activeProfile')).toBe('target')
  })
- it('cancelled profile change keeps Original without reloading', async () => {
+ it('cancelled profile change keeps Original', async () => {
   setActiveProfileId('default')
+  await useProfileStore().refreshProfiles()
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })
   await router.push('/')
   await router.isReady()
@@ -114,28 +81,11 @@ describe('confirmation choices and profile switching', () => {
   wrappers.push(w)
   host()
   await flushPromises()
-  const reload = vi.fn()
-  const originalWindow = window
-  vi.stubGlobal('window', new Proxy(originalWindow, {
-   get(target, key) {
-    if (key === 'location') return { reload }
-    return Reflect.get(target, key, target)
-   }
-  }))
   w.findComponent(Select).vm.$emit('update:modelValue', 'target')
   await flushPromises()
   await clickText('取消')
   expect(w.text()).toContain('Original')
   expect(activeProfileId.value).toBe('default')
   expect(sessionStorage.getItem('configflow.activeProfile')).toBe('default')
-  expect(reload).not.toHaveBeenCalled()
- })
- it('profile store switching itself persists target (positive control)', async () => {
-  setActiveProfileId('default')
-  const store = useProfileStore()
-  await store.refreshProfiles()
-  store.switchProfile('target')
-  expect(activeProfileId.value).toBe('target')
-  expect(sessionStorage.getItem('configflow.activeProfile')).toBe('target')
  })
 })

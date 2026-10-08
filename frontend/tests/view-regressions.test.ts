@@ -1,12 +1,15 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { AxiosHeaders } from 'axios'
+import type { Agent } from '@/types'
 import ProxyGroups from '@/views/ProxyGroups.vue'
 import Profiles from '@/views/Profiles.vue'
+import Agents from '@/views/Agents.vue'
 import ConfirmHost from '@/components/feedback/ConfirmHost.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
 // Exact git blob from a5bb908, not a modified production component.
 import LegacyConfirmHost from './fixtures/LegacyConfirmHost.vue'
-import { profileApi, proxyGroupApi, nodeApi } from '@/api'
+import { agentApi, profileApi, proxyGroupApi, nodeApi } from '@/api'
 import * as feedback from '@/lib/feedback'
 import { setActiveProfileId } from '@/profileContext'
 
@@ -16,6 +19,7 @@ vi.mock('@/api', () => ({
   { id: 'agg-on', name: 'Synthetic enabled aggregation', enabled: true },
   { id: 'agg-off', name: 'Synthetic disabled aggregation', enabled: false }
  ] : path === '/subscriptions' ? [{ id: 'sub-one', name: 'Synthetic subscription' }] : [] })), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
+ agentApi: { getAll: vi.fn() },
  proxyGroupApi: { getAll: vi.fn(async () => ({ data: [
   { id: 'group-one', name: 'Synthetic strategy', type: 'select', enabled: true, manual_nodes: ['DIRECT'] }
  ] })), create: vi.fn(async () => ({})), update: vi.fn(async () => ({})) },
@@ -68,6 +72,31 @@ async function addSource(w: ReturnType<typeof mount>, label: string) {
  }[label])!
 }
 describe('real view regressions with synthetic API data', () => {
+ it('labels mixed Agent cards by service type, including Surge rather than MosDNS', async () => {
+  const services = [
+   { id: 'router', name: 'Primary router', service_type: 'mihomo' },
+   { id: 'phone', name: 'Travel phone', service_type: 'surge' },
+   { id: 'dns', name: 'DNS server', service_type: 'mosdns' }
+  ] satisfies Pick<Agent, 'id' | 'name' | 'service_type'>[]
+  vi.mocked(agentApi.getAll).mockResolvedValue({
+   data: services.map(service => ({
+    ...service, host: '127.0.0.1', port: 8080, profile_id: 'default',
+    status: 'offline', last_heartbeat: '', version: '1.1.0-go', config_version: '0', enabled: true
+   })),
+   status: 200, statusText: 'OK', headers: {}, config: { headers: new AxiosHeaders() }
+  })
+  const w = render(Agents)
+  await flushPromises()
+  const cardLabel = (name: string) => {
+   const header = w.findAll('header').find(header => header.find('p').exists() && header.get('p').text() === name)
+   expect(header, `Agent card ${name}`).toBeDefined()
+   return header!.get('[data-slot="badge"]').text()
+  }
+  expect(cardLabel('Primary router')).toBe('Mihomo')
+  expect(cardLabel('Travel phone')).toBe('Surge')
+  expect(cardLabel('DNS server')).toBe('MosDNS')
+ })
+
  it('editing an existing group shows and saves a selected manual node', async () => {
   const w = render(ProxyGroups)
   await flushPromises()

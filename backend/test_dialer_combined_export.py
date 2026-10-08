@@ -6,7 +6,7 @@ import yaml
 
 from backend.test_qa_integrity import make_app
 from backend.test_dialer_delivery_snapshot import seed_profile
-from backend.test_dialer_proxy import node
+from backend.test_dialer_proxy import node, add_subscription
 from backend.utils.subscription_cache import load_subscription_cache, save_subscription_nodes
 
 
@@ -23,9 +23,9 @@ def provider(name='Remote', **fields):
 def test_combined_invalid_fetched_graph_rejected_without_side_effects(tmp_path, monkeypatch, content):
     app, repo = make_app(tmp_path)
     seed_profile(repo)
-    cache_before = load_subscription_cache('s', profile_id='default')
-    profile_before = repo._profile_path('default').read_bytes()
-    artifact = repo.write_profile_text('default', 'config.yaml', 'last-good')
+    cache_before = load_subscription_cache('s')
+    profile_before = repo.path.read_bytes()
+    artifact = repo.write_generated('default', 'config.yaml', 'last-good')
     cache_read = Mock(wraps=load_subscription_cache)
     monkeypatch.setattr('backend.routes.subscriptions.load_subscription_cache', cache_read)
     cache_write = Mock(side_effect=AssertionError('Combined export must not write cache'))
@@ -39,8 +39,8 @@ def test_combined_invalid_fetched_graph_rejected_without_side_effects(tmp_path, 
     cache_read.assert_not_called()
     cache_write.assert_not_called()
     network.assert_not_called()
-    assert load_subscription_cache('s', profile_id='default') == cache_before
-    assert repo._profile_path('default').read_bytes() == profile_before
+    assert load_subscription_cache('s') == cache_before
+    assert repo.path.read_bytes() == profile_before
     assert artifact.read_text() == 'last-good'
 
 
@@ -54,20 +54,20 @@ def test_combined_invalid_fetched_graph_rejected_without_side_effects(tmp_path, 
 def test_combined_invalid_cache_rejected_on_transport_failure(tmp_path, monkeypatch, cached):
     app, repo = make_app(tmp_path)
     seed_profile(repo)
-    save_subscription_nodes('s', [cached], profile_id='default')
-    before = load_subscription_cache('s', profile_id='default')
-    profile_before = repo._profile_path('default').read_bytes()
+    save_subscription_nodes('s', [cached])
+    before = load_subscription_cache('s')
+    profile_before = repo.path.read_bytes()
     monkeypatch.setattr('backend.routes.subscriptions.get_subscription_proxies_yaml',
                         Mock(side_effect=ConnectionError('transport failure')))
     response = app.test_client().get('/api/subscriptions/proxies')
     assert response.status_code == 400, response.data
-    assert load_subscription_cache('s', profile_id='default') == before
-    assert repo._profile_path('default').read_bytes() == profile_before
+    assert load_subscription_cache('s') == before
+    assert repo.path.read_bytes() == profile_before
 
 
 def add_second_feed(repo):
-    repo.update_profile_transaction('default', lambda p: p['subscriptions'].append(
-        {'id': 's2', 'name': 'Second', 'enabled': True, 'url': 'https://fixture.invalid/second'}))
+    add_subscription(repo, {'id': 's2', 'name': 'Second', 'enabled': True, 'url': 'https://fixture.invalid/second'})
+    repo.update_profile_transaction('default', lambda p: p['proxy_groups'][0].setdefault('subscriptions', []).append('s2'))
 
 
 @pytest.mark.parametrize('chain', ['none', 'managed'])
@@ -84,11 +84,11 @@ def test_combined_final_graph_rejects_cross_source_topology(tmp_path, monkeypatc
         contents = [provider('A', **{'dialer-proxy': 'B'}), provider('B', **{'dialer-proxy': 'A'})]
     fetch = Mock(side_effect=[(text, 'rendered_yaml') for text in contents])
     monkeypatch.setattr('backend.routes.subscriptions.get_subscription_proxies_yaml', fetch)
-    before = repo._profile_path('default').read_bytes()
+    before = repo.path.read_bytes()
     response = app.test_client().get('/api/subscriptions/proxies')
     assert response.status_code == 400, response.data
     assert fetch.call_count == 2
-    assert repo._profile_path('default').read_bytes() == before
+    assert repo.path.read_bytes() == before
 
 
 @pytest.mark.parametrize('content', ['proxies: [null]', 'proxies: not-an-array',
@@ -127,7 +127,7 @@ def test_combined_cross_feed_reference_validates_only_final_collection(tmp_path,
     add_second_feed(repo)
     source = provider('Remote', **{'dialer-proxy': 'OtherFeedRelay'})
     target = provider('OtherFeedRelay')
-    save_subscription_nodes('s2', [node('OtherFeedRelay')], profile_id='default')
+    save_subscription_nodes('s2', [node('OtherFeedRelay')])
     fetch = Mock(side_effect=[(source, 'rendered_yaml'),
         ConnectionError('transport failure') if cached_target else (target, 'rendered_yaml')])
     monkeypatch.setattr('backend.routes.subscriptions.get_subscription_proxies_yaml', fetch)
@@ -153,13 +153,15 @@ def test_combined_legacy_compatible_controls(tmp_path, monkeypatch, case):
         fetch = Mock(side_effect=ConnectionError('transport failure'))
         expected = ['old'] if case == 'transport-cache' else []
         if case == 'transport-no-cache':
-            monkeypatch.setattr('backend.routes.subscriptions.load_subscription_cache', lambda *a, **k: None)
+            from pathlib import Path
+            from backend.utils.subscription_cache import _get_cache_path
+            Path(_get_cache_path('s')).unlink()
     monkeypatch.setattr('backend.routes.subscriptions.get_subscription_proxies_yaml', fetch)
-    before = load_subscription_cache('s', profile_id='default')
+    before = load_subscription_cache('s')
     response = app.test_client().get('/api/subscriptions/proxies')
     assert response.status_code == 200, response.data
     assert [p['name'] for p in yaml.safe_load(response.data)['proxies']] == expected
-    assert load_subscription_cache('s', profile_id='default') == before
+    assert load_subscription_cache('s') == before
 
 
 @pytest.mark.parametrize('selector', ['header', 'query'])
@@ -167,9 +169,13 @@ def test_combined_profile_selection_isolated_and_context_cleared(tmp_path, monke
     app, repo = make_app(tmp_path)
     seed_profile(repo, chain='none')
     repo.create_profile({'id': 'other', 'name': 'Other'}, clone_from='default')
-    repo.update_profile_transaction('other', lambda p: p['nodes'][0].update(name='other-relay'))
+    repo.update_shared_transaction(lambda shared: shared['nodes'].append(node('other-relay')))
+    def add_other_group(p):
+        p['proxy_groups'].append({'id': 'other-entry', 'name': 'Other entry', 'type': 'select',
+                                  'manual_nodes': ['other-relay']})
+    repo.update_profile_transaction('other', add_other_group)
     monkeypatch.setattr('backend.routes.subscriptions.get_subscription_proxies_yaml',
-                        Mock(return_value=(provider(**{'dialer-proxy': 'other-relay'}), 'rendered_yaml')))
+                        Mock(return_value=(provider(**{'dialer-proxy': 'Other entry'}), 'rendered_yaml')))
     kwargs = {'headers': {'X-ConfigFlow-Profile': 'other'}} if selector == 'header' else {'query_string': {'profile': 'other'}}
     client = app.test_client()
     assert client.get('/api/subscriptions/proxies', **kwargs).status_code == 200
@@ -182,14 +188,16 @@ def test_combined_snapshot_and_cache_stay_bound_when_fetch_changes_context(tmp_p
     seed_profile(repo, chain='none')
     add_second_feed(repo)
     repo.create_profile({'id': 'other', 'name': 'Other'}, clone_from='default')
-    save_subscription_nodes('s2', [node('Bound', params={'dialer-proxy': 'relay'})], profile_id='default')
-    save_subscription_nodes('s2', [node('Wrong', params={'dialer-proxy': 'missing'})], profile_id='other')
+    save_subscription_nodes('s2', [node('Bound', params={'dialer-proxy': 'relay'})])
     calls = []
     def fetch(*_args):
         calls.append(1)
         if len(calls) == 1:
             get_config()['nodes'][0]['name'] = 'mutated-relay'
-            repo.activate_profile('other')
+            def change_group(p):
+                p['proxy_groups'][0]['manual_nodes'] = ['exit']
+            repo.update_profile_transaction('default', change_group)
+            get_config('other')['proxy_groups'][0]['name'] = 'Other snapshot'
             return provider(), 'rendered_yaml'
         raise ConnectionError('transport failure')
     cache_read = Mock(wraps=load_subscription_cache)
@@ -198,4 +206,6 @@ def test_combined_snapshot_and_cache_stay_bound_when_fetch_changes_context(tmp_p
     response = app.test_client().get('/api/subscriptions/proxies', headers={'X-ConfigFlow-Profile': 'default'})
     assert response.status_code == 200, response.data
     assert [p['name'] for p in yaml.safe_load(response.data)['proxies']] == ['Remote', 'Bound']
-    cache_read.assert_called_once_with('s2', profile_id='default')
+    cache_read.assert_called_once_with('s2')
+    assert load_subscription_cache('s2')['nodes'][0]['name'] == 'Bound'
+    assert repo.get_profile('default')['proxy_groups'][0]['manual_nodes'] == ['exit']

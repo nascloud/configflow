@@ -19,7 +19,6 @@ def setup(tmp_path, monkeypatch, *, chain=True, profile='default'):
     seed_profile(repo, direct=False, chain='uri')
     if profile != 'default':
         repo.create_profile({'id': profile, 'name': profile}, clone_from='default')
-        save_subscription_nodes('s', [node('old')], profile_id=profile)
     convert = Mock(return_value={**plain('exit'), **({'dialer-proxy': 'relay'} if chain else {})})
     monkeypatch.setattr('backend.utils.sub_store_client.convert_proxy_string', convert)
     network = Mock(side_effect=AssertionError('No unrelated provider/self-HTTP fetch'))
@@ -59,12 +58,12 @@ def test_uri_main_chain_rejects_plain_provider_before_any_publication(tmp_path, 
     proxies = {'duplicate': [plain('Same'), plain('Same')],
                'reserved': [plain('DIRECT')], 'malformed': [{'name': None}]}[case]
     fetch = install_fetch(monkeypatch, proxies)
-    before = {p: load_subscription_cache('s', profile_id=p) for p in ('default', profile)}
-    profiles_before = {p: repo._profile_path(p).read_bytes() for p in before}
-    artifacts = [repo.write_profile_text(p, 'providers/agg.yaml', 'last-good') for p in before]
+    before = load_subscription_cache('s')
+    document_before = repo.path.read_bytes()
+    artifacts = [repo.write_profile_text(p, 'providers/agg.yaml', 'last-good') for p in {'default', profile}]
     writes = Mock(side_effect=AssertionError('Must validate before cache/artifact publication'))
     monkeypatch.setattr(repo, 'write_profile_text', writes)
-    for target in ('backend.routes.aggregations.save_subscription_nodes',
+    for target in ('backend.utils.subscription_cache.save_subscription_nodes',
                    'backend.routes.subscriptions.save_subscription_nodes',
                    'backend.utils.provider_delivery.commit_cache_updates'):
         monkeypatch.setattr(target, writes)
@@ -74,8 +73,8 @@ def test_uri_main_chain_rejects_plain_provider_before_any_publication(tmp_path, 
     convert.assert_called_once_with('opaque://exit')
     writes.assert_not_called()
     network.assert_not_called()
-    assert {p: load_subscription_cache('s', profile_id=p) for p in before} == before
-    assert {p: repo._profile_path(p).read_bytes() for p in before} == profiles_before
+    assert load_subscription_cache('s') == before
+    assert repo.path.read_bytes() == document_before
     assert all(p.read_text() == 'last-good' for p in artifacts)
 
 
@@ -86,8 +85,8 @@ def test_standalone_uri_activation_and_transport_cache_controls(tmp_path, monkey
     app, repo, convert, network = setup(tmp_path, monkeypatch, chain=chain)
     proxies = [plain('Same'), plain('Same'), plain('DIRECT')]
     if fallback:
-        save_subscription_nodes('s', [node('Same'), node('Same'), node('DIRECT')], profile_id='default')
-    before = load_subscription_cache('s', profile_id='default')
+        save_subscription_nodes('s', [node('Same'), node('Same'), node('DIRECT')])
+    before = load_subscription_cache('s')
     fetch = install_fetch(monkeypatch, proxies, fallback=fallback)
     artifact = repo.write_profile_text('default', 'providers/agg.yaml', 'last-good')
     response = call(app.test_client(), consumer, 'default')
@@ -96,7 +95,7 @@ def test_standalone_uri_activation_and_transport_cache_controls(tmp_path, monkey
     convert.assert_called_once_with('opaque://exit')
     network.assert_not_called()
     if chain or fallback or consumer == 'combined':
-        assert load_subscription_cache('s', profile_id='default') == before
+        assert load_subscription_cache('s') == before
     if chain:
         assert artifact.read_text() == 'last-good'
     else:
@@ -107,15 +106,15 @@ def test_standalone_uri_activation_and_transport_cache_controls(tmp_path, monkey
 def test_direct_cached_surge_cannot_bypass_actual_main_activation(tmp_path, monkeypatch, case):
     app, repo, convert, network = setup(tmp_path, monkeypatch)
     nodes = [node('Same'), node('Same')] if case == 'duplicate' else [node('DIRECT')]
-    save_subscription_nodes('s', nodes, profile_id='default')
-    before = load_subscription_cache('s', profile_id='default')
+    save_subscription_nodes('s', nodes)
+    before = load_subscription_cache('s')
     fetch = install_fetch(monkeypatch, [], fallback=True)
     response = app.test_client().get('/api/subscriptions/s/proxies?format=surge')
     assert response.status_code == 400, response.get_data(as_text=True)
     fetch.assert_called_once()
     convert.assert_called_once_with('opaque://exit')
     network.assert_not_called()
-    assert load_subscription_cache('s', profile_id='default') == before
+    assert load_subscription_cache('s') == before
 
 
 @pytest.mark.parametrize('consumer', ['aggregation', 'subscription', 'combined'])

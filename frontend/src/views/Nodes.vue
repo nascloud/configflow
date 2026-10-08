@@ -2,11 +2,10 @@
   <div :class="reorder.active.value && 'cf-reordering'">
     <ScopeBanner
       scope="resource"
-      :profile-name="cfProfileName"
-      description="订阅拉取与手动录入的节点，按配置空间隔离"
+      description="修改节点会影响使用它的所有配置。若只想组合前置和落地节点，请在策略组中创建代理链，不会修改原节点。"
     />
 
-    <PageHeader eyebrow="Resource" title="节点库" description="订阅拉取与手动录入的节点集中在此。">
+    <PageHeader title="节点库" description="查看和管理从订阅获取或手动添加的节点。">
       <template #actions>
         <Button
           v-if="!reorder.active.value"
@@ -22,7 +21,7 @@
           <FilePlus2 class="size-4" />
           批量添加
         </Button>
-        <Button class="shadow-glow" @click="showAddDialog">
+        <Button @click="showAddDialog">
           <Plus class="size-4" />
           添加节点
         </Button>
@@ -35,7 +34,7 @@
           <SelectTrigger class="h-9 w-[150px] border-transparent bg-background/50 text-[13px]">
             <SelectValue placeholder="全部协议" />
           </SelectTrigger>
-          <SelectContent class="glass-strong">
+          <SelectContent>
             <SelectItem value="all">全部协议</SelectItem>
             <SelectItem v-for="p in protocolOptions" :key="p" :value="p">
               {{ p.toUpperCase() }}
@@ -202,8 +201,8 @@
         :data-name="node.name"
         data-reorder-item
         :class="[
-          'hairline edge-light relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card/55 p-4 backdrop-blur-xl transition-all duration-300 hover:shadow-glow-soft',
-          selectedNodeIds.has(node.id) ? 'border-primary-accent/45' : 'border-border/35',
+          'relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card p-4 transition-colors duration-200',
+          selectedNodeIds.has(node.id) ? 'border-primary-accent' : 'border-border',
           !node.enabled && 'opacity-60'
         ]"
       >
@@ -300,10 +299,10 @@
 
     <!-- ===== 新增 / 编辑节点 ===== -->
     <Dialog v-model:open="dialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[720px] border-border/50">
+      <DialogContent class="max-w-[720px]">
         <DialogHeader>
           <DialogTitle>{{ isEdit ? '编辑节点' : '添加节点' }}</DialogTitle>
-          <DialogDescription>填写节点名称与连接字符串，支持 URI / JSON / YAML 格式。</DialogDescription>
+          <DialogDescription>填写节点名称，粘贴节点链接或 JSON / YAML 配置。</DialogDescription>
         </DialogHeader>
 
         <div class="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto pr-1">
@@ -335,22 +334,6 @@
               placeholder="支持 URI、JSON、YAML 等格式"
             />
           </div>
-          <div v-if="!form.subscription_id" class="flex flex-col gap-1.5">
-            <Label>拨号代理（仅 Mihomo）</Label>
-            <Input v-model="dialerSearch" placeholder="搜索节点或静态策略组" aria-label="搜索拨号代理" />
-            <Select v-model="dialerSelection">
-              <SelectTrigger data-testid="dialer-trigger"><SelectValue>{{ dialerLabel }}</SelectValue></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">不覆盖（保留原始值）</SelectItem>
-                <SelectItem v-for="candidate in dialerCandidates" :key="candidate.value" :value="candidate.value">{{ candidate.label }}</SelectItem>
-              </SelectContent>
-            </Select>
-            <p v-if="dialerUnavailable" role="alert" class="text-xs text-destructive-accent">当前稳定引用目标不可用，请重新选择或清除覆盖；不会自动清除。</p>
-            <p v-if="legacyDialer" class="text-xs text-muted-foreground">原始 dialer-proxy：{{ legacyDialer }}；{{ form.dialer_ref ? '当前由稳定引用覆盖' : '将保留原始值' }}</p>
-            <Button v-if="form.dialer_ref" variant="outline" @click="form.dialer_ref = null">清除覆盖（恢复原始值）</Button>
-            <p class="text-xs text-muted-foreground">清除只移除稳定引用覆盖，不删除节点字符串/params 的原始值；如需关闭原始拨号，请显式编辑原始配置。</p>
-            <p class="text-xs text-muted-foreground">只支持当前配置空间已启用的手动节点和静态策略组；订阅、聚合、跟随组不支持。后端校验全部分支以防循环。</p>
-          </div>
           <div class="flex items-center gap-2.5">
             <Switch id="node-enabled" v-model="form.enabled" />
             <Label for="node-enabled" class="text-[13px] text-muted-foreground">
@@ -368,7 +351,7 @@
 
     <!-- ===== 批量添加 ===== -->
     <Dialog v-model:open="batchDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[780px] border-border/50">
+      <DialogContent class="max-w-[780px]">
         <DialogHeader>
           <DialogTitle>批量添加节点</DialogTitle>
           <DialogDescription>粘贴多个节点链接或配置，系统会自动识别格式并导入。</DialogDescription>
@@ -452,17 +435,12 @@ import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import { useReorder } from '@/composables/useReorder'
 import { confirm, confirmDanger, notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
-import { useProfileStore } from '@/stores/profile'
 import { nodeApi, subStoreUrlApi } from '@/api'
 import type { ProxyNode } from '@/types'
 import api from '@/api'
 import * as yaml from 'js-yaml'
 
 
-const cfProfileStore = useProfileStore()
-const cfProfileName = computed(
-  () => cfProfileStore.activeProfile.value?.name || cfProfileStore.activeProfileId.value
-)
 const nodes = ref<ProxyNode[]>([])
 const savingStatus = ref<Record<string, boolean>>({})
 const nodesContainer = ref<HTMLElement | null>(null)
@@ -475,67 +453,6 @@ const form = ref<Partial<ProxyNode>>({
   remark: ''
 })
 
-const legacyDialer = computed(() => {
-  if (!form.value.proxy_string) return form.value.params?.['dialer-proxy']
-  try {
-    let parsed: any = yaml.load(form.value.proxy_string)
-    if (Array.isArray(parsed)) parsed = parsed[0]
-    if (parsed?.proxies) parsed = parsed.proxies[0]
-    return parsed && typeof parsed === 'object' ? parsed['dialer-proxy'] : undefined
-  } catch { return undefined }
-})
-const dialerSearch = ref('')
-const dialerGroups = ref<any[]>([])
-const dialerGroupsLoading = ref(false)
-const dialerSelection = computed({
-  // Reference identity must not depend on the API object's JSON property order.
-  get: () => form.value.dialer_ref ? JSON.stringify({ type: form.value.dialer_ref.type, id: form.value.dialer_ref.id }) : 'none',
-  set: (value: string) => { form.value.dialer_ref = value === 'none' ? null : JSON.parse(value) }
-})
-const eligibleDialerCandidates = computed(() => {
-  const staticGroup = (id: string, seen = new Set<string>()): boolean => {
-    if (seen.has(id)) return false
-    const group = dialerGroups.value.find(g => g.id === id)
-    if (!group || group.enabled === false || ['subscriptions', 'aggregations', 'use', 'follow_group', 'include_all', 'include-all'].some(k => group[k]?.length || group[k] === true)) return false
-    if (group.proxies_order?.some((i: any) => !['node', 'strategy'].includes(i.type))) return false
-    const next = new Set(seen).add(id)
-    const members = group.proxies_order?.length ? group.proxies_order : [
-      ...(group.manual_nodes || (group.source === 'node' ? group.proxies : []) || []).map((id: string) => ({ type: 'node', id })),
-      ...(group.include_groups || (group.source === 'strategy' ? group.proxies : []) || []).map((id: string) => ({ type: 'strategy', id }))
-    ]
-    return members.every((member: any) => member.type === 'strategy'
-      ? staticGroup(member.id, next)
-      : ['DIRECT', 'REJECT'].includes(member.id) || nodes.value.some(n => n.id === member.id && n.enabled !== false && !n.subscription_id))
-  }
-  return [
-    ...nodes.value.filter(n => n.enabled !== false && !n.subscription_id && n.id !== form.value.id).map(n => ({ value: JSON.stringify({ type: 'node', id: n.id }), label: `节点 · ${n.name}` })),
-    ...dialerGroups.value.filter(g => staticGroup(g.id)).map(g => ({ value: JSON.stringify({ type: 'group', id: g.id }), label: `策略组 · ${g.name}` }))
-  ]
-})
-const dialerCandidates = computed(() => eligibleDialerCandidates.value.filter(c => c.label.toLowerCase().includes(dialerSearch.value.toLowerCase())))
-const selectedDialerCandidate = computed(() => eligibleDialerCandidates.value.find(c => c.value === dialerSelection.value))
-const dialerLoading = computed(() => form.value.dialer_ref?.type === 'group' && dialerGroupsLoading.value)
-const dialerUnavailable = computed(() => !!form.value.dialer_ref && !dialerLoading.value && !selectedDialerCandidate.value)
-// Resolve the trigger from resource identity, never from mounted/search-filtered items.
-const dialerLabel = computed(() => {
-  const reference = form.value.dialer_ref
-  if (!reference) return '不覆盖（保留原始值）'
-  if (dialerLoading.value) return `策略组 · ${reference.id}（加载中）`
-  if (selectedDialerCandidate.value) return selectedDialerCandidate.value.label
-  const target = reference.type === 'node'
-    ? nodes.value.find(n => n.id === reference.id)
-    : dialerGroups.value.find(g => g.id === reference.id)
-  return `${reference.type === 'node' ? '节点' : '策略组'} · ${target?.name || reference.id}（不可用）`
-})
-watch(dialogVisible, async open => {
-  if (!open) return
-  dialerSearch.value = ''
-  dialerGroups.value = []
-  dialerGroupsLoading.value = true
-  try { dialerGroups.value = (await api.get('/proxy-groups')).data }
-  catch { notify.error('加载拨号代理策略组失败') }
-  finally { dialerGroupsLoading.value = false }
-})
 
 // 节点字符串展开/收起状态
 const expandedNodes = ref<Set<string>>(new Set())
@@ -684,7 +601,7 @@ const checkSubStoreUrl = async (): Promise<boolean> => {
     const url = response.data?.sub_store_url || ''
     if (!url) {
       return await confirm(
-        '尚未配置 Sub-Store URL，节点格式转换功能将不可用。请前往「配置生成」页面配置 Sub-Store 地址。',
+        '尚未配置 Sub-Store URL，节点格式转换功能将不可用。请前往「系统设置」页面配置 Sub-Store 地址。',
         { title: '未配置 Sub-Store', confirmText: '继续添加' }
       )
     }
@@ -759,7 +676,7 @@ const batchDeleteNodes = async () => {
   }
 
   const confirmed = await confirmDanger(
-    `确定要删除选中的 ${selectedNodeIds.value.size} 个节点吗？删除后将同步清理策略组中对这些节点的引用。`,
+    `确定删除选中的 ${selectedNodeIds.value.size} 个节点吗？删除后无法恢复。仍被配置或聚合使用的节点无法删除，请先取消相关使用。`,
     { title: '批量删除节点' }
   )
   if (!confirmed) return
@@ -1149,7 +1066,7 @@ const saveBatchNodes = async () => {
 
 const deleteNode = async (row: ProxyNode) => {
   const confirmed = await confirmDanger(
-    '确定要删除该节点吗？删除后将同步清理策略组中对该节点的引用。',
+    '确定删除该节点吗？删除后无法恢复。仍被配置或聚合使用的节点无法删除，请先取消相关使用。',
     { title: '删除节点' }
   )
   if (!confirmed) return
@@ -1238,7 +1155,7 @@ const visibleNodes = computed(() => {
 })
 
 const nodesEmptyText = computed(() =>
-  nodes.value.length === 0 ? '还没有节点' : '没有匹配的节点'
+  nodes.value.length === 0 ? '添加节点链接或配置，也可一次粘贴多个节点批量添加。' : '试试其他关键词，或调整协议筛选。'
 )
 
 /* ---------- 统一拖动排序 ---------- */
@@ -1258,7 +1175,7 @@ const reorder = useReorder<any>({
 const handleSaveOrder = async () => {
   try {
     await reorder.save()
-    notify.success('顺序已保存，所有配置空间生效')
+    notify.success('顺序已保存，对所有配置生效')
   } catch (error) {
     notify.error('保存顺序失败，顺序已还原')
   }

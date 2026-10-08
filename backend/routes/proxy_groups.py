@@ -5,7 +5,8 @@ from flask import request, jsonify
 
 from backend.routes import proxy_groups_bp
 from backend.common.auth import require_auth
-from backend.common.config import get_config, save_config, update_config_transaction
+from backend.common.config import get_config, get_shared_config, update_config_transaction
+from backend.common.config_repository import ProfileRepositoryError
 from backend.utils.reorder import resolve_new_order
 from backend.utils.subscription_cache import load_subscription_cache
 
@@ -62,6 +63,17 @@ def _add_source_meta(nodes, source_type, source_id, source_name):
     return enriched
 
 
+def _clean_group_fields(group):
+    if group.get('type') == 'chain':
+        for field in ('subscriptions', 'regex', 'manual_nodes', 'aggregations', 'aggregation_regex',
+                      'include_groups', 'follow_group', 'proxies', 'source', 'source_type',
+                      'proxies_order', 'url', 'interval', 'strategy', 'lazy', 'use',
+                      'include_all', 'include-all'):
+            group.pop(field, None)
+    else:
+        group.pop('chain', None)
+
+
 @proxy_groups_bp.route('', methods=['GET', 'POST'])
 @require_auth
 def handle_proxy_groups():
@@ -73,14 +85,10 @@ def handle_proxy_groups():
 
     elif request.method == 'POST':
         group = request.json
-        from backend.utils.dialer_references import validate_dialers, DialerReferenceError
-        def create(profile):
-            profile.setdefault('proxy_groups', []).append(group)
-            validate_dialers(profile)
-        try:
-            update_config_transaction(create)
-        except DialerReferenceError as exc:
-            return jsonify({'success': False, 'message': str(exc)}), 400
+        if not isinstance(group, dict):
+            return jsonify({'success': False, 'message': '策略组请求必须是 JSON 对象'}), 400
+        _clean_group_fields(group)
+        update_config_transaction(lambda profile: profile.setdefault('proxy_groups', []).append(group))
         return jsonify({'success': True, 'data': group})
 
 
@@ -89,9 +97,11 @@ def handle_proxy_groups():
 def handle_proxy_group(group_id):
     """Single-profile transaction: validate references before any write."""
     from werkzeug.exceptions import Conflict, NotFound
-    from backend.utils.dialer_references import validate_dialers, incoming_dialers, DialerReferenceError
+    from backend.utils.dialer_references import incoming_dialers, DialerReferenceError
 
     group_data = request.get_json() if request.method == 'PUT' else None
+    if request.method == 'PUT' and not isinstance(group_data, dict):
+        return jsonify({'success': False, 'message': '策略组请求必须是 JSON 对象'}), 400
 
     def mutate(profile):
         groups = profile.setdefault('proxy_groups', [])
@@ -101,7 +111,11 @@ def handle_proxy_group(group_id):
         if group_data is not None:
             if group_data.get('id', group_id) != group_id:
                 raise Conflict('策略组 ID 不可修改，请保留原 ID')
+            merged = {**original, **group_data}
+            group_data.clear()
+            group_data.update(merged)
             group_data['id'] = group_id
+            _clean_group_fields(group_data)
             if any(g.get('id') != group_id and g.get('name') == group_data.get('name') for g in groups):
                 raise Conflict('策略组名称已存在，请使用其他名称')
         removing = request.method == 'DELETE' or not group_data.get('enabled', True)
@@ -123,7 +137,6 @@ def handle_proxy_group(group_id):
                     if rule.get('policy') == old_name:
                         rule['policy'] = new_name
             groups[groups.index(original)] = group_data
-        validate_dialers(profile)
 
     try:
         update_config_transaction(mutate)
@@ -139,7 +152,7 @@ def handle_proxy_group(group_id):
 def preview_proxy_group_regex():
     """Preview nodes matched by a proxy-group regex without saving config."""
     try:
-        config_data = get_config()
+        config_data = get_shared_config()
         payload = request.get_json() or {}
         source = payload.get('source')
         regex_text = (payload.get('regex') or '').strip()
@@ -245,5 +258,7 @@ def reorder_proxy_groups():
         return jsonify({'success': False, 'message': str(exc)}), 400
     except NotFound as exc:
         return jsonify({'success': False, 'message': exc.description}), 404
+    except ProfileRepositoryError:
+        raise
     except Exception as exc:
         return jsonify({'success': False, 'message': str(exc)}), 500

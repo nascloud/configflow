@@ -47,10 +47,10 @@ def test_subscription_required_fields_rejected_without_mutation(tmp_path, method
     client = app.test_client()
     valid = {'id': 'sub1', 'name': 'Feed', 'url': 'ss://existing-supported-protocol', 'enabled': True}
     assert client.post('/api/subscriptions', json=valid).status_code == 200
-    before = repo.get_profile('default')
+    before = repo.get_shared()
     response = getattr(client, method)('/api/subscriptions' + ('/sub1' if method == 'put' else ''), json={**valid, field: value})
     assert response.status_code == 400
-    assert repo.get_profile('default') == before
+    assert repo.get_shared() == before
 
 
 def seed_strategy(client):
@@ -80,7 +80,10 @@ def test_rename_updates_rule_and_ruleset_policies_preserves_id_refs_and_profile_
     app, repo = make_app(tmp_path)
     client = app.test_client()
     group = seed_strategy(client)
-    client.post('/api/rule-sets', json={'id': 'rs1', 'name': 'Set', 'policy': 'Old', 'enabled': False, 'url': 'https://example.test'})
+    repo.update_shared_transaction(lambda shared: shared['rule_library'].append({
+        'id': 'library', 'name': 'Set', 'source_type': 'content', 'content': 'DOMAIN,example.test',
+        'behavior': 'classical', 'enabled': True}))
+    assert client.post('/api/rule-sets', json={'id': 'rs1', 'library_rule_id': 'library', 'policy': 'Old', 'enabled': False}).status_code == 200
     client.post('/api/proxy-groups', json={'id': 'g2', 'name': 'Child', 'include_groups': ['g1'], 'follow_group': 'g1'})
     repo.create_profile({'id': 'other', 'name': 'Other'}, clone_from='default')
     other = repo.get_profile('other')
@@ -92,23 +95,23 @@ def test_rename_updates_rule_and_ruleset_policies_preserves_id_refs_and_profile_
     assert repo.get_profile('other') == other
 
 
-@pytest.mark.parametrize('failure', ['profile', 'system'])
-def test_rename_write_failure_rolls_back_all_resources(tmp_path, monkeypatch, failure):
+def test_rename_write_failure_rolls_back_all_resources(tmp_path, monkeypatch):
     app, repo = make_app(tmp_path)
     client = app.test_client()
     group = seed_strategy(client)
     before = repo.get_profile('default')
-    system_before = repo.system_file.read_bytes()
+    document = tmp_path / 'config.json'
+    system_before = document.read_bytes()
     original_write = repo._write_json
     def fail(path, data):
-        if (failure == 'system' and path == repo.system_file) or (failure == 'profile' and path == repo._profile_path('default')):
+        if path == document:
             raise OSError('injected write failure')
         return original_write(path, data)
     monkeypatch.setattr(repo, '_write_json', fail)
     response = client.put('/api/proxy-groups/g1', json={**group, 'name': 'New'})
     assert response.status_code == 500
     assert repo.get_profile('default') == before
-    assert repo.system_file.read_bytes() == system_before
+    assert document.read_bytes() == system_before
 
 
 @pytest.mark.parametrize('format', ['mihomo', 'surge'])
@@ -117,16 +120,22 @@ def test_rename_write_failure_rolls_back_all_resources(tmp_path, monkeypatch, fa
 def test_generation_rejects_dangling_policy_without_writing(tmp_path, format, preview, invalid_policy):
     app, repo = make_app(tmp_path)
     client = app.test_client()
-    client.post('/api/proxy-groups', json={'id': 'disabled', 'name': 'Disabled', 'enabled': False, 'type': 'select', 'manual_nodes': ['DIRECT']})
-    client.post('/api/rules', json={'id': 'r1', 'itemType': 'rule', 'rule_type': 'MATCH', 'policy': invalid_policy, 'enabled': True})
-    before = repo.get_profile('default')
     output = repo.generated_dir('default') / ('config.yaml' if format == 'mihomo' else 'config.conf')
-    output.write_text('last known good')
+    generated = client.post('/api/generate/' + format, json={})
+    assert generated.status_code == 200, generated.get_data(as_text=True)
+    last_known_good = output.read_bytes()
+    assert last_known_good == generated.data
+    assert last_known_good
+    assert client.post('/api/proxy-groups', json={'id': 'disabled', 'name': 'Disabled', 'enabled': False, 'type': 'select', 'manual_nodes': ['DIRECT']}).status_code == 200
+    assert client.post('/api/rules', json={'id': 'r1', 'itemType': 'rule', 'rule_type': 'MATCH', 'policy': invalid_policy, 'enabled': True}).status_code == 200
+    before = repo.get_profile('default')
+    document_before = (tmp_path / 'config.json').read_bytes()
     response = client.post('/api/generate/' + format + preview, json={})
     assert response.status_code == 400
     assert invalid_policy in response.get_json()['message']
     assert repo.get_profile('default') == before
-    assert output.read_text() == 'last known good'
+    assert output.read_bytes() == last_known_good
+    assert (tmp_path / 'config.json').read_bytes() == document_before
 
 
 @pytest.mark.parametrize('format,policy', [
@@ -137,13 +146,13 @@ def test_generation_rejects_dangling_policy_without_writing(tmp_path, format, pr
     ('mihomo', 'PROXY'), ('surge', 'Proxy'), ('mihomo', 'Auto'), ('surge', 'Auto'),
     ('mihomo', 'Node'), ('surge', 'Node'), ('mihomo', 'Old'), ('surge', 'Old'),
 ])
-def test_generation_accepts_builtins_real_nodes_groups_and_generated_defaults(tmp_path, format, policy):
+def test_generation_accepts_builtins_referenced_nodes_and_groups(tmp_path, format, policy):
     app, _ = make_app(tmp_path)
     client = app.test_client()
     client.post('/api/nodes', json={'id': 'n1', 'name': 'Node', 'type': 'http', 'server': 'example.test', 'port': 80, 'enabled': True, 'proxy_string': '{"type":"http","server":"example.test","port":80}'})
     if policy == 'Node':
         client.post('/api/proxy-groups', json={'id': 'source', 'name': 'Source', 'type': 'select', 'enabled': True, 'manual_nodes': ['n1']})
-    if format == 'mihomo' and policy in ('PROXY', 'Auto'):
+    if policy in ('PROXY', 'Proxy', 'Auto'):
         client.post('/api/proxy-groups', json={'id': 'default', 'name': policy, 'type': 'select', 'enabled': True, 'manual_nodes': ['n1']})
     if policy == 'Old':
         seed_strategy(client)

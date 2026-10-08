@@ -1,4 +1,4 @@
-"""Dialer stable-reference regressions using real profile storage and routes."""
+"""Chain regressions using shared resources and profile-local named groups."""
 import pytest
 import yaml
 from backend.test_qa_integrity import make_app
@@ -8,50 +8,71 @@ def node(id, name=None, **extra):
     return dict(id=id, name=name or id, enabled=True, type='http', server='example.test', port=80, **extra)
 
 
+def save_fixture(repo, shared, profile, profile_id='default'):
+    """Persist exactly the catalog and explicit group references supplied by a test."""
+    repo.save_shared(shared)
+    repo.save_profile(profile_id, profile)
+
+
+def add_subscription(repo, subscription):
+    repo.update_shared_transaction(lambda shared: shared['subscriptions'].append(subscription))
+
+
+def chain_group(exit_node, entry, *, id=None, name=None):
+    return {'id': id or 'chain-' + exit_node, 'name': name or 'Via ' + exit_node,
+            'type': 'chain', 'chain': {'entry': entry, 'exit': {'type': 'node', 'id': exit_node}}}
+
+
+def create_chain(client, exit_node, entry, profile='default', **kwargs):
+    response = client.post(f'/api/profiles/{profile}/proxy-groups',
+                           json=chain_group(exit_node, entry, **kwargs))
+    assert response.status_code == 200, response.get_data(as_text=True)
+    return response
+
+
+def seed_nodes(repo, nodes, *, chains=None, groups=None, aggregations=None, subscriptions=None):
+    shared = repo.get_shared()
+    shared['nodes'] = nodes
+    if subscriptions is not None:
+        shared['subscriptions'] = subscriptions
+    if aggregations is not None:
+        shared['subscription_aggregations'] = aggregations
+    profile = repo.get_profile('default')
+    profile['proxy_groups'] = list(groups or []) + list(chains or [])
+    save_fixture(repo, shared, profile)
+
+
 def test_stable_reference_emits_unused_relay_and_tracks_rename(tmp_path):
     app, repo = make_app(tmp_path)
     client = app.test_client()
-    assert client.post('/api/nodes', json=node('relay')).status_code == 200
-    assert client.post('/api/nodes', json=node('exit', dialer_ref={'type': 'node', 'id': 'relay'})).status_code == 200
-    client.post('/api/proxy-groups', json={'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit']})
+    seed_nodes(repo, [node('relay'), node('exit')])
+    create_chain(client, 'exit', {'type': 'node', 'id': 'relay'})
+    assert client.post('/api/proxy-groups', json={'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit']}).status_code == 200
     assert client.put('/api/nodes/relay', json=node('relay', 'Renamed')).status_code == 200
     response = client.post('/api/generate/mihomo/preview', json={})
     assert response.status_code == 200, response.get_data(as_text=True)
-    content = response.get_json()['content']
-    proxies = {p['name']: p for p in yaml.safe_load(content)['proxies']}
-    assert proxies['exit']['dialer-proxy'] == 'Renamed'
+    proxies = {p['name']: p for p in yaml.safe_load(response.get_json()['content'])['proxies']}
+    assert proxies['Via exit']['dialer-proxy'] == 'Renamed'
+    assert 'dialer-proxy' not in proxies['exit']
     assert 'Renamed' in proxies
+    assert all('dialer_ref' not in n for n in repo.get_shared()['nodes'])
+    assert repo.get_profile('default')['proxy_groups'][0]['chain']['entry'] == {'type': 'node', 'id': 'relay'}
 
 
-@pytest.mark.parametrize('failure', [None, 'profile', 'system'])
-def test_node_delete_cleans_related_resources_in_one_transaction(tmp_path, monkeypatch, failure):
+def test_referenced_shared_node_delete_never_cleans_profile_or_aggregation(tmp_path, monkeypatch):
+    from unittest.mock import Mock
     app, repo = make_app(tmp_path)
-    client = app.test_client()
-    client.post('/api/nodes', json=node('unused'))
-    repo.update_profile_transaction('default', lambda p: p['subscription_aggregations'].append({'id': 'agg', 'nodes': ['unused'], 'subscriptions': []}))
-    client.post('/api/proxy-groups', json={'id': 'g', 'name': 'Group', 'type': 'select', 'manual_nodes': ['unused', 'DIRECT'], 'aggregations': ['agg'], 'proxies_order': [{'type': 'node', 'id': 'unused'}, {'type': 'node', 'id': 'DIRECT'}]})
-    before = repo.get_profile('default')
-    system_before = repo.system_file.read_bytes()
-    if failure:
-        original = repo._write_json
-        def injected(path, data):
-            if path == (repo.system_file if failure == 'system' else repo._profile_path('default')):
-                raise OSError('injected write failure')
-            original(path, data)
-        monkeypatch.setattr(repo, '_write_json', injected)
-    response = client.delete('/api/nodes/unused')
-    if failure:
-        assert response.status_code == 500
-        assert repo.get_profile('default') == before
-        assert repo.system_file.read_bytes() == system_before
-    else:
-        assert response.status_code == 200
-        profile = repo.get_profile('default')
-        assert profile['nodes'] == []
-        assert profile['subscription_aggregations'][0]['enabled'] is False
-        assert profile['proxy_groups'][0]['manual_nodes'] == ['DIRECT']
-        assert profile['proxy_groups'][0]['aggregations'] == []
-        assert profile['proxy_groups'][0]['proxies_order'] == [{'type': 'node', 'id': 'DIRECT'}]
+    seed_nodes(repo, [node('used')], aggregations=[{'id': 'agg', 'name': 'Agg', 'nodes': ['used'], 'subscriptions': []}],
+               groups=[{'id': 'g', 'name': 'Group', 'type': 'select', 'manual_nodes': ['used', 'DIRECT'], 'aggregations': ['agg'], 'proxies_order': [{'type': 'node', 'id': 'used'}, {'type': 'node', 'id': 'DIRECT'}]}])
+    before = repo.path.read_bytes()
+    write = Mock(side_effect=AssertionError('Referenced deletion must not write'))
+    monkeypatch.setattr(repo, '_write_json', write)
+    response = app.test_client().delete('/api/nodes/used')
+    assert response.status_code == 409
+    assert repo.path.read_bytes() == before
+    write.assert_not_called()
+    assert repo.get_shared()['subscription_aggregations'][0]['nodes'] == ['used']
+    assert repo.get_profile('default')['proxy_groups'][0]['manual_nodes'] == ['used', 'DIRECT']
 
 
 @pytest.mark.parametrize('resource', ['nodes', 'proxy-groups'])
@@ -59,37 +80,36 @@ def test_node_delete_cleans_related_resources_in_one_transaction(tmp_path, monke
 def test_api_rejects_ambiguous_dialer_identity_without_write(tmp_path, resource, conflict):
     app, repo = make_app(tmp_path)
     client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    client.post('/api/nodes', json=node('exit', dialer_ref={'type': 'node', 'id': 'relay'}))
-    client.post('/api/proxy-groups', json={'id': 'g', 'name': 'Group', 'type': 'select', 'manual_nodes': ['DIRECT']})
-    before = repo.get_profile('default')
-    data = node('new') if resource == 'nodes' else {'id': 'new', 'name': 'New', 'type': 'select', 'manual_nodes': ['DIRECT']}
+    seed_nodes(repo, [node('relay'), node('exit')], chains=[chain_group('exit', {'type': 'node', 'id': 'relay'})],
+               groups=[{'id': 'g', 'name': 'Group', 'type': 'select', 'manual_nodes': ['DIRECT']}])
+    before = repo.path.read_bytes()
+    data = node('exit') if resource == 'nodes' else {'id': 'g', 'name': 'Group', 'type': 'select', 'manual_nodes': ['DIRECT']}
     if conflict == 'name':
         data['name'] = 'relay'
     elif conflict == 'builtin':
         data['name'] = 'DIRECT'
     else:
         data['id'] = 'relay' if resource == 'nodes' else 'g'
-    response = client.post('/api/' + resource, json=data)
-    assert response.status_code == 400
-    assert repo.get_profile('default') == before
+    response = (client.post('/api/' + resource, json=data) if conflict == 'id' else
+                client.put('/api/' + resource + ('/exit' if resource == 'nodes' else '/g'), json=data))
+    assert response.status_code == (409 if conflict == 'name' or (resource == 'nodes' and conflict == 'builtin') else 400)
+    assert repo.path.read_bytes() == before
 
 
 @pytest.mark.parametrize('resource,key', [('nodes', 'nodes'), ('proxy-groups', 'groups')])
 def test_legacy_reorder_cannot_bypass_dialer_validation(tmp_path, resource, key):
     app, repo = make_app(tmp_path)
     client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    client.post('/api/nodes', json=node('exit', dialer_ref={'type': 'node', 'id': 'relay'}))
     group = {'id': 'g', 'name': 'Group', 'type': 'select', 'manual_nodes': ['relay']}
-    client.post('/api/proxy-groups', json=group)
-    if resource == 'proxy-groups':
-        client.put('/api/nodes/exit', json=node('exit', dialer_ref={'type': 'group', 'id': 'g'}))
-    before = repo.get_profile('default')
-    replacement = [node('exit', dialer_ref={'type': 'node', 'id': 'relay'})] if resource == 'nodes' else [{**group, 'manual_nodes': ['exit']}]
+    seed_nodes(repo, [node('relay'), node('exit')], groups=[group])
+    create_chain(client, 'exit', {'type': 'node', 'id': 'relay'} if resource == 'nodes' else {'type': 'group', 'id': 'g'})
+    before = repo.get_compat_config('default')
+    replacement = [node('exit', params={'dialer-proxy': 'missing'})] if resource == 'nodes' else [{**group, 'manual_nodes': ['exit']}]
     response = client.post('/api/' + resource + '/reorder', json={key: replacement})
-    assert response.status_code == 400
-    assert repo.get_profile('default') == before
+    assert response.status_code == 200
+    after = repo.get_compat_config('default')
+    assert {n['id']: n for n in after['nodes']} == {n['id']: n for n in before['nodes']}
+    assert after['proxy_groups'] == before['proxy_groups']
 
 
 def test_surge_policy_path_never_silently_drops_raw_dialer():
@@ -102,217 +122,235 @@ def test_surge_policy_path_never_silently_drops_raw_dialer():
 def test_subscription_surge_consumer_reports_unsupported_dialer_as_400(tmp_path):
     from backend.utils.subscription_cache import save_subscription_nodes
     app, repo = make_app(tmp_path)
-    repo.update_profile_transaction('default', lambda p: p['subscriptions'].append({'id': 's', 'name': 'Cached', 'enabled': True, 'url': ''}))
-    save_subscription_nodes('s', [node('cached', params={'dialer-proxy': 'Relay'})], profile_id='default')
+    seed_nodes(repo, [], subscriptions=[{'id': 's', 'name': 'Cached', 'enabled': True, 'url': ''}])
+    save_subscription_nodes('s', [node('cached', params={'dialer-proxy': 'Relay'})])
     response = app.test_client().get('/api/subscriptions/s/proxies?format=surge')
     assert response.status_code == 400, response.get_data(as_text=True)
     assert 'Surge' in response.get_json()['message']
 
 
-def test_mcp_manage_node_documents_stable_reference_contract():
-    import json
-    from backend.mcp_server import tools
-    spec = next(t for t in tools.list_tools() if t['name'] == 'manage_node')
-    schema = json.dumps(spec, ensure_ascii=False)
-    assert 'dialer_ref' in schema
-    assert '静态' in schema
-    assert 'null' in schema
+@pytest.mark.parametrize('method', ['post', 'put'])
+def test_shared_node_api_rejects_profile_binding_without_mutation(tmp_path, method):
+    app, repo = make_app(tmp_path)
+    seed_nodes(repo, [node('relay'), node('exit')])
+    before = repo.path.read_bytes()
+    response = getattr(app.test_client(), method)('/api/nodes' + ('/exit' if method == 'put' else ''),
+        json=node('exit', dialer_ref={'type': 'node', 'id': 'relay'}))
+    assert response.status_code == 400
+    assert repo.path.read_bytes() == before
 
 
 def test_builtin_looking_resource_id_does_not_bypass_cycle_validation(tmp_path):
     app, repo = make_app(tmp_path)
     client = app.test_client()
-    client.post('/api/nodes', json=node('DIRECT', 'Relay'))
-    client.post('/api/nodes', json=node('exit', dialer_ref={'type': 'node', 'id': 'DIRECT'}))
-    before = repo.get_profile('default')
-    response = client.put('/api/nodes/DIRECT', json=node('DIRECT', 'Relay', dialer_ref={'type': 'node', 'id': 'exit'}))
-    assert response.status_code == 400
-    assert repo.get_profile('default') == before
+    seed_nodes(repo, [node('DIRECT', 'Relay'), node('exit')])
+    create_chain(client, 'exit', {'type': 'node', 'id': 'DIRECT'})
+    before = repo.path.read_bytes()
+    response = client.post('/api/proxy-groups', json=chain_group('DIRECT', {'type': 'node', 'id': 'DIRECT'}))
+    assert response.status_code == 409
+    assert repo.path.read_bytes() == before
 
 
 @pytest.mark.parametrize('storage', ['structured', 'uri'])
-def test_multihop_overlay_includes_every_dependency(tmp_path, monkeypatch, storage):
+def test_chain_includes_raw_multihop_dependencies(tmp_path, monkeypatch, storage):
     app, repo = make_app(tmp_path)
-    client = app.test_client()
-    client.post('/api/nodes', json=node('first'))
-    client.post('/api/nodes', json=node('second', dialer_ref={'type': 'node', 'id': 'first'}))
-    payload = node('exit', dialer_ref={'type': 'node', 'id': 'second'})
+    payload = node('exit')
     if storage == 'uri':
         payload['proxy_string'] = 'http://fixture.invalid:80'
-        monkeypatch.setattr('backend.utils.sub_store_client.convert_proxy_string', lambda s: {'type': 'http', 'server': 'example.test', 'port': 80, 'dialer-proxy': 'legacy-missing'})
-    client.post('/api/nodes', json=payload)
-    client.post('/api/proxy-groups', json={'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit']})
+        monkeypatch.setattr('backend.utils.sub_store_client.convert_proxy_string', lambda s: {'type': 'http', 'server': 'example.test', 'port': 80})
+    seed_nodes(repo, [node('first'), node('second', params={'dialer-proxy': 'first'}), payload])
+    client = app.test_client()
+    create_chain(client, 'exit', {'type': 'node', 'id': 'second'})
+    assert client.post('/api/proxy-groups', json={'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit'], 'include_groups': ['chain-exit']}).status_code == 200
     response = client.post('/api/generate/mihomo/preview', json={})
     assert response.status_code == 200
     proxies = {p['name']: p for p in yaml.safe_load(response.get_json()['content'])['proxies']}
-    assert set(proxies) == {'first', 'second', 'exit'}
-    assert proxies['exit']['dialer-proxy'] == 'second'
+    assert set(proxies) == {'first', 'second', 'exit', 'Via exit'}
+    assert proxies['Via exit']['dialer-proxy'] == 'second'
+    assert 'dialer-proxy' not in proxies['exit']
     assert proxies['second']['dialer-proxy'] == 'first'
 
 
 def test_scope_isolation_and_stable_group_rename(tmp_path):
     app, repo = make_app(tmp_path)
     client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
     group = {'id': 'g', 'name': 'RelayGroup', 'type': 'select', 'manual_nodes': ['relay']}
-    client.post('/api/proxy-groups', json=group)
-    client.post('/api/nodes', json=node('exit', dialer_ref={'type': 'group', 'id': 'g'}))
+    seed_nodes(repo, [node('relay'), node('exit')], groups=[group])
+    create_chain(client, 'exit', {'type': 'group', 'id': 'g'})
     repo.create_profile({'id': 'other', 'name': 'Other'})
-    before = repo.get_profile('other')
-    response = client.post('/api/nodes', headers={'X-ConfigFlow-Profile': 'other'}, json=node('foreign', dialer_ref={'type': 'node', 'id': 'relay'}))
-    assert response.status_code == 400
-    assert repo.get_profile('other') == before
-    client.put('/api/proxy-groups/g', json={**group, 'name': 'RenamedGroup'})
-    client.post('/api/proxy-groups', json={'id': 'e', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit']})
+    create_chain(client, 'exit', {'type': 'node', 'id': 'relay'}, profile='other', name='Other route')
+    other = repo.get_profile('other')
+    assert client.put('/api/proxy-groups/g', json={**group, 'name': 'RenamedGroup'}).status_code == 200
+    assert client.post('/api/proxy-groups', json={'id': 'e', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit']}).status_code == 200
     response = client.post('/api/generate/mihomo/preview', json={})
     proxies = {p['name']: p for p in yaml.safe_load(response.get_json()['content'])['proxies']}
-    assert proxies['exit']['dialer-proxy'] == 'RenamedGroup'
-    assert repo.get_profile('other') == before
+    assert proxies['Via exit']['dialer-proxy'] == 'RenamedGroup'
+    assert 'dialer-proxy' not in proxies['exit']
+    assert repo.get_profile('other') == other
+    response = client.post('/api/profiles/other/generate/mihomo/preview', json={})
+    assert response.status_code == 200, response.get_data(as_text=True)
+    other_proxies = {p['name']: p for p in yaml.safe_load(response.get_json()['content'])['proxies']}
+    assert other_proxies['Other route']['dialer-proxy'] == 'relay'
+    assert 'Via exit' not in other_proxies
 
 
-@pytest.mark.parametrize('failure', ['profile', 'system'])
-def test_node_put_failure_rolls_back_dialer_and_preserves_id(tmp_path, monkeypatch, failure):
+def test_editing_and_deleting_chain_keeps_direct_exit_and_other_profile(tmp_path):
     app, repo = make_app(tmp_path)
+    seed_nodes(repo, [node('relay'), node('other'), node('exit')],
+               groups=[{'id': 'direct', 'name': 'Direct exit', 'type': 'select', 'manual_nodes': ['exit']}])
     client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    client.post('/api/nodes', json=node('exit'))
-    before = repo.get_profile('default')
+    create_chain(client, 'exit', {'type': 'node', 'id': 'relay'})
+    repo.clone_profile('default', {'id': 'other', 'name': 'Other'})
+    shared_before = repo.get_shared()
+    other_before = repo.get_profile('other')
+    response = client.put('/api/proxy-groups/chain-exit',
+                          json=chain_group('exit', {'type': 'node', 'id': 'other'}, name='Alternate route'))
+    assert response.status_code == 200, response.get_data(as_text=True)
+    response = client.post('/api/generate/mihomo/preview', json={})
+    assert response.status_code == 200, response.get_data(as_text=True)
+    proxies = {p['name']: p for p in yaml.safe_load(response.get_json()['content'])['proxies']}
+    assert proxies['Alternate route']['dialer-proxy'] == 'other'
+    assert 'dialer-proxy' not in proxies['exit']
+    assert 'relay' not in proxies
+    assert client.delete('/api/proxy-groups/chain-exit').status_code == 200
+    response = client.post('/api/generate/mihomo/preview', json={})
+    assert response.status_code == 200, response.get_data(as_text=True)
+    proxies = yaml.safe_load(response.get_json()['content'])['proxies']
+    assert [p['name'] for p in proxies] == ['exit']
+    assert 'dialer-proxy' not in proxies[0]
+    assert repo.get_shared() == shared_before
+    assert repo.get_profile('other') == other_before
+
+
+def test_chain_write_failure_rolls_back_atomic_document(tmp_path, monkeypatch):
+    app, repo = make_app(tmp_path)
+    seed_nodes(repo, [node('relay'), node('exit')])
+    before = repo.path.read_bytes()
     original = repo._write_json
     def injected(path, data):
-        if path == (repo.system_file if failure == 'system' else repo._profile_path('default')):
+        if path == repo.path:
             raise OSError('injected write failure')
         original(path, data)
     monkeypatch.setattr(repo, '_write_json', injected)
-    response = client.put('/api/nodes/exit', json=node('exit', dialer_ref={'type': 'node', 'id': 'relay'}))
+    response = app.test_client().post('/api/proxy-groups', json=chain_group('exit', {'type': 'node', 'id': 'relay'}))
     assert response.status_code == 500
-    assert repo.get_profile('default') == before
+    assert repo.path.read_bytes() == before
 
 
-def test_same_profile_concurrent_cycle_race_commits_only_one_edge(tmp_path):
+def test_concurrent_chain_creation_preserves_independent_routes(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     app, repo = make_app(tmp_path)
-    client = app.test_client()
-    client.post('/api/nodes', json=node('a'))
-    client.post('/api/nodes', json=node('b'))
-    def update(pair):
-        source, target = pair
+    seed_nodes(repo, [node('a'), node('b')])
+    def create(pair):
+        exit_node, entry = pair
         with app.test_client() as client:
-            return client.put('/api/nodes/' + source, json=node(source, dialer_ref={'type': 'node', 'id': target})).status_code
+            return client.post('/api/proxy-groups', json=chain_group(exit_node, {'type': 'node', 'id': entry})).status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
-        codes = list(pool.map(update, [('a', 'b'), ('b', 'a')]))
-    assert sorted(codes) == [200, 400]
-    assert sum(n.get('dialer_ref') is not None for n in repo.get_profile('default')['nodes']) == 1
+        codes = list(pool.map(create, [('a', 'b'), ('b', 'a')]))
+    assert codes == [200, 200]
+    assert {g['id'] for g in repo.get_profile('default')['proxy_groups']} == {'chain-a', 'chain-b'}
+    response = app.test_client().post('/api/generate/mihomo/preview', json={})
+    assert response.status_code == 200, response.get_data(as_text=True)
+    proxies = {p['name']: p for p in yaml.safe_load(response.get_json()['content'])['proxies']}
+    assert proxies['Via a']['dialer-proxy'] == 'b'
+    assert proxies['Via b']['dialer-proxy'] == 'a'
+    assert 'dialer-proxy' not in proxies['a']
+    assert 'dialer-proxy' not in proxies['b']
 
 
 @pytest.mark.parametrize('operation', ['delete', 'disable'])
-def test_disabled_source_still_protects_its_stable_reference(tmp_path, operation):
+def test_disabled_chain_still_protects_its_stable_reference(tmp_path, operation):
     app, repo = make_app(tmp_path)
+    seed_nodes(repo, [node('relay'), node('exit')], chains=[{**chain_group('exit', {'type': 'node', 'id': 'relay'}), 'enabled': False}])
+    before = repo.path.read_bytes()
     client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    client.post('/api/nodes', json=node('exit', dialer_ref={'type': 'node', 'id': 'relay'}))
-    client.put('/api/nodes/exit', json={**node('exit', dialer_ref={'type': 'node', 'id': 'relay'}), 'enabled': False})
-    before = repo.get_profile('default')
     response = client.delete('/api/nodes/relay') if operation == 'delete' else client.put('/api/nodes/relay', json={**node('relay'), 'enabled': False})
     assert response.status_code == 409
-    assert repo.get_profile('default') == before
+    assert repo.path.read_bytes() == before
 
 
-def test_disabling_source_dialer_is_allowed_and_preserves_metadata(tmp_path):
+def test_disabling_selected_shared_source_preserves_binding_and_metadata(tmp_path):
     app, repo = make_app(tmp_path)
-    client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    payload = node('exit', dialer_ref={'type': 'node', 'id': 'relay'})
-    client.post('/api/nodes', json=payload)
-    response = client.put('/api/nodes/exit', json={**payload, 'enabled': False})
-    assert response.status_code == 200
-    assert repo.get_profile('default')['nodes'][1]['dialer_ref'] == payload['dialer_ref']
+    seed_nodes(repo, [node('relay'), node('exit')], chains=[chain_group('exit', {'type': 'node', 'id': 'relay'})])
+    before = repo.path.read_bytes()
+    response = app.test_client().put('/api/nodes/exit', json={**node('exit'), 'enabled': False})
+    assert response.status_code == 409
+    assert repo.path.read_bytes() == before
+    assert repo.get_profile('default')['proxy_groups'][0]['chain'] == {'entry': {'type': 'node', 'id': 'relay'}, 'exit': {'type': 'node', 'id': 'exit'}}
 
 
 @pytest.mark.parametrize('kind', ['aggregation_relay', 'legacy_static'])
 def test_dependency_closure_emits_relays_not_in_direct_selection(tmp_path, kind):
     app, repo = make_app(tmp_path)
-    client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    client.post('/api/nodes', json=node('exit', dialer_ref={'type': 'node', 'id': 'relay'}))
-    if kind == 'aggregation_relay':
-        repo.update_profile_transaction('default', lambda p: p['subscription_aggregations'].append({'id': 'agg', 'name': 'Agg', 'nodes': ['relay', 'exit'], 'subscriptions': []}))
-        group = {'id': 'g', 'name': 'Entry', 'type': 'select', 'aggregations': ['agg']}
-    else:
-        group = {'id': 'g', 'name': 'Entry', 'type': 'select', 'source': 'node', 'proxies': ['exit']}
-    client.post('/api/proxy-groups', json=group)
-    response = client.post('/api/generate/mihomo/preview', json={})
+    aggregations = [{'id': 'agg', 'name': 'Agg', 'nodes': ['relay', 'exit'], 'subscriptions': []}] if kind == 'aggregation_relay' else []
+    group = {'id': 'g', 'name': 'Entry', 'type': 'select', 'aggregations': ['agg']} if aggregations else {'id': 'g', 'name': 'Entry', 'type': 'select', 'source': 'node', 'proxies': ['exit']}
+    seed_nodes(repo, [node('relay'), node('exit')], aggregations=aggregations, groups=[group], chains=[chain_group('exit', {'type': 'node', 'id': 'relay'})])
+    response = app.test_client().post('/api/generate/mihomo/preview', json={})
     assert response.status_code == 200, response.get_data(as_text=True)
-    proxies = yaml.safe_load(response.get_json()['content'])['proxies']
-    assert 'relay' in {p['name'] for p in proxies}
+    assert 'relay' in {p['name'] for p in yaml.safe_load(response.get_json()['content'])['proxies']}
 
 
 @pytest.mark.parametrize('format', ['mihomo', 'surge'])
 def test_provider_rejects_untranslatable_dialer_before_write(tmp_path, monkeypatch, format):
     app, repo = make_app(tmp_path)
-    client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    payload = node('exit', dialer_ref={'type': 'node', 'id': 'relay'}) if format == 'surge' else node('exit', proxy_string='http://fixture.invalid:80')
-    client.post('/api/nodes', json=payload)
-    agg = {'id': 'agg', 'name': 'Agg', 'nodes': ['exit'], 'subscriptions': []}
-    repo.update_profile_transaction('default', lambda p: p['subscription_aggregations'].append(agg))
-    client.post('/api/proxy-groups', json={'id': 'g', 'name': 'Entry', 'type': 'select', 'aggregations': ['agg']})
+    payload = node('exit') if format == 'surge' else node('exit', proxy_string='http://fixture.invalid:80')
+    seed_nodes(repo, [node('relay'), payload], chains=[chain_group('exit', {'type': 'node', 'id': 'relay'})] if format == 'surge' else [],
+               aggregations=[{'id': 'agg', 'name': 'Agg', 'nodes': ['exit'], 'subscriptions': []}],
+               groups=[{'id': 'g', 'name': 'Entry', 'type': 'select', 'aggregations': ['agg']}])
     monkeypatch.setattr('backend.utils.sub_store_client.convert_proxy_string', lambda s: {'type': 'http', 'server': 'example.test', 'port': 80, 'dialer-proxy': 'gone'})
-    output = repo.profile_dir('default') / 'providers' / 'agg.yaml'
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text('known good')
-    response = client.get('/api/aggregations/agg/provider' + ('?format=surge' if format == 'surge' else ''))
+    output = repo.write_profile_text('default', 'providers/agg.yaml', 'known good')
+    response = app.test_client().get('/api/aggregations/agg/provider' + ('?format=surge' if format == 'surge' else ''))
     assert response.status_code == 400, response.get_data(as_text=True)
     assert output.read_text() == 'known good'
 
 
-def test_aggregation_manual_dialer_overlay_and_main_dependency_closure(tmp_path):
+def test_aggregation_manual_node_remains_direct_beside_chain(tmp_path):
     from pathlib import Path
     from backend.routes.aggregations import generate_aggregation_provider
     app, repo = make_app(tmp_path)
-    client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    client.post('/api/nodes', json=node('exit', dialer_ref={'type': 'node', 'id': 'relay'}))
     agg = {'id': 'agg', 'name': 'Agg', 'enabled': True, 'nodes': ['exit'], 'subscriptions': []}
-    repo.update_profile_transaction('default', lambda p: p['subscription_aggregations'].append(agg))
-    client.post('/api/proxy-groups', json={'id': 'g', 'name': 'Entry', 'type': 'select', 'aggregations': ['agg']})
-    with app.test_request_context('/api/subscription-aggregations/agg/proxies'):
+    seed_nodes(repo, [node('relay'), node('exit')], aggregations=[agg], chains=[chain_group('exit', {'type': 'node', 'id': 'relay'})],
+               groups=[{'id': 'g', 'name': 'Entry', 'type': 'select', 'aggregations': ['agg']}])
+    with app.test_request_context('/api/profiles/default/aggregations/agg/provider'):
         result = generate_aggregation_provider(agg)
-    proxies = yaml.safe_load(Path(result['file_path']).read_text())['proxies']
-    assert proxies[0]['dialer-proxy'] == 'relay'
-    response = client.post('/api/generate/mihomo/preview', json={})
+    provider_proxies = yaml.safe_load(Path(result['file_path']).read_text())['proxies']
+    assert provider_proxies[0]['name'] == 'exit'
+    assert 'dialer-proxy' not in provider_proxies[0]
+    response = app.test_client().post('/api/generate/mihomo/preview', json={})
     assert response.status_code == 200, response.get_data(as_text=True)
     config = yaml.safe_load(response.get_json()['content'])
-    assert 'relay' in {p['name'] for p in config['proxies']}
+    proxies = {p['name']: p for p in config['proxies']}
+    assert proxies['Via exit']['dialer-proxy'] == 'relay'
+    assert 'relay' in proxies
     assert 'Agg' in config['proxy-providers']
 
 
 @pytest.mark.parametrize('format', ['mihomo', 'surge'])
 @pytest.mark.parametrize('failure', ['missing', 'cycle', 'reserved', 'duplicate', 'unsupported_surge', 'uri'])
-def test_generation_rejects_invalid_topology_without_artifact_write(tmp_path, monkeypatch, format, failure):
+def test_invalid_topology_rejected_without_artifact_write(tmp_path, monkeypatch, format, failure):
     app, repo = make_app(tmp_path)
-    nodes = [node('relay'), node('exit', dialer_ref={'type': 'node', 'id': 'relay'})]
-    if failure == 'missing':
-        nodes[1]['dialer_ref']['id'] = 'gone'
-    elif failure == 'cycle':
-        nodes[0]['dialer_ref'] = {'type': 'node', 'id': 'exit'}
-    elif failure == 'reserved':
-        nodes[0]['name'] = 'DIRECT'
-    elif failure == 'duplicate':
-        nodes[0]['name'] = 'exit'
-    elif failure == 'uri':
-        nodes[1].pop('dialer_ref')
+    nodes = [node('relay'), node('exit')]
+    if failure == 'uri':
         nodes[1]['proxy_string'] = 'http://fixture.invalid:80'
-        monkeypatch.setattr('backend.utils.sub_store_client.convert_proxy_string', lambda s: {'type': 'http', 'server': 'example.test', 'port': 80, 'dialer-proxy': 'gone'})
-    elif format == 'mihomo':
-        pytest.skip('Valid stable topology is supported by Mihomo')
-    def seed(profile):
-        profile['nodes'] = nodes
-        profile['proxy_groups'] = [{'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit']}]
-    repo.update_profile_transaction('default', seed)
-    output = repo.generated_dir('default') / ('config.yaml' if format == 'mihomo' else 'config.conf')
-    output.write_text('known good')
-    response = app.test_client().post('/api/generate/' + format, json={})
-    assert response.status_code == 400, response.get_data(as_text=True)
+    seed_nodes(repo, nodes, groups=[{'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit']}])
+    client = app.test_client()
+    if failure != 'uri':
+        create_chain(client, 'exit', {'type': 'node', 'id': 'relay'})
+    output = repo.write_generated('default', 'config.yaml' if format == 'mihomo' else 'config.conf', 'known good')
+    before = repo.path.read_bytes()
+    if failure in ('missing', 'cycle'):
+        entry = {'type': 'node', 'id': 'gone' if failure == 'missing' else 'exit'}
+        response = client.put('/api/proxy-groups/chain-exit', json=chain_group('exit', entry))
+    elif failure in ('reserved', 'duplicate'):
+        response = client.put('/api/nodes/relay', json=node('relay', 'DIRECT' if failure == 'reserved' else 'exit'))
+    else:
+        if failure == 'uri':
+            monkeypatch.setattr('backend.utils.sub_store_client.convert_proxy_string', lambda s: {'type': 'http', 'server': 'example.test', 'port': 80, 'dialer-proxy': 'gone'})
+        elif format == 'mihomo':
+            pytest.skip('Valid stable topology is supported by Mihomo')
+        response = client.post('/api/generate/' + format, json={})
+    assert response.status_code == (409 if failure in ('missing', 'cycle', 'reserved', 'duplicate') else 400), response.get_data(as_text=True)
+    assert repo.path.read_bytes() == before
     assert output.read_text() == 'known good'
 
 
@@ -321,9 +359,9 @@ def test_generation_rejects_invalid_topology_without_artifact_write(tmp_path, mo
 def test_raw_dialer_validation_and_precedence(tmp_path, storage, operation):
     import json
     app, repo = make_app(tmp_path)
+    seed_nodes(repo, [node('relay'), node('other'), node('exit')],
+               groups=[{'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit']}])
     client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    client.post('/api/nodes', json=node('other'))
     raw = {'type': 'http', 'server': 'example.test', 'port': 80, 'dialer-proxy': 'missing' if operation == 'missing' else 'relay'}
     payload = node('exit')
     if storage == 'params':
@@ -331,95 +369,109 @@ def test_raw_dialer_validation_and_precedence(tmp_path, storage, operation):
     else:
         payload['proxy_string'] = json.dumps(raw) if storage == 'json' else yaml.safe_dump(raw)
     if operation == 'override':
-        payload['dialer_ref'] = {'type': 'node', 'id': 'other'}
-    before = repo.get_profile('default')
-    response = client.post('/api/nodes', json=payload)
+        create_chain(client, 'exit', {'type': 'node', 'id': 'other'})
+    before = repo.path.read_bytes()
+    response = client.put('/api/nodes/exit', json=payload)
     if operation == 'missing':
-        assert response.status_code == 400
-        assert repo.get_profile('default') == before
+        assert response.status_code == 409
+        assert repo.path.read_bytes() == before
         return
     assert response.status_code == 200
     if operation in ('cycle', 'rename', 'delete', 'disable'):
-        before = repo.get_profile('default')
-        data = node('relay')
+        before = repo.path.read_bytes()
         if operation == 'cycle':
-            data['dialer_ref'] = {'type': 'node', 'id': 'exit'}
-        elif operation == 'rename':
-            data['name'] = 'Renamed'
-        elif operation == 'disable':
-            data['enabled'] = False
-        response = client.delete('/api/nodes/relay') if operation == 'delete' else client.put('/api/nodes/relay', json=data)
-        assert response.status_code == (409 if operation in ('delete', 'disable') else 400)
-        assert repo.get_profile('default') == before
+            response = client.put('/api/nodes/relay', json=node('relay', params={'dialer-proxy': 'exit'}))
+        elif operation == 'delete':
+            response = client.delete('/api/nodes/relay')
+        else:
+            data = node('relay', 'Renamed') if operation == 'rename' else {**node('relay'), 'enabled': False}
+            response = client.put('/api/nodes/relay', json=data)
+        assert response.status_code == 409
+        assert repo.path.read_bytes() == before
     else:
-        client.post('/api/proxy-groups', json={'id': 'g', 'name': 'Entry', 'type': 'select', 'manual_nodes': ['exit']})
         response = client.post('/api/generate/mihomo/preview', json={})
         assert response.status_code == 200
         proxies = {p['name']: p for p in yaml.safe_load(response.get_json()['content'])['proxies']}
-        target = 'other' if operation == 'override' else 'relay'
-        assert proxies['exit']['dialer-proxy'] == target
-        assert target in proxies
+        assert proxies['exit']['dialer-proxy'] == 'relay'
+        assert 'relay' in proxies
+        if operation == 'override':
+            assert proxies['Via exit']['dialer-proxy'] == 'other'
+            assert 'other' in proxies
 
 
-@pytest.mark.parametrize('ref', [False, '', [], {}, {'type': 'bad', 'id': 'relay'}, {'type': 'node', 'id': 3}, {'type': 'node', 'id': 'missing'}, {'type': 'node', 'id': 'exit'}, {'type': 'group', 'id': 'dynamic'}])
-def test_invalid_stable_reference_rejected_without_write(tmp_path, ref):
+@pytest.mark.parametrize('ref,status', [
+    (False, 400), ('', 400), ([], 400), ({}, 400),
+    ({'type': 'bad', 'id': 'relay'}, 400), ({'type': 'node', 'id': 3}, 400),
+    ({'type': 'node', 'id': 'missing'}, 409), ({'type': 'node', 'id': 'exit'}, 409),
+    ({'type': 'group', 'id': 'missing-group'}, 409),
+])
+def test_invalid_stable_reference_rejected_without_write(tmp_path, ref, status):
     app, repo = make_app(tmp_path)
-    client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    client.post('/api/proxy-groups', json={'id': 'dynamic', 'name': 'Dynamic', 'subscriptions': ['sub']})
-    before = repo.get_profile('default')
-    response = client.post('/api/nodes', json=node('exit', dialer_ref=ref))
-    assert response.status_code == 400, response.get_data(as_text=True)
-    assert repo.get_profile('default') == before
+    seed_nodes(repo, [node('relay'), node('exit')])
+    before = repo.path.read_bytes()
+    response = app.test_client().post('/api/proxy-groups', json=chain_group('exit', ref))
+    assert response.status_code == status, response.get_data(as_text=True)
+    assert repo.path.read_bytes() == before
 
 
 @pytest.mark.parametrize('operation', ['delete', 'disable', 'cycle', 'id'])
 def test_node_mutations_protect_references_atomically(tmp_path, operation):
     app, repo = make_app(tmp_path)
+    seed_nodes(repo, [node('relay'), node('exit')], chains=[chain_group('exit', {'type': 'node', 'id': 'relay'})])
+    before = repo.path.read_bytes()
     client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    client.post('/api/nodes', json=node('exit', dialer_ref={'type': 'node', 'id': 'relay'}))
-    before = repo.get_profile('default')
     if operation == 'delete':
         response = client.delete('/api/nodes/relay')
+    elif operation == 'cycle':
+        response = client.put('/api/proxy-groups/chain-exit', json=chain_group('exit', {'type': 'node', 'id': 'exit'}))
     else:
-        data = node('relay')
-        if operation == 'disable':
-            data['enabled'] = False
-        elif operation == 'cycle':
-            data['dialer_ref'] = {'type': 'node', 'id': 'exit'}
-        else:
-            data['id'] = 'spoof'
+        data = {**node('relay'), 'enabled': False} if operation == 'disable' else node('spoof')
         response = client.put('/api/nodes/relay', json=data)
-    assert response.status_code == (409 if operation in ('delete', 'disable') else 400)
-    assert repo.get_profile('default') == before
+    assert response.status_code == (400 if operation == 'id' else 409)
+    assert repo.path.read_bytes() == before
 
 
-@pytest.mark.parametrize('operation', ['node_group_cycle', 'membership_cycle', 'delete', 'disable', 'dynamic_nested'])
-def test_static_group_dialer_validates_all_paths(tmp_path, operation):
+@pytest.mark.parametrize('operation', ['direct_exit_member', 'membership_cycle', 'delete', 'disable', 'dynamic_nested'])
+def test_group_dialer_validates_all_paths(tmp_path, operation):
     app, repo = make_app(tmp_path)
-    client = app.test_client()
-    client.post('/api/nodes', json=node('relay'))
-    client.post('/api/nodes', json=node('exit'))
     group = {'id': 'g', 'name': 'RelayPool', 'type': 'select', 'manual_nodes': ['relay', 'DIRECT']}
-    if operation == 'node_group_cycle':
+    if operation == 'direct_exit_member':
         group['manual_nodes'].append('exit')
-    client.post('/api/proxy-groups', json=group)
-    response = client.put('/api/nodes/exit', json=node('exit', dialer_ref={'type': 'group', 'id': 'g'}))
-    if operation == 'node_group_cycle':
-        assert response.status_code == 400
+    seed_nodes(repo, [node('relay'), node('exit')], groups=[group], subscriptions=[{'id': 'sub', 'name': 'Feed', 'url': ''}])
+    client = app.test_client()
+    response = client.post('/api/proxy-groups', json=chain_group('exit', {'type': 'group', 'id': 'g'}))
+    assert response.status_code == 200, response.get_data(as_text=True)
+    if operation == 'direct_exit_member':
+        response = client.post('/api/generate/mihomo/preview', json={})
+        assert response.status_code == 200, response.get_data(as_text=True)
+        proxies = {p['name']: p for p in yaml.safe_load(response.get_json()['content'])['proxies']}
+        assert proxies['Via exit']['dialer-proxy'] == 'RelayPool'
+        assert 'dialer-proxy' not in proxies['exit']
         return
-    assert response.status_code == 200
-    before = repo.get_profile('default')
+    before = repo.path.read_bytes()
     if operation == 'delete':
         response = client.delete('/api/proxy-groups/g')
     elif operation == 'disable':
         response = client.put('/api/proxy-groups/g', json={**group, 'enabled': False})
     elif operation == 'membership_cycle':
-        response = client.put('/api/proxy-groups/g', json={**group, 'manual_nodes': ['exit', 'relay']})
+        response = client.put('/api/proxy-groups/g', json={**group, 'include_groups': ['chain-exit']})
     else:
-        client.post('/api/proxy-groups', json={'id': 'd', 'name': 'Dynamic', 'subscriptions': ['sub']})
-        before = repo.get_profile('default')
+        from backend.utils.subscription_cache import save_subscription_nodes
+        save_subscription_nodes('sub', [node('cached', 'Remote')])
+        assert client.post('/api/proxy-groups', json={'id': 'd', 'name': 'Dynamic', 'type': 'select', 'subscriptions': ['sub']}).status_code == 200
         response = client.put('/api/proxy-groups/g', json={**group, 'include_groups': ['d']})
-    assert response.status_code == (409 if operation in ('delete', 'disable') else 400)
-    assert repo.get_profile('default') == before
+        assert response.status_code == 200, response.get_data(as_text=True)
+        shared_before = repo.get_shared()
+        response = client.post('/api/generate/mihomo/preview', json={})
+        assert response.status_code == 200, response.get_data(as_text=True)
+        config = yaml.safe_load(response.get_json()['content'])
+        proxies = {proxy['name']: proxy for proxy in config['proxies']}
+        groups = {item['name']: item for item in config['proxy-groups']}
+        assert proxies['Via exit']['dialer-proxy'] == 'RelayPool'
+        assert 'Dynamic' in groups['RelayPool']['proxies']
+        assert groups['Dynamic']['use'] == ['Feed']
+        assert 'Feed' in config['proxy-providers']
+        assert repo.get_shared() == shared_before
+        return
+    assert response.status_code == 409
+    assert repo.path.read_bytes() == before

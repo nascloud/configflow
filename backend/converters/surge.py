@@ -22,13 +22,9 @@ def get_aggregation_nodes(agg_id: str, config_data: Dict[str, Any]) -> List[Dict
         return []
 
     try:
-        # 生成 provider 文件（会自动重新解析订阅）
-        result = generate_aggregation_provider(aggregation)
-        file_path = result['file_path']
-
-        # 读取生成的 YAML 文件
-        with open(file_path, 'r', encoding='utf-8') as f:
-            provider_data = yaml.safe_load(f)
+        # Render from the bound profile snapshot, never the request selection.
+        result = generate_aggregation_provider(aggregation, config=config_data, persist=False)
+        provider_data = yaml.safe_load(result['content'])
 
         proxies = provider_data.get('proxies', [])
         logger.info(f"从聚合 '{aggregation['name']}' 获取了 {len(proxies)} 个节点")
@@ -52,6 +48,8 @@ def split_rules_and_rulesets(config_data: Dict[str, Any]) -> tuple:
     rule_sets = []
 
     for item in all_rules:
+        if not item.get('enabled', True) or not item.get('library_enabled', True):
+            continue
         item_type = item.get('itemType', '')
         if item_type == 'rule':
             rules.append(item)
@@ -327,7 +325,7 @@ def generate_surge_config(config_data: Dict[str, Any], base_url: str = '') -> st
 
     # 遍历合并后的规则数组，保持用户配置的顺序
     for item in config_data.get('rule_configs', []):
-        if not item.get('enabled', True):
+        if not item.get('enabled', True) or not item.get('library_enabled', True):
             continue
 
         item_type = item.get('itemType', '')
