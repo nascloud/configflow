@@ -360,38 +360,177 @@ class ProfileRepository:
     def _initialize_locked(self):
         if self.path.exists() and not self.path.is_file():
             raise ProfileValidationError('config.json must be a regular file')
+        system_file = self.data_dir / 'system.json'
+        has_layout = system_file.exists() or system_file.with_suffix('.json.bak').exists()
+        if has_layout:
+            for path in (self.path, self.path.with_name('config.json.bak'), self.profiles_dir):
+                self._check_migration_path(path)
         current = None
         if self.path.exists() or self.path.with_name('config.json.bak').exists():
             try:
                 current = self._read_json(self.path)
             except ProfileRepositoryError:
-                current = self._read_recoverable(
-                    self.path, lambda value: self._validate_document(self._convert_import(value)))
-            if current.get('schema_version') == self.SCHEMA_VERSION:
-                current = self._read_recoverable(
-                    self.path, lambda value: self._validate_document(self._convert_import(value)))
-            if current.get('schema_version') == self.SCHEMA_VERSION:
+                # A stale single-file config is not authoritative in a split
+                # installation. Prefer a committed current-format backup, if any.
+                if has_layout:
+                    backup = self.path.with_name('config.json.bak')
+                    if backup.is_file():
+                        try:
+                            candidate = self._read_json(backup)
+                        except ProfileRepositoryError:
+                            candidate = {}
+                        if candidate.get('schema_version') is not None:
+                            current = self._read_recoverable(
+                                self.path, lambda value: self._validate_document(self._convert_import(value)))
+                else:
+                    current = self._read_recoverable(
+                        self.path, lambda value: self._validate_document(self._convert_import(value)))
+            if current is not None and current.get('schema_version') == self.SCHEMA_VERSION:
+                current = self._read_recoverable(self.path, self._validate_document)
                 if self._ensure_rule_proxy_token(current['system']):
                     self._write_json(self.path, current)
                 return
-        source = current if current is not None else (self._initial_config_factory or self._legacy_defaults)()
-        document = self._convert_import(source)
+        split_source = None
+        if has_layout and (current is None or current.get('schema_version') is None):
+            split_source = self._read_profile_layout()
+            source = split_source
+        else:
+            if current is None or current.get('schema_version') is None:
+                if any(self.profiles_dir.glob('*/config.json')) or any(self.profiles_dir.glob('*/config.json.bak')):
+                    raise ProfileValidationError('发现旧配置文件但缺少 system.json 索引；请恢复完整数据目录，不能初始化空配置')
+            source = current if current is not None else (self._initial_config_factory or self._legacy_defaults)()
+        remaps = {}
+        document = self._convert_import(source, resource_remaps=remaps)
         self._ensure_rule_proxy_token(document['system'])
         self._validate_document(document)
-        if current is not None:
-            self._snapshot('migration')
-        self._migrate_raw_cache()
+        if current is not None or split_source is not None:
+            self._snapshot('migration', split_source['profiles'] if split_source else ())
+        if split_source is not None:
+            self._migrate_profile_cache(split_source, document, remaps)
+        else:
+            self._migrate_raw_cache()
         with self._commit_guard():
             self._write_json(self.path, document)
 
+    def _check_migration_path(self, path):
+        for part in (path, *path.parents):
+            if part == self.data_dir:
+                return
+            if part.is_symlink():
+                raise ProfileValidationError('旧配置路径不能是符号链接')
+        raise ProfileValidationError('旧配置路径不在数据目录内')
 
-    def _snapshot(self, reason):
+    def _read_legacy_json(self, path, validator):
+        """Read old files/backups without repairing them before migration commits."""
+        error = None
+        candidates = (path, path.with_name(path.name + '.bak'))
+        for candidate in candidates:
+            self._check_migration_path(candidate)
+        for candidate in candidates:
+            try:
+                value = self._read_json(candidate)
+            except ProfileRepositoryError as failure:
+                if error is None:
+                    error = failure
+                continue
+            # A readable but unsupported/invalid index is not a corrupt JSON
+            # file: do not silently downgrade it to an older backup.
+            validator(value)
+            return value
+        raise error
+
+    @classmethod
+    def _validate_legacy_index(cls, system):
+        if system.get('schema_version') != 2:
+            raise ProfileValidationError('不支持的旧配置索引版本；请保留原数据，不要重置')
+        profiles = _items_by_id(system.get('profiles'), '旧配置索引')
+        if 'default' not in profiles:
+            raise ProfileValidationError('旧配置索引缺少默认配置')
+        for profile_id in profiles:
+            cls.validate_profile_id(profile_id)
+
+    def _read_profile_layout(self):
+        system = self._read_legacy_json(self.data_dir / 'system.json', self._validate_legacy_index)
+        profiles = {}
+        for metadata in system['profiles']:
+            profile_id = metadata['id']
+            path = self.profiles_dir / profile_id / 'config.json'
+            profiles[profile_id] = self._read_legacy_json(path, lambda value: None)
+        return {'schema_version': 2, 'system': system, 'profiles': profiles}
+
+    def _migrate_profile_cache(self, source, document, remaps):
+        """Copy only caches belonging to the selected old resource definitions."""
+        from backend.utils.rule_utils import sanitize_rule_name
+        libraries = {item['id']: item for item in document['shared']['rule_library']}
+        targets = set()
+        copied = set()
+        for profile_id, old in source['profiles'].items():
+            for subscription in old.get('subscriptions', []):
+                old_id = subscription.get('id')
+                new_id = remaps[profile_id]['subscriptions'].get(old_id)
+                if new_id is None:
+                    continue
+                filename = old_id.replace('/', '_').replace('\\', '_') + '.json'
+                path = self.profile_path(profile_id, 'subscribes/' + filename)
+                target = self.shared_path('subscribes/' + new_id.replace('/', '_').replace('\\', '_') + '.json')
+                targets.add(target)
+                if path.is_file() and target not in copied:
+                    payload = self._read_json(path)
+                    payload['subscription_id'] = new_id
+                    for node in payload.get('nodes', []):
+                        if isinstance(node, dict) and node.get('subscription_id') == old_id:
+                            node['subscription_id'] = new_id
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    self._write_json(target, payload)
+                    copied.add(target)
+            for new_id, old_name in remaps[profile_id]['rule_cache'].items():
+                library = libraries[new_id]
+                path = self.profile_path(profile_id, 'rules/' + sanitize_rule_name(old_name) + '.list')
+                target = self.shared_path('rules/' + sanitize_rule_name(library['name']) + '.list')
+                targets.add(target)
+                if target in copied:
+                    continue
+                if library.get('source_type') == 'content':
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    self._write_atomic(target, library.get('content', ''))
+                    copied.add(target)
+                elif path.is_file():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, target)
+                    copied.add(target)
+        # Shared caches from an interrupted/incorrect older migration cannot
+        # substitute for missing profile-local caches with different sources.
+        for target in targets - copied:
+            if target.is_file():
+                target.unlink()
+
+
+    def _snapshot(self, reason, legacy_profiles=()):
+        self._check_migration_path(self.migrations_dir)
         destination = self._create_migration_snapshot_dir() / reason
         destination.mkdir()
-        for name in ('config.json', 'config.json.bak'):
+        for name in ('config.json', 'config.json.bak', 'system.json', 'system.json.bak'):
             source = self.data_dir / name
+            self._check_migration_path(source)
             if source.is_file():
                 shutil.copy2(source, destination / name)
+        for profile_id in legacy_profiles:
+            for name in ('config.json', 'config.json.bak'):
+                self._check_migration_path(self.profiles_dir / profile_id / name)
+                source = self.profile_path(profile_id, name)
+                if source.is_file():
+                    target = destination / 'profiles' / profile_id / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
+        for path in destination.rglob('*'):
+            if path.is_file():
+                with path.open('rb') as handle:
+                    os.fsync(handle.fileno())
+        directories = [path for path in destination.rglob('*') if path.is_dir()]
+        for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
+            self._fsync_dir(directory)
+        for directory in (destination, destination.parent, self.migrations_dir, self.data_dir):
+            self._fsync_dir(directory)
         return destination
 
     def _migrate_raw_cache(self):
@@ -414,7 +553,7 @@ class ProfileRepository:
                 if self.path.exists():
                     self.path.unlink()
             elif not self.path.exists() or self.path.read_bytes() != previous:
-                temporary = self._write_temp(self.path, previous.decode('utf-8'))
+                temporary = self._write_temp(self.path, previous)
                 try:
                     os.replace(temporary, self.path)
                     self._fsync_dir(self.path.parent)
@@ -940,17 +1079,18 @@ class ProfileRepository:
         finally:
             os.close(dir_fd)
 
-    def _write_temp(self, path: Path, content: str) -> Path:
+    def _write_temp(self, path: Path, content: str | bytes) -> Path:
         """Write and fsync a complete sibling file, removing failed short writes."""
+        content = content.encode('utf-8') if isinstance(content, str) else content
         fd, temp_name = tempfile.mkstemp(prefix=f'.{path.name}.', suffix='.tmp', dir=path.parent)
         temp_path = Path(temp_name)
         try:
-            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as handle:
+            with os.fdopen(fd, 'wb') as handle:
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
             written = temp_path.stat().st_size
-            expected = len(content.encode('utf-8'))
+            expected = len(content)
             if written != expected:
                 raise ProfileRepositoryError(f'Incomplete write for {path}: {written} of {expected} bytes')
             return temp_path
@@ -1039,7 +1179,106 @@ class ProfileRepository:
                 self._write_atomic(path, content)
         return path
 
-    def _convert_import(self, source):
+    @staticmethod
+    def _scope_legacy_dialers(profiles):
+        """Bind raw dialers locally before merging independent node catalogs."""
+        from backend.utils.dialer_references import raw_dialer, validate_shapes, DialerReferenceError
+        from backend.converters.mihomo import _parse_structured_proxy_string
+
+        profiles = copy.deepcopy(profiles)
+        definitions = {}
+        group_names = set()
+        used_names = set(BUILTIN_POLICIES)
+        edges = []
+        targets = set()
+        for profile_id, profile in profiles.items():
+            if not isinstance(profile, dict):
+                raise ProfileValidationError('旧配置内容必须是对象')
+            try:
+                validate_shapes(profile, require_ids=False)
+            except DialerReferenceError as error:
+                raise ProfileValidationError(str(error)) from error
+            nodes = profile.get('nodes', [])
+            groups = profile.get('proxy_groups', [])
+            subscriptions = _items_by_id(profile.get('subscriptions', []), '旧配置订阅')
+            subscription_identities = {
+                key: json.dumps(value, sort_keys=True, ensure_ascii=False)
+                for key, value in subscriptions.items()
+            }
+            for node in nodes:
+                name = node['name']
+                subscription_id = node.get('subscription_id')
+                if subscription_id and (not isinstance(subscription_id, str) or subscription_id not in subscriptions):
+                    raise ProfileValidationError(f'旧配置 {profile_id} 的节点引用的订阅不存在')
+                # Remapping different subscription definitions also splits
+                # otherwise identical nodes. Match that identity before aliases
+                # are assigned, so downstream raw dialers stay profile-local.
+                identity = (json.dumps(node, sort_keys=True, ensure_ascii=False),
+                            subscription_identities.get(subscription_id) if subscription_id else None)
+                definitions.setdefault(name, set()).add(identity)
+                used_names.add(name)
+            group_names.update(group['name'] for group in groups)
+            used_names.update(group['name'] for group in groups)
+            for node in nodes:
+                if not node.get('enabled', True):
+                    continue
+                target = raw_dialer(node)
+                if target is None:
+                    continue
+                if not isinstance(target, str) or not target.strip():
+                    raise ProfileValidationError('原始 dialer-proxy 必须是非空名称')
+                if target in BUILTIN_POLICIES:
+                    continue
+                matches = [('node', item) for item in nodes if item['name'] == target and item.get('enabled', True)]
+                matches += [('group', item) for item in groups if item['name'] == target and item.get('enabled', True)]
+                if len(matches) != 1:
+                    raise ProfileValidationError(f'旧配置 {profile_id} 的原始拨号目标不存在或名称不唯一：{target}')
+                targets.add(target)
+                kind, destination = matches[0]
+                edges.append((node, kind, destination, target))
+
+        scoped = {name for name in targets if name in definitions
+                  and (len(definitions[name]) > 1 or name in group_names)}
+        # A shared-looking B -> A also becomes profile-specific when A differs.
+        # Propagate this through multi-hop raw chains before assigning any names.
+        while True:
+            dependent = {node['name'] for node, kind, destination, target in edges
+                         if kind == 'node' and target in scoped and node['name'] in targets}
+            if dependent <= scoped:
+                break
+            scoped.update(dependent)
+        for profile_id, profile in profiles.items():
+            renamed = {}
+            for node in profile.get('nodes', []):
+                old_name = node['name']
+                if old_name not in scoped:
+                    continue
+                candidate = f'{old_name} ({profile_id})'
+                index = 2
+                while candidate in used_names:
+                    candidate = f'{old_name} ({profile_id}-{index})'
+                    index += 1
+                used_names.add(candidate)
+                node['name'] = candidate
+                if node.get('enabled', True):
+                    renamed[old_name] = candidate
+            local_groups = {group['name'] for group in profile.get('proxy_groups', [])}
+            for rule in profile.get('rule_configs', []):
+                policy = rule.get('policy')
+                if policy in renamed and policy not in local_groups:
+                    rule['policy'] = renamed[policy]
+        for node, kind, destination, old_target in edges:
+            if kind != 'node' or destination['name'] == old_target:
+                continue
+            if node.get('proxy_string'):
+                parsed = _parse_structured_proxy_string(node['proxy_string'])
+                parsed['dialer-proxy'] = destination['name']
+                node['proxy_string'] = json.dumps(parsed, ensure_ascii=False)
+            else:
+                node['params']['dialer-proxy'] = destination['name']
+        return profiles
+
+    def _convert_import(self, source, *, resource_remaps=None):
         if not isinstance(source, dict):
             raise ProfileValidationError('导入内容必须是 JSON 对象')
         version = source.get('schema_version')
@@ -1047,17 +1286,30 @@ class ProfileRepository:
             document = copy.deepcopy(source)
             self._validate_document(document)
             return document
-        if version is not None or set(source) & {'profiles', 'shared', 'resource_refs', 'node_dialers'}:
-            raise ProfileValidationError('仅支持作者原版单配置或当前格式的完整备份')
-        old = _deep_merge(self._legacy_defaults(), source)
+        if version == 2:
+            old_system = source.get('system')
+            old_profiles = source.get('profiles')
+            if not isinstance(old_system, dict) or not isinstance(old_profiles, dict):
+                raise ProfileValidationError('旧多配置备份必须包含 system 索引和全部 profiles 配置内容')
+            self._validate_legacy_index(old_system)
+            metadata = _items_by_id(old_system['profiles'], '旧配置索引')
+            if set(metadata) != set(old_profiles):
+                raise ProfileValidationError('旧多配置备份的索引与配置内容不一致')
+            old_profiles = self._scope_legacy_dialers(old_profiles)
+        elif version is None and not set(source) & {'profiles', 'shared', 'resource_refs', 'node_dialers'}:
+            old_system = source
+            old_profiles = {'default': source}
+            metadata = {'default': {}}
+        else:
+            raise ProfileValidationError('仅支持原版单配置、schema 2 完整多配置备份或当前格式；未修改原数据')
         document = {
             'schema_version': self.SCHEMA_VERSION,
-            'system': {key: copy.deepcopy(old.get(key, [] if key == 'agents' else {}))
+            'system': {key: copy.deepcopy(old_system.get(key, [] if key == 'agents' else {}))
                        for key in ('system_config', 'backup', 'agents')},
-            'shared': {key: copy.deepcopy(old.get(key, [])) for key in SHARED_FIELDS},
+            'shared': {key: [] for key in SHARED_FIELDS},
             'profiles': {},
         }
-        document['system']['_revision'] = 0
+        document['system']['_revision'] = old_system.get('_revision', 0)
         document['shared']['_revision'] = 0
         settings = document['system']['system_config']
         if not isinstance(settings, dict):
@@ -1066,44 +1318,137 @@ class ProfileRepository:
         settings.setdefault('github_proxy_domain', '')
         if not isinstance(settings['github_proxy_domain'], str):
             settings['github_proxy_domain'] = ''
-        for kind in SHARED_FIELDS:
-            resources = document['shared'][kind]
-            if not isinstance(resources, list) or any(not isinstance(item, dict) for item in resources):
-                raise ProfileValidationError(f'{kind} 必须是资源对象数组')
-            for resource in resources:
-                resource.setdefault('id', f'{kind}_{uuid.uuid4().hex[:12]}')
-        profile = self._empty_profile('default', old.get('name', '默认配置'), old.get('description', ''))
-        for key in PROFILE_FIELDS:
-            if key in old:
-                profile[key] = copy.deepcopy(old[key])
-        if not profile['rule_configs']:
-            profile['rule_configs'] = [{**item, 'itemType': 'rule'} for item in old.get('rules', [])] + [
-                {**item, 'itemType': 'ruleset'} for item in old.get('rule_sets', [])]
-        library = document['shared']['rule_library']
-        library_ids = {item['id'] for item in library}
-        library_names = {item.get('name') for item in library}
-        for rule in profile['rule_configs']:
-            rule.setdefault('id', f'rule_{uuid.uuid4().hex[:12]}')
-            if rule.get('itemType') != 'ruleset':
-                continue
-            library_id = rule.get('library_rule_id')
-            if library_id not in library_ids:
-                library_id = f'lib_{uuid.uuid4().hex[:12]}'
-                resource = {key: copy.deepcopy(rule[key]) for key in RULE_SOURCE_FIELDS if key in rule}
-                resource.update(id=library_id, enabled=True)
-                resource.setdefault('name', rule.get('name') or library_id)
-                resource.setdefault('source_type', 'content' if resource.get('content') else 'url')
-                if resource['name'] in library_names:
-                    resource['name'] += f' ({library_id[-6:]})'
-                library.append(resource)
-                library_ids.add(library_id)
-                library_names.add(resource['name'])
-            rule['library_rule_id'] = library_id
-            for key in RULE_SOURCE_FIELDS:
-                rule.pop(key, None)
-        document['profiles']['default'] = profile
+
+        from backend.utils.rule_utils import sanitize_rule_name
+        catalogs = {kind: {} for kind in SHARED_FIELDS}
+        identities = {kind: {} for kind in SHARED_FIELDS}
+        names = {kind: set() for kind in SHARED_FIELDS}
+        names['subscription_aggregations'] = names['subscriptions']
+
+        def merge_resource(kind, resource, profile_id):
+            old_id = resource['id']
+            identity = (old_id, json.dumps(resource, sort_keys=True, ensure_ascii=False))
+            if identity in identities[kind]:
+                return identities[kind][identity]
+            if old_id in catalogs[kind]:
+                resource['id'] = f'{old_id[:40]}_{uuid.uuid4().hex[:12]}'
+                while resource['id'] in catalogs[kind]:
+                    resource['id'] = f'{old_id[:40]}_{uuid.uuid4().hex[:12]}'
+            # Providers and rule libraries are emitted as name-keyed maps.
+            # Nodes keep their names: raw dialer-proxy values refer to them.
+            name = resource.get('name')
+            name_key = sanitize_rule_name(name) if kind == 'rule_library' else name
+            if kind != 'nodes' and isinstance(name, str) and name and name_key in names[kind]:
+                suffix = profile_id
+                index = 1
+                while name_key in names[kind]:
+                    resource['name'] = f'{name[:max(1, 196 - len(suffix))]} ({suffix})'
+                    name_key = sanitize_rule_name(resource['name']) if kind == 'rule_library' else resource['name']
+                    index += 1
+                    suffix = f'{profile_id}-{index}'
+            catalogs[kind][resource['id']] = resource
+            identities[kind][identity] = resource['id']
+            names[kind].add(name_key)
+            document['shared'][kind].append(resource)
+            return resource['id']
+
+        for profile_id, raw_profile in old_profiles.items():
+            self.validate_profile_id(profile_id)
+            if not isinstance(raw_profile, dict):
+                raise ProfileValidationError('旧配置内容必须是对象')
+            if set(raw_profile) & {'resource_refs', 'node_dialers', 'schema_version', 'shared', 'profiles'}:
+                raise ProfileValidationError('旧配置包含不支持的中间格式字段；未修改原数据')
+            old = _deep_merge(self._legacy_defaults(), raw_profile)
+            old.update(copy.deepcopy(metadata[profile_id]))
+            remaps = {kind: {} for kind in SHARED_FIELDS}
+            remaps['rule_cache'] = {}
+
+            def remap_reference(kind, value):
+                if kind == 'nodes' and value in BUILTIN_POLICIES:
+                    return value
+                if value not in remaps[kind]:
+                    raise ProfileValidationError(f'旧配置 {profile_id} 引用的本地资源不存在：{kind}/{value}')
+                return remaps[kind][value]
+
+            for kind in SHARED_FIELDS:
+                resources = old[kind]
+                if not isinstance(resources, list) or any(not isinstance(item, dict) for item in resources):
+                    raise ProfileValidationError(f'{kind} 必须是资源对象数组')
+                for resource in resources:
+                    resource.setdefault('id', f'{kind}_{uuid.uuid4().hex[:12]}')
+                _items_by_id(resources, kind)
+                for raw in resources:
+                    resource = copy.deepcopy(raw)
+                    old_id = resource['id']
+                    if kind == 'nodes' and resource.get('subscription_id'):
+                        value = resource['subscription_id']
+                        resource['subscription_id'] = remap_reference('subscriptions', value)
+                    if kind == 'subscription_aggregations':
+                        for field in ('subscriptions', 'nodes'):
+                            if field in resource:
+                                resource[field] = [remap_reference(field, value)
+                                                   for value in _id_list(resource[field], field)]
+                    remaps[kind][old_id] = merge_resource(kind, resource, profile_id)
+                    if kind == 'rule_library':
+                        remaps['rule_cache'][remaps[kind][old_id]] = raw.get('name', '')
+            if resource_remaps is not None:
+                resource_remaps[profile_id] = remaps
+            profile = self._empty_profile(profile_id, old.get('name', '默认配置' if profile_id == 'default' else profile_id), old.get('description', ''))
+            for key in (*PROFILE_FIELDS, 'created_at', 'updated_at', '_revision'):
+                if key in old:
+                    profile[key] = copy.deepcopy(old[key])
+            for group in profile['proxy_groups']:
+                for field, kind in (('subscriptions', 'subscriptions'), ('manual_nodes', 'nodes'), ('aggregations', 'subscription_aggregations')):
+                    if field in group:
+                        group[field] = [remap_reference(kind, value) for value in _id_list(group[field], field)]
+                legacy_kind = {'node': 'nodes', 'subscription': 'subscriptions', 'aggregation': 'subscription_aggregations'}.get(group.get('source'))
+                if legacy_kind and 'proxies' in group:
+                    group['proxies'] = [remap_reference(legacy_kind, value) for value in _id_list(group['proxies'], 'proxies')]
+                for item in group.get('proxies_order', []):
+                    kind = {'node': 'nodes', 'subscription': 'subscriptions', 'aggregation': 'subscription_aggregations'}.get(item.get('type'))
+                    if kind:
+                        item['id'] = remap_reference(kind, item.get('id'))
+            if not profile['rule_configs']:
+                profile['rule_configs'] = [{**item, 'itemType': 'rule'} for item in old.get('rules', [])] + [
+                    {**item, 'itemType': 'ruleset'} for item in old.get('rule_sets', [])]
+            rule_names = {item['name']: catalogs['rule_library'][remaps['rule_library'][item['id']]]['name']
+                          for item in old['rule_library']}
+            for rule in profile['rule_configs']:
+                rule.setdefault('id', f'rule_{uuid.uuid4().hex[:12]}')
+                if rule.get('itemType') != 'ruleset':
+                    continue
+                old_library_id = rule.get('library_rule_id')
+                library_id = remap_reference('rule_library', old_library_id) if old_library_id else None
+                if library_id is None:
+                    resource = {key: copy.deepcopy(rule[key]) for key in RULE_SOURCE_FIELDS if key in rule}
+                    resource.update(id=f'migrated_rule_{rule["id"]}', enabled=True)
+                    resource.setdefault('name', rule.get('name') or resource['id'])
+                    resource.setdefault('source_type', 'content' if resource.get('content') else 'url')
+                    library_id = merge_resource('rule_library', resource, profile_id)
+                else:
+                    # Old rules could customize their emitted name/behavior even
+                    # when the content came from a library. Preserve that variant.
+                    original = next(item for item in old['rule_library'] if item['id'] == old_library_id)
+                    overrides = {key: rule[key] for key in ('name', 'behavior', 'format')
+                                 if key in rule and rule[key] != original.get(key)}
+                    if overrides:
+                        resource = {**copy.deepcopy(original), **overrides, 'id': f'migrated_rule_{rule["id"]}'}
+                        library_id = merge_resource('rule_library', resource, profile_id)
+                        remaps['rule_cache'][library_id] = original.get('name', '')
+                if rule.get('name'):
+                    rule_names[rule['name']] = catalogs['rule_library'][library_id]['name']
+                rule['library_rule_id'] = library_id
+                for key in RULE_SOURCE_FIELDS:
+                    rule.pop(key, None)
+            for rule in profile['rule_configs']:
+                if rule.get('itemType') == 'rule' and rule.get('rule_type') == 'RULE-SET':
+                    rule['value'] = rule_names.get(rule.get('value'), rule.get('value'))
+            document['profiles'][profile_id] = profile
         for agent in document['system']['agents']:
-            agent['profile_id'] = 'default'
+            if version == 2:
+                agent.setdefault('profile_id', 'default')
+            else:
+                agent['profile_id'] = 'default'
         return document
 
     @staticmethod

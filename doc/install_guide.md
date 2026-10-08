@@ -85,7 +85,7 @@ services:
 
 **Q：换电脑或重装系统会丢配置吗？** 不会，`data` 文件夹已经挂载在本地，复制该文件夹即可恢复。
 
-**Q：如何升级？** 执行 `docker-compose pull && docker-compose up -d`，自动拉取最新镜像并重启，旧数据会自动加载。
+**Q：如何升级？** 先备份完整数据目录（包括 `system.json`、`profiles/` 和 `.bak`，不能只备份根 `config.json`），确认 Compose 的 `/data` 仍挂载原宿主机目录，再执行 `docker-compose pull && docker-compose up -d`。旧版多配置会自动迁移并保留 Agent 绑定；遇到迁移错误请保留原数据和日志，不要重置。详见[升级、备份与恢复](design/multi-config-management.md#升级备份与恢复)。
 
 ---
 

@@ -670,44 +670,6 @@ def test_legacy_migration_cleans_partial_derived_copy_and_retry_succeeds(tmp_pat
     assert (repository.shared_cache_dir() / 'sub.json').exists()
 
 
-def test_legacy_migration_restores_preexisting_default_when_system_commit_fails(tmp_path, monkeypatch):
-    (tmp_path / "config.json").write_text(
-        json.dumps({"subscriptions": [{"id": "legacy"}]}),
-        encoding="utf-8",
-    )
-    previous_default = tmp_path / "profiles" / "default"
-    previous_default.mkdir(parents=True)
-    (previous_default / "config.json").write_bytes(b"previous-profile")
-    (previous_default / "keep.bin").write_bytes(b"previous-derived")
-    before = {
-        path.relative_to(previous_default).as_posix(): path.read_bytes()
-        for path in previous_default.rglob("*")
-        if path.is_file()
-    }
-    original_write_system = ProfileRepository._write_json
-
-    def fail_system_commit(self, path, data):
-        original_write_system(self, path, data)
-        raise OSError("injected system commit failure")
-
-    monkeypatch.setattr(ProfileRepository, "_write_json", fail_system_commit)
-    with pytest.raises(OSError, match="injected system commit failure"):
-        ProfileRepository(tmp_path)
-
-    after = {
-        path.relative_to(previous_default).as_posix(): path.read_bytes()
-        for path in previous_default.rglob("*")
-        if path.is_file()
-    }
-    assert after == before
-    assert not (tmp_path / "system.json").exists()
-    assert not list((tmp_path / "profiles").glob(".*migration-staging*"))
-    assert not list((tmp_path / "profiles").glob(".*migration-backup*"))
-
-    monkeypatch.setattr(ProfileRepository, "_write_json", original_write_system)
-    repository = ProfileRepository(tmp_path)
-    assert repository.get_shared()["subscriptions"] == [{"id": "legacy"}]
-    assert (tmp_path / "config.json").exists()
 
 
 def test_atomic_profile_save_keeps_previous_file_when_replace_fails(tmp_path, monkeypatch):
