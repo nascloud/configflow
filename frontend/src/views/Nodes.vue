@@ -2,10 +2,10 @@
   <div :class="reorder.active.value && 'cf-reordering'">
     <ScopeBanner
       scope="resource"
-      description="共享节点库；编辑会影响所有引用它的配置。独立前置与落地组合请在策略组中创建代理链，不修改原节点。"
+      description="修改节点会影响使用它的所有配置。若只想组合前置和落地节点，请在策略组中创建代理链，不会修改原节点。"
     />
 
-    <PageHeader eyebrow="Resource" title="节点库" description="订阅拉取与手动录入的节点集中在此。">
+    <PageHeader title="节点库" description="查看和管理从订阅获取或手动添加的节点。">
       <template #actions>
         <Button
           v-if="!reorder.active.value"
@@ -21,7 +21,7 @@
           <FilePlus2 class="size-4" />
           批量添加
         </Button>
-        <Button class="shadow-glow" @click="showAddDialog">
+        <Button @click="showAddDialog">
           <Plus class="size-4" />
           添加节点
         </Button>
@@ -34,7 +34,7 @@
           <SelectTrigger class="h-9 w-[150px] border-transparent bg-background/50 text-[13px]">
             <SelectValue placeholder="全部协议" />
           </SelectTrigger>
-          <SelectContent class="glass-strong">
+          <SelectContent>
             <SelectItem value="all">全部协议</SelectItem>
             <SelectItem v-for="p in protocolOptions" :key="p" :value="p">
               {{ p.toUpperCase() }}
@@ -201,8 +201,8 @@
         :data-name="node.name"
         data-reorder-item
         :class="[
-          'hairline edge-light relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card/55 p-4 backdrop-blur-xl transition-all duration-300 hover:shadow-glow-soft',
-          selectedNodeIds.has(node.id) ? 'border-primary-accent/45' : 'border-border/35',
+          'relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card p-4 transition-colors duration-200',
+          selectedNodeIds.has(node.id) ? 'border-primary-accent' : 'border-border',
           !node.enabled && 'opacity-60'
         ]"
       >
@@ -299,10 +299,10 @@
 
     <!-- ===== 新增 / 编辑节点 ===== -->
     <Dialog v-model:open="dialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[720px] border-border/50">
+      <DialogContent class="max-w-[720px]">
         <DialogHeader>
           <DialogTitle>{{ isEdit ? '编辑节点' : '添加节点' }}</DialogTitle>
-          <DialogDescription>填写节点名称与连接字符串，支持 URI / JSON / YAML 格式。</DialogDescription>
+          <DialogDescription>填写节点名称，粘贴节点链接或 JSON / YAML 配置。</DialogDescription>
         </DialogHeader>
 
         <div class="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto pr-1">
@@ -351,7 +351,7 @@
 
     <!-- ===== 批量添加 ===== -->
     <Dialog v-model:open="batchDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[780px] border-border/50">
+      <DialogContent class="max-w-[780px]">
         <DialogHeader>
           <DialogTitle>批量添加节点</DialogTitle>
           <DialogDescription>粘贴多个节点链接或配置，系统会自动识别格式并导入。</DialogDescription>
@@ -676,7 +676,7 @@ const batchDeleteNodes = async () => {
   }
 
   const confirmed = await confirmDanger(
-    `确定要删除选中的 ${selectedNodeIds.value.size} 个共享节点吗？仍被配置引用的节点不能删除，请先移除引用。`,
+    `确定删除选中的 ${selectedNodeIds.value.size} 个节点吗？删除后无法恢复。仍被配置或聚合使用的节点无法删除，请先取消相关使用。`,
     { title: '批量删除节点' }
   )
   if (!confirmed) return
@@ -1066,7 +1066,7 @@ const saveBatchNodes = async () => {
 
 const deleteNode = async (row: ProxyNode) => {
   const confirmed = await confirmDanger(
-    '确定要删除该共享节点吗？仍被配置引用的节点不能删除，请先移除引用。',
+    '确定删除该节点吗？删除后无法恢复。仍被配置或聚合使用的节点无法删除，请先取消相关使用。',
     { title: '删除节点' }
   )
   if (!confirmed) return
@@ -1155,7 +1155,7 @@ const visibleNodes = computed(() => {
 })
 
 const nodesEmptyText = computed(() =>
-  nodes.value.length === 0 ? '还没有节点' : '没有匹配的节点'
+  nodes.value.length === 0 ? '添加节点链接或配置，也可一次粘贴多个节点批量添加。' : '试试其他关键词，或调整协议筛选。'
 )
 
 /* ---------- 统一拖动排序 ---------- */
@@ -1175,7 +1175,7 @@ const reorder = useReorder<any>({
 const handleSaveOrder = async () => {
   try {
     await reorder.save()
-    notify.success('顺序已保存，所有配置空间生效')
+    notify.success('顺序已保存，对所有配置生效')
   } catch (error) {
     notify.error('保存顺序失败，顺序已还原')
   }

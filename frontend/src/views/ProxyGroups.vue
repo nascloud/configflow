@@ -3,9 +3,8 @@
     <ScopeBanner scope="profile" :profile-name="cfProfileName" />
 
     <PageHeader
-      eyebrow="Profile"
       title="策略组"
-      description="直接引用共享订阅、节点与聚合，或组合仅属于当前配置的代理链。"
+      description="为当前配置选择要使用的订阅、节点和聚合，也可创建代理链。"
     >
       <template #actions>
         <Button
@@ -18,7 +17,7 @@
           <ArrowUpDown class="size-4" />
           调整顺序
         </Button>
-        <Button class="shadow-glow" @click="showAddDialog">
+        <Button @click="showAddDialog">
           <Plus class="size-4" />
           添加策略组
         </Button>
@@ -37,7 +36,7 @@
       <EmptyState
         :icon="LayoutGrid"
         title="还没有策略组"
-        description="策略组决定流量走哪些节点，是规则生效的落点。"
+        description="先添加策略组并选择节点，再在策略规则中指定哪些流量使用它。"
       >
         <Button @click="showAddDialog">
           <Plus class="size-4" />
@@ -58,7 +57,7 @@
         :data-name="group.name"
         data-reorder-item
         :class="[
-          'hairline edge-light relative flex flex-col gap-3 overflow-hidden rounded-xl border border-border/35 bg-card/55 p-4 backdrop-blur-xl transition-all duration-300 hover:shadow-glow-soft',
+          'relative flex flex-col gap-3 overflow-hidden rounded-xl border border-border bg-card p-4 transition-colors duration-200',
           !group.enabled && 'opacity-60'
         ]"
       >
@@ -290,10 +289,10 @@
 
     <!-- ===== 新增 / 编辑策略组 ===== -->
     <Dialog v-model:open="dialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[720px] border-border/50">
+      <DialogContent class="max-w-[720px]">
         <DialogHeader>
           <DialogTitle>{{ isEdit ? '编辑策略组' : '添加策略组' }}</DialogTitle>
-          <DialogDescription>直接选择共享资源，或创建独立命名出口的代理链；不会修改共享节点。</DialogDescription>
+          <DialogDescription>选择订阅、节点或聚合，或把前置和落地组合成代理链。这里只修改当前配置，不会修改共用的节点。</DialogDescription>
         </DialogHeader>
 
         <div class="flex max-h-[64dvh] flex-col gap-4 overflow-y-auto pr-1">
@@ -308,7 +307,7 @@
               <SelectTrigger data-testid="group-type" class="w-full bg-background/50">
                 <SelectValue placeholder="请选择策略组类型" />
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem value="select">手动选择 (Select)</SelectItem>
                 <SelectItem value="url-test">自动测速 (URL-Test)</SelectItem>
                 <SelectItem value="fallback">故障转移 (Fallback)</SelectItem>
@@ -319,11 +318,11 @@
           </div>
 
           <template v-if="form.type === 'chain' && form.chain">
-            <p class="text-xs leading-relaxed text-muted-foreground">前置 → 落地，链名即独立出口名。前置沿用原策略组的当前选择，落地策略组生成独立链组；订阅和聚合成员动态刷新。原节点和策略组仍可单独使用；仅支持 Mihomo，不能导出为 Surge。</p>
+            <p class="text-xs leading-relaxed text-muted-foreground">流量先经过前置，再由落地访问目标；代理链名称就是新出口的名称。前置使用原策略组当前选中的节点；落地若选策略组，会为此链单独创建一组。订阅和聚合中的节点会随更新变化。原节点和策略组仍可单独使用。仅支持 Mihomo，不能导出为 Surge。</p>
             <div class="flex min-w-0 flex-col gap-1.5">
               <Label for="chain-search">搜索节点或策略组</Label>
               <Input id="chain-search" v-model="chainSearch" placeholder="搜索名称" />
-              <Label>前置引用</Label>
+              <Label>前置节点或策略组</Label>
               <Select v-model="chainEntrySelection">
                 <SelectTrigger data-testid="chain-entry" class="data-[size=default]:h-auto min-h-9 w-full min-w-0 [&_[data-slot=select-value]]:line-clamp-none"><SelectValue class="min-w-0 whitespace-normal break-all text-left">{{ chainEntryLabel }}</SelectValue></SelectTrigger>
                 <SelectContent class="max-w-[calc(100vw-32px)]">
@@ -332,7 +331,7 @@
               </Select>
             </div>
             <div class="flex min-w-0 flex-col gap-1.5">
-              <Label>落地引用</Label>
+              <Label>落地节点或策略组</Label>
               <Select v-model="chainExitSelection">
                 <SelectTrigger data-testid="chain-exit" class="data-[size=default]:h-auto min-h-9 w-full min-w-0 [&_[data-slot=select-value]]:line-clamp-none"><SelectValue class="min-w-0 whitespace-normal break-all text-left">{{ chainExitLabel }}</SelectValue></SelectTrigger>
                 <SelectContent class="max-w-[calc(100vw-32px)]">
@@ -340,8 +339,8 @@
                 </SelectContent>
               </Select>
             </div>
-            <p v-if="chainUnavailable" role="alert" class="text-xs text-destructive-accent">引用目标缺失、已禁用或存在依赖环，请重新选择；不会自动清除已有引用。</p>
-            <p class="text-xs text-muted-foreground">两端支持手动节点、策略组（含订阅、聚合、跟随）或无环代理链。前置必须启用；禁用链可保留禁用的落地节点或策略组，启用链时落地也必须启用。</p>
+            <p v-if="chainUnavailable" role="alert" class="text-xs text-destructive-accent">所选节点或策略组已不存在、已停用，或会造成循环使用，请重新选择。原有选择不会自动清除。</p>
+            <p class="text-xs text-muted-foreground">两端可选手动节点、策略组（包括使用订阅、聚合或跟随的组）和其他代理链，但不能循环使用。前置必须启用。代理链停用时可保留已停用的落地节点或策略组；启用代理链前，也需启用落地。</p>
           </template>
 
           <template v-if="form.type !== 'chain'">
@@ -375,7 +374,7 @@
               <SelectTrigger class="w-full bg-background/50">
                 <SelectValue placeholder="选择要跟随的策略组" />
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem v-for="group in followStrategies" :key="group.id" :value="group.id">
                   {{ group.name }}
                 </SelectItem>
@@ -432,7 +431,7 @@
               :options="aggregationOptions"
               placeholder="选择订阅聚合"
             />
-            <p class="m-0 text-[12px] text-muted-foreground">聚合中的所有订阅和节点都会被包含。</p>
+            <p class="m-0 text-[12px] text-muted-foreground">加入所选聚合筛选后的节点；还可用下方正则表达式继续筛选。</p>
           </div>
 
           <div
@@ -539,7 +538,7 @@
               <SelectTrigger class="w-full bg-background/50">
                 <SelectValue placeholder="请选择负载策略（可选）" />
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem value="round-robin">轮询 (round-robin)</SelectItem>
                 <SelectItem value="consistent-hashing">一致性哈希 (consistent-hashing)</SelectItem>
                 <SelectItem value="sticky-sessions">会话保持 (sticky-sessions)</SelectItem>
@@ -557,7 +556,7 @@
               <SelectTrigger class="w-full bg-background/50">
                 <SelectValue placeholder="请选择是否启用懒加载（可选）" />
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem value="unset">未设置</SelectItem>
                 <SelectItem value="true">是</SelectItem>
                 <SelectItem value="false">否</SelectItem>
@@ -585,7 +584,7 @@
 
     <!-- ===== 正则匹配预览 ===== -->
     <Dialog v-model:open="regexPreviewVisible">
-      <DialogContent class="glass-strong hairline max-w-[680px] border-border/50">
+      <DialogContent class="max-w-[680px]">
         <DialogHeader>
           <DialogTitle>{{ regexPreviewTitle }}</DialogTitle>
           <DialogDescription v-if="regexPreviewResult">
@@ -612,7 +611,7 @@
             v-if="!regexPreviewNodes.length"
             :icon="Filter"
             title="当前正则没有匹配到节点"
-            description="放宽表达式，或确认所选订阅/聚合中确实存在候选节点。"
+            description="试着放宽筛选条件，或检查所选订阅、聚合中是否有节点。"
           />
         </div>
 
@@ -845,8 +844,8 @@ const chainExitSelection = computed({
   get: () => form.value.chain?.exit.id ? entryValue(form.value.chain.exit) : '',
   set: (value: string) => { if (form.value.chain) form.value.chain.exit = JSON.parse(value) }
 })
-const chainEntryLabel = computed(() => form.value.chain?.entry.id ? entryLabel(form.value.chain.entry) : '选择前置引用')
-const chainExitLabel = computed(() => form.value.chain?.exit.id ? entryLabel(form.value.chain.exit) : '选择落地引用')
+const chainEntryLabel = computed(() => form.value.chain?.entry.id ? entryLabel(form.value.chain.entry) : '选择前置节点或策略组')
+const chainExitLabel = computed(() => form.value.chain?.exit.id ? entryLabel(form.value.chain.exit) : '选择落地节点或策略组')
 const chainUnavailable = computed(() => !!form.value.chain && (
   (!!form.value.chain.entry.id && !chainEntryCandidates.value.some(candidate => candidate.value === chainEntrySelection.value)) ||
   (!!form.value.chain.exit.id && !chainExitCandidates.value.some(candidate => candidate.value === chainExitSelection.value))
@@ -1515,7 +1514,7 @@ const loadResources = async () => {
     subscriptions.value = subscriptionRows.data
     aggregations.value = aggregationRows.data
   } catch {
-    notify.error('加载共享资源失败')
+    notify.error('加载订阅、节点或聚合失败')
   }
 }
 
@@ -1725,7 +1724,7 @@ const saveGroup = async () => {
     return
   }
   if (form.value.type === 'chain' && (!form.value.chain?.entry.id || !form.value.chain.exit.id || chainUnavailable.value)) {
-    formError.value = '请选择可用且无依赖环的前置引用和落地引用'
+    formError.value = '请选择可用的前置和落地节点或策略组，且不能循环使用'
     return
   }
 
@@ -1811,13 +1810,13 @@ const saveGroup = async () => {
 
 const deleteGroup = async (row: ProxyGroup) => {
   if (!row.id) {
-    notify.error('策略组缺少ID，无法删除')
+    notify.error('策略组信息不完整，无法删除，请刷新后重试')
     console.error('策略组数据异常，缺少ID字段:', row)
     return
   }
 
   try {
-    const ok = await confirmDanger('确定要删除该策略组吗？被引用的策略组需先修改引用。', { title: '删除策略组' })
+    const ok = await confirmDanger('确定从当前配置中删除该策略组吗？删除后无法恢复。若规则或其他策略组仍在使用它，请先修改这些设置。', { title: '删除策略组' })
     if (!ok) return
     await proxyGroupApi.delete(row.id, profileId)
     notify.success('删除成功')

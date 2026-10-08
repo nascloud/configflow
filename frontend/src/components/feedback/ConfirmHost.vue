@@ -1,6 +1,6 @@
 <template>
   <AlertDialog :open="confirmState.open" @update:open="value => !value && settleConfirm('cancel')">
-    <AlertDialogContent class="glass-strong hairline border-border/60">
+    <AlertDialogContent>
       <AlertDialogHeader>
         <AlertDialogTitle>{{ confirmState.title }}</AlertDialogTitle>
         <AlertDialogDescription class="whitespace-pre-line">

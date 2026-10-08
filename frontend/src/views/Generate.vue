@@ -3,9 +3,8 @@
     <ScopeBanner scope="profile" :profile-name="cfProfileName" />
 
     <PageHeader
-      eyebrow="Profile"
       title="配置生成"
-      description="Mihomo、Surge 与 MosDNS 配置的生成与预览，订阅 URL 可直接给客户端使用。"
+      description="将当前配置空间的设置生成 Mihomo、Surge 或 MosDNS 配置。可先预览再下载，或复制订阅链接到客户端。"
     />
 
     <!-- ===== 三个生成目标 ===== -->
@@ -14,14 +13,14 @@
         v-for="(target, index) in targets"
         :key="target.key"
         v-bind="listItem(index)"
-        class="hairline edge-light relative flex min-w-0 flex-col gap-3.5 overflow-hidden rounded-xl border border-border/35 bg-card/55 p-5 backdrop-blur-xl transition-all duration-300 hover:shadow-glow-soft max-md:p-4"
+        class="relative flex min-w-0 flex-col gap-3.5 overflow-hidden rounded-xl border border-border bg-card p-5 max-md:p-4"
       >
         <header class="flex items-center gap-2.5">
           <span
             class="relative grid size-9 shrink-0 place-items-center rounded-lg border border-border/50 bg-background/50 text-primary-accent"
           >
             <span
-              class="absolute inset-0 rounded-lg bg-linear-to-br from-primary/20 to-accent-2/10"
+              class="absolute inset-0 rounded-lg bg-primary-soft"
               aria-hidden="true"
             />
             <component :is="target.icon" class="relative size-4.5" :stroke-width="2" aria-hidden="true" />
@@ -39,21 +38,21 @@
               :model-value="target.urlDisplay"
               readonly
               class="h-9 min-w-0 bg-background/50 font-mono text-[11.5px]"
-              placeholder="配置 URL"
-              :aria-label="`${target.title} 配置 URL`"
+              placeholder="订阅链接"
+              :aria-label="`${target.title} 订阅链接`"
             />
             <Button
               variant="outline"
               size="icon"
               class="size-9 shrink-0 border-border/60 bg-background/40"
-              :title="`复制 ${target.title} 配置 URL`"
-              :aria-label="`复制 ${target.title} 配置 URL`"
+              :title="`复制 ${target.title} 订阅链接`"
+              :aria-label="`复制 ${target.title} 订阅链接`"
               @click="copyUrl(target.url, target.title)"
             >
               <Copy class="size-4" />
             </Button>
           </div>
-          <p class="m-0 text-[11.5px] text-muted-foreground">复制后可在客户端中直接订阅此 URL。</p>
+          <p class="m-0 text-[11.5px] text-muted-foreground">将链接添加到客户端即可订阅。链接中的令牌同时拥有 MCP 管理权限，请勿公开分享。</p>
         </div>
 
         <div class="mt-auto grid grid-cols-[repeat(auto-fit,minmax(5.5rem,1fr))] gap-1.5">
@@ -63,7 +62,6 @@
             :variant="action.primary ? 'default' : 'outline'"
             size="sm"
             class="h-auto min-h-8 min-w-0 whitespace-normal py-1.5"
-            :class="action.primary ? 'shadow-glow' : 'border-border/60 bg-background/40'"
             :disabled="action.loading"
             @click="action.run"
           >
@@ -77,12 +75,12 @@
 
     <!-- ===== 自定义基础配置 ===== -->
     <Dialog v-model:open="customConfigDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[900px] border-border/50 [overflow-wrap:anywhere]">
+      <DialogContent class="max-w-[900px] [overflow-wrap:anywhere]">
         <DialogHeader>
           <DialogTitle>{{ getCustomConfigDialogTitle() }}</DialogTitle>
           <DialogDescription class="[overflow-wrap:anywhere]">
             {{ getCustomConfigDialogDesc() }}
-            留空则使用默认基础配置，{{ currentConfigType === 'surge' ? '支持 INI 格式语法' : '支持 YAML 语法高亮' }}。
+            留空并保存可恢复默认基础配置。{{ currentConfigType === 'surge' ? '请使用 INI 格式' : '请使用 YAML 格式' }}。
           </DialogDescription>
         </DialogHeader>
 
@@ -100,10 +98,10 @@
 
     <!-- ===== 配置预览 ===== -->
     <Dialog v-model:open="previewDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[1000px] border-border/50 [overflow-wrap:anywhere]">
+      <DialogContent class="max-w-[1000px] [overflow-wrap:anywhere]">
         <DialogHeader>
           <DialogTitle>{{ getPreviewDialogTitle() }}</DialogTitle>
-          <DialogDescription>只读预览，可整段复制到剪贴板。</DialogDescription>
+          <DialogDescription>查看生成结果，确认后可复制完整内容。此处不能直接修改。</DialogDescription>
         </DialogHeader>
 
         <YamlEditor v-model="previewContent" :read-only="true" />
@@ -120,10 +118,10 @@
 
     <!-- ===== MosDNS 设置 ===== -->
     <Dialog v-model:open="mosdnsSettingsDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[760px] border-border/50 [overflow-wrap:anywhere]">
+      <DialogContent class="max-w-[760px] [overflow-wrap:anywhere]">
         <DialogHeader>
           <DialogTitle>MosDNS 设置</DialogTitle>
-          <DialogDescription>规则分流、缓存、DNS 服务器与日志等生成参数。</DialogDescription>
+          <DialogDescription>设置当前配置空间的域名解析规则、DNS 服务器、缓存和日志，用于生成 MosDNS 配置。</DialogDescription>
         </DialogHeader>
 
         <Tabs v-model="mosdnsActiveTab" class="min-w-0">
@@ -141,13 +139,13 @@
           <TabsContent value="rules" class="max-h-[56dvh] overflow-y-auto pr-1">
             <div class="flex flex-col gap-4">
               <InfoNote>
-                <p>选择哪些规则 / 规则集使用直连 DNS（国内），哪些使用代理 DNS（国外）。</p>
-                <p>只有被选择的规则和规则集会包含在 MosDNS 配置中。</p>
+                <p>选择哪些规则和规则集使用国内 DNS，哪些使用国外 DNS。</p>
+                <p>只有选中的规则和规则集才会用于生成 MosDNS 配置。</p>
               </InfoNote>
 
               <LabeledDivider label="直连规则配置" />
 
-              <FormField label="直连规则集" hint="这些规则集将使用国内 DNS（与代理规则集互斥）。">
+              <FormField label="直连规则集" hint="使用国内 DNS；已选为代理规则集的项目不能重复选择。">
                 <MultiSelect
                   v-model="mosdnsDirectRulesets"
                   :options="directRulesetOptions"
@@ -155,7 +153,7 @@
                 />
               </FormField>
 
-              <FormField label="直连规则" hint="这些单条规则将使用国内 DNS（与代理规则互斥）。">
+              <FormField label="直连规则" hint="使用国内 DNS；已选为代理规则的项目不能重复选择。">
                 <MultiSelect
                   v-model="mosdnsDirectRules"
                   :options="directRuleOptions"
@@ -165,7 +163,7 @@
 
               <LabeledDivider label="代理规则配置" />
 
-              <FormField label="代理规则集" hint="这些规则集将使用国外 DNS（与直连规则集互斥）。">
+              <FormField label="代理规则集" hint="使用国外 DNS；已选为直连规则集的项目不能重复选择。">
                 <MultiSelect
                   v-model="mosdnsProxyRulesets"
                   :options="proxyRulesetOptions"
@@ -173,7 +171,7 @@
                 />
               </FormField>
 
-              <FormField label="代理规则" hint="这些单条规则将使用国外 DNS（与直连规则互斥）。">
+              <FormField label="代理规则" hint="使用国外 DNS；已选为直连规则的项目不能重复选择。">
                 <MultiSelect
                   v-model="mosdnsProxyRules"
                   :options="proxyRuleOptions"
@@ -188,7 +186,7 @@
                   <SelectTrigger class="w-full bg-background/50">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent class="glass-strong">
+                  <SelectContent>
                     <SelectItem value="head">优先匹配（在规则匹配之前执行）</SelectItem>
                     <SelectItem value="tail">尾部匹配（在规则匹配之后执行）</SelectItem>
                   </SelectContent>
@@ -208,7 +206,7 @@
                   v-if="mosdnsCustomMatches.length === 0"
                   class="m-0 rounded-lg border border-border/50 bg-background/40 px-3 py-3 text-[12px] text-muted-foreground"
                 >
-                  暂无自定义 match，可点击上方按钮添加。
+                  尚未添加自定义匹配项，点击「添加匹配项」设置条件和动作。
                 </p>
 
                 <div
@@ -281,11 +279,11 @@
           <TabsContent value="cache" class="max-h-[56dvh] overflow-y-auto pr-1">
             <div class="flex flex-col gap-4">
               <InfoNote>
-                <p>配置 MosDNS 缓存（lazy cache），用于加速重复解析。</p>
-                <p>关闭后会从生成配置中移除 cache 插件，并且不再在国内 DNS 序列中执行缓存。</p>
+                <p>开启缓存后，可复用 DNS 查询结果，加快重复查询。</p>
+                <p>关闭后，生成的配置将不再保存或使用这些缓存结果。</p>
               </InfoNote>
 
-              <FormField hint="关闭后会完全移除 tag: lazy_cache 相关配置。">
+              <FormField hint="关闭后，国内 DNS 查询将不再使用此缓存。">
                 <div class="flex items-center gap-2.5">
                   <Switch id="cache-enabled" v-model="mosdnsCacheEnabled" />
                   <Label for="cache-enabled" class="text-[13px] text-muted-foreground">启用缓存</Label>
@@ -320,7 +318,7 @@
                 <FormField>
                   <div class="flex items-center gap-2.5">
                     <Switch id="cache-dump" v-model="mosdnsCacheDumpEnabled" />
-                    <Label for="cache-dump" class="text-[13px] text-muted-foreground">持久化缓存</Label>
+                    <Label for="cache-dump" class="text-[13px] text-muted-foreground">将缓存保存到文件</Label>
                   </div>
                 </FormField>
 
@@ -328,7 +326,7 @@
                   <FormField
                     label="dump_file"
                     html-for="cache-dump-file"
-                    hint="缓存持久化文件路径（相对于 MosDNS 配置目录）。"
+                    hint="缓存文件的保存位置，相对于 MosDNS 配置目录。"
                   >
                     <Input
                       id="cache-dump-file"
@@ -474,7 +472,7 @@
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>当所有规则都不匹配时，使用的默认 DNS 服务器。</p>
-                <p>推荐使用「国外 DNS」以避免污染。</p>
+                <p>可选择「国外 DNS」，减少 DNS 污染的影响。</p>
               </InfoNote>
 
               <RadioGroup v-model="mosdnsDefaultForward" class="flex flex-col gap-2">
@@ -502,7 +500,7 @@
           <TabsContent value="hosts" class="max-h-[56dvh] overflow-y-auto pr-1">
             <div class="flex flex-col gap-4">
               <InfoNote>
-                <p>配置自定义域名解析，优先级最高。</p>
+                <p>为指定域名设置固定 IP，优先于其他规则使用。</p>
                 <p>格式：每行一个映射，域名在前，IP 地址在后，用空格分隔。</p>
               </InfoNote>
 
@@ -530,7 +528,7 @@
                 <p>可以控制日志详细程度，帮助排查问题。</p>
               </InfoNote>
 
-              <FormField hint="关闭日志可以提高性能，但不利于问题排查。">
+              <FormField hint="关闭后不再记录日志，出现问题时将缺少排查依据。">
                 <div class="flex items-center gap-2.5">
                   <Switch id="mosdns-log" v-model="mosdnsLogEnabled" />
                   <Label for="mosdns-log" class="text-[13px] text-muted-foreground">启用日志</Label>
@@ -543,7 +541,7 @@
                     <SelectTrigger class="w-full bg-background/50">
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent class="glass-strong">
+                    <SelectContent>
                       <SelectItem v-for="level in LOG_LEVELS" :key="level.value" :value="level.value">
                         <span class="flex flex-col leading-snug">
                           <span class="text-[13px] font-medium">{{ level.label }}</span>
@@ -574,11 +572,11 @@
           <TabsContent value="api" class="max-h-[56dvh] overflow-y-auto pr-1">
             <div class="flex flex-col gap-4">
               <InfoNote>
-                <p>配置 MosDNS API 接口，用于监控和管理 MosDNS 服务。</p>
-                <p>API 接口可以查询 MosDNS 运行状态和统计信息。</p>
+                <p>开启 API 后，可通过 API 查询 MosDNS 运行状态和统计信息。</p>
+                <p>关闭后将无法通过 API 监控和管理服务。</p>
               </InfoNote>
 
-              <FormField hint="关闭 API 可以减少资源占用，但无法通过 API 查询状态。">
+              <FormField hint="需要通过其他工具查看状态或管理 MosDNS 时开启。">
                 <div class="flex items-center gap-2.5">
                   <Switch id="mosdns-api" v-model="mosdnsApiEnabled" />
                   <Label for="mosdns-api" class="text-[13px] text-muted-foreground">启用 API</Label>
@@ -614,12 +612,12 @@
 
     <!-- ===== Surge Smart 模式 ===== -->
     <Dialog v-model:open="surgeSmartDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[680px] border-border/50 [overflow-wrap:anywhere]">
+      <DialogContent class="max-w-[680px] [overflow-wrap:anywhere]">
         <DialogHeader>
           <DialogTitle>Surge Smart 模式</DialogTitle>
           <DialogDescription class="[overflow-wrap:anywhere]">
-            选择要在 Surge 中以 Smart 模式输出的策略组并配置 policy-priority。
-            同一策略组在 Mihomo 中仍输出原类型（如 url-test），仅 Surge 配置受影响。
+            选择要使用 Smart 模式的策略组，并填写 policy-priority 设置优先级。
+            仅影响 Surge 配置；Mihomo 中仍保留原类型（如 url-test）。
           </DialogDescription>
         </DialogHeader>
 
@@ -633,7 +631,7 @@
               <SelectTrigger class="min-w-0 flex-[1_1_12rem] bg-background/50">
                 <SelectValue placeholder="选择策略组" />
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem
                   v-for="g in proxyGroupOptions"
                   :key="g.id"
@@ -668,7 +666,7 @@
             @click="addSurgeSmartGroup"
           >
             <Plus class="size-3.5" />
-            添加
+            添加策略组
           </Button>
         </div>
 
@@ -836,19 +834,19 @@ const validateYaml = (entry: DnsEntry): void => {
         if (parsed.length > 0) {
           const firstItem = parsed[0]
           if (typeof firstItem !== 'object' || !firstItem.addr) {
-            entry.yaml_error = 'YAML 格式错误：数组项必须包含 addr 字段'
+            entry.yaml_error = '请为 YAML 列表中的 DNS 条目填写 addr 地址字段'
             return
           }
         }
       } else {
         // 如果是对象，必须有 addr 字段
         if (!parsed.addr) {
-          entry.yaml_error = 'YAML 格式错误：必须包含 addr 字段'
+          entry.yaml_error = '请在 YAML 中填写 addr 地址字段'
           return
         }
       }
     } else {
-      entry.yaml_error = 'YAML 格式错误：必须是对象或数组'
+      entry.yaml_error = '请使用 YAML 对象填写单个 DNS 条目，或使用列表填写多个条目'
       return
     }
 
@@ -1121,7 +1119,7 @@ const saveSurgeSmartGroups = async () => {
     notify.success('Smart 配置已保存')
     surgeSmartDialogVisible.value = false
   } catch (error) {
-    notify.error('保存失败')
+    notify.error('保存 Surge Smart 设置失败')
   } finally {
     savingSurgeSmartGroups.value = false
   }
@@ -1181,7 +1179,7 @@ const targets = computed(() => [
     url: mihomoUrl.value,
     urlDisplay: mihomoUrlDisplay.value,
     actions: [
-      { label: '基础', icon: Pencil, run: () => showCustomConfigDialog('mihomo') },
+      { label: '基础配置', icon: Pencil, run: () => showCustomConfigDialog('mihomo') },
       { label: '预览', icon: Eye, loading: mihomoPreviewLoading.value, run: () => previewConfig('mihomo') },
       { label: '下载', icon: Download, primary: true, loading: mihomoLoading.value, run: generateMihomo }
     ]
@@ -1194,7 +1192,7 @@ const targets = computed(() => [
     url: surgeUrl.value,
     urlDisplay: surgeUrlDisplay.value,
     actions: [
-      { label: '基础', icon: Pencil, run: handleSurgeCustomConfig },
+      { label: '基础配置', icon: Pencil, run: handleSurgeCustomConfig },
       { label: 'Smart', icon: Settings, run: showSurgeSmartDialog },
       { label: '预览', icon: Eye, loading: surgePreviewLoading.value, run: handleSurgePreview },
       { label: '下载', icon: Download, primary: true, loading: surgeLoading.value, run: generateSurge }
@@ -1250,7 +1248,7 @@ const dnsGroups = computed(() => [
     label: '国内 DNS',
     entries: mosdnsLocalDnsEntries.value,
     listRef: (el: unknown) => (localDnsListRef.value = el as HTMLElement | null),
-    emptyText: '暂无 DNS 条目，点击上方按钮添加',
+    emptyText: '尚未设置国内 DNS，点击「添加条目」填写服务器地址',
     addrPlaceholder: 'https://dns.alidns.com/dns-query 或 223.5.5.5',
     hint: '直连规则使用的 DNS 服务器'
   },
@@ -1259,7 +1257,7 @@ const dnsGroups = computed(() => [
     label: '国外 DNS',
     entries: mosdnsRemoteDnsEntries.value,
     listRef: (el: unknown) => (remoteDnsListRef.value = el as HTMLElement | null),
-    emptyText: '暂无 DNS 条目，点击上方按钮添加',
+    emptyText: '尚未设置国外 DNS，点击「添加条目」填写服务器地址',
     addrPlaceholder: 'https://1.1.1.1/dns-query 或 1.1.1.1',
     hint: '代理规则使用的主 DNS 服务器'
   },
@@ -1268,9 +1266,9 @@ const dnsGroups = computed(() => [
     label: 'Fallback DNS',
     entries: mosdnsFallbackDnsEntries.value,
     listRef: (el: unknown) => (fallbackDnsListRef.value = el as HTMLElement | null),
-    emptyText: '暂无 DNS 条目，点击上方按钮添加（留空则使用国内 DNS）',
+    emptyText: '尚未设置备用 DNS。可点击「添加条目」填写地址；留空使用国内 DNS',
     addrPlaceholder: 'https://dns.alidns.com/dns-query 或 223.5.5.5',
-    hint: '当国外 DNS 超时时使用的备用 DNS 服务器，留空则复用国内 DNS 配置'
+    hint: '国外 DNS 超时时使用此备用服务器；留空使用国内 DNS'
   }
 ])
 
@@ -1278,9 +1276,9 @@ const DEFAULT_FORWARD_OPTIONS = [
   {
     value: 'forward_remote',
     label: '国外 DNS（推荐）',
-    desc: '使用国外 DNS 服务器，避免 DNS 污染'
+    desc: '使用国外 DNS 服务器，减少 DNS 污染的影响'
   },
-  { value: 'forward_local', label: '国内 DNS', desc: '使用国内 DNS 服务器，解析速度更快' }
+  { value: 'forward_local', label: '国内 DNS', desc: '使用国内 DNS 服务器处理未匹配规则的查询' }
 ]
 
 const LOG_LEVELS = [
@@ -1295,7 +1293,7 @@ const copyUrl = (url: string, configType: string) => {
   // 检查 Clipboard API 是否可用
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(url).then(() => {
-      notify.success(`${configType} 配置 URL 已复制到剪贴板`)
+      notify.success(`${configType} 订阅链接已复制，请添加到客户端`)
     }).catch(() => {
       fallbackCopyUrl(url, configType)
     })
@@ -1315,7 +1313,7 @@ const fallbackCopyUrl = (text: string, configType: string) => {
   textarea.select()
   try {
     document.execCommand('copy')
-    notify.success(`${configType} 配置 URL 已复制到剪贴板`)
+    notify.success(`${configType} 订阅链接已复制，请添加到客户端`)
   } catch (err) {
     notify.error('复制失败，请手动复制')
   }
@@ -1338,7 +1336,7 @@ const generateMihomo = async () => {
 
     notify.success('Mihomo 配置已生成')
   } catch (error) {
-    notify.error('生成失败')
+    notify.error('生成 Mihomo 配置失败')
   } finally {
     mihomoLoading.value = false
   }
@@ -1360,7 +1358,7 @@ const generateSurge = async () => {
 
     notify.success('Surge 配置已生成')
   } catch (error) {
-    notify.error('生成失败')
+    notify.error('生成 Surge 配置失败')
   } finally {
     surgeLoading.value = false
   }
@@ -1382,7 +1380,7 @@ const generateMosdns = async () => {
 
     notify.success('MosDNS 配置已生成')
   } catch (error) {
-    notify.error('生成失败')
+    notify.error('生成 MosDNS 配置失败')
   } finally {
     mosdnsLoading.value = false
   }
@@ -1399,9 +1397,9 @@ const getCustomConfigDialogTitle = () => {
 
 const getCustomConfigDialogDesc = () => {
   const descs = {
-    mihomo: '在此编辑 Mihomo 的基础配置（如 mixed-port、dns、tun 等），生成配置时会自动合并 proxies、proxy-groups、rules 等配置。使用 YAML 格式。',
-    surge: '在此编辑 Surge 的基础配置。使用 INI 风格的配置格式，包含 [General]、[Proxy]、[Proxy Group]、[Rule] 等部分。规则格式：TYPE,VALUE,POLICY（如 DOMAIN-SUFFIX,google.com,Proxy）',
-    mosdns: '在此编辑 MosDNS 的基础配置。使用 YAML 格式，主要包含 log、data_providers、plugins、servers 等部分。注意插件初始化顺序。'
+    mihomo: '设置 mixed-port、dns、tun 等基础选项。生成时会合并当前配置空间中的节点、策略组和规则（proxies、proxy-groups、rules）。',
+    surge: '编辑 [General] 等基础设置；[Proxy]、[Proxy Group]、[Rule] 将由当前配置空间的设置生成。规则格式为 TYPE,VALUE,POLICY，如 DOMAIN-SUFFIX,google.com,Proxy。',
+    mosdns: '设置 log、data_providers、plugins、servers 等选项。请按依赖关系排列插件，确保被使用的插件先初始化。'
   }
   return descs[currentConfigType.value]
 }
@@ -1452,7 +1450,7 @@ const saveCustomConfig = async () => {
     notify.success('自定义配置已保存')
     customConfigDialogVisible.value = false
   } catch (error) {
-    notify.error('保存失败')
+    notify.error('保存基础配置失败')
   } finally {
     savingCustomConfig.value = false
   }
@@ -1510,7 +1508,7 @@ const fallbackCopyPreview = () => {
     document.execCommand('copy')
     notify.success('已复制到剪贴板')
   } catch (err) {
-    notify.error('复制失败')
+    notify.error('复制失败，请手动复制预览内容')
   }
   document.body.removeChild(textarea)
 }
@@ -1593,7 +1591,7 @@ const toggleDnsEntryMode = (type: 'local' | 'remote' | 'fallback', id: string) =
         entry.enable_pipeline = enable_pipeline
         entry.mode = 'simple'
       } catch (error) {
-        notify.warning('YAML 解析失败，已清空字段')
+        notify.warning('无法读取 YAML，地址等字段已清空，请重新填写')
         entry.addr = ''
         entry.bootstrap = ''
         entry.enable_pipeline = false
@@ -1756,7 +1754,7 @@ const showMosdnsSettingsDialog = async () => {
     initDnsSortable()
   } catch (error) {
     console.error('加载 MosDNS 设置失败', error)
-    notify.error('加载设置失败')
+    notify.error('加载 MosDNS 设置失败')
   }
 }
 
@@ -1833,7 +1831,7 @@ const saveMosdnsSettings = async () => {
     mosdnsSettingsDialogVisible.value = false
   } catch (error) {
     console.error('保存 MosDNS 设置失败', error)
-    notify.error('保存失败')
+    notify.error('保存 MosDNS 设置失败')
   } finally {
     savingMosdnsSettings.value = false
   }

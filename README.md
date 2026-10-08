@@ -58,6 +58,11 @@
 - 全局服务、访问令牌、WebDAV 和全量备份统一放在「系统设置」，Agent 按绑定配置下发
 - [多配置、数据迁移与备份说明](doc/design/multi-config-management.md)
 
+### 界面与可访问性
+- 深浅主题均使用玻璃面板与柔和辉光；表单保持清晰底色，浮层保持高不透明度
+- 桌面固定导航，移动端保留分组导航与配置切换；总览指标在窄屏按两列排列
+- 支持键盘跳转到主要内容、可见焦点与系统减少动效偏好；长弹窗在视口内滚动
+
 ### 🔌 MCP 服务
 - 内置 MCP 服务端（`/mcp` 端点）
 - 工具覆盖共享资源、独立配置、系统设置与 Agent 管理
@@ -133,7 +138,7 @@ services:
 | 层级 | 技术 |
 |------|------|
 | **后端** | Python 3.11 • Flask • PyYAML |
-| **前端** | Vue 3 • TypeScript • Element Plus • Vite |
+| **前端** | Vue 3 • TypeScript • Tailwind CSS 4 • Reka UI • Vite |
 | **订阅解析** | [Sub-Store](https://github.com/sub-store-org/Sub-Store) |
 | **部署** | Docker • Nginx • Supervisor |
 

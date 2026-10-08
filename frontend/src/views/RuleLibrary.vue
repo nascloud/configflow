@@ -3,16 +3,15 @@
     <ScopeBanner
       scope="resource"
       :profile-name="cfProfileName"
-      description="规则集来源与缓存全局共享；策略、顺序和配置启用状态独立维护"
+      description="修改规则集来源或内容会影响使用它的所有配置；各配置的策略、顺序和启用状态保持不变。"
     />
 
     <PageHeader
-      eyebrow="Resource"
       title="规则库"
-      description="集中维护规则集来源与缓存，供策略规则引用。"
+      description="添加规则集链接或粘贴规则内容，再加入配置并选择处理流量的策略。"
     >
       <template #actions>
-        <Button class="shadow-glow" @click="showAddDialog">
+        <Button @click="showAddDialog">
           <Plus class="size-4" />
           添加规则集
         </Button>
@@ -23,7 +22,7 @@
               <ChevronDown class="size-4" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" class="glass-strong">
+          <DropdownMenuContent align="end">
             <DropdownMenuItem @select="showBatchImportDialog">
               <Upload class="size-4" />
               批量导入
@@ -52,7 +51,7 @@
       <EmptyState
         :icon="FolderOpen"
         title="规则库还是空的"
-        description="添加规则集来源（URL 或直接粘贴规则内容），策略规则即可引用它。"
+        description="添加规则集链接或粘贴规则内容，即可在策略规则中选择使用。"
       >
         <Button @click="showAddDialog">
           <Plus class="size-4" />
@@ -68,7 +67,7 @@
             <SelectTrigger class="h-9 w-[140px] border-transparent bg-background/50 text-[13px]">
               <SelectValue placeholder="全部类型" />
             </SelectTrigger>
-            <SelectContent class="glass-strong">
+            <SelectContent>
               <SelectItem value="all">全部类型</SelectItem>
               <SelectItem v-for="b in behaviorOptions" :key="b" :value="b">{{ b }}</SelectItem>
             </SelectContent>
@@ -91,7 +90,7 @@
 
         <template #actions>
           <Button v-if="selectedRules.length" variant="outline" size="sm" @click="showReferenceDialog(selectedRules)">
-            <Plus class="size-3.5" />加入当前配置
+            <Send class="size-3.5" />加入当前配置
           </Button>
           <Button
             v-if="selectedRules.length"
@@ -103,7 +102,7 @@
           >
             <Loader2 v-if="caching" class="size-3.5 animate-spin" />
             <Download v-else class="size-3.5" />
-            {{ caching ? '缓存中…' : '批量缓存' }}
+            {{ caching ? '下载中…' : '批量下载内容' }}
           </Button>
           <Button
             v-if="selectedRules.length"
@@ -210,8 +209,18 @@
             </TableCell>
             <TableCell class="cf-reorder-mute text-right">
               <div class="flex items-center justify-end gap-0.5">
-                <Button variant="ghost" size="icon-sm" title="加入当前配置" :aria-label="`将 ${rule.name} 加入当前配置`" @click="showReferenceDialog([rule.id])">
+                <Button
+                  v-if="rule.source_type === 'content'"
+                  variant="ghost"
+                  size="icon-sm"
+                  :aria-label="`向 ${rule.name} 添加规则`"
+                  title="添加规则"
+                  @click="showAddRuleToSetDialog(rule)"
+                >
                   <Plus class="size-4" />
+                </Button>
+                <Button variant="ghost" size="icon-sm" title="加入当前配置" :aria-label="`将 ${rule.name} 加入当前配置`" @click="showReferenceDialog([rule.id])">
+                  <Send class="size-4" />
                 </Button>
                 <Button
                   variant="ghost"
@@ -222,16 +231,6 @@
                   @click="handleToggle(rule)"
                 >
                   <component :is="rule.enabled ? Eye : EyeOff" class="size-4" />
-                </Button>
-                <Button
-                  v-if="rule.source_type === 'content'"
-                  variant="ghost"
-                  size="icon-sm"
-                  :aria-label="`向 ${rule.name} 添加规则`"
-                  title="添加规则"
-                  @click="showAddRuleToSetDialog(rule)"
-                >
-                  <Plus class="size-4" />
                 </Button>
                 <Button
                   variant="ghost"
@@ -280,8 +279,8 @@
           :data-id="rule.id"
           data-reorder-item
           :class="[
-            'hairline edge-light relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card/55 p-4 backdrop-blur-xl transition-all duration-300 hover:shadow-glow-soft',
-            selectedRules.includes(rule.id) ? 'border-primary-accent/45' : 'border-border/35',
+            'relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card p-4 transition-colors duration-200',
+            selectedRules.includes(rule.id) ? 'border-primary-accent' : 'border-border',
             !rule.enabled && 'opacity-60'
           ]"
         >
@@ -348,9 +347,6 @@
           </div>
 
           <footer class="cf-reorder-mute mt-auto flex items-center gap-0.5 border-0 border-t border-border/50 pt-3">
-            <Button variant="ghost" size="icon-sm" title="加入当前配置" :aria-label="`将 ${rule.name} 加入当前配置`" @click="showReferenceDialog([rule.id])">
-              <Plus class="size-4" />
-            </Button>
             <Button
               v-if="rule.source_type === 'content'"
               variant="ghost"
@@ -359,6 +355,9 @@
             >
               <Plus class="size-3.5" />
               添加规则
+            </Button>
+            <Button variant="ghost" size="icon-sm" title="加入当前配置" :aria-label="`将 ${rule.name} 加入当前配置`" @click="showReferenceDialog([rule.id])">
+              <Send class="size-4" />
             </Button>
             <Button variant="ghost" size="icon-sm" title="复制下载地址" aria-label="复制下载地址" @click="copyRuleUrl(rule)">
               <Copy class="size-4" />
@@ -382,16 +381,16 @@
     </template>
 
     <Dialog v-model:open="referenceDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[520px] border-border/50">
+      <DialogContent class="max-w-[520px]">
         <DialogHeader>
           <DialogTitle>加入配置</DialogTitle>
-          <DialogDescription class="break-all">将 {{ referenceRuleIds.length }} 个共享规则集引用加入「{{ referenceProfileName }}」。不复制来源，已有引用会跳过。</DialogDescription>
+          <DialogDescription class="break-all">将 {{ referenceRuleIds.length }} 个规则集加入「{{ referenceProfileName }}」，已添加的会跳过。内容仍与规则库共用，后续修改会影响使用它的所有配置。</DialogDescription>
         </DialogHeader>
         <div class="flex flex-col gap-2">
           <Label>目标策略</Label>
           <Select v-model="referencePolicy">
             <SelectTrigger class="w-full min-w-0 bg-background/50 [&>span]:truncate"><SelectValue /></SelectTrigger>
-            <SelectContent class="glass-strong">
+            <SelectContent>
               <SelectItem v-for="policy in referencePolicies" :key="policy" :value="policy" :title="policy"><span class="break-all">{{ policy }}</span></SelectItem>
             </SelectContent>
           </Select>
@@ -405,10 +404,10 @@
 
     <!-- ===== 添加 / 编辑规则集 ===== -->
     <Dialog v-model:open="dialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[700px] border-border/50">
+      <DialogContent class="max-w-[700px]">
         <DialogHeader>
           <DialogTitle>{{ isEdit ? '编辑规则' : '添加规则' }}</DialogTitle>
-          <DialogDescription>共享来源修改对所有引用配置生效，不修改各配置的策略、顺序或启用状态。</DialogDescription>
+          <DialogDescription>修改来源或内容会影响使用此规则集的所有配置，但不会改变各配置的策略、顺序或启用状态。</DialogDescription>
         </DialogHeader>
 
         <div class="flex max-h-[62dvh] flex-col gap-4 overflow-y-auto pr-1">
@@ -464,7 +463,7 @@
               <SelectTrigger class="w-full bg-background/50">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem value="domain">Domain</SelectItem>
                 <SelectItem value="ipcidr">IP CIDR</SelectItem>
                 <SelectItem value="classical">Classical</SelectItem>
@@ -493,7 +492,7 @@
 
     <!-- ===== 向规则集添加规则 ===== -->
     <Dialog v-model:open="addRuleToSetDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[600px] border-border/50">
+      <DialogContent class="max-w-[600px]">
         <DialogHeader>
           <DialogTitle>添加规则到 {{ currentRuleSet?.name }}</DialogTitle>
           <DialogDescription>{{ addRuleToSetHelperText }}</DialogDescription>
@@ -506,7 +505,7 @@
               <SelectTrigger class="w-full bg-background/50 font-mono">
                 <SelectValue placeholder="选择规则类型" />
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem v-for="type in CLASSICAL_RULE_TYPES" :key="type" :value="type" class="font-mono">
                   {{ type }}
                 </SelectItem>
@@ -535,7 +534,7 @@
 
     <!-- ===== 批量导入 ===== -->
     <Dialog v-model:open="batchImportDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[700px] border-border/50">
+      <DialogContent class="max-w-[700px]">
         <DialogHeader>
           <DialogTitle>批量导入规则</DialogTitle>
           <DialogDescription>粘贴 YAML 格式的 rule-providers 配置。</DialogDescription>
@@ -570,7 +569,7 @@
 
     <!-- ===== GitHub 代理域名配置 ===== -->
     <Dialog v-model:open="proxyConfigDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[520px] border-border/50">
+      <DialogContent class="max-w-[520px]">
         <DialogHeader>
           <DialogTitle>GitHub 代理域名配置</DialogTitle>
           <DialogDescription>
@@ -617,6 +616,7 @@ import {
   Network,
   Pencil,
   Plus,
+  Send,
   Settings,
   Trash2,
   Upload
@@ -744,10 +744,10 @@ const addReferences = async () => {
       }, requestConfig)
       added++
     }
-    notify.success(`已向「${referenceProfileName.value}」添加 ${added} 个引用，跳过 ${referenceRuleIds.value.length - added} 个已有引用`)
+    notify.success(`已向「${referenceProfileName.value}」添加 ${added} 个规则集，跳过 ${referenceRuleIds.value.length - added} 个已添加的规则集`)
     referenceDialogVisible.value = false
   } catch (error) {
-    notify.error(`已添加 ${added} 个引用；${errorMessage(error, '添加失败')}`)
+    notify.error(`已添加 ${added} 个规则集；${errorMessage(error, '添加失败')}`)
   } finally {
     addingReferences.value = false
   }
@@ -869,7 +869,7 @@ const loadRuleLibrary = async () => {
     const { data } = await api.get('/rule-library')
     ruleLibrary.value = data
   } catch (error) {
-    notify.error('加载规则仓库失败')
+    notify.error('加载规则库失败')
   }
 }
 
@@ -984,7 +984,7 @@ const saveRule = async () => {
 
 
 const deleteRule = async (row: RuleLibraryItem) => {
-  const ok = await confirmDanger('确定删除此共享规则集？被任何配置引用时无法删除，请先在相应配置移除引用。', { title: '删除共享规则集' })
+  const ok = await confirmDanger('确定删除此规则集吗？删除后无法恢复。仍在配置中使用的规则集无法删除，请先从对应配置中移除。', { title: '删除共享规则集' })
   if (!ok) return
   try {
     await api.delete(`/rule-library/${row.id}`)
@@ -1252,8 +1252,8 @@ const batchTestConnectivity = async () => {
 
 const batchCacheRules = async () => {
   const ok = await confirm(
-    `即将缓存选中的 ${selectedRules.value.length} 条规则到本地，缓存失败的规则将被自动关闭。是否继续？`,
-    { title: '批量缓存规则' }
+    `将下载选中的 ${selectedRules.value.length} 个规则集内容并保存在服务器上。下载失败的来源会被停用，各配置的启用状态不变。是否继续？`,
+    { title: '批量下载规则集内容' }
   )
   if (!ok) return
 
@@ -1273,18 +1273,18 @@ const batchCacheRules = async () => {
       selectedRules.value = []
 
       if (failedCount > 0) {
-        notify.warning(`缓存完成！成功: ${successCount}，失败: ${failedCount}。缓存失败的共享来源已关闭，各配置启用状态保持不变。`)
+        notify.warning(`下载完成：成功 ${successCount} 个，失败 ${failedCount} 个。下载失败的来源已停用，各配置的启用状态不变。`)
       } else {
-        notify.success(`缓存完成！成功缓存 ${totalCount} 条规则。`)
+        notify.success(`已下载 ${totalCount} 个规则集的内容。`)
       }
 
       await loadRuleLibrary()
     } else {
-      notify.error('缓存失败：' + data.message)
+      notify.error('下载规则集内容失败：' + data.message)
     }
   } catch (error: any) {
     if (error !== 'cancel') {
-      notify.error('缓存失败')
+      notify.error('下载规则集内容失败')
       console.error('批量缓存失败:', error)
     }
   } finally {
@@ -1386,7 +1386,7 @@ const toggleSelectAll = () => {
 // 共享删除由服务端检查所有配置，不级联删除配置引用。
 const batchDeleteRules = async () => {
   if (selectedRules.value.length === 0) return
-  const ok = await confirmDanger(`确定删除选中的 ${selectedRules.value.length} 个共享规则集？仍被配置引用的规则集会保留。`, { title: '批量删除共享规则集' })
+  const ok = await confirmDanger(`确定删除选中的 ${selectedRules.value.length} 个规则集吗？删除后无法恢复。仍在配置中使用的规则集会保留。`, { title: '批量删除共享规则集' })
   if (!ok) return
   const failedIds: string[] = []
   const failures: string[] = []
@@ -1439,7 +1439,7 @@ const visibleRules = computed(() => {
 })
 
 const rulesEmptyText = computed(() =>
-  ruleLibrary.value.length === 0 ? '还没有规则集' : '没有匹配的规则集'
+  ruleLibrary.value.length === 0 ? '添加规则集后，即可加入配置使用。' : '试试其他关键词，或调整类型筛选。'
 )
 
 /* ---------- 统一拖动排序 ---------- */

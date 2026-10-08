@@ -1,8 +1,9 @@
 <template>
   <div class="flex min-w-0 items-center gap-1">
+    <span class="shrink-0 text-xs text-muted-foreground max-[1100px]:hidden">当前配置</span>
     <Select v-model="selectedProfileId" :disabled="loading || scopedRequests > 0" @update:model-value="handleChange">
       <SelectTrigger
-        class="data-[size=default]:h-8 w-[190px] min-w-0 gap-2 border-border/60 bg-background/40 text-[13px] font-medium transition-colors hover:border-border-strong hover:text-foreground max-md:w-[132px] max-[420px]:w-[108px]"
+        class="data-[size=default]:h-11 w-[190px] min-w-0 gap-2 border-border bg-background text-[13px] font-medium transition-colors hover:border-border-strong hover:text-foreground max-[1100px]:w-[160px] max-[700px]:flex-1"
         aria-label="当前配置空间"
       >
         <Boxes class="size-4 shrink-0 text-primary-accent" />
@@ -10,7 +11,7 @@
           {{ currentLabel || '选择配置空间' }}
         </SelectValue>
       </SelectTrigger>
-      <SelectContent align="end" class="glass-strong min-w-[220px] max-w-[calc(100vw-24px)]">
+      <SelectContent align="end" class="min-w-[220px] max-w-[calc(100vw-24px)]">
         <SelectItem v-for="profile in profiles" :key="profile.id" :value="profile.id">
           <span class="flex min-w-0 flex-col whitespace-normal break-all leading-snug">
             <span class="text-[13px] font-medium">{{ profile.name }}</span>
@@ -23,7 +24,7 @@
     <Button
       variant="ghost"
       size="icon-sm"
-      class="text-primary-accent"
+      class="size-11 shrink-0 text-muted-foreground"
       title="管理配置空间"
       aria-label="管理配置空间"
       @click="router.push('/profiles')"

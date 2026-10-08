@@ -2,9 +2,8 @@
   <div class="min-w-0 [overflow-wrap:anywhere]">
     <ScopeBanner scope="system" />
     <PageHeader
-      eyebrow="System"
       title="系统设置"
-      description="全局服务与全量数据管理，适用于所有配置。"
+      description="设置服务地址和访问令牌，备份或恢复全部数据。这里的修改会影响所有配置空间。"
     />
     <!-- ===== 服务配置 / 配置管理 ===== -->
     <div class="grid grid-cols-2 gap-3 max-[1100px]:grid-cols-1">
@@ -13,7 +12,7 @@
           <FormField
             label="服务域名"
             html-for="server-domain"
-            hint="用于规则仓库内容 URL、MosDNS 规则转换接口、Agent 安装脚本与配置订阅 URL。"
+            hint="填写可访问本服务的地址，用于生成规则链接、MosDNS 规则转换地址、Agent 安装脚本和配置订阅链接。"
           >
             <div class="flex items-center gap-1.5">
               <Input
@@ -39,7 +38,7 @@
           <FormField
             label="Sub-Store"
             html-for="sub-store-url"
-            hint="Sub-Store 后端 API 地址，用于订阅解析和节点格式转换。Docker 部署默认 http://sub-store:3001，留空使用环境变量或默认值。"
+            hint="填写 Sub-Store 的 API 地址，用于读取订阅和转换节点格式。Docker 部署默认 http://sub-store:3001，留空使用环境变量或默认值。"
           >
             <Input
               id="sub-store-url"
@@ -62,9 +61,9 @@
           </FormField>
 
           <FormField
-            label="全局令牌"
+            label="访问令牌"
             html-for="config-token"
-            hint="所有配置共用此令牌，订阅 URL 需携带 ?token=xxx；点击清除可关闭令牌保护。"
+            hint="所有配置共用此令牌，订阅链接需携带 ?token=xxx。修改后请更新客户端中的链接；清除令牌会关闭令牌保护。"
           >
             <div class="flex items-center gap-1.5">
               <Input
@@ -100,7 +99,7 @@
           <FormField
             label="MCP"
             html-for="mcp-url"
-            hint="MCP 客户端可连接此地址，使用 Authorization: Bearer 全局令牌认证。令牌同时授予 MCP 管理权限，请勿公开分享订阅链接。"
+            hint="在 MCP 客户端中填写此地址，使用 Authorization: Bearer 加上访问令牌认证。此令牌同时授予 MCP 管理权限，请勿公开分享令牌或含令牌的订阅链接。"
           >
             <div class="flex items-center gap-1.5">
               <Input id="mcp-url" :model-value="mcpUrl" readonly class="min-w-0 bg-background/50 font-mono" />
@@ -112,12 +111,12 @@
         </div>
       </SectionCard>
 
-      <SectionCard title="全量数据管理" :icon="Archive" class="min-w-0">
+      <SectionCard title="备份与恢复" :icon="Archive" class="min-w-0">
         <div class="flex flex-col gap-4">
           <div class="grid grid-cols-2 gap-2 max-[480px]:grid-cols-1 [&_button]:h-auto [&_button]:min-h-9 [&_button]:min-w-0 [&_button]:whitespace-normal">
             <Button variant="outline" class="border-border/60 bg-background/40" @click="exportConfig">
               <Upload class="size-4" />
-              全量导出
+              导出全部数据
             </Button>
             <Button
               variant="outline"
@@ -129,7 +128,7 @@
             </Button>
             <Button variant="outline" class="border-border/60 bg-background/40" @click="pickImportFile">
               <Download class="size-4" />
-              全量导入
+              导入全部数据
             </Button>
             <Button variant="outline" class="border-border/60 bg-background/40" @click="handleBackup">
               <CloudUpload class="size-4" />
@@ -145,7 +144,7 @@
           </div>
 
           <p class="m-0 text-[12px] leading-relaxed text-muted-foreground">
-            导出与 WebDAV 备份包含共享资源、所有配置、系统设置及 Agent。脱敏导出隐藏敏感信息，仅用于分享；全量导入将覆盖上述全部数据，不仅影响当前配置。完整备份含敏感信息，请妥善保管。
+            导出和 WebDAV 备份包含共享资源、所有配置、系统设置及 Agent。脱敏导出隐藏敏感信息，仅用于分享。导入会覆盖上述全部数据，不仅影响当前配置，且无法撤销，请先备份。完整备份含敏感信息，请妥善保管。
           </p>
 
           <!-- 重置会清空全部数据，与常规操作分区并降低视觉权重，避免误触 -->
@@ -153,7 +152,7 @@
             class="mt-auto flex flex-wrap items-center gap-3 rounded-lg border border-destructive-accent/25 bg-destructive-soft/30 p-3"
           >
             <div class="min-w-0 flex-[1_1_12rem]">
-              <p class="m-0 text-[13px] font-semibold text-destructive-accent">全量重置</p>
+              <p class="m-0 text-[13px] font-semibold text-destructive-accent">重置全部数据</p>
               <p class="mt-0.5 mb-0 text-[12px] text-muted-foreground">
                 清空共享资源、所有配置及 Agent，恢复默认系统设置，不可撤销。
               </p>
@@ -174,9 +173,9 @@
 
     <!-- ===== 配置备份 ===== -->
     <Dialog v-model:open="backupDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[620px] border-border/50 [overflow-wrap:anywhere]">
+      <DialogContent class="max-w-[620px] [overflow-wrap:anywhere]">
         <DialogHeader>
-          <DialogTitle>全量数据备份</DialogTitle>
+          <DialogTitle>备份全部数据</DialogTitle>
           <DialogDescription>
             通过 WebDAV 备份共享资源、所有配置、系统设置及 Agent。支持坚果云、Nextcloud 等服务。
           </DialogDescription>
@@ -217,7 +216,7 @@
             />
           </FormField>
 
-          <FormField label="备份路径" html-for="webdav-path" hint="远程存储路径，默认为 /config-flow-backup/">
+          <FormField label="备份路径" html-for="webdav-path" hint="备份在 WebDAV 中的保存位置，默认为 /config-flow-backup/">
             <Input
               id="webdav-path"
               v-model="backupForm.webdav_path"
@@ -226,7 +225,7 @@
             />
           </FormField>
 
-          <FormField hint="开启后每次配置变更时自动备份全量数据。">
+          <FormField hint="开启后，每次修改配置都会自动备份全部数据。">
             <div class="flex items-center gap-2.5">
               <Switch id="auto-backup" v-model="backupForm.auto_backup" />
               <Label for="auto-backup" class="text-[13px] text-muted-foreground">自动备份</Label>
@@ -316,7 +315,7 @@ const loadConfigToken = async () => {
     const response = await configTokenApi.get()
     configToken.value = response.data.config_token || ''
   } catch {
-    notify.error('加载全局令牌失败')
+    notify.error('加载访问令牌失败')
   }
 }
 
@@ -342,7 +341,7 @@ const resetServerDomain = async () => {
     notify.success('服务域名已重置为当前地址')
   } catch (error) {
     console.error('重置服务域名失败:', error)
-    notify.error('重置失败')
+    notify.error('重置服务域名失败')
   }
 }
 
@@ -361,7 +360,7 @@ const onServerDomainBlur = async () => {
     notify.success(`服务域名已更新为：${serverDomain.value}`)
   } catch (error) {
     console.error('更新服务域名失败:', error)
-    notify.error('更新失败')
+    notify.error('更新服务域名失败')
   }
 }
 
@@ -382,7 +381,7 @@ const onSubscriptionAggregationChange = async (value: boolean) => {
     }))
   } catch (error) {
     console.error('更新订阅聚合开关失败:', error)
-    notify.error('更新失败')
+    notify.error('更新订阅聚合设置失败')
     // 失败时恢复原值
     subscriptionAggregationEnabled.value = !value
   }
@@ -415,7 +414,7 @@ const onTokenBlur = async () => {
 }
 
 const onClearToken = async () => {
-  const ok = await confirm('确定要清除全局令牌吗？清除后所有配置的订阅 URL 将不再需要令牌验证，MCP 也不再使用此令牌保护。', {
+  const ok = await confirm('确定清除访问令牌吗？清除后，所有配置的订阅链接都不再需要令牌验证，MCP 也不再受此令牌保护。', {
     title: '清除令牌',
     confirmText: '清除'
   })
@@ -441,7 +440,7 @@ const onSubStoreUrlBlur = async () => {
     notify.success('Sub-Store URL 已保存')
   } catch (error) {
     console.error('保存 Sub-Store URL 失败:', error)
-    notify.error('保存失败')
+    notify.error('保存 Sub-Store URL 失败')
   }
 }
 
@@ -467,7 +466,7 @@ const exportConfig = async () => {
     link.click()
     window.URL.revokeObjectURL(url)
 
-    notify.success('全量数据已导出')
+    notify.success('全部数据已导出，请妥善保管备份文件')
   } catch (error) {
     notify.error('导出失败')
   }
@@ -485,7 +484,7 @@ const exportConfigDesensitized = async () => {
     link.click()
     window.URL.revokeObjectURL(url)
 
-    notify.success('全量脱敏数据已导出')
+    notify.success('脱敏数据已导出，仅用于分享')
   } catch (error) {
     notify.error('导出失败')
   }
@@ -503,12 +502,12 @@ const onImportFileChange = async (event: Event) => {
   try {
     const config = JSON.parse(await file.text())
     const ok = await confirmDanger(
-      '全量导入将覆盖共享资源、所有配置、系统设置及 Agent，不仅影响当前配置。确定继续吗？',
-      { title: '全量导入', confirmText: '确认导入' }
+      '导入将覆盖共享资源、所有配置、系统设置及 Agent，不仅影响当前配置，且无法撤销。请先导出备份。确定继续吗？',
+      { title: '导入全部数据', confirmText: '确认覆盖并导入' }
     )
     if (!ok) return
     await configApi.import(config)
-    notify.success('全量数据导入成功，正在刷新页面')
+    notify.success('全部数据已导入，正在刷新页面')
     localStorage.removeItem('serverDomain')
     localStorage.removeItem('subscriptionAggregationEnabled')
     window.location.reload()
@@ -522,14 +521,14 @@ const onImportFileChange = async (event: Event) => {
 
 const resetConfig = async () => {
   const ok = await confirmDanger(
-    '全量重置将清空共享资源、所有配置及 Agent，并恢复默认系统设置。不仅影响当前配置，此操作不可撤销。',
-    { title: '全量重置', confirmText: '确认重置' }
+    '重置将清空共享资源、所有配置及 Agent，并恢复默认系统设置。不仅影响当前配置，且无法撤销。请先导出备份。',
+    { title: '重置全部数据', confirmText: '确认重置' }
   )
   if (!ok) return
 
   try {
     await api.post('/config/reset')
-    notify.success('全量数据已重置，正在刷新页面')
+    notify.success('全部数据已重置，正在刷新页面')
     localStorage.removeItem('serverDomain')
     localStorage.removeItem('subscriptionAggregationEnabled')
 
@@ -592,7 +591,7 @@ const testWebDAVConnection = async () => {
   } catch (error) {
     console.error('测试连接失败', error)
     const errorMsg = isAxiosError<{ message?: string }>(error) ? error.response?.data?.message : undefined
-    notify.error(errorMsg || '连接测试失败，请检查配置')
+    notify.error(errorMsg || '连接失败，请检查 WebDAV 地址、用户名和密码')
   } finally {
     testingConnection.value = false
   }
@@ -620,11 +619,11 @@ const backupNow = async () => {
       webdav_password: backupForm.value.webdav_password,
       webdav_path: backupForm.value.webdav_path
     })
-    notify.success('全量数据备份成功')
+    notify.success('全部数据已备份到 WebDAV')
   } catch (error) {
     console.error('备份失败', error)
     const errorMsg = isAxiosError<{ message?: string }>(error) ? error.response?.data?.message : undefined
-    notify.error(errorMsg || '备份失败，请检查配置')
+    notify.error(errorMsg || '备份失败，请检查 WebDAV 连接和备份路径')
   } finally {
     backingUp.value = false
   }
@@ -638,7 +637,7 @@ const saveBackupConfig = async () => {
     backupDialogVisible.value = false
   } catch (error) {
     console.error('保存备份配置失败', error)
-    notify.error('保存失败')
+    notify.error('保存备份设置失败')
   } finally {
     savingBackup.value = false
   }

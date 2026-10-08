@@ -3,12 +3,11 @@
     <ScopeBanner scope="profile" :profile-name="cfProfileName" />
 
     <PageHeader
-      eyebrow="Profile"
       title="策略规则"
-      description="当前配置独立维护策略、顺序和启用状态；规则集来源由共享规则库管理。"
+      description="设置当前配置如何处理不同流量。规则从上到下匹配；这里的策略、顺序和启用状态不影响其他配置，规则集内容与规则库共用。"
     >
       <template #actions>
-        <Button class="shadow-glow" @click="showAddRuleDialog">
+        <Button @click="showAddRuleDialog">
           <Plus class="size-4" />
           添加规则
         </Button>
@@ -19,7 +18,7 @@
               <ChevronDown class="size-4" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" class="glass-strong">
+          <DropdownMenuContent align="end">
             <DropdownMenuItem @select="showAddRuleSetDialog">
               <FolderOpen class="size-4" />
               添加规则集
@@ -55,7 +54,7 @@
       <EmptyState
         :icon="FileText"
         title="暂无规则"
-        description="添加单条规则或引用一个规则集，规则会按列表顺序自上而下匹配。"
+        description="添加单条规则或从规则库选择规则集，再指定处理流量的策略。规则从上到下匹配。"
       >
         <Button @click="showAddRuleDialog">
           <Plus class="size-4" />
@@ -203,8 +202,8 @@
                 variant="ghost"
                 size="icon-sm"
                 class="text-destructive-accent hover:bg-destructive-soft"
-                title="删除"
-                aria-label="删除"
+                title="从当前配置删除，删除后无法恢复"
+                aria-label="从当前配置删除，删除后无法恢复"
                 @click="deleteItem(item)"
               >
                 <Trash2 class="size-4" />
@@ -232,8 +231,8 @@
         data-reorder-item
         :data-id="item.uniqueId"
         :class="[
-          'hairline edge-light relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card/55 p-4 backdrop-blur-xl transition-all duration-300 hover:shadow-glow-soft',
-          item.isGroup ? 'border-warning-accent/35' : 'border-border/35',
+          'relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card p-4 transition-colors duration-200',
+          item.isGroup ? 'border-warning-accent/35' : 'border-border',
           item.isExpandedGroupItem && 'border-primary-accent/30',
           !item.isGroup && !item.enabled && 'opacity-60'
         ]"
@@ -352,8 +351,8 @@
               variant="ghost"
               size="icon-sm"
               class="text-destructive-accent hover:bg-destructive-soft"
-              title="删除"
-              aria-label="删除"
+              title="从当前配置删除，删除后无法恢复"
+              aria-label="从当前配置删除，删除后无法恢复"
               @click="deleteItem(item)"
             >
               <Trash2 class="size-4" />
@@ -365,7 +364,7 @@
 
     <!-- ===== 添加 / 编辑规则 ===== -->
     <Dialog v-model:open="ruleDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[520px] border-border/50">
+      <DialogContent class="max-w-[520px]">
         <DialogHeader>
           <DialogTitle>{{ isEditRule ? '编辑规则' : '添加规则' }}</DialogTitle>
           <DialogDescription>规则按列表顺序自上而下匹配，命中即停止。</DialogDescription>
@@ -378,7 +377,7 @@
               <SelectTrigger class="w-full bg-background/50 font-mono">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem v-for="type in RULE_TYPES" :key="type" :value="type" class="font-mono">
                   {{ type }}
                 </SelectItem>
@@ -402,7 +401,7 @@
               <SelectTrigger class="w-full min-w-0 bg-background/50 [&>span]:truncate">
                 <SelectValue placeholder="选择策略" />
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem v-for="policy in availablePolicies" :key="policy" :value="policy" :title="policy">
                   <span class="break-all">{{ policy }}</span>
                 </SelectItem>
@@ -426,7 +425,7 @@
               <Label for="rule-noresolve" class="text-[13px] text-muted-foreground">no-resolve</Label>
             </div>
             <p class="m-0 text-[12px] text-muted-foreground">
-              IP 类规则建议开启；逻辑规则会写入其 IP 子条件。
+              开启后，匹配 IP 条件时不为此解析域名。IP 类规则建议开启；逻辑规则中仅对 IP 子条件生效。
             </p>
           </div>
 
@@ -447,10 +446,10 @@
 
     <!-- ===== 添加 / 编辑规则集 ===== -->
     <Dialog v-model:open="ruleSetDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[520px] border-border/50">
+      <DialogContent class="max-w-[520px]">
         <DialogHeader>
           <DialogTitle>{{ isEditRuleSet ? '编辑规则集' : '添加规则集' }}</DialogTitle>
-          <DialogDescription>引用共享规则集，仅修改当前配置的策略、顺序与启用状态。</DialogDescription>
+          <DialogDescription>从规则库选择规则集，并设置当前配置使用的策略和启用状态。不会修改规则集内容或其他配置。</DialogDescription>
         </DialogHeader>
 
         <div class="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto pr-1">
@@ -462,7 +461,7 @@
                   {{ selectedLibraryRuleLabel || '选择共享规则集（必选）' }}
                 </SelectValue>
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem v-for="rule in enabledLibraryRules" :key="rule.id" :value="rule.id">
                   <span class="flex w-full items-center gap-2">
                     <span class="min-w-0 truncate">{{ rule.name }}</span>
@@ -474,7 +473,7 @@
               </SelectContent>
             </Select>
             <div class="flex items-center gap-2">
-              <p class="m-0 flex-1 text-[12px] text-muted-foreground">已添加的规则不会重复显示在列表中。</p>
+              <p class="m-0 flex-1 text-[12px] text-muted-foreground">当前配置已添加的规则集不会重复显示。</p>
               <Button v-if="selectedLibraryRule" variant="ghost" size="sm" @click="onLibraryRuleClear">
                 清除选择
               </Button>
@@ -494,7 +493,7 @@
               <SelectTrigger class="w-full min-w-0 bg-background/50 [&>span]:truncate">
                 <SelectValue placeholder="选择策略" />
               </SelectTrigger>
-              <SelectContent class="glass-strong">
+              <SelectContent>
                 <SelectItem v-for="policy in availablePolicies" :key="policy" :value="policy" :title="policy">
                   <span class="break-all">{{ policy }}</span>
                 </SelectItem>
@@ -517,7 +516,7 @@
               <Switch id="ruleset-noresolve" v-model="ruleSetForm.no_resolve" />
               <Label for="ruleset-noresolve" class="text-[13px] text-muted-foreground">no-resolve</Label>
             </div>
-            <p class="m-0 text-[12px] text-muted-foreground">IP CIDR 类规则集建议开启。</p>
+            <p class="m-0 text-[12px] text-muted-foreground">开启后，匹配 IP 条件时不为此解析域名。IP CIDR 类规则集建议开启。</p>
           </div>
 
           <div class="flex items-center gap-2.5">
@@ -540,7 +539,7 @@
 
     <!-- ===== 规则组重命名 ===== -->
     <Dialog v-model:open="groupRenameDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[440px] border-border/50">
+      <DialogContent class="max-w-[440px]">
         <DialogHeader>
           <DialogTitle>{{ groupRenameDialogTitle }}</DialogTitle>
           <DialogDescription>留空将显示默认名称（按数量）。</DialogDescription>
@@ -566,7 +565,7 @@
 
     <!-- ===== 规则索引 ===== -->
     <Dialog v-model:open="ruleIndexDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[620px] border-border/50">
+      <DialogContent class="max-w-[620px]">
         <DialogHeader>
           <DialogTitle>规则索引</DialogTitle>
           <DialogDescription>输入域名或 IP，查询它会命中哪一条规则。</DialogDescription>
@@ -644,11 +643,11 @@
 
     <!-- ===== 查找重复规则 ===== -->
     <Dialog v-model:open="duplicateDialogVisible">
-      <DialogContent class="glass-strong hairline max-w-[720px] border-border/50">
+      <DialogContent class="max-w-[720px]">
         <DialogHeader>
           <DialogTitle>查找重复规则</DialogTitle>
           <DialogDescription>
-            检查已启用的直接规则与规则集内容，找出完全相同的规则条目。首次扫描需拉取规则集内容，可能较慢。
+            检查当前配置中已启用的单条规则和规则集，找出完全相同的条目。首次检查需要下载规则集内容，可能较慢。
           </DialogDescription>
         </DialogHeader>
 
@@ -678,7 +677,7 @@
             v-if="!duplicateResult.duplicates.length"
             :icon="CircleCheck"
             title="未发现重复规则"
-            description="当前启用的规则与规则集之间没有完全相同的条目。"
+            description="本次成功检查的规则和规则集中，没有完全相同的条目。"
           />
 
           <div
@@ -1120,7 +1119,7 @@ const loadRuleLibrary = async () => {
     const { data } = await api.get('/rule-library')
     ruleLibrary.value = data
   } catch (error) {
-    notify.error('加载规则仓库失败')
+    notify.error('加载规则库失败')
   }
 }
 
