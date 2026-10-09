@@ -62,7 +62,7 @@
         data-reorder-item
         :class="[
           'relative flex flex-col gap-3 overflow-hidden rounded-xl border border-border bg-card p-4 transition-colors duration-200',
-          !aggregation.enabled && 'opacity-60'
+          !aggregation.enabled && 'dark:opacity-60'
         ]"
       >
         <header class="flex items-start gap-2.5">
@@ -193,7 +193,7 @@
           <DialogDescription>选择要合并的订阅和节点，可按节点名称筛选。</DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[62dvh] flex-col gap-4 overflow-y-auto pr-1">
+        <div class="cf-focus-gutter flex max-h-[62dvh] flex-col gap-4 overflow-y-auto">
           <div class="flex flex-col gap-1.5">
             <Label for="agg-name">聚合名称</Label>
             <Input id="agg-name" v-model="form.name" class="bg-background/50" placeholder="请输入聚合名称" />
@@ -286,7 +286,7 @@
 
         <LoadingRows v-if="previewLoading" :rows="4" />
 
-        <div v-else class="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto pr-1">
+        <div v-else class="cf-focus-gutter flex max-h-[60dvh] flex-col gap-4 overflow-y-auto">
           <section v-if="Object.keys(previewSubscriptionCounts).length">
             <p class="m-0 mb-2 text-[11.5px] font-medium tracking-[0.04em] text-muted-foreground uppercase">
               订阅统计
@@ -745,4 +745,3 @@ onMounted(async () => {
   await Promise.all([loadSubscriptions(), loadNodes()])
 })
 </script>
-

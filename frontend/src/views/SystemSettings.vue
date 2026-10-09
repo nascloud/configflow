@@ -181,7 +181,7 @@
           </DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[56dvh] flex-col gap-4 overflow-y-auto pr-1">
+        <div class="cf-focus-gutter flex max-h-[56dvh] flex-col gap-4 overflow-y-auto">
           <FormField
             label="WebDAV 地址"
             html-for="webdav-url"

@@ -27,7 +27,7 @@
     <Toolbar v-model:search="keyword" placeholder="搜索订阅名称或地址…">
       <template #filters>
         <Select v-model="statusFilter" :disabled="reorder.active.value">
-          <SelectTrigger class="h-9 w-[132px] border-transparent bg-background/50 text-[13px]" aria-label="按状态筛选">
+          <SelectTrigger class="h-9 w-[132px] border-input bg-card text-[13px] dark:border-transparent" aria-label="按状态筛选">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -96,7 +96,7 @@
           :key="sub.id"
           :data-id="sub.id"
           data-reorder-item
-          :class="!sub.enabled && 'opacity-55'"
+          :class="!sub.enabled && 'dark:opacity-55'"
         >
           <TableCell v-if="reorder.active.value">
             <DragHandle
@@ -190,7 +190,7 @@
         data-reorder-item
         :class="cn(
           'relative overflow-hidden rounded-xl border border-border bg-card transition-colors duration-200',
-          !sub.enabled && 'opacity-60'
+          !sub.enabled && 'dark:opacity-60'
         )"
       >
         <div class="card-header flex items-center gap-2 px-4 pt-3.5 pb-2">

@@ -181,7 +181,7 @@
           <DialogDescription>选择安装方式并填写机器信息，然后复制生成的命令到目标机器执行。</DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[62dvh] flex-col gap-4 overflow-y-auto pr-1">
+        <div class="cf-focus-gutter flex max-h-[62dvh] flex-col gap-4 overflow-y-auto">
           <FormField label="安装类型" :hint="installTypeHint">
             <RadioGroup v-model="scriptForm.installType" class="flex gap-2" @update:model-value="onInstallTypeChange">
               <label
@@ -1162,8 +1162,8 @@ const chipClass = (active: boolean): string =>
   [
     'flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-[13px] transition-colors',
     active
-      ? 'border-primary-accent/40 bg-primary-soft/50 text-foreground'
-      : 'border-border/50 bg-background/40 text-muted-foreground hover:border-border-strong'
+      ? 'border-primary-accent bg-primary-soft text-primary-accent dark:border-primary-accent/40 dark:bg-primary-soft/50 dark:text-foreground'
+      : 'border-input bg-card text-muted-foreground hover:border-border-strong dark:border-border/50 dark:bg-background/40'
   ].join(' ')
 
 const INSTALL_TYPES = [
@@ -1992,4 +1992,3 @@ onUnmounted(() => {
   stopAutoRefresh()
 })
 </script>
-

@@ -12,8 +12,8 @@
       :aria-label="option.label"
       :title="option.label"
       :class="[
-        'grid size-8 cursor-pointer place-items-center rounded-md border-0 p-0 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none',
-        modelValue === option.value ? 'bg-card text-foreground' : 'bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground'
+        'grid size-8 cursor-pointer place-items-center rounded-md border p-0 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none motion-reduce:transition-none dark:border-0',
+        modelValue === option.value ? 'border-primary-accent bg-primary-soft text-primary-accent dark:bg-card dark:text-foreground' : 'border-transparent bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground'
       ]"
       @click="$emit('update:modelValue', option.value)"
     >
