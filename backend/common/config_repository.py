@@ -1404,10 +1404,31 @@ class ProfileRepository:
                 legacy_kind = {'node': 'nodes', 'subscription': 'subscriptions', 'aggregation': 'subscription_aggregations'}.get(group.get('source'))
                 if legacy_kind and 'proxies' in group:
                     group['proxies'] = [remap_reference(legacy_kind, value) for value in _id_list(group['proxies'], 'proxies')]
-                for item in group.get('proxies_order', []):
-                    kind = {'node': 'nodes', 'subscription': 'subscriptions', 'aggregation': 'subscription_aggregations'}.get(item.get('type'))
-                    if kind:
-                        item['id'] = remap_reference(kind, item.get('id'))
+            # proxies_order is only an ordering hint. Old versions left entries
+            # behind when the referenced group/resource was deleted, and the
+            # converters skipped them; drop them instead of failing the upgrade.
+            group_ids = {group.get('id') for group in profile['proxy_groups']}
+            for group in profile['proxy_groups']:
+                if not isinstance(group.get('proxies_order'), list):
+                    continue
+                order = []
+                for item in group['proxies_order']:
+                    if not isinstance(item, dict):
+                        continue
+                    value = item.get('id')
+                    if item.get('type') == 'strategy':
+                        if value not in group_ids or value == group.get('id'):
+                            continue
+                    else:
+                        kind = {'node': 'nodes', 'subscription': 'subscriptions', 'aggregation': 'subscription_aggregations'}.get(item.get('type'))
+                        if not kind:
+                            continue
+                        if not (kind == 'nodes' and value in BUILTIN_POLICIES):
+                            if value not in remaps[kind]:
+                                continue
+                            item['id'] = remaps[kind][value]
+                    order.append(item)
+                group['proxies_order'] = order
             if not profile['rule_configs']:
                 profile['rule_configs'] = [{**item, 'itemType': 'rule'} for item in old.get('rules', [])] + [
                     {**item, 'itemType': 'ruleset'} for item in old.get('rule_sets', [])]
