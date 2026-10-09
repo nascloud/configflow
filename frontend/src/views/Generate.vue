@@ -4,11 +4,11 @@
 
     <PageHeader
       title="配置生成"
-      description="将当前配置空间的设置生成 Mihomo、Surge 或 MosDNS 配置。可先预览再下载，或复制订阅链接到客户端。"
+      description="将当前配置空间的设置生成 Mihomo、Surge、Loon 或 MosDNS 配置。可先预览再下载，或复制订阅链接到客户端。"
     />
 
-    <!-- ===== 三个生成目标 ===== -->
-    <div class="mb-4 grid grid-cols-3 gap-3 max-[1100px]:grid-cols-1">
+    <!-- ===== 生成目标 ===== -->
+    <div class="mb-4 grid grid-cols-2 gap-3 max-[900px]:grid-cols-1">
       <Motion
         v-for="(target, index) in targets"
         :key="target.key"
@@ -92,7 +92,7 @@
           <DialogTitle>{{ getCustomConfigDialogTitle() }}</DialogTitle>
           <DialogDescription class="[overflow-wrap:anywhere]">
             {{ getCustomConfigDialogDesc() }}
-            留空并保存可恢复默认基础配置。{{ currentConfigType === 'surge' ? '请使用 INI 格式' : '请使用 YAML 格式' }}。
+            留空并保存可恢复默认基础配置。{{ currentConfigType === 'surge' || currentConfigType === 'loon' ? '请使用 INI 格式' : '请使用 YAML 格式' }}。
           </DialogDescription>
         </DialogHeader>
 
@@ -721,7 +721,9 @@ import {
   Plus,
   Settings,
   Shield,
-  Trash2
+  Smartphone,
+  Trash2,
+  Upload
 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -1026,20 +1028,24 @@ const moveMosdnsCustomMatch = (index: number, direction: 'up' | 'down') => {
 
 const mihomoLoading = ref(false)
 const surgeLoading = ref(false)
+const loonLoading = ref(false)
 const mosdnsLoading = ref(false)
 
 const mihomoPreviewLoading = ref(false)
 const surgePreviewLoading = ref(false)
+const loonPreviewLoading = ref(false)
 const mosdnsPreviewLoading = ref(false)
+
+type ConfigType = 'mihomo' | 'surge' | 'loon' | 'mosdns'
 
 const customConfigDialogVisible = ref(false)
 const customConfigContent = ref('')
 const savingCustomConfig = ref(false)
-const currentConfigType = ref<'mihomo' | 'surge' | 'mosdns'>('mihomo')
+const currentConfigType = ref<ConfigType>('mihomo')
 
 const previewDialogVisible = ref(false)
 const previewContent = ref('')
-const currentPreviewType = ref<'mihomo' | 'surge' | 'mosdns'>('mihomo')
+const currentPreviewType = ref<ConfigType>('mihomo')
 
 const mosdnsSettingsDialogVisible = ref(false)
 const mosdnsActiveTab = ref('rules')
@@ -1176,6 +1182,16 @@ const surgeUrl = computed(() => {
   const url = `${baseUrl.value}/api/config/${encodeURIComponent(profileId)}/surge`
   return configToken.value ? `${url}?token=${encodeURIComponent(configToken.value)}` : url
 })
+// Loon 以链接末段（文件名）作为导入后的配置名称，与后端 loon_config_name 保持一致
+const loonConfigName = computed(() => {
+  const name = cfProfileStore.activeProfile.value?.name || ''
+  const cleaned = name.replace(/[\\/:*?"<>|\x00-\x1f]+/g, ' ').trim().replace(/^\.+|\.+$/g, '')
+  return cleaned || profileId || 'loon'
+})
+const loonUrl = computed(() => {
+  const url = `${baseUrl.value}/api/config/${encodeURIComponent(profileId)}/loon/${encodeURIComponent(loonConfigName.value)}.lcf`
+  return configToken.value ? `${url}?token=${encodeURIComponent(configToken.value)}` : url
+})
 const mosdnsUrl = computed(() => {
   const url = `${baseUrl.value}/api/config/${encodeURIComponent(profileId)}/mosdns`
   return configToken.value ? `${url}?token=${encodeURIComponent(configToken.value)}` : url
@@ -1184,11 +1200,12 @@ const mosdnsUrl = computed(() => {
 // URL显示
 const mihomoUrlDisplay = computed(() => mihomoUrl.value)
 const surgeUrlDisplay = computed(() => surgeUrl.value)
+const loonUrlDisplay = computed(() => loonUrl.value)
 const mosdnsUrlDisplay = computed(() => mosdnsUrl.value)
 
 /* ---------- 新 UI 的派生数据 ---------- */
 
-/** 三个生成目标的展示与操作，避免在模板里重复三段几乎相同的卡片 */
+/** 各生成目标的展示与操作，避免在模板里重复几乎相同的卡片 */
 const targets = computed(() => [
   {
     key: 'mihomo',
@@ -1215,6 +1232,20 @@ const targets = computed(() => [
       { label: 'Smart', icon: Settings, run: showSurgeSmartDialog },
       { label: '预览', icon: Eye, loading: surgePreviewLoading.value, run: handleSurgePreview },
       { label: '下载', icon: Download, primary: true, loading: surgeLoading.value, run: generateSurge }
+    ]
+  },
+  {
+    key: 'loon',
+    title: 'Loon',
+    desc: '生成 Loon 的 .lcf 配置，iOS 上可一键导入',
+    icon: Smartphone,
+    url: loonUrl.value,
+    urlDisplay: loonUrlDisplay.value,
+    actions: [
+      { label: '基础配置', icon: Pencil, run: () => showCustomConfigDialog('loon') },
+      { label: '预览', icon: Eye, loading: loonPreviewLoading.value, run: () => previewConfig('loon') },
+      { label: '导入 Loon', icon: Upload, run: importToLoon },
+      { label: '下载', icon: Download, primary: true, loading: loonLoading.value, run: generateLoon }
     ]
   },
   {
@@ -1383,6 +1414,34 @@ const generateSurge = async () => {
   }
 }
 
+const generateLoon = async () => {
+  try {
+    loonLoading.value = true
+    const response = await generateApi.loon(profileId)
+
+    // 创建下载链接
+    const blob = new Blob([response.data], { type: 'text/plain' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${loonConfigName.value}.lcf`
+    link.click()
+    window.URL.revokeObjectURL(url)
+
+    notify.success('Loon 配置已生成')
+  } catch (error) {
+    notify.error('生成 Loon 配置失败')
+  } finally {
+    loonLoading.value = false
+  }
+}
+
+// 通过 Loon URL Scheme 导入远程配置：https://nsloon.app/docs/Scheme/
+// 需在用户点击中同步跳转，iOS Safari 才会唤起 App；未安装 Loon 时 Safari 会提示无法打开
+const importToLoon = () => {
+  window.location.href = `loon://import?sub=${encodeURIComponent(loonUrl.value)}`
+}
+
 const generateMosdns = async () => {
   try {
     mosdnsLoading.value = true
@@ -1409,6 +1468,7 @@ const getCustomConfigDialogTitle = () => {
   const titles = {
     mihomo: '自定义 Mihomo 基础配置',
     surge: '自定义 Surge 基础配置',
+    loon: '自定义 Loon 基础配置',
     mosdns: '自定义 MosDNS 基础配置'
   }
   return titles[currentConfigType.value]
@@ -1418,6 +1478,7 @@ const getCustomConfigDialogDesc = () => {
   const descs = {
     mihomo: '设置 mixed-port、dns、tun 等基础选项。生成时会合并当前配置空间中的节点、策略组和规则（proxies、proxy-groups、rules）。',
     surge: '编辑 [General] 等基础设置；[Proxy]、[Proxy Group]、[Rule] 将由当前配置空间的设置生成。规则格式为 TYPE,VALUE,POLICY，如 DOMAIN-SUFFIX,google.com,Proxy。',
+    loon: '编辑 [General]、[Rewrite]、[Plugin]、[MITM] 等设置；[Proxy]、[Remote Proxy]、[Remote Filter]、[Proxy Group]、[Rule]、[Remote Rule] 将由当前配置空间的设置生成。',
     mosdns: '设置 log、data_providers、plugins、servers 等选项。请按依赖关系排列插件，确保被使用的插件先初始化。'
   }
   return descs[currentConfigType.value]
@@ -1427,6 +1488,7 @@ const getCustomConfigPlaceholder = () => {
   const placeholders = {
     mihomo: '输入自定义 YAML 配置，例如：\nmixed-port: 7890\nallow-lan: true\nmode: rule\nlog-level: info\nexternal-controller: 127.0.0.1:9090\ndns:\n  enable: true\n  listen: 0.0.0.0:53\n  enhanced-mode: fake-ip',
     surge: '输入自定义配置，例如：\n[General]\nloglevel = notify\ninternet-test-url = http://www.gstatic.com/generate_204\nproxy-test-url = http://www.gstatic.com/generate_204\nskip-proxy = 127.0.0.1, 192.168.0.0/16, 10.0.0.0/8\n\n# 代理将自动生成在 [Proxy] 部分\n# 策略组将自动生成在 [Proxy Group] 部分\n# 规则将自动生成在 [Rule] 部分',
+    loon: '输入自定义配置，例如：\n[General]\nip-mode = dual\ndns-server = system, 223.5.5.5\nproxy-test-url = http://www.gstatic.com/generate_204\nskip-proxy = 192.168.0.0/16, 10.0.0.0/8, localhost, *.local\n\n[Plugin]\n# 插件链接, tag=名称, enabled=true\n\n# 节点、订阅、策略组和规则将自动生成',
     mosdns: '输入自定义 YAML 配置，例如：\nlog:\n  level: info\n  file: ./mosdns.log\n\nservers:\n  - addr: 127.0.0.1:53\n    protocol: udp\n\n# data_providers 和 plugins 将自动生成'
   }
   return placeholders[currentConfigType.value]
@@ -1436,17 +1498,19 @@ const getPreviewDialogTitle = () => {
   const titles = {
     mihomo: '预览 Mihomo 配置',
     surge: '预览 Surge 配置',
+    loon: '预览 Loon 配置',
     mosdns: '预览 MosDNS 配置'
   }
   return titles[currentPreviewType.value]
 }
 
-const showCustomConfigDialog = async (type: 'mihomo' | 'surge' | 'mosdns') => {
+const showCustomConfigDialog = async (type: ConfigType) => {
   currentConfigType.value = type
   try {
     const apiMap = {
       mihomo: customConfigApi.getMihomo,
       surge: customConfigApi.getSurge,
+      loon: customConfigApi.getLoon,
       mosdns: customConfigApi.getMosdns
     }
     const response = await apiMap[type](profileId)
@@ -1463,6 +1527,7 @@ const saveCustomConfig = async () => {
     const apiMap = {
       mihomo: customConfigApi.saveMihomo,
       surge: customConfigApi.saveSurge,
+      loon: customConfigApi.saveLoon,
       mosdns: customConfigApi.saveMosdns
     }
     await apiMap[currentConfigType.value]({ config: customConfigContent.value }, profileId)
@@ -1475,11 +1540,12 @@ const saveCustomConfig = async () => {
   }
 }
 
-const previewConfig = async (type: 'mihomo' | 'surge' | 'mosdns') => {
+const previewConfig = async (type: ConfigType) => {
   currentPreviewType.value = type
   const loadingMap = {
     mihomo: mihomoPreviewLoading,
     surge: surgePreviewLoading,
+    loon: loonPreviewLoading,
     mosdns: mosdnsPreviewLoading
   }
 
@@ -1489,6 +1555,7 @@ const previewConfig = async (type: 'mihomo' | 'surge' | 'mosdns') => {
     const apiMap = {
       mihomo: generateApi.previewMihomo,
       surge: generateApi.previewSurge,
+      loon: generateApi.previewLoon,
       mosdns: generateApi.previewMosdns
     }
     const response = await apiMap[type](profileId)

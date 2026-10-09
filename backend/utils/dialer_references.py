@@ -438,19 +438,19 @@ def validate_emitted(config, *, force_chains=False, provider_proxies=None, requi
         pending.extend(graph.get(key, []))
 
 
-def reject_surge_dialers(profile):
+def reject_surge_dialers(profile, client='Surge'):
     if any(g.get('type') == 'chain' and g.get('enabled', True) for g in profile.get('proxy_groups', [])):
-        raise DialerReferenceError('Surge 暂不支持代理链，请使用 Mihomo 或禁用代理链')
+        raise DialerReferenceError(f'{client} 暂不支持代理链，请使用 Mihomo 或禁用代理链')
     from backend.converters.mihomo import convert_node_to_mihomo
     for node in profile.get('nodes', []):
         if not node.get('enabled', True):
             continue
         if node.get('dialer_ref') is not None or raw_dialer(node) is not None:
-            raise DialerReferenceError('Surge 暂不支持 Mihomo 拨号代理拓扑，请使用 Mihomo 或显式移除拨号配置')
+            raise DialerReferenceError(f'{client} 暂不支持 Mihomo 拨号代理拓扑，请使用 Mihomo 或显式移除拨号配置')
         if node.get('proxy_string'):
             proxy = convert_node_to_mihomo(node)
             if proxy and proxy.get('dialer-proxy') is not None:
-                raise DialerReferenceError('Surge 暂不支持转换结果中的 dialer-proxy')
+                raise DialerReferenceError(f'{client} 暂不支持转换结果中的 dialer-proxy')
 
 
 def dependency_node_ids(profile, selected, include_roots=True):

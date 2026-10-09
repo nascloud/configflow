@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Vue](https://img.shields.io/badge/Vue-3.x-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org)
 
-**一站式管理订阅、节点、规则，一键生成 Mihomo / Surge / MosDNS 配置**
+**一站式管理订阅、节点、规则，一键生成 Mihomo / Surge / Loon / MosDNS 配置**
 
 [功能特性](#-功能特性) •
 [快速开始](#-快速开始) •
@@ -53,8 +53,10 @@
 ### ⚡ 配置生成
 - 一键生成 Mihomo YAML 配置
 - 一键生成 Surge 配置
+- 一键生成 Loon 配置，iOS 上可通过 `loon://import?sub=` 一键导入
 - 一键生成 MosDNS 配置
 - 实时预览 & 配置导入导出
+- 导入 Mihomo / Surge / Loon / Shadowrocket 配置文件为新的配置空间：节点、订阅、规则集并入共享资源（相同定义自动复用），策略组与规则按本项目结构转换
 - 多配置共享订阅、节点、聚合和规则仓库；资源引用、策略组、规则目标、拨号代理与生成参数分别保存
 - 全局服务、访问令牌、WebDAV 和全量备份统一放在「系统设置」，Agent 按绑定配置下发
 - [多配置、数据迁移与备份说明](doc/design/multi-config-management.md)

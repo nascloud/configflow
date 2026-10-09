@@ -33,7 +33,7 @@ def setup_before_request(app):
         if is_internal_call() or not is_auth_enabled():
             return None
         public_exact_paths = {
-            '/api/auth/status', '/api/auth/login', '/api/config/mihomo', '/api/config/surge', '/api/config/mosdns',
+            '/api/auth/status', '/api/auth/login', '/api/config/mihomo', '/api/config/surge', '/api/config/loon', '/api/config/mosdns',
             '/api/mosdns/rule-proxy',
             '/api/agents/register', '/api/agents/install-script', '/api/agents/docker-compose', '/api/agents/docker-run',
             '/api/agents/docker-mihomo-compose', '/api/agents/docker-mihomo-run', '/api/agents/docker-mosdns-compose',
@@ -43,7 +43,8 @@ def setup_before_request(app):
         if request.endpoint in {'agents.agent_heartbeat', 'agents.get_agent_config'}:
             return None
         profile_public_patterns = (
-            r'^/api/config/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/(?:mihomo|surge|mosdns)$',
+            r'^/api/config/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/(?:mihomo|surge|loon|mosdns)$',
+            r'^/api/config/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/loon/[^/]+$',
             r'^/api/profiles/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/mosdns/rule-proxy$',
             r'^/api/profiles/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/(?:subscriptions/[^/]+/proxies|aggregations/[^/]+/provider|rules/local/[^/]+|rule-library/content/[^/]+)$',
         )

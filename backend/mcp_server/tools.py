@@ -309,6 +309,27 @@ def _clone_profile(args):
 
 
 @tool(
+    'import_client_config',
+    '把 Mihomo / Surge / Loon / Shadowrocket 配置文件导入为新的 profile：节点、订阅和规则集写入共享资源'
+    '（相同定义复用），策略组与规则写入新 profile。dry_run=true 时只返回解析摘要与提示。',
+    obj(
+        {
+            'client_type': string('配置类型', ['mihomo', 'surge', 'loon', 'shadowrocket']),
+            'content': string('配置文件全文'),
+            'name': string('新 profile 名称'),
+            'id': string('新 profile id，可选'),
+            'description': string('说明，可选'),
+            'default_subscription_ids': array('仅含筛选条件（include-all / 正则）的策略组额外关联的已有订阅 id'),
+            'dry_run': boolean('只解析不写入'),
+        },
+        ['client_type', 'content', 'name'],
+    ),
+)
+def _import_client_config(args):
+    return call_api('POST', '/api/profiles/import-client', body=args)
+
+
+@tool(
     'bind_agent_profile',
     '把 Agent 绑定到指定 profile；后续配置读取和推送都使用该 profile。',
     obj(

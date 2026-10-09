@@ -7,13 +7,17 @@
       <template #actions>
         <Button variant="outline" class="border-border/60 bg-background/40" @click="pickImportFile">
           <Upload class="size-4" />
-          导入到当前
+          导入备份到当前
+        </Button>
+        <Button variant="outline" class="border-border/60 bg-background/40" @click="openClientImport">
+          <FileInput class="size-4" />
+          导入客户端配置
         </Button>
         <Button @click="openCreate">
           <Plus class="size-4" />
           新建配置空间
         </Button>
-        <input ref="importInput" type="file" accept="application/json" hidden @change="importProfile" />
+        <input ref="importInput" type="file" accept="application/json,.json" hidden @change="importProfile" />
       </template>
     </PageHeader>
 
@@ -165,17 +169,137 @@
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <Dialog v-model:open="clientImport.visible">
+      <DialogContent class="max-w-[640px]">
+        <DialogHeader>
+          <DialogTitle>导入客户端配置</DialogTitle>
+          <DialogDescription>
+            将 Mihomo、Surge、Loon 或 Shadowrocket 的配置文件导入为新的配置空间。节点、订阅和规则集加入共用资源，定义相同的资源直接复用；策略组和规则只属于新配置空间。
+          </DialogDescription>
+        </DialogHeader>
+
+        <form class="flex flex-col gap-4" @submit.prevent="submitClientImport(false)">
+          <div class="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
+            <div class="flex flex-col gap-1.5">
+              <Label for="client-type">配置类型</Label>
+              <Select v-model="clientImport.clientType">
+                <SelectTrigger id="client-type" class="w-full bg-background/50"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem v-for="option in CLIENT_TYPES" :key="option.value" :value="option.value">
+                    {{ option.label }}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div class="flex flex-col gap-1.5">
+              <Label for="client-name">配置名称</Label>
+              <Input id="client-name" v-model="clientImport.name" class="bg-background/50" maxlength="120" />
+            </div>
+            <div class="col-span-2 flex flex-col gap-1.5 max-sm:col-span-1">
+              <Label for="client-id">标识 ID（可选）</Label>
+              <Input
+                id="client-id"
+                v-model="clientImport.id"
+                class="bg-background/50 font-mono"
+                maxlength="64"
+                placeholder="留空自动生成"
+              />
+            </div>
+          </div>
+
+          <div class="flex flex-col gap-1.5">
+            <div class="flex items-center justify-between gap-2">
+              <Label for="client-content">配置内容</Label>
+              <Button type="button" variant="ghost" size="sm" @click="clientFileInput?.click()">
+                <Upload class="size-3.5" />
+                选择文件
+              </Button>
+              <input
+                ref="clientFileInput"
+                type="file"
+                hidden
+                @change="loadClientFile"
+              />
+            </div>
+            <Textarea
+              id="client-content"
+              v-model="clientImport.content"
+              class="h-48 resize-none overflow-auto bg-background/50 font-mono text-[12px] [field-sizing:fixed] max-sm:h-36"
+              :placeholder="clientImport.fileName ? '' : '粘贴配置内容，或选择配置文件'"
+            />
+            <p v-if="clientImport.fileName" class="m-0 text-[12px] text-muted-foreground">
+              已读取 {{ clientImport.fileName }}
+            </p>
+          </div>
+
+          <div v-if="subscriptions.length" class="flex flex-col gap-1.5">
+            <Label>为筛选型策略组关联订阅（可选）</Label>
+            <p class="m-0 text-[12px] text-muted-foreground">
+              配置中按正则筛选全部节点的策略组（如 include-all、Shadowrocket 的 policy-regex-filter）会同时使用这里选择的订阅。
+            </p>
+            <div class="flex max-h-28 flex-wrap gap-2 overflow-y-auto">
+              <label
+                v-for="sub in subscriptions"
+                :key="sub.id"
+                class="flex cursor-pointer items-center gap-2 rounded-lg border border-border/50 bg-background/40 px-3 py-1.5 text-[12.5px]"
+              >
+                <Checkbox
+                  :model-value="clientImport.subscriptionIds.includes(sub.id)"
+                  @update:model-value="toggleImportSubscription(sub.id, $event === true)"
+                />
+                {{ sub.name }}
+              </label>
+            </div>
+          </div>
+
+          <div
+            v-if="clientImport.result"
+            class="flex flex-col gap-2 rounded-lg border border-border/50 bg-background/40 p-3 text-[12.5px]"
+          >
+            <p class="m-0 font-medium text-foreground">
+              {{ clientImport.result.committed ? '导入完成' : '解析结果' }}
+            </p>
+            <div class="flex flex-wrap gap-1.5">
+              <Badge v-for="item in summaryItems" :key="item" variant="outline">{{ item }}</Badge>
+            </div>
+            <ul
+              v-if="clientImport.result.warnings.length"
+              class="m-0 flex max-h-40 flex-col gap-1 overflow-y-auto overscroll-contain pl-4 text-muted-foreground"
+            >
+              <li v-for="warning in clientImport.result.warnings" :key="warning" class="break-words">{{ warning }}</li>
+            </ul>
+          </div>
+        </form>
+
+        <DialogFooter>
+          <Button variant="outline" @click="clientImport.visible = false">
+            {{ clientImport.result?.committed ? '关闭' : '取消' }}
+          </Button>
+          <template v-if="!clientImport.result?.committed">
+            <Button variant="outline" :disabled="clientImport.saving" @click="submitClientImport(true)">
+              解析预览
+            </Button>
+            <Button :disabled="clientImport.saving" @click="submitClientImport(false)">
+              <Loader2 v-if="clientImport.saving" class="size-4 animate-spin" />
+              导入
+            </Button>
+          </template>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { Motion } from 'motion-v'
 import {
   Boxes,
   CircleCheck,
   Copy,
   Download,
+  FileInput,
   Loader2,
   Pencil,
   Plus,
@@ -192,14 +316,22 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
-import { profileApi } from '@/api'
+import { profileApi, subscriptionApi } from '@/api'
 import { confirmDanger, notify, prompt } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
 import { useProfileStore, type Profile } from '@/stores/profile'
@@ -319,6 +451,146 @@ const importProfile = async (event: Event) => {
     notify.error(error.response?.data?.message || '配置空间导入失败')
   } finally {
     input.value = ''
+  }
+}
+
+const CLIENT_TYPES = [
+  { value: 'mihomo', label: 'Mihomo / Clash Meta' },
+  { value: 'surge', label: 'Surge' },
+  { value: 'loon', label: 'Loon' },
+  { value: 'shadowrocket', label: 'Shadowrocket' }
+]
+
+interface ImportSummary {
+  nodes: number
+  nodes_reused: number
+  subscriptions: number
+  subscriptions_reused: number
+  rule_library: number
+  rule_library_reused: number
+  proxy_groups: number
+  rules: number
+  rulesets: number
+  custom_config: string | null
+}
+
+const subscriptions = ref<{ id: string; name: string }[]>([])
+const clientFileInput = ref<HTMLInputElement>()
+const clientImport = reactive({
+  visible: false,
+  saving: false,
+  clientType: 'mihomo',
+  name: '',
+  id: '',
+  content: '',
+  fileName: '',
+  subscriptionIds: [] as string[],
+  result: null as null | { committed: boolean; summary: ImportSummary; warnings: string[] }
+})
+
+const summaryItems = computed(() => {
+  const summary = clientImport.result?.summary
+  if (!summary) return []
+  const withReuse = (label: string, added: number, reused: number) =>
+    reused ? `${label} 新增 ${added}，复用 ${reused}` : `${label} 新增 ${added}`
+  const items = [
+    withReuse('节点', summary.nodes, summary.nodes_reused),
+    withReuse('订阅', summary.subscriptions, summary.subscriptions_reused),
+    withReuse('规则集', summary.rule_library, summary.rule_library_reused),
+    `策略组 ${summary.proxy_groups}`,
+    `规则 ${summary.rules}`,
+    `规则集引用 ${summary.rulesets}`
+  ]
+  if (summary.custom_config) items.push(`${summary.custom_config} 基础配置`)
+  return items
+})
+
+const openClientImport = async () => {
+  Object.assign(clientImport, {
+    visible: true,
+    saving: false,
+    clientType: 'mihomo',
+    name: '',
+    id: '',
+    content: '',
+    fileName: '',
+    subscriptionIds: [],
+    result: null
+  })
+  try {
+    const response = await subscriptionApi.getAll()
+    subscriptions.value = response.data || []
+  } catch {
+    subscriptions.value = []
+  }
+}
+
+const guessClientType = (fileName: string, content: string) => {
+  const lower = fileName.toLowerCase()
+  if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return 'mihomo'
+  if (lower.endsWith('.lcf') || /^\s*\[Remote (Proxy|Rule|Filter)\]/m.test(content)) return 'loon'
+  return clientImport.clientType
+}
+
+const loadClientFile = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    clientImport.content = await file.text()
+    clientImport.fileName = file.name
+    clientImport.clientType = guessClientType(file.name, clientImport.content)
+    if (!clientImport.name.trim()) clientImport.name = file.name.replace(/\.[^.]+$/, '')
+    clientImport.result = null
+  } catch {
+    notify.error('读取文件失败')
+  } finally {
+    input.value = ''
+  }
+}
+
+const toggleImportSubscription = (id: string, checked: boolean) => {
+  const ids = clientImport.subscriptionIds.filter(item => item !== id)
+  clientImport.subscriptionIds = checked ? [...ids, id] : ids
+}
+
+const submitClientImport = async (dryRun: boolean) => {
+  if (!clientImport.name.trim()) {
+    notify.warning('请填写配置名称')
+    return
+  }
+  if (clientImport.id.trim() && !PROFILE_ID.test(clientImport.id.trim())) {
+    notify.warning('ID 须为 1–64 个字符，以字母或数字开头，仅含字母、数字、下划线和短横线')
+    return
+  }
+  if (!clientImport.content.trim()) {
+    notify.warning('请粘贴配置内容或选择配置文件')
+    return
+  }
+  clientImport.saving = true
+  try {
+    const response = await profileApi.importClient({
+      client_type: clientImport.clientType,
+      content: clientImport.content,
+      name: clientImport.name.trim(),
+      id: clientImport.id.trim() || undefined,
+      default_subscription_ids: clientImport.subscriptionIds,
+      dry_run: dryRun
+    })
+    clientImport.result = {
+      committed: !dryRun,
+      summary: response.data.summary,
+      warnings: response.data.warnings || []
+    }
+    if (!dryRun) {
+      await refreshProfiles()
+      notify.success(`已导入配置空间「${response.data.profile.name}」`)
+    }
+  } catch (error: any) {
+    clientImport.result = null
+    notify.error(error.response?.data?.message || '配置导入失败')
+  } finally {
+    clientImport.saving = false
   }
 }
 

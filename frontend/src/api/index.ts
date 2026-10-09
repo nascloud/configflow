@@ -139,15 +139,26 @@ export const profileApi = {
   clone: (id: string, data: any) => api.post(profilePath(id, '/clone'), data),
   export: (id: string) => api.get(profilePath(id, '/export'), { responseType: 'blob' }),
   import: (id: string, data: any) => api.post(profilePath(id, '/import'), data),
+  importClient: (data: {
+    client_type: string
+    content: string
+    name: string
+    id?: string
+    description?: string
+    default_subscription_ids?: string[]
+    dry_run?: boolean
+  }) => api.post('/profiles/import-client', data),
 }
 
 // 配置生成
 export const generateApi = {
   mihomo: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/mihomo'), { base_url: getBaseUrl() }, { responseType: 'blob' }),
   surge: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/surge'), { base_url: getBaseUrl() }, { responseType: 'blob' }),
+  loon: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/loon'), { base_url: getBaseUrl() }, { responseType: 'blob' }),
   mosdns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/mosdns'), { base_url: getBaseUrl() }, { responseType: 'blob' }),
   previewMihomo: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/mihomo/preview'), { base_url: getBaseUrl() }),
   previewSurge: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/surge/preview'), { base_url: getBaseUrl() }),
+  previewLoon: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/loon/preview'), { base_url: getBaseUrl() }),
   previewMosdns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/mosdns/preview'), { base_url: getBaseUrl() })
 }
 
@@ -164,6 +175,8 @@ export const customConfigApi = {
   saveMihomo: (data: unknown, profileId?: string) => api.post('/custom-config/mihomo', data, profileOptions(profileId)),
   getSurge: (profileId?: string) => api.get('/custom-config/surge', profileOptions(profileId)),
   saveSurge: (data: unknown, profileId?: string) => api.post('/custom-config/surge', data, profileOptions(profileId)),
+  getLoon: (profileId?: string) => api.get('/custom-config/loon', profileOptions(profileId)),
+  saveLoon: (data: unknown, profileId?: string) => api.post('/custom-config/loon', data, profileOptions(profileId)),
   getMosdns: (profileId?: string) => api.get('/custom-config/mosdns', profileOptions(profileId)),
   saveMosdns: (data: unknown, profileId?: string) => api.post('/custom-config/mosdns', data, profileOptions(profileId))
 }

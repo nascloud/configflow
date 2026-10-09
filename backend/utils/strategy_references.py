@@ -12,6 +12,8 @@ def validate_rule_policies(config_data, available_names, format):
         'mihomo': {'DIRECT', 'REJECT', 'REJECT-DROP', 'PASS', 'PASS-RULE', 'COMPATIBLE'},
         'surge': {'DIRECT', 'REJECT', 'REJECT-DROP', 'REJECT-TINYGIF', 'REJECT-NO-DROP',
                   'CELLULAR', 'CELLULAR-ONLY', 'HYBRID', 'NO-HYBRID'},
+        # https://github.com/Loon0x00/LoonManual/blob/main/docs/cn/policy.md
+        'loon': {'DIRECT', 'REJECT', 'REJECT-DROP', 'REJECT-IMG', 'REJECT-DICT', 'REJECT-ARRAY'},
     }
     available = set(available_names) | builtins[format]
     default = 'PROXY' if format == 'mihomo' else 'Proxy'

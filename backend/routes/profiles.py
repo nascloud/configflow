@@ -20,6 +20,43 @@ def handle_profiles():
     return jsonify(repository.create_profile(data, clone_from=clone_from)), 201
 
 
+@profiles_bp.route('/import-client', methods=['POST'])
+@require_auth
+def import_client_profile():
+    """导入 Mihomo / Surge / Loon / Shadowrocket 配置文件为新的配置空间。
+
+    请求体：{client_type, content, name, id?, description?, default_subscription_ids?, dry_run?}
+    dry_run 为 true 时只返回解析结果，不写入。
+    """
+    from backend.utils.config_importer import ConfigImportError, build_import, parse_client_config
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'success': False, 'message': '请求数据必须是 JSON 对象'}), 400
+    name = data.get('name')
+    if not isinstance(name, str) or not name.strip():
+        return jsonify({'success': False, 'message': '请填写配置名称'}), 400
+    default_subscription_ids = data.get('default_subscription_ids') or []
+    if not isinstance(default_subscription_ids, list):
+        return jsonify({'success': False, 'message': 'default_subscription_ids 必须是数组'}), 400
+    try:
+        plan = parse_client_config(data.get('client_type'), data.get('content'))
+    except ConfigImportError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
+
+    def build(shared):
+        return build_import(plan, shared, default_subscription_ids)
+
+    repository = get_repository()
+    if data.get('dry_run'):
+        result = build(repository.get_shared())
+        return jsonify({'success': True, 'summary': result['summary'], 'warnings': result['warnings']})
+    result = repository.import_client_profile(
+        {'id': data.get('id'), 'name': name, 'description': data.get('description') or ''}, build)
+    return jsonify({'success': True, 'profile': result['profile'], 'summary': result['summary'],
+                    'warnings': result['warnings']}), 201
+
+
 @profiles_bp.route('/<profile_id>', methods=['GET', 'PUT', 'DELETE'])
 @require_auth
 def handle_profile(profile_id):
@@ -123,6 +160,12 @@ def profile_generate_surge(profile_id):
     return generate_surge()
 
 
+@profiles_bp.route('/<profile_id>/generate/loon', methods=['POST'])
+@require_auth
+def profile_generate_loon(profile_id):
+    from backend.routes.generate import generate_loon
+    return generate_loon()
+
 @profiles_bp.route('/<profile_id>/generate/mosdns', methods=['POST'])
 @require_auth
 def profile_generate_mosdns(profile_id):
@@ -143,6 +186,12 @@ def profile_preview_surge(profile_id):
     from backend.routes.generate import preview_surge
     return preview_surge()
 
+
+@profiles_bp.route('/<profile_id>/generate/loon/preview', methods=['POST'])
+@require_auth
+def profile_preview_loon(profile_id):
+    from backend.routes.generate import preview_loon
+    return preview_loon()
 
 @profiles_bp.route('/<profile_id>/generate/mosdns/preview', methods=['POST'])
 @require_auth
