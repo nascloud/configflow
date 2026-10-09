@@ -51,7 +51,6 @@ def test_group_exit_has_independent_strategy_and_live_provider_membership(kind, 
     private = main['proxy-providers'][private_name]
     assert private['filter'] == '^US-'
     assert private['override']['dialer-proxy'] == 'A'
-    assert private['override']['additional-prefix']
     assert main['proxy-providers']['Feed'].get('override') is None
     assert config == before
     assert len(calls) == 1
@@ -112,6 +111,27 @@ def test_nested_static_exit_copies_every_candidate_and_preserves_order():
     assert groups['Exit']['proxies'] == ['Nested', 'B']
     assert 'dialer-proxy' not in proxies['B']
     assert 'dialer-proxy' not in proxies['C']
+    assert config == before
+
+
+def test_readable_candidates_remain_isolated_when_names_collide():
+    config = profile(
+        {'id': 'exit', 'name': 'Exit', 'type': 'select', 'manual_nodes': ['b']},
+        {'id': 'existing', 'name': 'Chain_B', 'type': 'select', 'manual_nodes': ['b']},
+        chain('other', {'type': 'node', 'id': 'c'}, exit={'type': 'group', 'id': 'exit'}),
+    )
+    config['nodes'].append(node('c'))
+    config['proxy_groups'][0]['chain']['exit'] = {'type': 'group', 'id': 'exit'}
+    before = deepcopy(config)
+    main = yaml.safe_load(generate_mihomo_config(config))
+    groups = {g['name']: g for g in main['proxy-groups']}
+    proxies = {p['name']: p for p in main['proxies']}
+    assert groups['Chain']['proxies'] == ['Chain_B (2)']
+    assert groups['Other']['proxies'] == ['Other_B']
+    assert proxies['Chain_B (2)']['dialer-proxy'] == 'A'
+    assert proxies['Other_B']['dialer-proxy'] == 'C'
+    assert groups['Chain_B']['proxies'] == ['B']
+    assert 'dialer-proxy' not in proxies['B']
     assert config == before
 
 
@@ -229,6 +249,85 @@ def test_backtick_filters_preserve_global_provider_order_and_original_captures(m
             candidates.append({'name': transformed, 'original': original})
     ordered = filter_provider_candidates(candidates, group['filter'])
     assert [p['original'] for p in ordered] == ['US-first', 'US-second', 'HK-first', 'HK-second']
+
+
+@pytest.mark.parametrize('chain_name, source_name, static_name', [
+    ('Chain`名称', 'Feed', 'US-static'),
+    ('Chain', 'Feed`来源', 'US-static'),
+    ('Chain', 'Feed', 'US-`static'),
+    ('Chain`名称', 'Feed`来源', 'US-`static'),
+])
+def test_backticks_in_names_preserve_mixed_candidate_bucket_order(chain_name, source_name, static_name):
+    from backend.utils.dialer_references import provider_proxy_name, filter_provider_candidates
+    config = dynamic_profile()
+    config['proxy_groups'][0]['name'] = chain_name
+    config['proxy_groups'][1].update(regex='^(US)-`^HK-', manual_nodes=['b', 'c', 'd'])
+    config['nodes'][1]['name'] = static_name
+    hk_static_name = 'HK-' + static_name.removeprefix('US-')
+    config['nodes'].append(node('c', name=hk_static_name))
+    excluded_static_name = 'DE-' + static_name.removeprefix('US-')
+    config['nodes'].append(node('d', name=excluded_static_name))
+    config['subscriptions'][0]['name'] = source_name
+    config['proxy_groups'][1]['subscriptions'].append('second')
+    config['subscriptions'].append({'id': 'second', 'name': 'Second', 'url': 'https://second.test'})
+    before = deepcopy(config)
+    main = yaml.safe_load(generate_mihomo_config(config, preflight_providers=False))
+    group = next(g for g in main['proxy-groups'] if g['name'] == chain_name)
+    us_static, hk_static, excluded_static = group['proxies']
+    candidates = [{'name': us_static, 'original': static_name},
+                  {'name': hk_static, 'original': hk_static_name},
+                  {'name': excluded_static, 'original': excluded_static_name}]
+    memberships = [['HK-first', 'US-first'], ['HK-second', 'US-second']]
+    for provider_name, raw in zip(group['use'], memberships):
+        override = main['proxy-providers'][provider_name]['override']
+        candidates.extend({'name': provider_proxy_name({'name': name}, override), 'original': name}
+                          for name in raw)
+    selected = filter_provider_candidates(candidates, group['filter'])
+    assert [p['original'] for p in selected] == [
+        static_name, 'US-first', 'US-second', hk_static_name, 'HK-first', 'HK-second']
+    assert config == before
+
+
+@pytest.mark.parametrize('regex, marker', [('^US-', ''), ('^(US)-`^HK-', '排序_1_')])
+def test_readable_provider_names_survive_refresh_and_preserve_chain_isolation(regex, marker, monkeypatch):
+    from backend.utils.dialer_references import provider_proxy_name
+    config = dynamic_profile()
+    config['proxy_groups'][1]['regex'] = regex
+    config['proxy_groups'].extend([
+        {'id': 'existing', 'name': 'Chain_Feed', 'type': 'select', 'manual_nodes': ['b']},
+        chain('other', {'type': 'node', 'id': 'b'}, exit={'type': 'group', 'id': 'exit'}),
+    ])
+    membership = ['US-old', 'HK-old']
+    monkeypatch.setattr('backend.routes.subscriptions.get_subscription_proxies_yaml',
+                        lambda *_: (provider_text(membership), 'rendered_yaml'))
+    main = yaml.safe_load(generate_mihomo_config(config))
+    groups = {g['name']: g for g in main['proxy-groups']}
+    assert groups['Chain']['use'] == ['Chain_Feed (2)']
+    assert groups['Other']['use'] == ['Other_Feed']
+    for chain_name, dialer in [('Chain', 'A'), ('Other', 'B')]:
+        provider_name, = groups[chain_name]['use']
+        override = main['proxy-providers'][provider_name]['override']
+        assert override['dialer-proxy'] == dialer
+        assert provider_proxy_name({'name': 'US-old'}, override) == f'{provider_name}_{marker}US-old'
+    membership[:] = ['US-new', 'HK-new']
+    bundle = prepare_provider_bundle(config, main)
+    payloads = {item['name']: yaml.safe_load(item['content'])['proxies'] for item in bundle}
+    validate_emitted(main, provider_proxies=payloads, require_providers=True)
+    for chain_name in ('Chain', 'Other'):
+        provider_name, = groups[chain_name]['use']
+        refreshed = payloads[provider_name][0]
+        assert provider_proxy_name(refreshed, main['proxy-providers'][provider_name]['override']) == (
+            f'{provider_name}_{marker}US-new')
+    assert [p['name'] for p in payloads['Feed']] == membership
+
+
+def test_provider_sorting_marker_collision_is_rejected_before_publication(monkeypatch):
+    config = dynamic_profile()
+    config['proxy_groups'][1]['regex'] = '.*`^HK-'
+    monkeypatch.setattr('backend.routes.subscriptions.get_subscription_proxies_yaml',
+                        lambda *_: (provider_text(['排序_1_US-old']), 'rendered_yaml'))
+    with pytest.raises(DialerReferenceError, match='排序标记冲突'):
+        generate_mihomo_config(config)
 
 
 def test_direct_and_aggregation_providers_share_one_subscription_materialization(monkeypatch):

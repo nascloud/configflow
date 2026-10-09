@@ -340,7 +340,7 @@ def provider_proxy_name(proxy, override):
     import re
     name = proxy['name']
     rules = override.get('proxy-name', [])
-    if rules and name.startswith(rules[0]['target'].rsplit('::', 2)[0] + '::'):
+    if rules and name.startswith(rules[0]['target'].rsplit('_', 2)[0] + '_'):
         raise DialerReferenceError('Provider 原始节点名称与代理链私有排序标记冲突')
     try:
         for rule in override.get('proxy-name', []):

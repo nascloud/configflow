@@ -94,10 +94,11 @@ def lower_proxy_chains(profile):
         occupied_ids.add(value)
         return value
 
-    def private_name(id):
-        name = id
+    def private_name(base):
+        name, suffix = base, 2
         while name in occupied_names:
-            name += '_'
+            name = f'{base} ({suffix})'
+            suffix += 1
         occupied_names.add(name)
         return name
 
@@ -106,19 +107,19 @@ def lower_proxy_chains(profile):
             return build_chain(ref['id'])
         return deepcopy(ref)
 
-    def clone(ref, dialer, seed, name=None):
+    def clone(ref, dialer, seed, scope, name=None):
         id = private_id(seed)
-        name = name or private_name(id)
+        original = (nodes if ref['type'] == 'node' else groups)[ref['id']]
+        name = name or private_name(f"{scope}_{original['name']}")
         if ref['type'] == 'node':
             obj = deepcopy(nodes[ref['id']])
             obj.update(id=id, name=name, enabled=True, dialer_ref=deepcopy(dialer), _proxy_chain_id=seed)
             runtime['nodes'].append(obj)
             return {'type': 'node', 'id': id}
-        original = groups[ref['id']]
         if original.get('type') == 'chain':
             # A -> (B -> C) is (A -> B) -> C, not A -> C.
-            entry = clone(original['chain']['entry'], dialer, seed + '/entry')
-            return clone(original['chain']['exit'], entry, seed + '/exit', name)
+            entry = clone(original['chain']['entry'], dialer, seed + '/entry', scope)
+            return clone(original['chain']['exit'], entry, seed + '/exit', scope, name)
         seen = set()
         while original.get('follow_group'):
             if original['id'] in seen:
@@ -136,7 +137,7 @@ def lower_proxy_chains(profile):
         for index, (kind, target) in enumerate(members):
             if kind == 'builtin':
                 raise DialerReferenceError('代理链落地组不能包含 DIRECT/REJECT 等非代理候选')
-            candidate = clone({'type': kind, 'id': target}, dialer, f'{seed}/{index}')
+            candidate = clone({'type': kind, 'id': target}, dialer, f'{seed}/{index}', scope)
             order.append({'type': 'node' if candidate['type'] == 'node' else 'strategy', 'id': candidate['id']})
             original_candidate = (nodes if kind == 'node' else groups)[target]
             originals[candidate['id']] = {'name': original_candidate['name']}
@@ -152,7 +153,8 @@ def lower_proxy_chains(profile):
     def build_chain(id):
         if id not in results:
             chain = chains[id]
-            results[id] = clone(chain['chain']['exit'], reference(chain['chain']['entry']), id, chain['name'])
+            results[id] = clone(chain['chain']['exit'], reference(chain['chain']['entry']),
+                                id, chain['name'], chain['name'])
         return deepcopy(results[id])
 
     for id, chain in chains.items():
@@ -188,9 +190,15 @@ def lower_chain_providers(runtime, main):
     """Mihomo filters original names before applying provider overrides."""
     import re
     from backend.utils.dialer_references import DialerReferenceError, resolve_dialer, filter_provider_candidates
+
+    def name_pattern(name):
+        # Literal name backticks must not become Mihomo filter separators.
+        return re.escape(name).replace('`', r'\x60')
+
     providers = main.setdefault('proxy-providers', {})
     groups = {g['name']: g for g in main.get('proxy-groups', [])}
     proxies = {p['name']: p for p in main.get('proxies', [])}
+    occupied_names = set(providers) | set(groups) | set(proxies)
     for source in runtime.get('proxy_groups', []):
         if not source.get('_chain_dialer'):
             continue
@@ -199,7 +207,7 @@ def lower_chain_providers(runtime, main):
         excluded = {key: group.pop(key) for key in ('exclude-filter', 'exclude-type') if key in group}
         use = []
         patterns = filter_value.split('`') if '`' in filter_value else []
-        order_tag = source['id'] + '::order::'
+        order_tag = '排序_'
         static = []
         for id, original in source.get('_chain_original_candidates', {}).items():
             ref_type = 'node' if any(n['id'] == id for n in runtime.get('nodes', [])) else 'group'
@@ -212,12 +220,15 @@ def lower_chain_providers(runtime, main):
             allowed = {p['emitted'] for p in static}
             group['proxies'] = [name for name in group['proxies'] if name in allowed]
         for index, original in enumerate(group.get('use', [])):
-            name = f"{source['id']}_provider_{index}"
-            if name in providers:
-                raise DialerReferenceError('代理链私有 Provider 名称冲突')
+            base = f"{source['name']}_{original}"
+            name, suffix = base, 2
+            while name in occupied_names:
+                name = f'{base} ({suffix})'
+                suffix += 1
+            occupied_names.add(name)
             provider = deepcopy(providers[original])
-            provider['path'] = f'./providers/{name}.yaml'
-            provider['override'] = {'additional-prefix': name + '::',
+            provider['path'] = f"./providers/{source['id']}_provider_{index}.yaml"
+            provider['override'] = {'additional-prefix': name + '_',
                                     'dialer-proxy': resolve_dialer(runtime, {'dialer_ref': source['_chain_dialer']})}
             if filter_value:
                 provider['filter'] = filter_value
@@ -227,7 +238,7 @@ def lower_chain_providers(runtime, main):
                 # Native group sorting can then retain cross-provider backtick order.
                 provider['override']['proxy-name'] = [
                     {'pattern': f'^(?!{re.escape(order_tag)})(?=[\\s\\S]*?(?:{pattern}))([\\s\\S]*)$',
-                     'target': f'{order_tag}{rank}::${re.compile(pattern).groups + 1}'}
+                     'target': f'{order_tag}{rank + 1}_${re.compile(pattern).groups + 1}'}
                     for rank, pattern in enumerate(patterns)]
             provider.update(excluded)
             providers[name] = provider
@@ -237,9 +248,9 @@ def lower_chain_providers(runtime, main):
         if patterns and use:
             ordered_filters = []
             for rank, pattern in enumerate(patterns):
-                dynamic = [f"^{re.escape(name + '::' + order_tag + str(rank) + '::')}" for name in use]
+                dynamic = [f"^{name_pattern(name + '_' + order_tag + str(rank + 1) + '_')}" for name in use]
                 matching = filter_provider_candidates(static, pattern)
-                dynamic.extend(f"^{re.escape(p['emitted'])}$" for p in matching)
+                dynamic.extend(f"^{name_pattern(p['emitted'])}$" for p in matching)
                 ordered_filters.append('|'.join(dynamic))
             group['filter'] = '`'.join(ordered_filters)
     if not providers:
