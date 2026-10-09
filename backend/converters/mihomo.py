@@ -10,6 +10,45 @@ from backend.utils.url_utils import safe_url_for_log
 # 获取当前模块的日志记录器
 logger = get_logger(__name__)
 
+class CustomConfigYAMLError(Exception):
+    """mihomo.custom_config 解析/校验失败。
+
+    生成路径在解析失败时抛此异常，上游 Flask 路由透传到 HTTP 500，
+    确保不会写 /data/config.yaml，保留上一份有效产物。
+    """
+
+
+def _default_mihomo_template() -> dict:
+    """首次初始化时的内嵌默认模板。
+
+    仅用于 mihomo.custom_config 字段从未设置过的场景；
+    解析失败时**不再** fallback 到这个模板，而是抛 CustomConfigYAMLError。
+    """
+    return {
+        'mixed-port': 7890,
+        'allow-lan': True,
+        'bind-address': '*',
+        'mode': 'rule',
+        'log-level': 'info',
+        'external-controller': '127.0.0.1:9090',
+        'dns': {
+            'enable': True,
+            'listen': '0.0.0.0:53',
+            'enhanced-mode': 'fake-ip',
+            'fake-ip-range': '198.18.0.1/16',
+            'nameserver': [
+                '223.5.5.5',
+                '119.29.29.29',
+            ],
+            'fallback': [
+                'https://1.1.1.1/dns-query',
+                'https://dns.google/dns-query',
+            ],
+        },
+    }
+
+
+
 
 class IndentDumper(yaml.Dumper):
     """自定义 YAML Dumper，增加列表项缩进"""
@@ -241,46 +280,47 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
     rule_library = config_data.get('rule_library', [])
 
     # 检查是否有自定义配置（从嵌套结构中读取）
+    # 策略变更：v1.3.0 的实现会在 yaml.safe_load 抛异常时静默设置
+    # mihomo_config = {} 并 fallback 到内嵌默认模板（mixed-port 7890 /
+    # log-level info / external-controller 127.0.0.1:9090 / dns.listen
+    # 0.0.0.0:53 / 223.5.5.5+119.29.29.29 / fallback 1.1.1.1+dns.google），
+    # 导致用户的 tun / dns.listen / nameserver-policy 等被静默抹掉。
+    #
+    # 改为"硬失败"：
+    # - custom_config 解析失败 / 结果非 dict 时抛 CustomConfigYAMLError
+    # - 上游 Flask 路由透传到 HTTP 500，不写 config.yaml
+    # - 上一份有效 /data/config.yaml 不会被覆盖
+    # - 内嵌默认模板仅在 custom_config 字段从未被设置时使用（首次初始化）
     mihomo_config_data = config_data.get('mihomo', {})
     custom_mihomo_config = mihomo_config_data.get('custom_config', '')
 
-    if custom_mihomo_config and custom_mihomo_config.strip():
-        # 使用自定义配置作为基础
+    if not (custom_mihomo_config and custom_mihomo_config.strip()):
+        # 没有任何 custom_config —— 首次初始化场景，使用内嵌默认模板
+        mihomo_config = _default_mihomo_template()
+    else:
         try:
             mihomo_config = yaml.safe_load(custom_mihomo_config)
-            if not isinstance(mihomo_config, dict):
-                mihomo_config = {}
-        except Exception:
-            # 如果解析失败，使用默认配置
-            mihomo_config = {}
-    else:
-        # 使用默认基础配置
-        mihomo_config = {}
+        except yaml.YAMLError as e:
+            logger.error(
+                'mihomo.custom_config YAML 解析失败，本次生成被中止，'
+                '/data/config.yaml 未被覆盖。原因: %s '
+                '（常见原因：nameserver-policy / fake-ip-filter 等 mapping 段缩进错乱，'
+                '请到 UI → Mihomo 基础配置 → 修正后重新保存并重新生成。）',
+                e
+            )
+            raise CustomConfigYAMLError(
+                f'mihomo.custom_config YAML 解析失败: {e}'
+            ) from e
 
-    # 如果没有基础配置或基础配置为空，使用默认配置
-    if not mihomo_config:
-        mihomo_config = {
-            'mixed-port': 7890,
-            'allow-lan': True,
-            'bind-address': '*',
-            'mode': 'rule',
-            'log-level': 'info',
-            'external-controller': '127.0.0.1:9090',
-            'dns': {
-                'enable': True,
-                'listen': '0.0.0.0:53',
-                'enhanced-mode': 'fake-ip',
-                'fake-ip-range': '198.18.0.1/16',
-                'nameserver': [
-                    '223.5.5.5',
-                    '119.29.29.29'
-                ],
-                'fallback': [
-                    'https://1.1.1.1/dns-query',
-                    'https://dns.google/dns-query'
-                ]
-            }
-        }
+        if not isinstance(mihomo_config, dict):
+            logger.error(
+                'mihomo.custom_config 解析成功但不是 mapping（得到 %s），'
+                '本次生成被中止，/data/config.yaml 未被覆盖。',
+                type(mihomo_config).__name__
+            )
+            raise CustomConfigYAMLError(
+                f'mihomo.custom_config 不是 mapping，得到 {type(mihomo_config).__name__}'
+            )
 
     normalize_find_process_mode(mihomo_config)
 

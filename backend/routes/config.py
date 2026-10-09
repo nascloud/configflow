@@ -213,6 +213,17 @@ def handle_custom_mihomo_config():
         # 保存自定义配置（保存到嵌套结构中）
         try:
             custom_config = request.json.get('config', '')
+            # 预先做 YAML 校验：避免把坏的 custom_config 写进 config.json，
+            # 下次生成时反而更难定位问题（生成路径也会 fail-closed）。
+            if custom_config and custom_config.strip():
+                try:
+                    import yaml as _yaml
+                    _yaml.safe_load(custom_config)
+                except _yaml.YAMLError as e:
+                    return jsonify({
+                        'success': False,
+                        'message': f'YAML 语法错误，未保存: {e}',
+                    }), 400
             config_data['mihomo']['custom_config'] = custom_config
             save_config(config_data)
             return jsonify({'success': True})
