@@ -833,3 +833,20 @@ def test_identical_raw_dialer_nodes_preserve_subscription_source_identity(
             target_ids.add(target["id"])
             subscription_ids.add(subscription["id"])
         assert len(target_ids) == len(subscription_ids) == expected_variants
+
+
+def test_stale_sort_entries_are_dropped_instead_of_blocking_startup(tmp_path):
+    bundle = _bundle()
+    group = bundle["profiles"]["office"]["proxy_groups"][0]
+    group["proxies_order"] += [
+        {"type": "strategy", "id": "group_deleted"},
+        {"type": "strategy", "id": "main"},
+        {"type": "node", "id": "node_deleted"},
+        {"type": "unknown", "id": "x"},
+    ]
+    _install_split(tmp_path, bundle)
+    repository = ProfileRepository(tmp_path, initial_config_factory=_no_template)
+    main = repository.get_compat_config("office")["proxy_groups"][0]
+    assert [item["type"] for item in main["proxies_order"]] == [
+        "aggregation", "node", "subscription", "strategy", "node"]
+    assert main["proxies_order"][3]["id"] == "legacy-node"
