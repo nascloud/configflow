@@ -120,7 +120,7 @@
             :class="[
               'flex items-center gap-2.5 border-0 border-b border-border/40 px-4 py-2.5 transition-colors hover:bg-accent/30',
               item.isExpandedGroupItem && 'bg-background/40 pl-8',
-              !item.enabled && 'opacity-55'
+              !item.enabled && 'dark:opacity-55'
             ]"
           >
             <DragHandle
@@ -234,7 +234,7 @@
           'relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card p-4 transition-colors duration-200',
           item.isGroup ? 'border-warning-accent/35' : 'border-border',
           item.isExpandedGroupItem && 'border-primary-accent/30',
-          !item.isGroup && !item.enabled && 'opacity-60'
+          !item.isGroup && !item.enabled && 'dark:opacity-60'
         ]"
       >
         <!-- 分组卡片 -->
@@ -370,7 +370,7 @@
           <DialogDescription>规则按列表顺序自上而下匹配，命中即停止。</DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto pr-1">
+        <div class="cf-focus-gutter flex max-h-[60dvh] flex-col gap-4 overflow-y-auto">
           <div class="flex flex-col gap-1.5">
             <Label>规则类型</Label>
             <Select v-model="ruleForm.rule_type">
@@ -452,7 +452,7 @@
           <DialogDescription>从规则库选择规则集，并设置当前配置使用的策略和启用状态。不会修改规则集内容或其他配置。</DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto pr-1">
+        <div class="cf-focus-gutter flex max-h-[60dvh] flex-col gap-4 overflow-y-auto">
           <div class="flex flex-col gap-1.5">
             <Label>选择规则</Label>
             <Select v-model="selectedLibraryRule" @update:model-value="value => onLibraryRuleSelect(String(value))">

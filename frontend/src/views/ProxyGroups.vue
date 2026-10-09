@@ -58,7 +58,7 @@
         data-reorder-item
         :class="[
           'relative flex flex-col gap-3 overflow-hidden rounded-xl border border-border bg-card p-4 transition-colors duration-200',
-          !group.enabled && 'opacity-60'
+          !group.enabled && 'dark:opacity-60'
         ]"
       >
         <header class="flex items-center gap-2.5">
@@ -295,7 +295,7 @@
           <DialogDescription>选择订阅、节点或聚合，或把前置和落地组合成代理链。这里只修改当前配置，不会修改共用的节点。</DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[64dvh] flex-col gap-4 overflow-y-auto pr-1">
+        <div class="cf-focus-gutter flex max-h-[64dvh] flex-col gap-4 overflow-y-auto">
           <div class="flex flex-col gap-1.5">
             <Label for="group-name">名称</Label>
             <Input id="group-name" v-model="form.name" class="bg-background/50" placeholder="请输入策略组名称" />
@@ -354,8 +354,8 @@
                 :class="[
                   'flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-[13px] transition-colors',
                   enabledSources.includes(source.value)
-                    ? 'border-primary-accent/40 bg-primary-soft/50 text-foreground'
-                    : 'border-border/50 bg-background/40 text-muted-foreground hover:border-border-strong'
+                    ? 'border-primary-accent bg-primary-soft text-primary-accent dark:border-primary-accent/40 dark:bg-primary-soft/50 dark:text-foreground'
+                    : 'border-input bg-card text-muted-foreground hover:border-border-strong dark:border-border/50 dark:bg-background/40'
                 ]"
               >
                 <Checkbox
@@ -1920,4 +1920,3 @@ onMounted(() => {
 onUnmounted(() => {
 })
 </script>
-

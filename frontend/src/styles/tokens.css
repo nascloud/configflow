@@ -106,6 +106,13 @@ body {
   border-radius: var(--cf-r-sm);
 }
 
+/* 滚动表单为外扩的焦点高亮留出空间；负边距保持控件与标题对齐。 */
+.cf-focus-gutter {
+  margin: -0.25rem;
+  padding: 0.25rem;
+  scroll-padding: 0.25rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

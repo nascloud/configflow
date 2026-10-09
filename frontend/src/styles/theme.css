@@ -84,7 +84,7 @@
   --secondary: oklch(0.9500 0.0060 270.0);
   --secondary-foreground: var(--foreground);
   --muted: var(--secondary);
-  --muted-foreground: oklch(0.4800 0.0170 270.0);
+  --muted-foreground: oklch(0.4400 0.0170 270.0);
   --accent: oklch(0.9320 0.0080 270.0);
   --accent-foreground: var(--foreground);
 
@@ -100,7 +100,8 @@
 
   --border: oklch(0.8700 0.0080 270.0);
   --border-strong: oklch(0.7600 0.0150 270.0);
-  --input: oklch(0.7600 0.0150 270.0);
+  /* 控件轮廓与关闭状态开关需要比装饰分隔线更高的对比度。 */
+  --input: oklch(0.6200 0.0200 270.0);
   --ring: var(--primary);
 
   --primary-soft: oklch(0.9420 0.0220 267.0);

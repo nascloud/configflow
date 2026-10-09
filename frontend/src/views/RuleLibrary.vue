@@ -64,7 +64,7 @@
       <Toolbar v-model:search="keyword" placeholder="搜索名称、地址或内容…">
         <template #filters>
           <Select v-model="behaviorFilter" :disabled="reorder.active.value">
-            <SelectTrigger class="h-9 w-[140px] border-transparent bg-background/50 text-[13px]">
+            <SelectTrigger class="h-9 w-[140px] border-input bg-card text-[13px] dark:border-transparent">
               <SelectValue placeholder="全部类型" />
             </SelectTrigger>
             <SelectContent>
@@ -151,7 +151,7 @@
             :key="rule.id"
             :data-id="rule.id"
             data-reorder-item
-            :class="!rule.enabled && 'opacity-55'"
+            :class="!rule.enabled && 'dark:opacity-55'"
           >
             <TableCell v-if="reorder.active.value">
               <DragHandle
@@ -281,7 +281,7 @@
           :class="[
             'relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card p-4 transition-colors duration-200',
             selectedRules.includes(rule.id) ? 'border-primary-accent' : 'border-border',
-            !rule.enabled && 'opacity-60'
+            !rule.enabled && 'dark:opacity-60'
           ]"
         >
           <header class="flex items-start gap-2.5">
@@ -410,7 +410,7 @@
           <DialogDescription>修改来源或内容会影响使用此规则集的所有配置，但不会改变各配置的策略、顺序或启用状态。</DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[62dvh] flex-col gap-4 overflow-y-auto pr-1">
+        <div class="cf-focus-gutter flex max-h-[62dvh] flex-col gap-4 overflow-y-auto">
           <div class="flex flex-col gap-1.5">
             <Label for="lib-name">规则名</Label>
             <Input id="lib-name" v-model="form.name" class="bg-background/50" placeholder="请输入规则名称" />
@@ -425,8 +425,8 @@
                 :class="[
                   'flex flex-1 cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-[13px] transition-colors',
                   form.source_type === option.value
-                    ? 'border-primary-accent/40 bg-primary-soft/50 text-foreground'
-                    : 'border-border/50 bg-background/40 text-muted-foreground hover:border-border-strong'
+                    ? 'border-primary-accent bg-primary-soft text-primary-accent dark:border-primary-accent/40 dark:bg-primary-soft/50 dark:text-foreground'
+                    : 'border-input bg-card text-muted-foreground hover:border-border-strong dark:border-border/50 dark:bg-background/40'
                 ]"
               >
                 <RadioGroupItem :value="option.value" />
@@ -1476,4 +1476,3 @@ onUnmounted(() => {
   window.removeEventListener('resize', syncNarrow)
 })
 </script>
-

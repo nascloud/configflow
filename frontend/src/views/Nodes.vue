@@ -31,7 +31,7 @@
     <Toolbar v-model:search="keyword" placeholder="搜索名称、地址或备注…">
       <template #filters>
         <Select v-model="protocolFilter" :disabled="reorder.active.value">
-          <SelectTrigger class="h-9 w-[150px] border-transparent bg-background/50 text-[13px]">
+          <SelectTrigger class="h-9 w-[150px] border-input bg-card text-[13px] dark:border-transparent">
             <SelectValue placeholder="全部协议" />
           </SelectTrigger>
           <SelectContent>
@@ -107,7 +107,7 @@
           :key="node.id || node.name"
           :data-name="node.name"
           data-reorder-item
-          :class="!node.enabled && 'opacity-55'"
+          :class="!node.enabled && 'dark:opacity-55'"
         >
           <TableCell v-if="reorder.active.value">
             <DragHandle
@@ -203,7 +203,7 @@
         :class="[
           'relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card p-4 transition-colors duration-200',
           selectedNodeIds.has(node.id) ? 'border-primary-accent' : 'border-border',
-          !node.enabled && 'opacity-60'
+          !node.enabled && 'dark:opacity-60'
         ]"
       >
         <header class="flex items-start gap-2.5">
@@ -305,7 +305,7 @@
           <DialogDescription>填写节点名称，粘贴节点链接或 JSON / YAML 配置。</DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[60dvh] flex-col gap-4 overflow-y-auto pr-1">
+        <div class="cf-focus-gutter flex max-h-[60dvh] flex-col gap-4 overflow-y-auto">
           <div class="flex flex-col gap-1.5">
             <Label for="node-name">节点名称</Label>
             <Input
@@ -1191,4 +1191,3 @@ onUnmounted(() => {
   window.removeEventListener('resize', syncNarrow)
 })
 </script>
-

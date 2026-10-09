@@ -1,31 +1,98 @@
 <template>
-  <!-- 当前分组内的页面切换：横向分段控件，就地切换不弹层。
-       仅移动端出现；桌面由左侧 rail 承担分组导航。 -->
+  <!-- 手机用底部面板切换；平板空间足够时平铺，桌面仍使用侧栏。 -->
   <nav
-    v-if="items.length > 1"
-    class="-mx-4 mb-5 hidden gap-2 overflow-x-auto px-4 py-1 [scroll-snap-type:x_proximity] max-[900px]:flex"
+    v-if="group && activeItem && items.length > 1"
+    ref="navContainer"
+    class="mb-5 hidden min-w-0 max-[900px]:block"
     aria-label="分组内页面"
   >
-    <router-link
-      v-for="item in items"
-      :key="item.path"
-      :to="item.path"
-      :class="cn(
-        'relative inline-flex min-h-11 shrink-0 items-center gap-2 rounded-lg border px-3.5 text-[13px] font-medium whitespace-nowrap no-underline [scroll-snap-align:start] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-        activePath === item.path
-          ? 'border-primary-accent/30 bg-primary-soft text-primary-accent'
-          : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground'
-      )"
-      :aria-current="activePath === item.path ? 'page' : undefined"
+    <div
+      v-show="showTabs"
+      ref="tabsContainer"
+      class="grid gap-2"
+      :style="{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }"
     >
-      <component :is="iconOf(item.icon)" class="size-3.5" :stroke-width="2" aria-hidden="true" />
-      <span>{{ item.label }}</span>
-    </router-link>
+      <router-link
+        v-for="item in items"
+        :key="item.path"
+        :to="item.path"
+        :class="cn(
+          'inline-flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-lg border px-3 text-[13px] font-medium no-underline transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+          activePath === item.path
+            ? 'border-primary-accent/30 bg-primary-soft text-primary-accent'
+            : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground'
+        )"
+        :aria-current="activePath === item.path ? 'page' : undefined"
+      >
+        <component :is="iconOf(item.icon)" class="size-3.5 shrink-0" :stroke-width="2" aria-hidden="true" />
+        <span class="[overflow-wrap:anywhere]">{{ item.label }}</span>
+      </router-link>
+    </div>
+
+    <Sheet v-model:open="open">
+      <SheetTrigger as-child>
+        <button
+          v-show="!showTabs"
+          type="button"
+          class="flex min-h-11 w-full cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 text-left text-[13px] font-medium text-foreground transition-colors hover:border-primary-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          :aria-label="`切换${group.tabLabel}页面，当前${activeItem.label}`"
+        >
+          <component :is="iconOf(activeItem.icon)" class="size-4 shrink-0 text-primary-accent" :stroke-width="2" aria-hidden="true" />
+          <span class="min-w-0 flex-1 [overflow-wrap:anywhere]">
+            <span class="text-muted-foreground">{{ group.tabLabel }} · </span>{{ activeItem.label }}
+          </span>
+          <ChevronDown class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </button>
+      </SheetTrigger>
+
+      <SheetContent
+        side="bottom"
+        :show-close-button="false"
+        class="max-h-[85dvh] gap-0 rounded-t-2xl border-border bg-card pb-[env(safe-area-inset-bottom)] shadow-overlay data-[state=open]:duration-200 data-[state=closed]:duration-150"
+        @close-auto-focus="restoreFocus"
+      >
+        <SheetHeader class="shrink-0 flex-row items-center justify-between gap-3 p-4 pb-2">
+          <div class="min-w-0">
+            <SheetTitle class="text-base [overflow-wrap:anywhere]">切换{{ group.tabLabel }}页面</SheetTitle>
+            <SheetDescription class="mt-1 text-xs">选择要查看的页面</SheetDescription>
+          </div>
+          <SheetClose as-child>
+            <Button variant="ghost" size="icon" class="size-11 shrink-0" aria-label="关闭页面切换">
+              <X class="size-5" aria-hidden="true" />
+            </Button>
+          </SheetClose>
+        </SheetHeader>
+
+        <nav class="min-h-0 overflow-y-auto overscroll-contain px-4 pt-1 pb-4" :aria-label="`${group.tabLabel}页面`">
+          <router-link
+            v-for="item in items"
+            :key="item.path"
+            :to="item.path"
+            :class="cn(
+              'mb-1 flex min-h-12 items-center gap-3 rounded-lg px-3 py-3 text-sm font-medium no-underline last:mb-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+              activePath === item.path
+                ? 'bg-primary-soft text-primary-accent'
+                : 'text-foreground hover:bg-muted'
+            )"
+            :aria-current="activePath === item.path ? 'page' : undefined"
+            @click="closeCurrentItem(item.path)"
+          >
+            <component :is="iconOf(item.icon)" class="size-4 shrink-0" :stroke-width="2" aria-hidden="true" />
+            <span class="min-w-0 flex-1 [overflow-wrap:anywhere]">{{ item.label }}</span>
+            <Check v-if="activePath === item.path" class="size-4 shrink-0" aria-hidden="true" />
+          </router-link>
+        </nav>
+      </SheetContent>
+    </Sheet>
   </nav>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useElementSize, useMediaQuery } from '@vueuse/core'
+import { Check, ChevronDown, X } from '@lucide/vue'
+import { Button } from '@/components/ui/button'
+import { Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { NAV_GROUPS, scopeOfPath, type NavItem } from '@/navigation'
 import { iconOf } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -35,12 +102,40 @@ const props = defineProps<{
   subscriptionAggregationEnabled: boolean
 }>()
 
-const items = computed<NavItem[]>(() => {
-  const scope = scopeOfPath(props.activePath)
-  const group = NAV_GROUPS.find(g => g.scope === scope)
-  if (!group) return []
-  return group.items.filter(
+const open = ref(false)
+const navContainer = ref<HTMLElement>()
+const tabsContainer = ref<HTMLElement>()
+const { width } = useElementSize(navContainer)
+const isMobileLayout = useMediaQuery('(max-width: 900px)')
+const isTablet = useMediaQuery('(min-width: 640px) and (max-width: 900px)')
+
+const group = computed(() => NAV_GROUPS.find(g => g.scope === scopeOfPath(props.activePath)))
+const items = computed<NavItem[]>(() =>
+  (group.value?.items ?? []).filter(
     item => item.flag !== 'subscriptionAggregation' || props.subscriptionAggregationEnabled
   )
+)
+const activeItem = computed(() => group.value?.items.find(item => item.path === props.activePath))
+
+// 平铺时为每项的图标、完整名称和内边距预留空间；入口增多自动回到菜单。
+const showTabs = computed(() => isTablet.value && width.value >= items.value.length * 112 + (items.value.length - 1) * 8)
+
+watch([() => props.activePath, items, showTabs, isMobileLayout], () => {
+  open.value = false
 })
+
+// 切到其它页面由路由变更关闭；导航被拦截时保持面板可用。
+const closeCurrentItem = (path: string) => {
+  if (path === props.activePath) open.value = false
+}
+
+const restoreFocus = (event: Event) => {
+  if (showTabs.value) {
+    event.preventDefault()
+    tabsContainer.value?.querySelector<HTMLElement>('[aria-current="page"]')?.focus({ preventScroll: true })
+  } else if (!isMobileLayout.value) {
+    event.preventDefault()
+    document.querySelector<HTMLElement>('#main-content')?.focus({ preventScroll: true })
+  }
+}
 </script>

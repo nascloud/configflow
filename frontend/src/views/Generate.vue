@@ -143,7 +143,7 @@
         </DialogHeader>
 
         <Tabs v-model="mosdnsActiveTab" class="min-w-0">
-          <TabsList class="w-full justify-start overflow-x-auto bg-background/50">
+          <TabsList class="w-full justify-start overflow-x-auto dark:bg-background/50">
             <TabsTrigger value="rules" class="text-xs">规则配置</TabsTrigger>
             <TabsTrigger value="cache" class="text-xs">缓存</TabsTrigger>
             <TabsTrigger value="dns" class="text-xs">DNS 服务器</TabsTrigger>
@@ -154,7 +154,7 @@
           </TabsList>
 
           <!-- 规则配置 -->
-          <TabsContent value="rules" class="max-h-[56dvh] overflow-y-auto pr-1">
+          <TabsContent value="rules" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>选择哪些规则和规则集使用国内 DNS，哪些使用国外 DNS。</p>
@@ -294,7 +294,7 @@
           </TabsContent>
 
           <!-- 缓存 -->
-          <TabsContent value="cache" class="max-h-[56dvh] overflow-y-auto pr-1">
+          <TabsContent value="cache" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>开启缓存后，可复用 DNS 查询结果，加快重复查询。</p>
@@ -371,7 +371,7 @@
           </TabsContent>
 
           <!-- DNS 服务器 -->
-          <TabsContent value="dns" class="max-h-[56dvh] overflow-y-auto pr-1">
+          <TabsContent value="dns" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
             <div class="flex flex-col gap-5">
               <InfoNote>
                 <p>配置国内和国外的 DNS 服务器地址。</p>
@@ -486,7 +486,7 @@
           </TabsContent>
 
           <!-- 默认转发 -->
-          <TabsContent value="default" class="max-h-[56dvh] overflow-y-auto pr-1">
+          <TabsContent value="default" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>当所有规则都不匹配时，使用的默认 DNS 服务器。</p>
@@ -500,8 +500,8 @@
                   :class="[
                     'flex cursor-pointer items-start gap-2.5 rounded-lg border px-3.5 py-3 transition-colors',
                     mosdnsDefaultForward === option.value
-                      ? 'border-primary-accent/40 bg-primary-soft/50'
-                      : 'border-border/50 bg-background/40 hover:border-border-strong'
+                      ? 'border-primary-accent bg-primary-soft dark:border-primary-accent/40 dark:bg-primary-soft/50'
+                      : 'border-input bg-card hover:border-border-strong dark:border-border/50 dark:bg-background/40'
                   ]"
                 >
                   <RadioGroupItem :value="option.value" class="mt-0.5" />
@@ -515,7 +515,7 @@
           </TabsContent>
 
           <!-- 自定义 Host -->
-          <TabsContent value="hosts" class="max-h-[56dvh] overflow-y-auto pr-1">
+          <TabsContent value="hosts" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>为指定域名设置固定 IP，优先于其他规则使用。</p>
@@ -539,7 +539,7 @@
           </TabsContent>
 
           <!-- 日志 -->
-          <TabsContent value="log" class="max-h-[56dvh] overflow-y-auto pr-1">
+          <TabsContent value="log" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>配置 MosDNS 日志输出级别和文件路径。</p>
@@ -587,7 +587,7 @@
           </TabsContent>
 
           <!-- API -->
-          <TabsContent value="api" class="max-h-[56dvh] overflow-y-auto pr-1">
+          <TabsContent value="api" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>开启 API 后，可通过 API 查询 MosDNS 运行状态和统计信息。</p>
@@ -639,7 +639,7 @@
           </DialogDescription>
         </DialogHeader>
 
-        <div class="flex max-h-[52dvh] flex-col gap-2 overflow-y-auto pr-1">
+        <div class="cf-focus-gutter flex max-h-[52dvh] flex-col gap-2 overflow-y-auto">
           <div
             v-for="(item, index) in surgeSmartGroups"
             :key="index"

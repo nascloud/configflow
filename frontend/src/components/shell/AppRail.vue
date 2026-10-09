@@ -18,17 +18,17 @@
         :key="item.path"
         :to="item.path"
         :class="cn(
-          'group relative flex min-h-9.5 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium text-muted-foreground no-underline transition-colors duration-200 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+          'group relative flex min-h-9.5 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium text-foreground dark:text-muted-foreground no-underline transition-colors duration-200 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
           activePath === item.path
-            ? 'text-foreground'
-            : 'hover:bg-accent/60 hover:text-foreground'
+            ? 'text-primary-accent font-semibold dark:text-foreground dark:font-medium'
+            : 'hover:bg-accent/60 hover:text-foreground dark:hover:text-foreground'
         )"
         :aria-current="activePath === item.path ? 'page' : undefined"
       >
         <Motion
           v-if="activePath === item.path"
           layout-id="rail-active"
-          class="absolute inset-0 rounded-lg border border-primary-accent/25 bg-primary-soft/45"
+          class="absolute inset-0 rounded-lg border border-primary-accent/50 bg-primary-soft dark:border-primary-accent/25 dark:bg-primary-soft/45"
           :transition="SPRING"
           aria-hidden="true"
         />
