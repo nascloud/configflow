@@ -1464,6 +1464,20 @@ class ProfileRepository:
             for rule in profile['rule_configs']:
                 if rule.get('itemType') == 'rule' and rule.get('rule_type') == 'RULE-SET':
                     rule['value'] = rule_names.get(rule.get('value'), rule.get('value'))
+            # Same as proxies_order: generators skip selections whose rule or
+            # group no longer exists, so drop them instead of failing the upgrade.
+            item_types = {rule.get('id'): rule.get('itemType') for rule in profile['rule_configs']}
+            mosdns = profile.get('mosdns')
+            if isinstance(mosdns, dict):
+                for key in ('direct_rulesets', 'proxy_rulesets', 'direct_rules', 'proxy_rules'):
+                    if isinstance(mosdns.get(key), list):
+                        expected = 'ruleset' if key.endswith('rulesets') else 'rule'
+                        mosdns[key] = [value for value in mosdns[key]
+                                       if isinstance(value, str) and item_types.get(value) == expected]
+            surge = profile.get('surge')
+            if isinstance(surge, dict) and isinstance(surge.get('smart_groups'), list):
+                surge['smart_groups'] = [setting for setting in surge['smart_groups']
+                                         if isinstance(setting, dict) and setting.get('group_id') in group_ids]
             document['profiles'][profile_id] = profile
         for agent in document['system']['agents']:
             if version == 2:

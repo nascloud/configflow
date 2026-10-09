@@ -850,3 +850,17 @@ def test_stale_sort_entries_are_dropped_instead_of_blocking_startup(tmp_path):
     assert [item["type"] for item in main["proxies_order"]] == [
         "aggregation", "node", "subscription", "strategy", "node"]
     assert main["proxies_order"][3]["id"] == "legacy-node"
+
+
+def test_stale_mosdns_and_smart_selections_are_dropped_on_upgrade(tmp_path):
+    bundle = _bundle()
+    profile = bundle["profiles"]["office"]
+    profile["mosdns"]["direct_rulesets"].append("ruleset_deleted")
+    profile["mosdns"]["proxy_rules"] += ["rule_deleted", "ruleset"]
+    profile["surge"]["smart_groups"].append({"group_id": "group_deleted", "enabled": True})
+    _install_split(tmp_path, bundle)
+    office = ProfileRepository(tmp_path, initial_config_factory=_no_template).get_compat_config("office")
+    assert office["mosdns"]["direct_rulesets"] == ["ruleset"]
+    assert office["mosdns"]["direct_rules"] == ["rule-z"]
+    assert office["mosdns"]["proxy_rules"] == ["rule-a"]
+    assert office["surge"]["smart_groups"] == [{"group_id": "main", "enabled": True}]
