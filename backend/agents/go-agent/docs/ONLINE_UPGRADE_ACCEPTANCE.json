@@ -1,0 +1,688 @@
+{
+  "host": "isolated-linux-test-host",
+  "date": "2026-10-10",
+  "target_version": "1.3.0-go",
+  "runs": [
+    {
+      "report": "systemd-110-report.json",
+      "manager": "systemd",
+      "legacy_version": "1.1.0-go",
+      "cases": [
+        {
+          "service": "mihomo",
+          "case": "legacy_migration_failure",
+          "status": "rolled_back",
+          "update_id": "17d8e5c32e6841f490fa9550dcea45c6",
+          "stages": [
+            "downloading",
+            "rolled_back"
+          ],
+          "core_health_checks": 14,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "cannot infer custom lifecycle; configure service_manager and service_unit before upgrading"
+        },
+        {
+          "service": "mihomo",
+          "case": "legacy_one_click_success",
+          "status": "succeeded",
+          "update_id": "19bfce8303174b748def9b68805fc31d",
+          "stages": [
+            "downloading",
+            "succeeded"
+          ],
+          "core_health_checks": 15,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": ""
+        },
+        {
+          "service": "mihomo",
+          "case": "new_protocol_success",
+          "status": "succeeded",
+          "update_id": "bbc2d92886f44628a50b0799b8c11e15",
+          "stages": [
+            "queued",
+            "downloading",
+            "backing_up",
+            "migrating",
+            "replacing",
+            "checking",
+            "succeeded"
+          ],
+          "core_health_checks": 9,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": ""
+        },
+        {
+          "service": "mihomo",
+          "case": "download_http503",
+          "status": "failed",
+          "update_id": "45d68d54cc76496dbc12e71aba085a3a",
+          "stages": [
+            "queued",
+            "checking",
+            "failed"
+          ],
+          "core_health_checks": 4,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent download HTTP 503"
+        },
+        {
+          "service": "mihomo",
+          "case": "download_sha256_mismatch",
+          "status": "failed",
+          "update_id": "1963cc6f60814ab482c13efb219a5287",
+          "stages": [
+            "queued",
+            "checking",
+            "failed"
+          ],
+          "core_health_checks": 4,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent download size or SHA-256 mismatch"
+        },
+        {
+          "service": "mihomo",
+          "case": "new_executable_start_failure",
+          "status": "rolled_back",
+          "update_id": "7b1b7e6b9067435f9649b99bdf717fe0",
+          "stages": [
+            "queued",
+            "downloading",
+            "backing_up",
+            "migrating",
+            "checking",
+            "rolled_back"
+          ],
+          "core_health_checks": 230,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent did not confirm expected version, identity and migration readiness"
+        },
+        {
+          "service": "mihomo",
+          "case": "interrupted_update_worker",
+          "status": "rolled_back",
+          "update_id": "6b67bd80f5e64e4b9d3829d0d70b045d",
+          "stages": [
+            "queued",
+            "verifying",
+            "backing_up",
+            "migrating",
+            "checking",
+            "rolled_back"
+          ],
+          "core_health_checks": 22,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "interrupted Agent update recovered from durable journal"
+        },
+        {
+          "service": "mihomo",
+          "case": "publish_after_upgrade",
+          "status": "succeeded"
+        },
+        {
+          "service": "mihomo",
+          "case": "recovery_gate_before_core",
+          "status": "succeeded"
+        },
+        {
+          "service": "mosdns",
+          "case": "legacy_migration_failure",
+          "status": "rolled_back",
+          "update_id": "5a0e482c38d84f239f2272cf65aabc51",
+          "stages": [
+            "downloading",
+            "rolled_back"
+          ],
+          "core_health_checks": 14,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "cannot infer custom lifecycle; configure service_manager and service_unit before upgrading"
+        },
+        {
+          "service": "mosdns",
+          "case": "legacy_one_click_success",
+          "status": "succeeded",
+          "update_id": "3c89817478714b76843187b8b5dc05f7",
+          "stages": [
+            "downloading",
+            "succeeded"
+          ],
+          "core_health_checks": 15,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": ""
+        },
+        {
+          "service": "mosdns",
+          "case": "new_protocol_success",
+          "status": "succeeded",
+          "update_id": "35b97ff838f34b1297c88aec66581fc1",
+          "stages": [
+            "queued",
+            "downloading",
+            "backing_up",
+            "migrating",
+            "checking",
+            "succeeded"
+          ],
+          "core_health_checks": 9,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": ""
+        },
+        {
+          "service": "mosdns",
+          "case": "download_http503",
+          "status": "failed",
+          "update_id": "ab676408ba534c289ad89d72c304cd38",
+          "stages": [
+            "queued",
+            "checking",
+            "failed"
+          ],
+          "core_health_checks": 4,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent download HTTP 503"
+        },
+        {
+          "service": "mosdns",
+          "case": "download_sha256_mismatch",
+          "status": "failed",
+          "update_id": "129a8d1f406149079ba0ba5b95422ec2",
+          "stages": [
+            "queued",
+            "checking",
+            "failed"
+          ],
+          "core_health_checks": 3,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent download size or SHA-256 mismatch"
+        },
+        {
+          "service": "mosdns",
+          "case": "new_executable_start_failure",
+          "status": "rolled_back",
+          "update_id": "49bc33ee51604a4999b12c9832a57bf8",
+          "stages": [
+            "queued",
+            "verifying",
+            "backing_up",
+            "migrating",
+            "rolling_back",
+            "checking",
+            "rolled_back"
+          ],
+          "core_health_checks": 230,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent did not confirm expected version, identity and migration readiness"
+        },
+        {
+          "service": "mosdns",
+          "case": "interrupted_update_worker",
+          "status": "rolled_back",
+          "update_id": "9f9eb88d8a564545a69aeca441bb38e7",
+          "stages": [
+            "queued",
+            "verifying",
+            "backing_up",
+            "migrating",
+            "checking",
+            "rolled_back"
+          ],
+          "core_health_checks": 21,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "interrupted Agent update recovered from durable journal"
+        },
+        {
+          "service": "mosdns",
+          "case": "publish_after_upgrade",
+          "status": "succeeded"
+        },
+        {
+          "service": "mosdns",
+          "case": "recovery_gate_before_core",
+          "status": "succeeded"
+        }
+      ],
+      "tested_binary_sha256": "f51a6b830dfeb308464913ff80c3e562aba04f88725d154b22229ff148255609",
+      "cleanup_success": true
+    },
+    {
+      "report": "systemd-108-final-report.json",
+      "manager": "systemd",
+      "legacy_version": "1.0.8-go",
+      "cases": [
+        {
+          "service": "mihomo",
+          "case": "legacy_migration_failure",
+          "status": "rolled_back",
+          "update_id": "53fa10dabb544c38a4adc785ce73030f",
+          "stages": [
+            "downloading",
+            "rolled_back"
+          ],
+          "core_health_checks": 14,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "cannot infer custom lifecycle; configure service_manager and service_unit before upgrading"
+        },
+        {
+          "service": "mihomo",
+          "case": "legacy_one_click_success",
+          "status": "succeeded",
+          "update_id": "edcc31cea80c4f8494b55a9a55149a11",
+          "stages": [
+            "downloading",
+            "succeeded"
+          ],
+          "core_health_checks": 15,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": ""
+        },
+        {
+          "service": "mihomo",
+          "case": "new_protocol_success",
+          "status": "succeeded",
+          "update_id": "b7999d094ab14223b17580cc57ff1d7d",
+          "stages": [
+            "queued",
+            "downloading",
+            "verifying",
+            "backing_up",
+            "migrating",
+            "restarting",
+            "checking",
+            "succeeded"
+          ],
+          "core_health_checks": 11,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": ""
+        },
+        {
+          "service": "mihomo",
+          "case": "download_http503",
+          "status": "failed",
+          "update_id": "12efcf6b226f4a44945ae89248e0380a",
+          "stages": [
+            "queued",
+            "checking",
+            "failed"
+          ],
+          "core_health_checks": 5,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent download HTTP 503"
+        },
+        {
+          "service": "mihomo",
+          "case": "download_sha256_mismatch",
+          "status": "failed",
+          "update_id": "5a81a5fd0a0c4f02a7a895d3da03946e",
+          "stages": [
+            "queued",
+            "downloading",
+            "checking",
+            "failed"
+          ],
+          "core_health_checks": 5,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent download size or SHA-256 mismatch"
+        },
+        {
+          "service": "mihomo",
+          "case": "new_executable_start_failure",
+          "status": "rolled_back",
+          "update_id": "01a0949fe97f4b968fc89e6fcebd59e2",
+          "stages": [
+            "queued",
+            "downloading",
+            "backing_up",
+            "migrating",
+            "replacing",
+            "checking",
+            "rolled_back"
+          ],
+          "core_health_checks": 232,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent did not confirm expected version, identity and migration readiness"
+        },
+        {
+          "service": "mihomo",
+          "case": "interrupted_update_worker",
+          "status": "rolled_back",
+          "update_id": "5b05869a3d9b4827b3dec98883cdb33d",
+          "stages": [
+            "queued",
+            "downloading",
+            "backing_up",
+            "migrating",
+            "restarting",
+            "checking",
+            "rolled_back"
+          ],
+          "core_health_checks": 24,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "interrupted Agent update recovered from durable journal"
+        },
+        {
+          "service": "mihomo",
+          "case": "publish_after_upgrade",
+          "status": "succeeded"
+        },
+        {
+          "service": "mihomo",
+          "case": "recovery_gate_before_core",
+          "status": "succeeded"
+        },
+        {
+          "service": "mosdns",
+          "case": "legacy_migration_failure",
+          "status": "rolled_back",
+          "update_id": "2631edd0661a4bc3974813bf2b1439bb",
+          "stages": [
+            "downloading",
+            "rolled_back"
+          ],
+          "core_health_checks": 14,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "cannot infer custom lifecycle; configure service_manager and service_unit before upgrading"
+        },
+        {
+          "service": "mosdns",
+          "case": "legacy_one_click_success",
+          "status": "succeeded",
+          "update_id": "c025ccc8e01a4de4aa571bb6f7b7c2a4",
+          "stages": [
+            "downloading",
+            "succeeded"
+          ],
+          "core_health_checks": 15,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": ""
+        },
+        {
+          "service": "mosdns",
+          "case": "new_protocol_success",
+          "status": "succeeded",
+          "update_id": "3153f80ee1fe4ca09724ea142151c5cd",
+          "stages": [
+            "queued",
+            "downloading",
+            "verifying",
+            "backing_up",
+            "migrating",
+            "replacing",
+            "checking",
+            "succeeded"
+          ],
+          "core_health_checks": 11,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": ""
+        },
+        {
+          "service": "mosdns",
+          "case": "download_http503",
+          "status": "failed",
+          "update_id": "8ebf1147d6c54818aa9d0728bfea8c33",
+          "stages": [
+            "queued",
+            "downloading",
+            "checking",
+            "failed"
+          ],
+          "core_health_checks": 4,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent download HTTP 503"
+        },
+        {
+          "service": "mosdns",
+          "case": "download_sha256_mismatch",
+          "status": "failed",
+          "update_id": "b330c42eab474b22896c421434bab23f",
+          "stages": [
+            "queued",
+            "downloading",
+            "checking",
+            "failed"
+          ],
+          "core_health_checks": 5,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent download size or SHA-256 mismatch"
+        },
+        {
+          "service": "mosdns",
+          "case": "new_executable_start_failure",
+          "status": "rolled_back",
+          "update_id": "e5106b3139bc436c804b419d1e1727f8",
+          "stages": [
+            "queued",
+            "downloading",
+            "backing_up",
+            "migrating",
+            "restarting",
+            "checking",
+            "rolled_back"
+          ],
+          "core_health_checks": 231,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "Agent did not confirm expected version, identity and migration readiness"
+        },
+        {
+          "service": "mosdns",
+          "case": "interrupted_update_worker",
+          "status": "rolled_back",
+          "update_id": "3f57ed42232f4f10abe2859218063196",
+          "stages": [
+            "queued",
+            "downloading",
+            "backing_up",
+            "migrating",
+            "restarting",
+            "checking",
+            "rolled_back"
+          ],
+          "core_health_checks": 24,
+          "core_files_unchanged": true,
+          "identity_preserved": true,
+          "error": "interrupted Agent update recovered from durable journal"
+        },
+        {
+          "service": "mosdns",
+          "case": "publish_after_upgrade",
+          "status": "succeeded"
+        },
+        {
+          "service": "mosdns",
+          "case": "recovery_gate_before_core",
+          "status": "succeeded"
+        }
+      ],
+      "tested_binary_sha256": "dd98a3d5bcd604ae8750fe6594c1b2c380788221e0a745f6e0653bbd6ae8017f",
+      "cleanup_success": true
+    },
+    {
+      "report": "openrc-final-report.json",
+      "manager": "openrc",
+      "legacy_version": "1.0.8-go",
+      "cases": [
+        {
+          "service": "mihomo",
+          "case": "legacy108_one_click_success",
+          "status": "succeeded",
+          "stages": [
+            "downloading",
+            "succeeded"
+          ]
+        },
+        {
+          "service": "mihomo",
+          "case": "new_protocol_success",
+          "status": "succeeded",
+          "stages": [
+            "queued",
+            "migrating",
+            "checking",
+            "succeeded"
+          ]
+        },
+        {
+          "service": "mihomo",
+          "case": "download_http503",
+          "status": "failed",
+          "stages": [
+            "queued",
+            "failed"
+          ]
+        },
+        {
+          "service": "mihomo",
+          "case": "download_integrity",
+          "status": "failed",
+          "stages": [
+            "queued",
+            "failed"
+          ]
+        },
+        {
+          "service": "mihomo",
+          "case": "start_failure",
+          "status": "rolled_back",
+          "stages": [
+            "queued",
+            "migrating",
+            "rolled_back"
+          ]
+        },
+        {
+          "service": "mihomo",
+          "case": "worker_interruption",
+          "status": "rolled_back",
+          "stages": [
+            "queued",
+            "migrating",
+            "rolled_back"
+          ]
+        },
+        {
+          "service": "mihomo",
+          "case": "publish_after_upgrade",
+          "status": "succeeded"
+        },
+        {
+          "service": "mihomo",
+          "case": "recovery_gate_before_core",
+          "status": "succeeded"
+        },
+        {
+          "service": "mosdns",
+          "case": "legacy108_one_click_success",
+          "status": "succeeded",
+          "stages": [
+            "downloading",
+            "succeeded"
+          ]
+        },
+        {
+          "service": "mosdns",
+          "case": "new_protocol_success",
+          "status": "succeeded",
+          "stages": [
+            "queued",
+            "migrating",
+            "checking",
+            "succeeded"
+          ]
+        },
+        {
+          "service": "mosdns",
+          "case": "download_http503",
+          "status": "failed",
+          "stages": [
+            "queued",
+            "failed"
+          ]
+        },
+        {
+          "service": "mosdns",
+          "case": "download_integrity",
+          "status": "failed",
+          "stages": [
+            "queued",
+            "failed"
+          ]
+        },
+        {
+          "service": "mosdns",
+          "case": "start_failure",
+          "status": "rolled_back",
+          "stages": [
+            "downloading",
+            "migrating",
+            "rolled_back"
+          ]
+        },
+        {
+          "service": "mosdns",
+          "case": "worker_interruption",
+          "status": "rolled_back",
+          "stages": [
+            "queued",
+            "migrating",
+            "rolled_back"
+          ]
+        },
+        {
+          "service": "mosdns",
+          "case": "publish_after_upgrade",
+          "status": "succeeded"
+        },
+        {
+          "service": "mosdns",
+          "case": "recovery_gate_before_core",
+          "status": "succeeded"
+        }
+      ]
+    }
+  ],
+  "checks": {
+    "backend": {
+      "passed": 1350,
+      "skipped": 2
+    },
+    "frontend": {
+      "passed": 119
+    },
+    "go_race": "passed",
+    "frontend_build": "passed"
+  },
+  "scope_notes": [
+    "OpenRC uses native service management inside a disposable Alpine container; this is not a Docker image upgrade test.",
+    "Final complete matrix is systemd/1.0.8 plus OpenRC/1.0.8; systemd/1.1.0 is additional earlier compatibility coverage.",
+    "No whole-machine power-off or ARM hardware execution tested.",
+    "After integration tests, corrupt-journal fail-closed behavior was added and verified by a targeted Go race regression.",
+    "Docker update guide was subsequently verified with the full 119-test frontend suite and production build; automatic image reconstruction is outside this change."
+  ],
+  "test_resources_removed": true
+}

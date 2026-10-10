@@ -3,6 +3,7 @@ package routes
 // A deployment is a write-ahead transaction. Nothing in the live directory is
 // changed before the backup is durable, and success is durable before cleanup.
 import (
+	"agent/upgrade"
 	"archive/tar"
 	"compress/gzip"
 	"crypto/sha256"
@@ -81,6 +82,18 @@ func deploymentPath(cfg *Config, id string) string { return filepath.Join(deploy
 // AcquireServiceOperation serializes deployment, restart, uninstall and upgrades,
 // including different Agent processes pointed at the same configuration root.
 func AcquireServiceOperation(cfg *Config) (func(), error) {
+	return acquireServiceOperation(cfg, false)
+}
+func acquireServiceOperation(cfg *Config, updating bool) (func(), error) {
+	if !updating && cfg.AgentConfigFile != "" {
+		binary, err := os.Executable()
+		if err != nil {
+			return nil, err
+		}
+		if upgrade.Pending(binary) {
+			return nil, fmt.Errorf("Agent update requires completion or recovery")
+		}
+	}
 	root := deploymentRoot(cfg)
 	if err := durableMkdirAll(root, 0700); err != nil {
 		return nil, err
@@ -89,7 +102,7 @@ func AcquireServiceOperation(cfg *Config) (func(), error) {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("invalid deployment directory")
 	}
-	fd, err := unix.Open(filepath.Join(root, "operation.lock"), unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW, 0600)
+	fd, err := unix.Open(filepath.Join(root, "operation.lock"), unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
 	if err != nil {
 		return nil, err
 	}

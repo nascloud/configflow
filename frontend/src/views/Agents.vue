@@ -146,12 +146,20 @@
           <Button v-if="deployments[agent.id].not_recorded || deployments[agent.id].retrying" variant="outline" size="sm" class="mt-2" :disabled="deployments[agent.id].retrying" @click="retryDeployment(agent.id)">{{ deployments[agent.id].retrying ? '正在重新提交…' : '重试同一次发布' }}</Button>
         </section>
 
+        <section v-if="upgrades[agent.id]" class="rounded-lg border border-border/50 p-3 text-sm" aria-live="polite">
+          <p class="m-0 font-medium">{{ upgradeLabels[upgrades[agent.id].status] || upgrades[agent.id].status }} · {{ upgrades[agent.id].target_version }}</p>
+          <p v-if="upgrades[agent.id].error" class="mt-1 break-words text-destructive">{{ upgrades[agent.id].error }}</p>
+          <Button variant="outline" size="sm" class="mt-2" @click="refreshUpgrade(agent.id)">查询更新结果</Button>
+        </section>
+        <p v-if="agent.has_update && agent.deployment_method === 'docker'" class="text-xs text-muted-foreground">有新版 Agent，点击“更新”查看拉取镜像、保留数据卷重建容器的步骤。</p>
+        <p v-else-if="agent.has_update && !agent.upgrade_available" class="text-xs text-muted-foreground">更新文件或安装方式尚未就绪，请先确认 ConfigFlow 主服务已更新。</p>
+
         <footer class="mt-auto flex flex-wrap items-center gap-1 border-0 border-t border-border/50 pt-3">
-          <Button variant="ghost" size="sm" :disabled="deploymentBusy(agent.id) || deployments[agent.id]?.status === 'rollback_failed'" @click="pushConfig(agent)">
+          <Button variant="ghost" size="sm" :disabled="upgradeBusy(agent.id) || deploymentBusy(agent.id) || deployments[agent.id]?.status === 'rollback_failed'" @click="pushConfig(agent)">
             <Upload class="size-3.5" />
             推送配置
           </Button>
-          <Button variant="ghost" size="sm" :disabled="deploymentBusy(agent.id) || deployments[agent.id]?.status === 'rollback_failed'" @click="restartAgent(agent)">
+          <Button variant="ghost" size="sm" :disabled="upgradeBusy(agent.id) || deploymentBusy(agent.id) || deployments[agent.id]?.status === 'rollback_failed'" @click="restartAgent(agent)">
             <RotateCw class="size-3.5" />
             重启服务
           </Button>
@@ -159,7 +167,7 @@
             <ScrollText class="size-3.5" />
             日志
           </Button>
-          <Button v-if="agent.has_update" variant="ghost" size="sm" class="text-primary-accent" @click="updateAgent(agent)">
+          <Button v-if="agent.has_update" variant="ghost" size="sm" class="text-primary-accent" :disabled="agent.deployment_method !== 'docker' && (!agent.upgrade_available || upgradeBusy(agent.id) || deploymentBusy(agent.id))" @click="updateAgent(agent)">
             <Download class="size-3.5" />
             更新
           </Button>
@@ -184,6 +192,8 @@
         </footer>
       </Motion>
     </div>
+
+    <DockerAgentUpdateDialog v-if="dockerUpdateAgent" :agent="dockerUpdateAgent" @close="dockerUpdateAgent = null" @refresh="loadAgents" />
 
     <!-- ===== 生成安装脚本 ===== -->
     <Dialog v-model:open="scriptDialogVisible">
@@ -584,6 +594,7 @@
 <script setup lang="ts">
 import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import DockerAgentUpdateDialog from '@/components/agents/DockerAgentUpdateDialog.vue'
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { Motion } from 'motion-v'
 import {
@@ -647,6 +658,7 @@ import api from '@/api'
 import type { Agent } from '@/types'
 import { useProfileStore } from '@/stores/profile'
 import { createDeploymentId, deploymentLabels, useAgentDeployments } from '@/composables/useAgentDeployments'
+import { upgradeLabels, useAgentUpgrades } from '@/composables/useAgentUpgrades'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, TitleComponent } from 'echarts/components'
@@ -658,9 +670,11 @@ use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent
 
 const agents = ref<Agent[]>([])
 const { deployments, busy: deploymentBusy, track: trackDeployment, refresh: refreshDeployment, activate: activateDeployment, retryPublish: retryDeployment } = useAgentDeployments(() => { void loadAgents() })
+const { upgrades, busy: upgradeBusy, track: trackUpgrade, refresh: refreshUpgrade, start: startUpgrade } = useAgentUpgrades(() => { void loadAgents() })
 const { profiles, refreshProfiles } = useProfileStore()
 const bindingAgentId = ref<string | null>(null)
 const scriptDialogVisible = ref(false)
+const dockerUpdateAgent = ref<Agent | null>(null)
 const lifecyclePanelOpen = ref(false)
 const logsDialogVisible = ref(false)
 const metricsDialogVisible = ref(false)
@@ -1104,6 +1118,7 @@ const loadAgents = async () => {
     if (generation !== agentsLoadGeneration) return
     agents.value = data
     for (const agent of agents.value) {
+      if (agent.latest_upgrade) trackUpgrade(agent.id, agent.latest_upgrade)
       if (agent.latest_deployment && !deploymentBusy(agent.id)) trackDeployment(agent.id, agent.latest_deployment, false)
     }
   } catch (error) {
@@ -1113,6 +1128,7 @@ const loadAgents = async () => {
 }
 
 const profileBindingBlocked = (agentId: string) => {
+  if (upgradeBusy(agentId)) return true
   const task = deployments[agentId] || agents.value.find(agent => agent.id === agentId)?.latest_deployment
   return !!task && !['succeeded', 'failed', 'rolled_back'].includes(task.status)
 }
@@ -1794,31 +1810,21 @@ const restartAgent = async (agent: Agent) => {
 }
 
 const updateAgent = async (agent: Agent) => {
-  const ok = await confirm('检测到新版本可用，是否立即更新 Agent？更新过程中 Agent 将会重启。', {
-    title: '更新 Agent',
-    confirmText: '立即更新'
+  if (agent.deployment_method === 'docker') {
+    dockerUpdateAgent.value = agent
+    return
+  }
+  if (upgradeBusy(agent.id) || deploymentBusy(agent.id)) return
+  const ok = await confirm('更新将保留身份和核心配置，自动完成迁移并重启 Agent。网页会持续查询最终结果。', {
+    title: '更新 Agent', confirmText: '立即更新'
   })
   if (!ok) return
-
   try {
-    const loadingToast = notify.loading('正在更新 Agent，请稍候...')
-
-    try {
-      const response = await agentApi.update(agent.id)
-      notify.dismiss(loadingToast)
-
-      notify.success('Agent 更新已启动，请等待重启完成')
-
-      // 3秒后刷新列表
-      setTimeout(() => {
-        loadAgents()
-      }, 3000)
-    } catch (error: any) {
-      notify.dismiss(loadingToast)
-      notify.error(error.response?.data?.message || 'Agent 更新失败')
-    }
+    await startUpgrade(agent.id)
+    notify.info('更新任务已创建，正在确认执行结果')
   } catch (error: any) {
-    notify.error(error.response?.data?.message || 'Agent 更新失败')
+    notify.error(error.response?.data?.message || '更新请求未确认，请查询更新结果')
+    void loadAgents()
   }
 }
 

@@ -428,10 +428,13 @@ def handle_agents():
 
     if request.method == 'GET':
         agents = [_public_agent(agent) for agent in agent_manager.get_all_agents()]
+        from backend.agents.upgrades import artifacts
+        upgrade_files_ready = bool(artifacts())
         # 为每个 agent 添加 has_update 字段
         for agent in agents:
             current_version = agent.get('version', '0.0.0')
             agent['has_update'] = has_update(current_version)
+            agent['upgrade_available'] = upgrade_files_ready and agent.get('deployment_method') == 'shell'
         return jsonify(agents), 200
 
     elif request.method == 'POST':
@@ -477,6 +480,8 @@ def handle_agent_item(agent_id):
                 return jsonify({'success': True}), 200
             else:
                 return jsonify({'success': False, 'message': 'Agent not found'}), 404
+        except AgentDeploymentConflict as exc:
+            return jsonify({'success': False, 'message': str(exc)}), 409
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -602,31 +607,47 @@ def uninstall_agent(agent_id):
 @bp.route('/<agent_id>/update', methods=['POST'])
 @require_auth
 def update_agent_version(agent_id):
-    """触发 Agent 更新"""
+    """Create a durable upgrade; acceptance is not completion."""
+    from backend.agents.upgrades import start
     try:
-        agent_manager = get_agent_manager()
-        agent = agent_manager.get_agent_by_id(agent_id)
-        if not agent:
-            return jsonify({'success': False, 'message': 'Agent not found'}), 404
+        result = start(get_agent_manager(), agent_id)
+        return jsonify(result), 202 if result['status'] != 'failed' else 409
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 409
 
-        # 获取最新版本
-        latest_version = get_latest_version()
 
-        # 构建二进制下载 URL
-        # 根据架构确定文件名（简化处理，默认使用 amd64）
-        # 实际应用中可能需要 agent 报告其架构
-        arch = request.json.get('arch', 'linux-amd64')
-        binary_filename = f'configflow-agent-{arch}'
+@bp.route('/<agent_id>/upgrade', methods=['GET'])
+def get_agent_upgrade(agent_id):
+    from backend.agents.upgrades import poll
+    manager = get_agent_manager()
+    agent = manager.get_agent_by_id(agent_id)
+    provided = parse_bearer_token(request.headers.get('Authorization', ''))
+    if agent and provided and _constant_time_ascii_equal(provided, agent.get('token', '')):
+        # Legacy bootstrap reads its own pending plan; no recursive Agent call.
+        return jsonify(agent.get('latest_upgrade') or {}), 200
+    @require_auth
+    def for_admin():
+        try:
+            return jsonify(poll(manager, agent_id)), 200
+        except ValueError as exc:
+            return jsonify({'success': False, 'message': str(exc)}), 404
+    return for_admin()
 
-        # 构建完整的下载 URL
-        server_url = request.host_url.rstrip('/')
-        binary_url = f"{server_url}/api/agents/download/{binary_filename}"
 
-        # 触发更新
-        result = agent_manager.update_agent_version(agent_id, latest_version, binary_url)
-        return jsonify(result), 200 if result.get('success') else 500
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+@bp.route('/<agent_id>/upgrade/report', methods=['POST'])
+def report_agent_upgrade(agent_id):
+    from backend.agents.upgrades import report_legacy
+    manager = get_agent_manager()
+    agent = manager.get_agent_by_id(agent_id)
+    provided = parse_bearer_token(request.headers.get('Authorization', ''))
+    if not agent or not provided or not _constant_time_ascii_equal(provided, agent.get('token', '')):
+        return jsonify({'success': False}), 401
+    if request.content_length is None or request.content_length > 4096:
+        return jsonify({'success': False}), 413
+    try:
+        return jsonify(report_legacy(manager, agent_id, request.get_json())), 200
+    except (ValueError, TypeError, AttributeError):
+        return jsonify({'success': False, 'message': 'Invalid update report'}), 400
 
 
 # Docker 相关路由（安装脚本生成）

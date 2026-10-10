@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"agent/upgrade"
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"time"
 )
@@ -27,146 +27,76 @@ type UpdateResponse struct {
 	Message string `json:"message"`
 }
 
-// HandleUpdate 处理 Agent 更新请求
+// HandleUpdate returns a durable task. Its worker has a separate system service.
 func HandleUpdate(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Println("收到更新请求")
-
-		// 解析请求
-		var req AgentUpdateRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			log.Printf("解析更新请求失败: %v", err)
-			JsonResponse(w, http.StatusBadRequest, UpdateResponse{
-				Success: false,
-				Message: "Invalid request body",
-			})
-			return
-		}
-
-		log.Printf("更新请求: version=%s", req.Version)
-
-		release, err := AcquireServiceOperation(cfg)
+		binary, err := os.Executable()
 		if err != nil {
-			deploymentFailure(w, http.StatusConflict, err)
+			deploymentFailure(w, 500, err)
 			return
 		}
+		if r.Method == http.MethodGet {
+			status, err := upgrade.ReadStatus(binary, cfg.AgentID)
+			if err != nil {
+				deploymentFailure(w, 404, fmt.Errorf("update not recorded"))
+				return
+			}
+			JsonResponse(w, 200, status)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(405)
+			return
+		}
+		var request upgrade.Request
+		if err := json.NewDecoder(io.LimitReader(r.Body, 16385)).Decode(&request); err != nil {
+			deploymentFailure(w, 400, fmt.Errorf("invalid update request"))
+			return
+		}
+		release, err := acquireServiceOperation(cfg, true)
+		for deadline := time.Now().Add(2 * time.Second); err == errDeploymentBusy && time.Now().Before(deadline); {
+			time.Sleep(100 * time.Millisecond)
+			release, err = acquireServiceOperation(cfg, true)
+		}
+		if err != nil {
+			deploymentFailure(w, 409, err)
+			return
+		}
+		defer release()
 		if err = deploymentBlocked(cfg); err != nil {
-			release()
-			deploymentFailure(w, http.StatusConflict, err)
+			deploymentFailure(w, 409, err)
 			return
 		}
-		// 立即返回成功响应（更新在后台进行）
-		JsonResponse(w, http.StatusOK, UpdateResponse{
-			Success: true,
-			Message: "Update started",
-		})
-
-		// 在后台执行更新
-		go func() { defer release(); performUpdate(req, cfg) }()
+		status, err := upgrade.Prepare(cfg.AgentConfigFile, binary, request)
+		if err != nil {
+			deploymentFailure(w, 409, err)
+			return
+		}
+		JsonResponse(w, 202, status)
 	}
 }
 
-// performUpdate 执行实际的更新操作
-func performUpdate(req AgentUpdateRequest, cfg *Config) {
-	log.Println("开始后台更新流程...")
-
-	// 等待响应发送完成
-	time.Sleep(2 * time.Second)
-
-	// 1. 获取当前二进制文件路径
-	currentBinary, err := os.Executable()
-	if err != nil {
-		log.Printf("获取当前二进制路径失败: %v", err)
-		return
-	}
-	log.Printf("当前二进制路径: %s", currentBinary)
-
-	// 2. 检测系统架构
-	arch := detectArchitecture()
-	log.Printf("检测到系统架构: %s", arch)
-
-	// 3. 构造下载 URL（使用 Agent 配置中的 ServerURL）
-	serverURL := cfg.ServerURL
-	if serverURL == "" {
-		log.Printf("配置中的 ServerURL 为空，无法下载更新")
-		return
-	}
-
-	// 去除末尾斜杠
-	if serverURL[len(serverURL)-1] == '/' {
-		serverURL = serverURL[:len(serverURL)-1]
-	}
-
-	downloadURL := fmt.Sprintf("%s/api/agents/download/configflow-agent-%s", serverURL, arch)
-	log.Printf("构造下载 URL: %s", redactURLForLog(downloadURL))
-
-	// 4. 创建备份目录
-	backupDir := "/opt/configflow-agent/backup"
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
-		log.Printf("创建备份目录失败: %v", err)
-		return
-	}
-
-	// 5. 备份当前二进制（固定文件名，每次覆盖）
-	backupPath := filepath.Join(backupDir, "configflow-agent.bak")
-	log.Printf("备份当前二进制到: %s", backupPath)
-
-	if err := copyFile(currentBinary, backupPath); err != nil {
-		log.Printf("备份二进制文件失败: %v", err)
-		return
-	}
-
-	// 6. 下载新版本
-	tempFile := filepath.Join(backupDir, "configflow-agent.tmp")
-	log.Printf("下载新版本到: %s", tempFile)
-
-	if err := downloadFile(tempFile, downloadURL); err != nil {
-		log.Printf("下载新版本失败: %v", err)
-		return
-	}
-
-	// 5. 验证下载的文件是否为有效的二进制文件
-	if err := verifyBinaryFile(tempFile); err != nil {
-		log.Printf("下载的文件验证失败: %v", err)
-		os.Remove(tempFile)
-		return
-	}
-
-	// 6. 验证 MD5（如果提供）
-	if req.MD5Sum != "" {
-		log.Println("验证文件 MD5...")
-		if err := verifyMD5(tempFile, req.MD5Sum); err != nil {
-			log.Printf("MD5 校验失败: %v", err)
-			os.Remove(tempFile)
+func UpgradeInfoHandler(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(405)
 			return
 		}
-		log.Println("MD5 校验通过")
+		binary, err := os.Executable()
+		if err != nil {
+			deploymentFailure(w, 500, err)
+			return
+		}
+		ready, _ := upgrade.MigrationReady(cfg.AgentConfigFile, binary)
+		method := "shell"
+		if config, err := upgrade.ReadConfig(cfg.AgentConfigFile); err == nil && config.Docker() {
+			method = "docker"
+		}
+		JsonResponse(w, 200, map[string]interface{}{
+			"version": upgrade.Version, "agent_id": cfg.AgentID, "migration_ready": ready,
+			"architecture": detectArchitecture(), "deployment_method": method, "update_protocol": 2,
+		})
 	}
-
-	// 7. 设置可执行权限
-	if err := os.Chmod(tempFile, 0755); err != nil {
-		log.Printf("设置可执行权限失败: %v", err)
-		os.Remove(tempFile)
-		return
-	}
-
-	// 8. 原子替换二进制文件
-	log.Println("替换二进制文件...")
-	if err := os.Rename(tempFile, currentBinary); err != nil {
-		log.Printf("替换二进制文件失败: %v", err)
-		os.Remove(tempFile)
-		return
-	}
-
-	log.Println("二进制文件替换成功，准备重启...")
-
-	// 9. 重启 Agent 并验证
-	if err := restartAgentWithCheck(currentBinary, backupPath); err != nil {
-		log.Printf("更新失败: %v", err)
-		return
-	}
-
-	log.Println("更新流程完成，Agent 已成功重启")
 }
 
 // downloadFile 下载文件

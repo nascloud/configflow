@@ -1,10 +1,14 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.2.0-go"
+LATEST_AGENT_VERSION = "1.3.0-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.3.0-go": {
+        "date": "2026-10-10",
+        "features": ["Shell 网页一键更新与旧配置自动迁移", "独立更新任务、SHA-256 校验、健康确认和失败回滚", "持久更新进度及 Docker 镜像更新提示"]
+    },
     "1.2.0-go": {
         "date": "2026-10-10",
         "features": [

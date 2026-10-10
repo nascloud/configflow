@@ -27,6 +27,7 @@ func RegisterRoutes(mux *http.ServeMux, cfg *Config) {
 
 	// 注册更新路由
 	mux.HandleFunc("/api/update", AuthMiddleware(cfg, HandleUpdate(cfg)))
+	mux.HandleFunc("/api/upgrade-info", AuthMiddleware(cfg, UpgradeInfoHandler(cfg)))
 
 	// 注册基于端口的日志路由
 	mux.HandleFunc("/logs", PortBasedLogsHandler(cfg))

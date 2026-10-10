@@ -2,7 +2,9 @@ package main
 
 import (
 	"agent/routes"
+	"agent/upgrade"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,11 +14,23 @@ func main() {
 	// 使用命令行参数指定配置文件路径
 	// Go的flag包支持单横线(-)和双横线(--)两种格式的参数
 	configPath := flag.String("config", "", "Path to the configuration file")
+	printVersion := flag.Bool("version", false, "Print Agent version and exit")
+	upgradeWorker := flag.String("upgrade-worker", "", "Run a durable Agent update outside the Agent service")
 	recoverOnly := flag.Bool("recover-only", false, "Restore interrupted deployments before managed services start; do not register or listen")
 	recoverAndExit := flag.Bool("recover-and-exit", false, "Recover interrupted deployments with service lifecycle, then exit without registration")
 
 	// 解析命令行参数
 	flag.Parse()
+	if *printVersion {
+		fmt.Println(upgrade.Version)
+		return
+	}
+	if *upgradeWorker != "" {
+		if err := upgrade.Run(*upgradeWorker); err != nil {
+			log.Fatalf("Agent update: %v", err)
+		}
+		return
+	}
 
 	// 如果没有通过命令行参数指定配置文件路径，则使用自动检测
 	if *configPath == "" {
@@ -44,6 +58,15 @@ func main() {
 	}
 
 	log.Printf("Using config file: %s", *configPath)
+	if !*recoverOnly && !*recoverAndExit {
+		binary, err := os.Executable()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err = upgrade.EnsureInstalled(*configPath, binary); err != nil {
+			log.Fatalf("Agent migration: %v", err)
+		}
+	}
 
 	// 1. 加载配置
 	cfg, err := LoadConfig(*configPath)
