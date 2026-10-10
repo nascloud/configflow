@@ -245,12 +245,6 @@ export const configTokenApi = {
   delete: () => api.delete('/config-token')
 }
 
-// Sub-Store URL 管理
-export const subStoreUrlApi = {
-  get: () => api.get('/settings/sub-store-url'),
-  update: (data: { sub_store_url: string }) => api.post('/settings/sub-store-url', data)
-}
-
 // 第三方依赖（内置 Sub-Store 等）检测与在线更新
 export interface DependencyUpdateState {
   state: 'idle' | 'running' | 'success' | 'failed'
@@ -264,8 +258,6 @@ export interface DependencyStatus {
   name: string
   description: string
   homepage: string
-  mode: 'builtin' | 'external'
-  source: 'builtin' | 'settings' | 'env'
   running: boolean
   current_version: string
   builtin_version: string

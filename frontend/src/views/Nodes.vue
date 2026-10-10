@@ -539,9 +539,9 @@ import ViewToggle from '@/components/common/ViewToggle.vue'
 import ReorderBar from '@/components/shell/ReorderBar.vue'
 import DragHandle from '@/components/shell/DragHandle.vue'
 import { useReorder } from '@/composables/useReorder'
-import { confirm, confirmDanger, notify } from '@/lib/feedback'
+import { confirmDanger, notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
-import { nodeApi, subStoreUrlApi } from '@/api'
+import { nodeApi } from '@/api'
 import type { ProxyNode } from '@/types'
 import api from '@/api'
 import * as yaml from 'js-yaml'
@@ -700,26 +700,7 @@ const loadNodes = async () => {
   }
 }
 
-const checkSubStoreUrl = async (): Promise<boolean> => {
-  try {
-    const response = await subStoreUrlApi.get()
-    const url = response.data?.sub_store_url || ''
-    if (!url) {
-      return await confirm(
-        '尚未配置 Sub-Store URL，节点格式转换功能将不可用。请前往「系统设置」页面配置 Sub-Store 地址。',
-        { title: '未配置 Sub-Store', confirmText: '继续添加' }
-      )
-    }
-    return true
-  } catch (error) {
-    // 读取设置失败不应阻断添加流程
-    console.error('Failed to check Sub-Store URL:', error)
-    return true
-  }
-}
-
-const showAddDialog = async () => {
-  if (!await checkSubStoreUrl()) return
+const showAddDialog = () => {
   isEdit.value = false
   form.value = {
     name: '',
@@ -730,8 +711,7 @@ const showAddDialog = async () => {
   dialogVisible.value = true
 }
 
-const showBatchAddDialog = async () => {
-  if (!await checkSubStoreUrl()) return
+const showBatchAddDialog = () => {
   batchForm.value = {
     nodes_text: '',
     enabled: true

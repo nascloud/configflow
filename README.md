@@ -107,7 +107,7 @@ services:
 
 > 💡 **提示**：生产环境请务必修改默认密码和 JWT 密钥；镜像已内置 Sub-Store（订阅解析和节点格式转换），无需另外部署，可在「系统设置 → 第三方依赖」检测并在线更新
 >
-> 从旧版升级：可删除 compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量，改用内置 Sub-Store（保留 `SUB_STORE_URL` 则继续使用外部 Sub-Store）。
+> 从旧版升级：compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量已不再使用，可以删除。
 
 ## 升级与数据安全
 

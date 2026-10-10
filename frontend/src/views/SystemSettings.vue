@@ -61,20 +61,6 @@
             </div>
           </FormField>
 
-          <FormField
-            label="Sub-Store"
-            html-for="sub-store-url"
-            hint="留空使用镜像内置的 Sub-Store，用于读取订阅和转换节点格式。如需改用自己部署的 Sub-Store，填写其 API 地址（外部 Sub-Store 不支持在线更新）。"
-          >
-            <Input
-              id="sub-store-url"
-              v-model="subStoreUrl"
-              class="bg-background/50 font-mono"
-              placeholder="留空使用内置 Sub-Store"
-              @blur="onSubStoreUrlBlur"
-            />
-          </FormField>
-
           <FormField hint="开启后将在资源分组下显示「订阅聚合」，可组合订阅和节点。">
             <div class="flex items-center gap-2.5">
               <Switch
@@ -236,18 +222,10 @@
                 rel="noopener noreferrer"
                 class="text-[13px] font-semibold text-foreground hover:underline"
               >{{ dep.name }}</a>
-              <Badge :variant="dep.mode === 'builtin' ? 'brand' : 'outline'">
-                {{ dep.mode === 'builtin' ? '内置' : '外部' }}
-              </Badge>
               <StatusDot :tone="dep.running ? 'success' : 'danger'" :label="dep.running ? '运行中' : '无法连接'" />
             </div>
             <p class="mt-1 mb-0 text-[12px] text-muted-foreground">
               {{ dep.description }}<template v-if="dep.runtime"> · Node.js {{ dep.runtime }}</template>
-            </p>
-            <p v-if="dep.mode === 'external'" class="mt-1 mb-0 text-[12px] text-muted-foreground">
-              {{ dep.source === 'env'
-                ? '正在使用环境变量 SUB_STORE_URL 指定的外部 Sub-Store，移除该变量即可切换到内置版本。'
-                : '正在使用系统设置中填写的外部 Sub-Store，清空地址即可切换到内置版本。' }}
             </p>
           </div>
 
@@ -286,7 +264,6 @@
                 <CircleArrowUp v-else class="size-3.5" />
                 更新到 {{ dep.latest_version }}
               </Button>
-              <Badge v-else-if="dep.has_update" variant="warning">有新版本，请在外部部署处更新</Badge>
               <Badge v-else-if="dep.current_version && dep.latest_version" variant="success">已是最新</Badge>
               <span v-if="dep.check_error" class="max-w-[22rem] text-[12px] text-destructive-accent">{{ dep.check_error }}</span>
               <span
@@ -405,7 +382,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { confirm, confirmDanger, notify } from '@/lib/feedback'
-import api, { configApi, serverDomainApi, configTokenApi, subStoreUrlApi, ruleFetchProxyApi, dependenciesApi } from '@/api'
+import api, { configApi, serverDomainApi, configTokenApi, ruleFetchProxyApi, dependenciesApi } from '@/api'
 import type { DependencyStatus } from '@/api'
 
 // 备份配置
@@ -421,8 +398,6 @@ const testingConnection = ref(false)
 const backingUp = ref(false)
 const savingBackup = ref(false)
 
-// Sub-Store URL
-const subStoreUrl = ref('')
 const ruleFetchProxy = ref('')
 const savedRuleFetchProxy = ref('')
 const showRuleFetchProxy = ref(false)
@@ -659,30 +634,6 @@ const onRuleFetchProxyBlur = async () => {
   }
 }
 
-// Sub-Store URL 相关函数
-const onSubStoreUrlBlur = async () => {
-  try {
-    await subStoreUrlApi.update({
-      sub_store_url: subStoreUrl.value
-    })
-
-    notify.success('Sub-Store URL 已保存')
-  } catch (error) {
-    console.error('保存 Sub-Store URL 失败:', error)
-    notify.error('保存 Sub-Store URL 失败')
-  }
-}
-
-const loadSubStoreUrl = async () => {
-  try {
-    const response = await subStoreUrlApi.get()
-    subStoreUrl.value = response.data.sub_store_url || ''
-  } catch (error) {
-    console.error('加载 Sub-Store URL 失败:', error)
-    notify.error('加载 Sub-Store URL 失败')
-  }
-}
-
 const exportConfig = async () => {
   try {
     const response = await configApi.export()
@@ -875,7 +826,6 @@ const saveBackupConfig = async () => {
 onMounted(async () => {
   await Promise.all([
     loadConfigToken(),
-    loadSubStoreUrl(),
     loadRuleFetchProxy(),
     loadDependencies(),
     (async () => {

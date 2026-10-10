@@ -283,7 +283,6 @@ def test_profile_export_and_explicit_settings_responses_do_not_leak_rule_proxy_t
         client.get("/api/server-domain"),
         client.get("/api/config-token"),
         client.get("/api/backup/config"),
-        client.get("/api/settings/sub-store-url"),
         client.get("/api/settings/subscription-aggregation"),
     ]
 
@@ -309,7 +308,6 @@ def test_all_ordinary_json_api_responses_scrub_embedded_repository_token(tmp_pat
     client = app.test_client()
     responses = [
         client.get("/api/server-domain"),
-        client.get("/api/settings/sub-store-url"),
         client.get("/api/subscriptions"),
         client.get("/api/nodes"),
         client.get("/api/profiles/default/export"),

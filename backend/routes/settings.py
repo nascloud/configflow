@@ -11,7 +11,6 @@ from backend.common.utils import generate_random_token
 from backend.common.config import get_repository, get_system_config, save_system_config
 from backend.common.config_export import contains_internal_rule_proxy_token
 from backend.version import get_version_info
-from backend.utils.url_utils import safe_url_for_log
 from backend.utils.rule_fetch import normalize_rule_fetch_proxy
 
 
@@ -325,38 +324,6 @@ def backup_now():
 
     except Exception as e:
         return jsonify({'success': False, 'message': f'备份失败：{str(e)}。请检查父级目录是否存在。'}), 500
-
-
-@settings_bp.route('/settings/sub-store-url', methods=['GET', 'POST'])
-@require_auth
-def handle_sub_store_url():
-    """Sub-Store URL 管理"""
-    config_data = get_system_config()
-
-    if request.method == 'GET':
-        sub_store_url = config_data.get('system_config', {}).get('sub_store_url', '')
-        return jsonify({'sub_store_url': sub_store_url})
-
-    elif request.method == 'POST':
-        try:
-            data = request.json
-            new_url = data.get('sub_store_url', '').strip()
-
-            if 'system_config' not in config_data:
-                config_data['system_config'] = {}
-
-            config_data['system_config']['sub_store_url'] = new_url
-
-            current_app.logger.info(f"Updated Sub-Store URL to {safe_url_for_log(new_url)}")
-
-            save_system_config(config_data)
-            return jsonify({
-                'success': True,
-                'sub_store_url': new_url
-            })
-        except Exception as e:
-            current_app.logger.error(f"Failed to update Sub-Store URL: {e}")
-            return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @settings_bp.route('/settings/subscription-aggregation', methods=['GET', 'POST'])

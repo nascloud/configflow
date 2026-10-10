@@ -4,7 +4,7 @@
 
 ## 前提条件
 
-ConfigFlow 依赖 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 进行订阅解析和节点格式转换。镜像已内置 Sub-Store 后端（仅监听容器内 `127.0.0.1:3001`，数据保存在 `/data/sub-store`），无需另外部署；可在「系统设置 → 第三方依赖」检测并在线更新。也可在「系统设置」填写已有的外部 Sub-Store 地址。
+ConfigFlow 依赖 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 进行订阅解析和节点格式转换。镜像已内置 Sub-Store 后端（仅监听容器内 `127.0.0.1:3001`，数据保存在 `/data/sub-store`），自动使用，无需另外部署或配置地址；可在「系统设置 → 第三方依赖」检测并在线更新。
 
 ## Docker 单独部署
 
@@ -116,8 +116,8 @@ docker-compose up -d
 访问 `http://localhost` 即可使用。
 
 > 认证是可选的：不设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 即无需登录直接使用；设置后才开启登录，此时请把 `ADMIN_PASSWORD` 和 `JWT_SECRET_KEY` 替换为更安全的值。
-> 镜像已内置 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 后端，无需另外部署；可在「系统设置 → 第三方依赖」检测并在线更新。如需改用自己的 Sub-Store，在「系统设置」填写其 API 地址即可。
-> 从旧版升级：可删除 compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量，改用内置 Sub-Store（保留 `SUB_STORE_URL` 则继续使用外部 Sub-Store）。
+> 镜像已内置 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 后端并自动使用，无需另外部署或配置地址；可在「系统设置 → 第三方依赖」检测并在线更新。
+> 从旧版升级：compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量已不再使用，可以删除。
 
 ### 配置说明
 
@@ -125,7 +125,6 @@ docker-compose up -d
 - **image**: Docker 镜像，`latest` 为最新版本
 - **ports**: 端口映射，格式为 `宿主机:容器`
 - **volumes**: 数据目录挂载，支持相对路径或绝对路径
-- **SUB_STORE_URL**（可选）: 外部 Sub-Store API 地址；不设置则使用镜像内置的 Sub-Store
 - **restart**: 重启策略
   - `unless-stopped`: 除非手动停止，否则自动重启
   - `always`: 始终重启

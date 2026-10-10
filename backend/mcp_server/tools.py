@@ -1131,7 +1131,6 @@ def _convert_mosdns_rule(args):
 _SETTING_SECTIONS = {
     'server_domain': ('/api/server-domain', '/api/server-domain', {'server_domain': 'new_domain'}),
     'config_token': ('/api/config-token', '/api/config-token', {'config_token': 'token'}),
-    'sub_store_url': ('/api/settings/sub-store-url', '/api/settings/sub-store-url', {}),
     'subscription_aggregation': (
         '/api/settings/subscription-aggregation',
         '/api/settings/subscription-aggregation',
@@ -1157,7 +1156,7 @@ def _get_overview(args):
 @tool(
     'get_settings',
     '读取系统设置。section 对应：server_domain（对外域名）、config_token（订阅链接令牌）、'
-    'sub_store_url（Sub-Store 地址）、subscription_aggregation（聚合功能开关）、'
+    'subscription_aggregation（聚合功能开关）、'
     'backup（WebDAV 备份配置）、github_proxy（GitHub 规则源加速域名）、'
     'version（版本信息）。留空返回全部。',
     obj({'section': string('设置分区，留空返回全部', _SETTING_SECTION_NAMES)}),

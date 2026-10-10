@@ -34,8 +34,8 @@ services:
 - `./data` 保存 ConfigFlow 数据（含内置 Sub-Store 数据 `./data/sub-store`），方便以后迁移或备份。
 
 > 认证是可选的：不设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 即无需登录直接使用；设置后才开启登录，此时请把 `ADMIN_PASSWORD` 和 `JWT_SECRET_KEY` 替换为更安全的值。
-> 镜像已内置 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 后端，无需另外部署；可在「系统设置 → 第三方依赖」检测并在线更新。如需改用自己的 Sub-Store，在「系统设置」填写其 API 地址即可。
-> 从旧版升级：可删除 compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量，改用内置 Sub-Store（保留 `SUB_STORE_URL` 则继续使用外部 Sub-Store）。
+> 镜像已内置 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 后端并自动使用，无需另外部署或配置地址；可在「系统设置 → 第三方依赖」检测并在线更新。
+> 从旧版升级：compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量已不再使用，可以删除。
 
 ---
 
