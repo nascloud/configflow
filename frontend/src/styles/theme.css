@@ -583,11 +583,15 @@
   }
 }
 
-/* Tweaks：关闭动效时冻结所有 CSS 动画；关闭纹理时去掉颗粒与点阵 */
+/* Tweaks：关闭动效时让 CSS 动画瞬间播完；关闭纹理时去掉颗粒与点阵。
+   不能用 animation-play-state: paused —— 弹层的进出场动画会停在首帧，
+   reka-ui 等不到 animationend，菜单关不掉、对话框透明且整页无法点击。 */
 :root[data-motion='off'] *,
 :root[data-motion='off'] *::before,
 :root[data-motion='off'] *::after {
-  animation-play-state: paused !important;
+  animation-delay: 0s !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
 }
 
 :root[data-texture='off'] .paper-grain,
