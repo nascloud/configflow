@@ -45,6 +45,16 @@ func HandleUpdate(cfg *Config) http.HandlerFunc {
 
 		log.Printf("更新请求: version=%s", req.Version)
 
+		release, err := AcquireServiceOperation(cfg)
+		if err != nil {
+			deploymentFailure(w, http.StatusConflict, err)
+			return
+		}
+		if err = deploymentBlocked(cfg); err != nil {
+			release()
+			deploymentFailure(w, http.StatusConflict, err)
+			return
+		}
 		// 立即返回成功响应（更新在后台进行）
 		JsonResponse(w, http.StatusOK, UpdateResponse{
 			Success: true,
@@ -52,7 +62,7 @@ func HandleUpdate(cfg *Config) http.HandlerFunc {
 		})
 
 		// 在后台执行更新
-		go performUpdate(req, cfg)
+		go func() { defer release(); performUpdate(req, cfg) }()
 	}
 }
 

@@ -36,6 +36,7 @@ def get_default_config() -> Dict[str, Any]:
         'system_config': {  # 系统配置
             'server_domain': '',
             'github_proxy_domain': '',
+            'rule_fetch_proxy': '',
         },
         'subscription_aggregations': [],
         'mihomo': {  # Mihomo 配置

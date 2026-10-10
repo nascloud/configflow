@@ -17,6 +17,7 @@ from backend.utils.reorder import reorder_by_ids
 from backend.utils.rule_utils import get_rules_dir, sanitize_rule_name
 from backend.utils.logger import get_logger
 from backend.utils.url_utils import safe_exception_details, safe_url_for_log
+from backend.utils.rule_fetch import request_rule
 
 logger = get_logger(__name__)
 
@@ -246,7 +247,7 @@ def get_local_rule(name):
 
             try:
                 # 尝试在 2 秒内拉取最新数据
-                response = requests.get(url, timeout=2)
+                response = request_rule(url, timeout=2, config_data=config_data)
                 if response.status_code == 200:
                     logger.info(f"Successfully fetched latest data for rule '{name}'")
                     # 更新本地缓存
@@ -293,10 +294,10 @@ def get_local_rule(name):
                         'message': f'Failed to generate cache for rule: {name}'
                     }), 500
             except Exception as cache_error:
-                logger.error(f"Error regenerating cache for rule '{name}': {cache_error}")
+                logger.error("Error regenerating cache for rule '%s': %s", name, safe_exception_details(cache_error))
                 return jsonify({
                     'success': False,
-                    'message': f'Error generating cache: {str(cache_error)}'
+                    'message': 'Error generating rule cache'
                 }), 500
 
     except Exception as e:
@@ -392,7 +393,7 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
             url = library_rule.get('url', '')
             if url:
                 try:
-                    response = requests.get(url, timeout=30)
+                    response = request_rule(url, timeout=30, config_data=config_data)
                     if response.status_code == 200:
                         rule_content = response.text
                         logger.info(f"Fetched rule content from library URL: {safe_url_for_log(url)}")
@@ -420,7 +421,7 @@ def get_ruleset_content(rule_item: dict, library_rule: dict = None) -> str:
                     url = f"{server_domain}{url}"
 
             try:
-                response = requests.get(url, timeout=30)
+                response = request_rule(url, timeout=30, config_data=config_data)
                 if response.status_code == 200:
                     rule_content = response.text
                     logger.info(f"Fetched rule content from item URL: {safe_url_for_log(url)}")

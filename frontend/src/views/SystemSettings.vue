@@ -36,6 +36,36 @@
           </FormField>
 
           <FormField
+            label="规则下载代理"
+            html-for="rule-fetch-proxy"
+            hint="用于规则下载和连通性测试。支持 HTTP/HTTPS 代理地址，可包含用户名和密码；留空使用现有网络。此设置与「GitHub 代理域名」的镜像前缀独立。失去焦点时自动保存。"
+          >
+            <div class="flex items-center gap-1.5">
+              <Input
+                id="rule-fetch-proxy"
+                v-model="ruleFetchProxy"
+                :type="showRuleFetchProxy ? 'text' : 'password'"
+                autocomplete="off"
+                :spellcheck="false"
+                class="min-w-0 bg-background/50 font-mono"
+                placeholder="http://192.168.0.3:7890"
+                @blur="onRuleFetchProxyBlur"
+              />
+              <Button
+                variant="outline"
+                size="icon"
+                class="shrink-0 border-border/60 bg-background/40"
+                :aria-label="showRuleFetchProxy ? '隐藏规则下载代理' : '显示规则下载代理'"
+                :title="showRuleFetchProxy ? '隐藏规则下载代理' : '显示规则下载代理'"
+                @click="showRuleFetchProxy = !showRuleFetchProxy"
+              >
+                <EyeOff v-if="showRuleFetchProxy" class="size-4" />
+                <Eye v-else class="size-4" />
+              </Button>
+            </div>
+          </FormField>
+
+          <FormField
             label="Sub-Store"
             html-for="sub-store-url"
             hint="填写 Sub-Store 的 API 地址，用于读取订阅和转换节点格式。Docker 部署默认 http://sub-store:3001，留空使用环境变量或默认值。"
@@ -265,7 +295,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { isAxiosError } from 'axios'
-import { Archive, CloudUpload, Copy, Download, Loader2, RefreshCw, RotateCcw, Settings, ShieldCheck, Trash2, Upload } from '@lucide/vue'
+import { Archive, CloudUpload, Copy, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, Settings, ShieldCheck, Trash2, Upload } from '@lucide/vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
@@ -276,7 +306,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { confirm, confirmDanger, notify } from '@/lib/feedback'
-import api, { configApi, serverDomainApi, configTokenApi, subStoreUrlApi } from '@/api'
+import api, { configApi, serverDomainApi, configTokenApi, subStoreUrlApi, ruleFetchProxyApi } from '@/api'
 
 // 备份配置
 const backupDialogVisible = ref(false)
@@ -293,6 +323,9 @@ const savingBackup = ref(false)
 
 // Sub-Store URL
 const subStoreUrl = ref('')
+const ruleFetchProxy = ref('')
+const savedRuleFetchProxy = ref('')
+const showRuleFetchProxy = ref(false)
 
 // 订阅聚合开关
 const subscriptionAggregationEnabled = ref(false)
@@ -427,6 +460,31 @@ const onClearToken = async () => {
   } catch (error) {
     console.error('清除令牌失败:', error)
     notify.error('清除令牌失败')
+  }
+}
+
+const loadRuleFetchProxy = async () => {
+  try {
+    const response = await ruleFetchProxyApi.get()
+    ruleFetchProxy.value = response.data.rule_fetch_proxy || ''
+    savedRuleFetchProxy.value = ruleFetchProxy.value
+  } catch {
+    notify.error('加载规则下载代理失败')
+  }
+}
+
+const onRuleFetchProxyBlur = async () => {
+  const value = ruleFetchProxy.value.trim()
+  if (value === savedRuleFetchProxy.value) return
+  try {
+    const response = await ruleFetchProxyApi.update({ rule_fetch_proxy: value })
+    savedRuleFetchProxy.value = response.data.rule_fetch_proxy
+    ruleFetchProxy.value = savedRuleFetchProxy.value
+    notify.success(value ? '规则下载代理已保存' : '规则下载代理已清除，将使用现有网络')
+  } catch (error) {
+    // Axios errors contain the submitted URL, which may include credentials.
+    const invalid = isAxiosError(error) && error.response?.status === 400
+    notify.error(invalid ? '代理地址无效，请填写 HTTP/HTTPS 代理地址或留空' : '保存规则下载代理失败')
   }
 }
 
@@ -647,6 +705,7 @@ onMounted(async () => {
   await Promise.all([
     loadConfigToken(),
     loadSubStoreUrl(),
+    loadRuleFetchProxy(),
     (async () => {
       try {
         const response = await serverDomainApi.get()

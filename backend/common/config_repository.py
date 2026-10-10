@@ -1350,6 +1350,7 @@ class ProfileRepository:
             raise ProfileValidationError('系统设置必须是对象')
         settings.setdefault('server_domain', '')
         settings.setdefault('github_proxy_domain', '')
+        settings.setdefault('rule_fetch_proxy', '')
         if not isinstance(settings['github_proxy_domain'], str):
             settings['github_proxy_domain'] = ''
 

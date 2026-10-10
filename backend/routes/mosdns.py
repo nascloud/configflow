@@ -1,9 +1,7 @@
 """MosDNS 配置路由模块"""
 import logging
 import os
-import ipaddress
-import socket
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 
 from flask import request, jsonify
 
@@ -12,6 +10,7 @@ from backend.routes import mosdns_bp as bp
 from backend.common.auth import require_auth
 from backend.common.config import get_config, save_config
 from backend.utils.rule_utils import get_rules_dir, sanitize_rule_name
+from backend.utils.rule_fetch import request_rule, validate_rule_url
 from backend.utils.url_utils import safe_exception_details, safe_url_for_log
 
 logger = logging.getLogger(__name__)
@@ -372,131 +371,37 @@ def handle_mosdns_cache_settings():
 
 _MAX_RULE_PROXY_BYTES = 5 * 1024 * 1024
 _MAX_RULE_PROXY_REDIRECTS = 3
-_FORBIDDEN_REMOTE_NETWORKS = tuple(
-    ipaddress.ip_network(network)
-    for network in (
-        # Multicast.
-        '224.0.0.0/4',
-        'ff00::/8',
-        # Carrier-grade NAT.
-        '100.64.0.0/10',
-        # Documentation and benchmarking ranges.
-        '192.0.2.0/24',
-        '198.51.100.0/24',
-        '203.0.113.0/24',
-        '2001:db8::/32',
-        '198.18.0.0/15',
-        '2001:2::/48',
-        # IPv6 unique-local addresses.
-        'fc00::/7',
-        # Link-local, loopback, and unspecified ranges.
-        '169.254.0.0/16',
-        'fe80::/10',
-        '127.0.0.0/8',
-        '::1/128',
-        '0.0.0.0/32',
-        '::/128',
-    )
-)
 
 
 def _validate_remote_url(url: str) -> str:
-    _resolve_remote_url(url)
+    validate_rule_url(url)
     return url
-
-
-def _resolve_remote_url(url: str):
-    parsed = urlparse(url)
-    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
-        raise ValueError('Only absolute http/https URLs are allowed')
-    hostname = parsed.hostname.rstrip('.').lower()
-    if hostname == 'localhost' or hostname.endswith('.localhost'):
-        raise ValueError('Private network targets are not allowed')
-    try:
-        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port, type=socket.SOCK_STREAM)}
-    except (OSError, ValueError) as exc:
-        raise ValueError('Unable to resolve remote host') from exc
-    if not addresses:
-        raise ValueError('Unable to resolve remote host')
-    for address in addresses:
-        try:
-            ip = ipaddress.ip_address(address)
-        except ValueError as exc:
-            raise ValueError('Unable to resolve remote host') from exc
-        explicitly_forbidden = any(
-            ip.version == network.version and ip in network
-            for network in _FORBIDDEN_REMOTE_NETWORKS
-        )
-        if (
-            explicitly_forbidden
-            or ip.is_multicast
-            or ip.is_private
-            or ip.is_link_local
-            or ip.is_loopback
-            or ip.is_unspecified
-            or ip.is_reserved
-            or not ip.is_global
-        ):
-            raise ValueError('Public network targets only')
-    return parsed, sorted(addresses)[0]
 
 
 def _fetch_remote_content(url: str) -> str:
     import requests
-    import urllib3
 
-    current = url
-    for _ in range(_MAX_RULE_PROXY_REDIRECTS + 1):
-        parsed, address = _resolve_remote_url(current)
-        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
-        hostname = parsed.hostname.rstrip('.')
-        host_header = f'[{hostname}]' if ':' in hostname else hostname
-        if parsed.port and parsed.port != (443 if parsed.scheme == 'https' else 80):
-            host_header = f'{host_header}:{parsed.port}'
-        pool_kwargs = {'timeout': urllib3.Timeout(connect=3, read=10), 'maxsize': 1}
-        if parsed.scheme == 'https':
-            pool_kwargs.update(
-                cert_reqs='CERT_REQUIRED',
-                assert_hostname=hostname,
-                server_hostname=hostname,
+    response = request_rule(
+        url, timeout=(3, 10), stream=True,
+        max_redirects=_MAX_RULE_PROXY_REDIRECTS,
+    )
+    try:
+        if not 200 <= response.status_code < 300:
+            raise requests.exceptions.HTTPError(
+                f'Remote server returned HTTP {response.status_code}', response=response,
             )
-            pool = urllib3.HTTPSConnectionPool(address, port, **pool_kwargs)
-        else:
-            pool = urllib3.HTTPConnectionPool(address, port, **pool_kwargs)
-        target = parsed.path or '/'
-        if parsed.query:
-            target = f'{target}?{parsed.query}'
-        response = None
-        try:
-            response = pool.urlopen(
-                'GET', target, headers={'Host': host_header}, redirect=False,
-                retries=False, preload_content=False,
-            )
-            if 300 <= response.status < 400:
-                location = response.headers.get('Location')
-                if not location:
-                    raise ValueError('Redirect without Location')
-                current = urljoin(current, location)
-                continue
-            if not 200 <= response.status < 300:
-                raise requests.exceptions.HTTPError(f'Remote server returned HTTP {response.status}')
-            content_length = response.headers.get('Content-Length')
-            if content_length and int(content_length) > _MAX_RULE_PROXY_BYTES:
+        content_length = response.headers.get('Content-Length')
+        if content_length and int(content_length) > _MAX_RULE_PROXY_BYTES:
+            raise ValueError('Remote response exceeds size limit')
+        chunks, total = [], 0
+        for chunk in response.iter_content(64 * 1024):
+            total += len(chunk)
+            if total > _MAX_RULE_PROXY_BYTES:
                 raise ValueError('Remote response exceeds size limit')
-            chunks, total = [], 0
-            for chunk in response.stream(64 * 1024):
-                total += len(chunk)
-                if total > _MAX_RULE_PROXY_BYTES:
-                    raise ValueError('Remote response exceeds size limit')
-                chunks.append(chunk)
-            return b''.join(chunks).decode('utf-8', errors='replace')
-        except urllib3.exceptions.HTTPError as exc:
-            raise requests.exceptions.RequestException(str(exc)) from exc
-        finally:
-            if response is not None:
-                response.release_conn()
-            pool.close()
-    raise ValueError('Too many redirects')
+            chunks.append(chunk)
+        return b''.join(chunks).decode('utf-8', errors='replace')
+    finally:
+        response.close()
 
 
 def _require_rule_proxy_auth():
@@ -591,7 +496,7 @@ def mosdns_rule_proxy():
 
         original_content = _local_content_rule(original_url, config_data)
         if original_content is None:
-            # Every network request, including redirects, keeps the pinned SSRF gate.
+            # Use normal hostname routing, including Fake-IP networks and the download proxy.
             fetch_url = apply_github_proxy_domain(original_url, config_data)
             _validate_remote_url(fetch_url)
             try:

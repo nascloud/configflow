@@ -2,8 +2,8 @@ package routes
 
 import (
 	"fmt"
-	"net/http"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"time"
@@ -12,6 +12,16 @@ import (
 // UninstallHandler 卸载功能处理程序
 func UninstallHandler(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		release, err := AcquireServiceOperation(cfg)
+		if err != nil {
+			deploymentFailure(w, http.StatusConflict, err)
+			return
+		}
+		if err = deploymentBlocked(cfg); err != nil {
+			release()
+			deploymentFailure(w, http.StatusConflict, err)
+			return
+		}
 		log.Println("Received uninstall request.")
 
 		// 立即返回成功响应，避免连接中断
@@ -22,6 +32,7 @@ func UninstallHandler(cfg *Config) http.HandlerFunc {
 
 		// 在 goroutine 中异步执行卸载操作
 		go func() {
+			defer release()
 			// 等待 2 秒，确保响应已经发送
 			log.Println("Waiting 2 seconds before starting uninstall...")
 			time.Sleep(2 * time.Second)
@@ -31,6 +42,11 @@ func UninstallHandler(cfg *Config) http.HandlerFunc {
 			// 检测系统类型和 init 系统
 			initSystem := detectInitSystem()
 			log.Printf("Detected init system: %s", initSystem)
+
+			if err := RemoveRecoveryInstallation(cfg); err != nil {
+				log.Printf("Uninstall stopped: recovery boot gate cleanup failed: %v", err)
+				return
+			}
 
 			// 1. 删除二进制文件（先删除，避免服务停止后无法删除）
 			log.Printf("Removing binary: /usr/local/bin/configflow-agent")
@@ -52,37 +68,37 @@ func UninstallHandler(cfg *Config) http.HandlerFunc {
 			}
 
 			// 4. 删除服务文件和停止服务
-		if initSystem == "supervisor" {
-			// Supervisor: 先删除配置再停止
-			agentConfPath := fmt.Sprintf("/etc/supervisor/conf.d/agent-%s.conf", cfg.ServiceName)
-			serviceConfPath := fmt.Sprintf("/etc/supervisor/conf.d/%s.conf", cfg.ServiceName)
+			if initSystem == "supervisor" {
+				// Supervisor: 先删除配置再停止
+				agentConfPath := fmt.Sprintf("/etc/supervisor/conf.d/agent-%s.conf", cfg.ServiceName)
+				serviceConfPath := fmt.Sprintf("/etc/supervisor/conf.d/%s.conf", cfg.ServiceName)
 
-			log.Printf("Removing supervisor configs...")
-			os.Remove(agentConfPath)
-			os.Remove(serviceConfPath)
+				log.Printf("Removing supervisor configs...")
+				os.Remove(agentConfPath)
+				os.Remove(serviceConfPath)
 
-			// 重新加载 supervisor
-			executeCommand("supervisorctl -c /etc/supervisor/supervisord.conf reread")
-			executeCommand("supervisorctl -c /etc/supervisor/supervisord.conf update")
-		} else if initSystem == "systemd" {
-			// systemd: 先删除服务文件
-			log.Printf("Removing systemd service file...")
-			os.Remove("/etc/systemd/system/configflow-agent.service")
+				// 重新加载 supervisor
+				executeCommand("supervisorctl -c /etc/supervisor/supervisord.conf reread")
+				executeCommand("supervisorctl -c /etc/supervisor/supervisord.conf update")
+			} else if initSystem == "systemd" {
+				// systemd: 先删除服务文件
+				log.Printf("Removing systemd service file...")
+				os.Remove("/etc/systemd/system/configflow-agent.service")
 
-			// 禁用并停止服务
-			executeCommand("systemctl disable configflow-agent")
-			executeCommand("systemctl stop configflow-agent")
-			executeCommand("systemctl daemon-reload")
-		} else if initSystem == "openrc" {
-			// OpenRC: 先删除服务文件
-			log.Printf("Removing OpenRC service file...")
-			os.Remove("/etc/init.d/configflow-agent")
+				// 禁用并停止服务
+				executeCommand("systemctl disable configflow-agent")
+				executeCommand("systemctl stop configflow-agent")
+				executeCommand("systemctl daemon-reload")
+			} else if initSystem == "openrc" {
+				// OpenRC: 先删除服务文件
+				log.Printf("Removing OpenRC service file...")
+				os.Remove("/etc/init.d/configflow-agent")
 
-			// 从运行级别移除并停止服务
-			executeCommand("rc-update del configflow-agent default")
-			executeCommand("rc-service configflow-agent stop")
-			executeCommand("rc-update -u")
-		}
+				// 从运行级别移除并停止服务
+				executeCommand("rc-update del configflow-agent default")
+				executeCommand("rc-service configflow-agent stop")
+				executeCommand("rc-update -u")
+			}
 
 			// 注意：不删除服务（mihomo/mosdns）的配置文件和日志
 			// 因为这些服务可能是用户独立安装和配置的

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"agent/routes"
 	"flag"
 	"log"
 	"os"
@@ -11,40 +12,37 @@ func main() {
 	// 使用命令行参数指定配置文件路径
 	// Go的flag包支持单横线(-)和双横线(--)两种格式的参数
 	configPath := flag.String("config", "", "Path to the configuration file")
-	
+	recoverOnly := flag.Bool("recover-only", false, "Restore interrupted deployments before managed services start; do not register or listen")
+	recoverAndExit := flag.Bool("recover-and-exit", false, "Recover interrupted deployments with service lifecycle, then exit without registration")
+
 	// 解析命令行参数
 	flag.Parse()
-	
+
 	// 如果没有通过命令行参数指定配置文件路径，则使用自动检测
 	if *configPath == "" {
 		// 获取agent配置目录，优先使用环境变量，否则使用默认路径
-		agentDir := "/opt/sublink-agent"
+		agentDirs := []string{"/opt/configflow-agent", "/opt/sublink-agent"}
 		if envAgentDir := os.Getenv("AGENT_DIR"); envAgentDir != "" {
-			agentDir = envAgentDir
+			agentDirs = []string{envAgentDir}
 		}
-		
-		// 定义可能的配置文件名
-		configFiles := []string{
-			"config-mihomo.json",
-			"config-mosdns.json",
-			"config.json",
-		}
-		
-		// 检查每个配置文件是否存在
-		for _, configFile := range configFiles {
-			fullPath := filepath.Join(agentDir, configFile)
-			if _, err := os.Stat(fullPath); err == nil {
-				*configPath = fullPath
+		configFiles := []string{"config-mihomo.json", "config-mosdns.json", "config.json"}
+		for _, agentDir := range agentDirs {
+			for _, configFile := range configFiles {
+				fullPath := filepath.Join(agentDir, configFile)
+				if _, err := os.Stat(fullPath); err == nil {
+					*configPath = fullPath
+					break
+				}
+			}
+			if *configPath != "" {
 				break
 			}
 		}
-		
-		// 如果都没找到，使用默认配置文件
 		if *configPath == "" {
-			*configPath = filepath.Join(agentDir, "config.json")
+			*configPath = filepath.Join(agentDirs[0], "config.json")
 		}
 	}
-	
+
 	log.Printf("Using config file: %s", *configPath)
 
 	// 1. 加载配置
@@ -53,6 +51,21 @@ func main() {
 		log.Fatalf("Fatal: Could not load configuration from %s: %v", *configPath, err)
 	}
 	log.Println("Configuration loaded successfully.")
+
+	// Recovery must precede registration, heartbeat and API traffic. Boot gates call
+	// recover-only before the managed services or container defaults can run.
+	if err := routes.RecoverDeployments(toRoutesConfig(cfg), !*recoverOnly); err != nil {
+		if *recoverOnly || *recoverAndExit {
+			log.Fatalf("Fatal: Deployment recovery failed; refusing startup: %v", err)
+		}
+		// Keep authenticated status/log APIs available for repair. All mutating
+		// service routes reject the unresolved durable recovery journal.
+		log.Printf("Deployment recovery requires attention; service mutations remain blocked: %v", err)
+	}
+	if *recoverOnly || *recoverAndExit {
+		log.Println("Deployment recovery completed.")
+		return
+	}
 
 	// 2. 如果未注册，执行注册流程
 	if cfg.AgentID == "" || cfg.Token == "" {

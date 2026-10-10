@@ -78,7 +78,7 @@
         <FormField label="绑定配置空间">
           <Select
             :model-value="agent.profile_id || 'default'"
-            :disabled="bindingAgentId === agent.id"
+            :disabled="bindingAgentId === agent.id || profileBindingBlocked(agent.id)"
             @update:model-value="value => handleAgentProfileChange(agent, String(value))"
           >
             <SelectTrigger class="data-[size=default]:h-auto min-h-8 w-full min-w-0 bg-background/50 py-1.5 text-[12.5px] [&_[data-slot=select-value]]:line-clamp-none" :aria-label="`绑定配置空间 ${agent.name}`">
@@ -134,12 +134,24 @@
           </div>
         </section>
 
+        <section v-if="deployments[agent.id]" class="rounded-lg border border-border/50 p-3 text-sm" aria-live="polite">
+          <p class="m-0 font-medium">{{ deploymentLabels[deployments[agent.id].status] || deployments[agent.id].status }}</p>
+          <p v-if="deployments[agent.id].not_recorded" class="mt-1 text-muted-foreground">后端暂未记录此发布，正在继续查询。可使用原发布编号重新提交。</p>
+          <p v-else-if="deployments[agent.id].query_error" class="mt-1 text-muted-foreground">暂时无法确认结果，正在重新查询。</p>
+          <p v-if="deployments[agent.id].error || deployments[agent.id].rollback_error" class="mt-1 break-words text-destructive">
+            {{ deployments[agent.id].error }} {{ deployments[agent.id].rollback_error }}
+          </p>
+          <Button v-if="deployments[agent.id].status === 'ready'" variant="outline" size="sm" class="mt-2" @click="activateDeployment(agent.id)">应用并启动</Button>
+          <Button v-if="deployments[agent.id].status === 'rollback_failed'" variant="outline" size="sm" class="mt-2" @click="refreshDeployment(agent.id)">查询恢复状态</Button>
+          <Button v-if="deployments[agent.id].not_recorded || deployments[agent.id].retrying" variant="outline" size="sm" class="mt-2" :disabled="deployments[agent.id].retrying" @click="retryDeployment(agent.id)">{{ deployments[agent.id].retrying ? '正在重新提交…' : '重试同一次发布' }}</Button>
+        </section>
+
         <footer class="mt-auto flex flex-wrap items-center gap-1 border-0 border-t border-border/50 pt-3">
-          <Button variant="ghost" size="sm" @click="pushConfig(agent)">
+          <Button variant="ghost" size="sm" :disabled="deploymentBusy(agent.id) || deployments[agent.id]?.status === 'rollback_failed'" @click="pushConfig(agent)">
             <Upload class="size-3.5" />
             推送配置
           </Button>
-          <Button variant="ghost" size="sm" @click="restartAgent(agent)">
+          <Button variant="ghost" size="sm" :disabled="deploymentBusy(agent.id) || deployments[agent.id]?.status === 'rollback_failed'" @click="restartAgent(agent)">
             <RotateCw class="size-3.5" />
             重启服务
           </Button>
@@ -208,8 +220,8 @@
             </RadioGroup>
           </FormField>
 
-          <FormField label="Agent 名称" html-for="agent-name">
-            <Input id="agent-name" v-model="scriptForm.name" class="bg-background/50" placeholder="例如：香港服务器" />
+          <FormField label="Agent 名称" html-for="agent-name" hint="使用字母、数字、短横线或下划线。">
+            <Input id="agent-name" v-model="scriptForm.name" class="bg-background/50" placeholder="例如：hong-kong-server" />
           </FormField>
 
           <FormField v-if="scriptForm.installType !== 'docker'" label="服务类型">
@@ -287,17 +299,53 @@
             </FormField>
 
             <FormField
-              label="重启命令"
+              label="重启命令（可选）"
               html-for="agent-restart"
-              hint="用于完全重启服务，会短暂中断。支持命令方式（systemctl restart mihomo）或 URL 方式（http://127.0.0.1:9090/restart）。"
+              hint="留空由安装脚本识别 systemd / OpenRC。使用自定义命令时，请在高级配置中提供停止、启动和状态检查方式。"
             >
               <Input
                 id="agent-restart"
                 v-model="scriptForm.restart_command"
                 class="bg-background/50 font-mono"
-                placeholder="命令或 URL"
+                placeholder="留空自动识别"
               />
             </FormField>
+
+            <Collapsible v-model:open="lifecyclePanelOpen" class="rounded-lg border border-border/70">
+              <CollapsibleTrigger class="w-full px-3 py-2 text-left text-[13px] font-medium">
+                服务管理高级配置（可选）
+              </CollapsibleTrigger>
+              <CollapsibleContent class="space-y-4 border-t border-border/60 p-3">
+                <FormField label="服务管理方式" hint="默认自动识别；自行启动的服务可选择自定义命令。">
+                  <Select v-model="scriptForm.service_manager">
+                    <SelectTrigger class="bg-background/50"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">自动识别 systemd / OpenRC</SelectItem>
+                      <SelectItem value="systemd">systemd</SelectItem>
+                      <SelectItem value="openrc">OpenRC</SelectItem>
+                      <SelectItem value="command">自定义命令</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </FormField>
+                <FormField label="服务名称" html-for="agent-service-unit" hint="留空使用 mihomo 或 mosdns；可填写自定义 systemd 单元或 OpenRC 服务名。">
+                  <Input id="agent-service-unit" v-model="scriptForm.service_unit" class="bg-background/50 font-mono" :placeholder="scriptForm.type" />
+                </FormField>
+                <FormField label="内核程序路径" html-for="agent-service-binary" hint="用于配置检查，应指向正在运行的同一个 Mihomo / MosDNS 程序；留空按程序名查找。">
+                  <Input id="agent-service-binary" v-model="scriptForm.service_binary" class="bg-background/50 font-mono" :placeholder="`/usr/local/bin/${scriptForm.type}`" />
+                </FormField>
+                <template v-if="scriptForm.service_manager === 'command' || scriptForm.restart_command.trim()">
+                  <FormField label="停止命令" html-for="agent-service-stop" hint="应等待服务完全停止后再退出。">
+                    <Input id="agent-service-stop" v-model="scriptForm.stop_command" class="bg-background/50 font-mono" placeholder="例如：/opt/service/control stop" />
+                  </FormField>
+                  <FormField label="启动命令" html-for="agent-service-start">
+                    <Input id="agent-service-start" v-model="scriptForm.start_command" class="bg-background/50 font-mono" placeholder="例如：/opt/service/control start" />
+                  </FormField>
+                  <FormField label="状态检查命令" html-for="agent-service-status" hint="服务运行时退出码为 0，未运行时为非 0。">
+                    <Input id="agent-service-status" v-model="scriptForm.status_command" class="bg-background/50 font-mono" placeholder="例如：/opt/service/control status" />
+                  </FormField>
+                </template>
+              </CollapsibleContent>
+            </Collapsible>
           </template>
 
           <template v-if="scriptForm.installType === 'docker'">
@@ -598,6 +646,7 @@ import { agentApi } from '@/api'
 import api from '@/api'
 import type { Agent } from '@/types'
 import { useProfileStore } from '@/stores/profile'
+import { createDeploymentId, deploymentLabels, useAgentDeployments } from '@/composables/useAgentDeployments'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, TitleComponent } from 'echarts/components'
@@ -608,9 +657,11 @@ import VChart from 'vue-echarts'
 use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent, CanvasRenderer])
 
 const agents = ref<Agent[]>([])
+const { deployments, busy: deploymentBusy, track: trackDeployment, refresh: refreshDeployment, activate: activateDeployment, retryPublish: retryDeployment } = useAgentDeployments(() => { void loadAgents() })
 const { profiles, refreshProfiles } = useProfileStore()
 const bindingAgentId = ref<string | null>(null)
 const scriptDialogVisible = ref(false)
+const lifecyclePanelOpen = ref(false)
 const logsDialogVisible = ref(false)
 const metricsDialogVisible = ref(false)
 const installScript = ref('')
@@ -630,7 +681,7 @@ const metricsHistory = ref<any[]>([])
 const metricsLoading = ref(false)
 const logsPaneRef = ref<HTMLElement | null>(null)
 
-const scriptForm = ref({
+const createScriptForm = () => ({
   installType: 'shell',
   dockerMode: 'mihomo', // mihomo, mosdns, aio
   name: '',
@@ -638,7 +689,13 @@ const scriptForm = ref({
   port: 8080,
   agent_ip: '',
   config_path: '/etc/mihomo/config.yaml',
-  restart_command: 'systemctl restart mihomo',
+  restart_command: '',
+  service_manager: 'auto',
+  service_unit: '',
+  service_binary: '',
+  stop_command: '',
+  start_command: '',
+  status_command: '',
   dockerImage: '',
   containerName: 'configflow-agent',
   serviceContainerName: '',
@@ -647,6 +704,7 @@ const scriptForm = ref({
   mihomoAgentPort: 8080,
   mosdnsAgentPort: 8081
 })
+const scriptForm = ref(createScriptForm())
 
 const serviceTypeLabels: Record<Agent['service_type'], string> = {
   mihomo: 'Mihomo',
@@ -1038,16 +1096,32 @@ const trafficChartOption = computed(() => {
 })
 
 // 加载 Agent 列表
+let agentsLoadGeneration = 0
 const loadAgents = async () => {
+  const generation = ++agentsLoadGeneration
   try {
     const { data } = await agentApi.getAll()
+    if (generation !== agentsLoadGeneration) return
     agents.value = data
+    for (const agent of agents.value) {
+      if (agent.latest_deployment && !deploymentBusy(agent.id)) trackDeployment(agent.id, agent.latest_deployment, false)
+    }
   } catch (error) {
+    if (generation !== agentsLoadGeneration) return
     notify.error('加载 Agent 列表失败')
   }
 }
 
+const profileBindingBlocked = (agentId: string) => {
+  const task = deployments[agentId] || agents.value.find(agent => agent.id === agentId)?.latest_deployment
+  return !!task && !['succeeded', 'failed', 'rolled_back'].includes(task.status)
+}
+
 const bindAgentProfile = async (agent: Agent, profileId: string): Promise<boolean> => {
+  if (profileBindingBlocked(agent.id)) {
+    notify.warning('请先完成发布或恢复服务，再更改绑定配置空间')
+    return false
+  }
   const previousProfileId = agent.profile_id || 'default'
   if (profileId === previousProfileId) return true
   bindingAgentId.value = agent.id
@@ -1417,16 +1491,20 @@ const onDockerModeChange = () => {
 
 // 服务类型变化时更新默认配置路径和重启命令
 const onServiceTypeChange = () => {
+  Object.assign(scriptForm.value, {
+    service_manager: 'auto', service_unit: '', service_binary: '',
+    stop_command: '', start_command: '', status_command: ''
+  })
   if (scriptForm.value.type === 'mihomo') {
     scriptForm.value.config_path = '/etc/mihomo/config.yaml'
-    scriptForm.value.restart_command = 'systemctl restart mihomo'
+    scriptForm.value.restart_command = ''
     // 如果是 Docker 模式，更新默认服务容器名称
     if (scriptForm.value.installType === 'docker' && !scriptForm.value.serviceContainerName) {
       scriptForm.value.serviceContainerName = 'mihomo'
     }
   } else if (scriptForm.value.type === 'mosdns') {
     scriptForm.value.config_path = '/etc/mosdns/config.yaml'
-    scriptForm.value.restart_command = 'systemctl restart mosdns'
+    scriptForm.value.restart_command = ''
     // 如果是 Docker 模式，更新默认服务容器名称
     if (scriptForm.value.installType === 'docker' && !scriptForm.value.serviceContainerName) {
       scriptForm.value.serviceContainerName = 'mosdns'
@@ -1448,22 +1526,10 @@ const showGenerateScriptDialog = () => {
   dockerRunCommand.value = ''
   scriptPanelOpen.value = false
 
-  // 重置表单值
-  scriptForm.value = {
-    installType: 'shell',
-    dockerMode: 'mihomo',
-    name: '',
-    type: 'mihomo',
-    port: generateRandomPort(),
-    agent_ip: '',
-    config_path: '/etc/mihomo/config.yaml',
-    restart_command: 'systemctl restart mihomo',
-    dockerImage: '',
-    containerName: 'configflow-agent',
-    serviceContainerName: '',
-    networkMode: 'bridge'
-  }
-
+  // Reset every installation field, including both Docker Agent ports.
+  scriptForm.value = { ...createScriptForm(), port: generateRandomPort() }
+  lifecyclePanelOpen.value = false
+  installCommandAlpine.value = ''
 
   // 打开对话框 - v-if 会确保表单完全重新渲染
   scriptDialogVisible.value = true
@@ -1481,16 +1547,32 @@ const resetForm = () => {
 
 // 生成安装脚本
 const generateScript = async () => {
-  if (!scriptForm.value.name) {
+  if (!scriptForm.value.name.trim()) {
     notify.warning('请输入 Agent 名称')
     return
   }
 
   // Shell 安装时检查配置文件路径是否为文件而非目录
   if (scriptForm.value.installType === 'shell') {
+    if (!/^[A-Za-z0-9_-]+$/.test(scriptForm.value.name.trim())) {
+      notify.warning('Agent 名称只能包含字母、数字、短横线或下划线')
+      return
+    }
     const configPath = scriptForm.value.config_path.trim()
     if (configPath && !configPath.match(/\.\w+$/)) {
       notify.warning('配置文件路径应指向一个文件（如 config.yaml），而不是文件夹')
+      return
+    }
+    const form = scriptForm.value
+    const unit = (form.service_unit.trim() || form.type).replace(/\.service$/, '')
+    const restart = form.restart_command.trim()
+    const standardRestart = !restart || [
+      `systemctl restart ${unit}`, `systemctl restart ${unit}.service`, `rc-service ${unit} restart`
+    ].includes(restart)
+    const customLifecycle = form.service_manager === 'command' || (form.service_manager === 'auto' && !standardRestart)
+    if (customLifecycle && ![form.stop_command, form.start_command, form.status_command].every(value => value.trim())) {
+      lifecyclePanelOpen.value = true
+      notify.warning('自定义服务需要填写停止、启动和状态检查命令，才能在发布失败时回滚')
       return
     }
   }
@@ -1498,8 +1580,6 @@ const generateScript = async () => {
   const loadingToast = notify.loading(scriptForm.value.installType === 'docker' ? '正在生成 Docker 部署命令...' : '正在生成安装命令...')
 
   try {
-    console.log('开始生成脚本，参数：', scriptForm.value)
-
     if (scriptForm.value.installType === 'docker') {
       // 生成 Docker Compose 和 Docker Run
       const serverUrl = localStorage.getItem('serverDomain') || window.location.origin
@@ -1528,38 +1608,34 @@ const generateScript = async () => {
       dockerRunCommand.value = runResponse.data
       notify.success('Docker 部署命令已生成，请复制到目标机器执行')
     } else {
-      // 生成 Shell 脚本
-      const response = await agentApi.generateScript({
-        name: scriptForm.value.name,
-        type: scriptForm.value.type,
-        port: scriptForm.value.port,
-        agent_ip: scriptForm.value.agent_ip,
-        config_path: scriptForm.value.config_path,
-        restart_command: scriptForm.value.restart_command
-      })
-
-      console.log('API 响应：', response)
-
-      // 保存完整脚本
+      const serverUrl = localStorage.getItem('serverDomain') || window.location.origin
+      const form = scriptForm.value
+      const lifecycleParams: Record<string, string> = {}
+      if (form.service_manager !== 'auto') lifecycleParams.service_manager = form.service_manager
+      for (const key of ['service_unit', 'service_binary', 'stop_command', 'start_command', 'status_command'] as const) {
+        const value = form[key].trim()
+        if (value) lifecycleParams[key] = value
+      }
+      const shellParams = {
+        name: form.name.trim(),
+        type: form.type,
+        port: form.port,
+        agent_ip: form.agent_ip.trim(),
+        config_path: form.config_path.trim(),
+        restart_command: form.restart_command.trim(),
+        server_url: serverUrl,
+        ...lifecycleParams
+      }
+      const response = await agentApi.generateScript(shellParams)
       installScript.value = response.data
 
-      // 获取服务域名配置（优先使用配置的域名，否则使用当前访问地址）
-      const serverUrl = localStorage.getItem('serverDomain') || window.location.origin
-
-      // 生成一键安装命令
-      const params = new URLSearchParams({
-        name: scriptForm.value.name,
-        type: scriptForm.value.type,
-        port: scriptForm.value.port.toString(),
-        config_path: scriptForm.value.config_path,
-        restart_command: scriptForm.value.restart_command,
-        server_url: serverUrl  // 传递完整的服务器URL给后端
-      })
-
-      // 如果用户输入了 agent_ip，则添加到参数中
-      if (scriptForm.value.agent_ip && scriptForm.value.agent_ip.trim()) {
-        params.set('agent_ip', scriptForm.value.agent_ip.trim())
+      // Preview and one-click installation use exactly the same parameters.
+      const params = new URLSearchParams()
+      for (const [key, value] of Object.entries(shellParams)) {
+        if (value !== '') params.set(key, String(value))
       }
+      // An explicit empty restart command requests lifecycle auto-detection.
+      params.set('restart_command', shellParams.restart_command)
 
       const scriptUrl = `${serverUrl}/api/agents/install-script?${params.toString()}`
 
@@ -1572,8 +1648,6 @@ const generateScript = async () => {
       notify.success('安装命令已生成，请复制到目标机器执行')
     }
   } catch (error: any) {
-    console.error('生成脚本失败，错误详情：', error)
-    console.error('错误响应：', error.response)
     const errorMsg = error.response?.data?.message || error.message || '生成脚本失败'
     notify.error(errorMsg)
   } finally {
@@ -1668,14 +1742,26 @@ const fallbackCopy = (text: string) => {
 
 // 推送配置
 const pushConfig = async (agent: Agent) => {
-  const loadingToast = notify.loading('正在推送配置...')
+  if (deploymentBusy(agent.id)) return
+  const deploymentId = createDeploymentId()
+  const loadingToast = notify.loading('正在准备并上传发布文件...')
+  deployments[agent.id] = { deployment_id: deploymentId, status: 'preparing' }
 
   try {
-    await agentApi.pushConfig(agent.id)
-    notify.success('配置推送成功')
-    loadAgents()
+    const { data } = await agentApi.pushConfig(agent.id, deploymentId)
+    if (data.deployment_id) trackDeployment(agent.id, data)
+    else {
+      delete deployments[agent.id]
+      notify.success('配置推送成功')
+      void loadAgents()
+    }
   } catch (error: any) {
-    notify.error(error.response?.data?.message || '配置推送失败')
+    if (error.response?.data?.deployment_id) trackDeployment(agent.id, error.response.data)
+    else if (!error.response) trackDeployment(agent.id, { deployment_id: deploymentId, status: 'unknown' })
+    else {
+      delete deployments[agent.id]
+      notify.error(error.response?.data?.message || '配置发布失败')
+    }
   } finally {
     notify.dismiss(loadingToast)
   }
@@ -1683,6 +1769,10 @@ const pushConfig = async (agent: Agent) => {
 
 // 重启 Agent
 const restartAgent = async (agent: Agent) => {
+  if (deployments[agent.id]?.status === 'ready') {
+    await activateDeployment(agent.id)
+    return
+  }
   const ok = await confirm('确定要重启此 Agent 的服务吗？服务将会短暂中断。', {
     title: '重启服务',
     confirmText: '重启'

@@ -30,6 +30,8 @@ services:
       - "9090:9090"
 
     volumes:
+      # Agent identity persists across container recreation; journals live under each service volume.
+      - ./config/agent:/opt/configflow-agent
       # 持久化配置目录（可选，如果不挂载则使用容器内配置）
       - ./config/mihomo:/etc/mihomo
       - ./config/mosdns:/etc/mosdns

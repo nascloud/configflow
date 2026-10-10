@@ -201,9 +201,18 @@ export const agentApi = {
   validateLogPath: (id: string, path: string) => api.post(`/agents/${id}/logs/validate`, { path }),
   getLoggingConfig: (id: string) => api.get(`/agents/${id}/config/logging`),
   setLoggingConfig: (id: string, enabled: boolean) => api.post(`/agents/${id}/config/logging`, { enabled }),
-  pushConfig: (id: string) => api.post(`/agents/${id}/push-config`, { base_url: getBaseUrl() }),
+  pushConfig: (id: string, deploymentId?: string) => api.post(`/agents/${id}/push-config`, {
+    base_url: getBaseUrl(), deployment_id: deploymentId
+  }, { timeout: 120000 }),
+  getDeployment: (id: string, deploymentId: string) => api.get(`/agents/${id}/deployments/${deploymentId}`),
+  activateDeployment: (id: string, deploymentId: string) => api.post(`/agents/${id}/deployments/${deploymentId}/activate`),
   uninstall: (id: string) => api.post(`/agents/${id}/uninstall`),
-  generateScript: (params: { name: string; type: string; port?: number; host?: string }) =>
+  generateScript: (params: {
+    name: string; type: string; port?: number; agent_ip?: string; config_path?: string;
+    restart_command?: string; server_url?: string; service_manager?: string;
+    service_unit?: string; service_binary?: string; stop_command?: string;
+    start_command?: string; status_command?: string;
+  }) =>
     api.get('/agents/install-script', { params, responseType: 'text' }),
   generateDockerCompose: (params: any) =>
     api.get('/agents/docker-compose', { params, responseType: 'text' }),
@@ -233,6 +242,13 @@ export const configTokenApi = {
 export const subStoreUrlApi = {
   get: () => api.get('/settings/sub-store-url'),
   update: (data: { sub_store_url: string }) => api.post('/settings/sub-store-url', data)
+}
+
+// 规则下载 HTTP 代理（与 GitHub 镜像域名前缀独立）
+export const ruleFetchProxyApi = {
+  get: () => api.get<{ rule_fetch_proxy: string }>('/settings/rule-fetch-proxy'),
+  update: (data: { rule_fetch_proxy: string }) =>
+    api.post<{ success: boolean; rule_fetch_proxy: string }>('/settings/rule-fetch-proxy', data)
 }
 
 // 统计数据

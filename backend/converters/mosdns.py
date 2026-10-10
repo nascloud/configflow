@@ -1161,14 +1161,14 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
         'type': 'udp_server',
         'args': {
             'entry': 'sequence_main',
-            'listen': ':53'
+            'listen': mosdns_config_data.get('listen_address') or ':53'
         }
     })
     plugins.append({
         'type': 'tcp_server',
         'args': {
             'entry': 'sequence_main',
-            'listen': ':53'
+            'listen': mosdns_config_data.get('listen_address') or ':53'
         }
     })
 

@@ -11,6 +11,8 @@ from backend.common.config_repository import ProfileRepositoryError
 from backend.utils.reorder import resolve_new_order
 from backend.utils.rule_utils import sanitize_rule_name, get_rules_dir, save_rule_to_local
 from backend.utils.logger import get_logger
+from backend.utils.rule_fetch import request_rule
+from backend.utils.url_utils import safe_exception_details
 
 logger = get_logger(__name__)
 
@@ -105,7 +107,7 @@ def reorder_rule_library():
     except ProfileRepositoryError:
         raise
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': safe_exception_details(e)}), 500
 
 
 @rule_library_bp.route('/content/<rule_id>', methods=['GET'])
@@ -126,7 +128,7 @@ def get_rule_library_content(rule_id):
         return content, 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': safe_exception_details(e)}), 500
 
 
 @rule_library_bp.route('/proxy-domains', methods=['GET', 'POST'])
@@ -153,7 +155,7 @@ def handle_proxy_domains():
                 'proxy_domains': proxy_url
             })
         except Exception as e:
-            return jsonify({'success': False, 'message': str(e)}), 500
+            return jsonify({'success': False, 'message': safe_exception_details(e)}), 500
 
 
 @rule_library_bp.route('/test-single', methods=['POST'])
@@ -172,14 +174,14 @@ def test_single_rule():
         config_data = get_system_config()
         test_url = apply_github_proxy_domain(url, config_data)
 
-        response = requests.get(test_url, timeout=5)
+        response = request_rule(test_url, timeout=5, config_data=config_data)
         return jsonify({
             'success': True,
             'status_code': response.status_code,
             'available': response.status_code == 200
         })
-    except requests.RequestException as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+    except (requests.RequestException, ValueError) as e:
+        return jsonify({'success': False, 'message': safe_exception_details(e)}), 500
 
 
 @rule_library_bp.route('/test', methods=['POST'])
@@ -220,7 +222,7 @@ def test_rules():
 
                 # 应用 GitHub 代理域名替换
                 test_url = apply_github_proxy_domain(url, config_data)
-                response = requests.head(test_url, timeout=5, allow_redirects=True)
+                response = request_rule(test_url, method='head', timeout=5, config_data=config_data)
                 is_available = response.status_code < 400
                 return {
                     'id': rule.get('id', ''),
@@ -229,13 +231,13 @@ def test_rules():
                     'available': is_available,
                     'status_code': response.status_code
                 }
-            except requests.exceptions.RequestException as e:
+            except (requests.exceptions.RequestException, ValueError) as e:
                 return {
                     'id': rule.get('id', ''),
                     'name': rule.get('name', ''),
                     'url': rule.get('url', ''),
                     'available': False,
-                    'error': str(e)
+                    'error': safe_exception_details(e)
                 }
 
         # 使用线程池并发测试（只测试 URL 类型的规则）
@@ -269,7 +271,7 @@ def test_rules():
     except ProfileRepositoryError:
         raise
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': safe_exception_details(e)}), 500
 
 
 @rule_library_bp.route('/cache', methods=['POST'])
@@ -313,7 +315,7 @@ def cache_rules():
                     'id': rule.get('id', ''),
                     'name': rule.get('name', ''),
                     'success': False,
-                    'error': str(e)
+                    'error': safe_exception_details(e)
                 }
 
         # 使用线程池并发缓存
@@ -348,4 +350,4 @@ def cache_rules():
     except ProfileRepositoryError:
         raise
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': safe_exception_details(e)}), 500

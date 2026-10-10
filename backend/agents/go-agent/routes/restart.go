@@ -38,6 +38,16 @@ func RestartService(cfg *Config) ([]byte, error) {
 // RestartHandler 处理服务重启请求
 func RestartHandler(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		release, err := AcquireServiceOperation(cfg)
+		if err != nil {
+			deploymentFailure(w, http.StatusConflict, err)
+			return
+		}
+		defer release()
+		if err = deploymentBlocked(cfg); err != nil {
+			deploymentFailure(w, http.StatusConflict, err)
+			return
+		}
 		log.Println("Received restart request.")
 		log.Print("Executing restart command")
 
@@ -47,7 +57,7 @@ func RestartHandler(cfg *Config) http.HandlerFunc {
 			log.Print("Prepared supervisorctl restart command")
 		}
 
-		_, err := executeURLCommand(restartCommand)
+		_, err = executeURLCommand(restartCommand)
 		if err != nil {
 			log.Print("Restart command failed")
 

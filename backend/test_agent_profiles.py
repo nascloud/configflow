@@ -139,9 +139,9 @@ def test_agent_mutations_persist_through_system_transactions(tmp_path, monkeypat
             return {"success": True}
 
     monkeypatch.setattr("backend.agents.manager.requests.post", lambda *args, **kwargs: SuccessfulResponse())
-    assert manager.push_config_to_agent(agent_id, "new config")["success"]
+    assert manager.push_config_to_agent(agent_id, "new config")["http_status"] == 409
     persisted = next(agent for agent in repository.get_system()["agents"] if agent["id"] == agent_id)
-    assert persisted["config_version"] != "heartbeat"
+    assert persisted["config_version"] == "heartbeat"
 
     assert manager.delete_agent(agent_id)
     assert all(agent["id"] != agent_id for agent in repository.get_system()["agents"])

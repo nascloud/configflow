@@ -2,7 +2,6 @@ package routes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -68,6 +67,17 @@ type Config struct {
 	AgentID           string `json:"agent_id,omitempty"`
 	Token             string `json:"token,omitempty"`
 
+	ServiceManager          string `json:"service_manager,omitempty"`
+	ServiceBinary           string `json:"service_binary,omitempty"`
+	ServiceUnit             string `json:"service_unit,omitempty"`
+	StopCommand             string `json:"stop_command,omitempty"`
+	StartCommand            string `json:"start_command,omitempty"`
+	StatusCommand           string `json:"status_command,omitempty"`
+	HealthURL               string `json:"health_url,omitempty"`
+	HealthDNSAddress        string `json:"health_dns_address,omitempty"`
+	HealthDNSName           string `json:"health_dns_name,omitempty"`
+	DeploymentHealthTimeout int    `json:"deployment_health_timeout,omitempty"`
+
 	// MosDNS 特殊功能字段
 	Directories      []string              `json:"directories,omitempty"`
 	RulesetDownloads []RulesetDownloadItem `json:"ruleset_downloads,omitempty"`
@@ -78,24 +88,7 @@ type Config struct {
 // ConfigUpdateHandler 处理配置更新请求
 func ConfigUpdateHandler(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Config update requested from %s", r.RemoteAddr)
-
-		var req UpdateRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			log.Printf("Failed to decode request body: %v", err)
-			JsonResponse(w, http.StatusBadRequest, map[string]string{"success": "false", "message": "Invalid request body"})
-			return
-		}
-
-		log.Printf("Request parsed. Config length: %d, Directories: %d, RulesetDownloads: %d, CustomFiles: %d",
-			len(req.Config), len(req.Directories), len(req.RulesetDownloads), len(req.CustomFiles))
-
-		// 立即启动后台配置更新任务
-		go handleConfigUpdateAsync(cfg, req)
-
-		// 立即返回成功响应
-		log.Printf("Config update task started in background.")
-		JsonResponse(w, http.StatusOK, map[string]string{"success": "true", "message": "Config update task started"})
+		JsonResponse(w, http.StatusConflict, map[string]interface{}{"success": false, "message": "Legacy configuration updates are disabled; upgrade ConfigFlow and use deployment protocol 1"})
 	}
 }
 
@@ -797,106 +790,11 @@ func findNode(parent *yaml.Node, key string) *yaml.Node {
 
 // handleConfigUpdateAsync 异步处理配置更新请求
 func handleConfigUpdateAsync(cfg *Config, req UpdateRequest) {
-	log.Printf("Starting async config update...")
-
-	// 检查是否需要修改 mihomo 配置（在备份之前处理）
-	if cfg.ServiceType == "mihomo" && os.Getenv("ENABLE_MOSDNS") == "true" {
-		log.Printf("ENABLE_MOSDNS is true, modifying mihomo config...")
-		modifiedConfig, err := modifyMihomoConfig(req.Config)
-		if err != nil {
-			log.Printf("Error modifying mihomo config asynchronously: %v", err)
-			return
-		}
-		req.Config = modifiedConfig
-		log.Printf("Mihomo config modified successfully.")
-	}
-
-	// 第一步：备份旧配置（根据服务类型有选择地备份和清理）
-	log.Printf("Step 1: Backing up and cleaning old config...")
-	backupPath := backupConfig(cfg.ConfigPath, cfg.ServiceType)
-
-	// 第二步：下载 providers/rulesets（在清理之后）
-	// 只有 MosDNS 服务才处理 MosDNS 特殊功能
-	if cfg.ServiceType == "mosdns" {
-		log.Printf("Step 2: Handling MosDNS features (after backup)...")
-		if err := handleMosdnsFeatures(cfg, req); err != nil {
-			log.Printf("Error handling MosDNS features asynchronously: %v", err)
-			return
-		}
-	}
-
-	// 只有 Mihomo 服务才处理 Mihomo 特殊功能
-	if cfg.ServiceType == "mihomo" {
-		log.Printf("Step 2: Handling Mihomo features (after backup)...")
-		if err := handleMihomoFeatures(cfg, req); err != nil {
-			log.Printf("Error handling Mihomo features asynchronously: %v", err)
-			return
-		}
-	}
-
-	// 第三步：写入新配置
-	log.Printf("Step 3: Writing new config...")
-	if err := writeConfig(cfg, req.Config, backupPath); err != nil {
-		log.Printf("Error writing config file asynchronously: %v", err)
-		return
-	}
-
-	log.Printf("Async config update completed successfully.")
-
-	// 配置与规则集全部落盘后再重启，避免服务端在异步任务进行中重启导致
-	// 服务读到不完整（甚至缺失）的配置而启动失败
-	if req.RestartAfterUpdate {
-		log.Printf("RestartAfterUpdate is set, restarting service...")
-		if _, err := RestartService(cfg); err != nil {
-			log.Print("Restart after config update failed")
-		} else {
-			log.Printf("Service restarted successfully after config update.")
-		}
-	}
+	log.Print("Legacy configuration update refused; use deployment protocol 1")
 }
 
-// handleConfigUpdate 处理配置更新请求 (同步版本，保留用于兼容)
 func handleConfigUpdate(cfg *Config, req UpdateRequest) error {
-	// 检查是否需要修改 mihomo 配置（在备份之前处理）
-	if cfg.ServiceType == "mihomo" && os.Getenv("ENABLE_MOSDNS") == "true" {
-		log.Printf("ENABLE_MOSDNS is true, modifying mihomo config...")
-		modifiedConfig, err := modifyMihomoConfig(req.Config)
-		if err != nil {
-			log.Printf("Error modifying mihomo config: %v", err)
-			return fmt.Errorf("failed to modify mihomo config: %w", err)
-		}
-		req.Config = modifiedConfig
-		log.Printf("Mihomo config modified successfully.")
-	}
-
-	// 第一步：备份旧配置（根据服务类型有选择地备份和清理）
-	log.Printf("Step 1: Backing up and cleaning old config...")
-	backupPath := backupConfig(cfg.ConfigPath, cfg.ServiceType)
-
-	// 第二步：下载 providers/rulesets（在清理之后）
-	// 处理 MosDNS 特殊功能
-	if cfg.ServiceType == "mosdns" {
-		log.Printf("Step 2: Handling MosDNS features (after backup)...")
-		if err := handleMosdnsFeatures(cfg, req); err != nil {
-			return err
-		}
-	}
-
-	// 处理 Mihomo 特殊功能
-	if cfg.ServiceType == "mihomo" {
-		log.Printf("Step 2: Handling Mihomo features (after backup)...")
-		if err := handleMihomoFeatures(cfg, req); err != nil {
-			return err
-		}
-	}
-
-	// 第三步：写入新配置
-	log.Printf("Step 3: Writing new config...")
-	if err := writeConfig(cfg, req.Config, backupPath); err != nil {
-		return err
-	}
-
-	return nil
+	return fmt.Errorf("legacy configuration update refused; use deployment protocol 1")
 }
 
 // copyFile 复制文件的辅助函数
