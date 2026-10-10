@@ -144,10 +144,25 @@ def poll(manager, agent_id):
                     return _save(manager, agent_id, state['update_id'], {'status': 'succeeded', 'error': ''})
     except (requests.RequestException, ValueError):
         pass
-    if time.time() - state['started_at'] > 600:
+    deadline = state['started_at'] + 600
+    if time.time() > deadline:
+        # The Agent did not report this job in progress. A heartbeat sent after
+        # the deadline that still carries the old version proves the update
+        # never took effect, so release the lock and allow a retry.
+        if agent.get('version') == state['previous_version'] and _heartbeat_after(agent, deadline):
+            return _save(manager, agent_id, state['update_id'], {
+                'status': 'failed', 'error': f"更新未生效：Agent 仍在运行 {state['previous_version']}，可重新更新；详情请查看 Agent 日志"})
         # Do not claim rollback when the old executable cannot be reached.
-        return _save(manager, agent_id, state['update_id'], {'status': 'unknown', 'error': '升级结果未能确认，正在继续查询；请查看 Agent 日志'})
+        if state['status'] != 'unknown':
+            return _save(manager, agent_id, state['update_id'], {'status': 'unknown', 'error': '升级结果未能确认，正在继续查询；请查看 Agent 日志'})
     return state
+
+
+def _heartbeat_after(agent, moment):
+    try:
+        return datetime.fromisoformat(agent.get('last_heartbeat', '')).timestamp() > moment
+    except ValueError:
+        return False
 
 
 def report_legacy(manager, agent_id, payload):
