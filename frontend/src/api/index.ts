@@ -186,6 +186,7 @@ export const agentApi = {
   getAll: () => api.get('/agents'),
   create: (data: any) => api.post('/agents', data),
   update: (id: string, data: any = {}) => api.post(`/agents/${id}/update`, data),
+  getUpgrade: (id: string) => api.get(`/agents/${id}/upgrade`),
   bindProfile: (id: string, profileId: string) => api.put(`/agents/${id}`, { profile_id: profileId }),
   delete: (id: string) => api.delete(`/agents/${id}`),
   restart: (id: string) => api.post(`/agents/${id}/restart`),

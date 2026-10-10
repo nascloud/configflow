@@ -54,6 +54,7 @@ type CustomFileItem struct {
 
 // Config 结构体定义
 type Config struct {
+	AgentConfigFile   string `json:"-"`
 	ServerURL         string `json:"server_url"`
 	AgentName         string `json:"agent_name"`
 	AgentHost         string `json:"agent_host"`

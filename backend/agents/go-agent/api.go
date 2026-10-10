@@ -37,6 +37,7 @@ func toRoutesConfig(cfg *Config) *routes.Config {
 	}
 
 	return &routes.Config{
+		AgentConfigFile:         cfg.filePath,
 		ServerURL:               cfg.ServerURL,
 		AgentName:               cfg.AgentName,
 		AgentHost:               cfg.AgentHost,

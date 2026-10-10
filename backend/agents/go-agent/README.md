@@ -245,3 +245,8 @@ POST /api/uninstall
 ## 许可证
 
 [MIT License](LICENSE)
+## Shell 网页一键更新
+
+标准 systemd/OpenRC 安装可在主服务更新后，从 Agent 页面完成程序更新、旧配置迁移和恢复服务安装，无需重新运行安装命令。页面持续查询任务，确认目标版本就绪后才显示成功；失败恢复旧版本。Docker 点击“更新”打开镜像更新指南，提供 Compose / Docker Run 操作步骤和可复制命令，保留数据卷重建容器后刷新列表确认版本。
+
+详见 [在线升级方案与首次旧协议限制](docs/ONLINE_UPGRADE.md) 和 [真实验收记录](docs/ONLINE_UPGRADE_ACCEPTANCE.json)。

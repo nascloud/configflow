@@ -91,6 +91,8 @@ export interface Agent {
   enabled: boolean
   profile_id?: string
   has_update?: boolean
+  upgrade_available?: boolean
+  latest_upgrade?: import('@/composables/useAgentUpgrades').AgentUpgrade
   created_at?: string
   updated_at?: string
   cpu?: number

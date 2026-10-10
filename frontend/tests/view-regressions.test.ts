@@ -19,7 +19,7 @@ vi.mock('@/api', () => ({
   { id: 'agg-on', name: 'Synthetic enabled aggregation', enabled: true },
   { id: 'agg-off', name: 'Synthetic disabled aggregation', enabled: false }
  ] : path === '/subscriptions' ? [{ id: 'sub-one', name: 'Synthetic subscription' }] : [] })), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
- agentApi: { getAll: vi.fn() },
+ agentApi: { getAll: vi.fn(), update: vi.fn(), getUpgrade: vi.fn() },
  proxyGroupApi: { getAll: vi.fn(async () => ({ data: [
   { id: 'group-one', name: 'Synthetic strategy', type: 'select', enabled: true, manual_nodes: ['DIRECT'] }
  ] })), create: vi.fn(async () => ({})), update: vi.fn(async () => ({})) },
@@ -29,10 +29,19 @@ vi.mock('@/api', () => ({
 const wrappers: ReturnType<typeof mount>[] = []
 // jsdom has no layout/scrolling; replace only that absent browser primitive.
 const scrollDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
-beforeAll(() => Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() }))
+const matchMediaDescriptor = Object.getOwnPropertyDescriptor(window, 'matchMedia')
+beforeAll(() => {
+ Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
+ Object.defineProperty(window, 'matchMedia', { configurable: true, value: (query: string) => ({
+  matches: query.includes('prefers-reduced-motion'), media: query, onchange: null,
+  addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn()
+ }) })
+})
 afterAll(() => {
  if (scrollDescriptor) Object.defineProperty(Element.prototype, 'scrollIntoView', scrollDescriptor)
  else delete (Element.prototype as any).scrollIntoView
+ if (matchMediaDescriptor) Object.defineProperty(window, 'matchMedia', matchMediaDescriptor)
+ else delete (window as any).matchMedia
 })
 beforeEach(() => {
  vi.clearAllMocks()
@@ -72,6 +81,46 @@ async function addSource(w: ReturnType<typeof mount>, label: string) {
  }[label])!
 }
 describe('real view regressions with synthetic API data', () => {
+ it.each(['mihomo', 'mosdns'])('Docker %s update opens guidance without starting a binary upgrade', async service_type => {
+  vi.mocked(agentApi.getAll).mockResolvedValue({ data: [{
+   id: 'docker-agent', name: 'Synthetic Docker Agent', host: '192.0.2.10', port: 8080,
+   profile_id: 'default', status: 'online', service_type, deployment_method: 'docker',
+   has_update: true, upgrade_available: false, version: '1.1.0-go', last_heartbeat: ''
+  }] } as any)
+  render(Agents)
+  await clickText('更新')
+  const dialog = document.querySelector('[role="dialog"]')
+  expect(dialog?.textContent).toContain('Docker Agent 更新步骤')
+  expect(dialog?.textContent).toContain('192.0.2.10')
+  expect(dialog?.textContent).toContain("docker compose up -d --no-deps 'agent'")
+  expect(feedback.confirmState.open).toBe(false)
+  expect(agentApi.update).not.toHaveBeenCalled()
+  await clickText('刷新 Agent 列表')
+  expect(agentApi.getAll).toHaveBeenCalledTimes(2)
+  expect(agentApi.update).not.toHaveBeenCalled()
+  expect(agentApi.getUpgrade).not.toHaveBeenCalled()
+ })
+
+ it('Shell update still confirms and submits the online upgrade', async () => {
+  vi.mocked(agentApi.getAll).mockResolvedValue({ data: [{
+   id: 'shell-agent', name: 'Synthetic Shell Agent', host: '192.0.2.11', port: 8080,
+   profile_id: 'default', status: 'online', service_type: 'mihomo', deployment_method: 'shell',
+   has_update: true, upgrade_available: true, version: '1.1.0-go', last_heartbeat: ''
+  }] } as any)
+  vi.mocked(agentApi.update).mockResolvedValue({ data: {
+   update_id: 'shell-update', status: 'queued', target_version: '1.3.0-go'
+  } } as any)
+  render(Agents)
+  render(ConfirmHost)
+  await clickText('更新')
+  expect(feedback.confirmState.open).toBe(true)
+  expect(document.body.textContent).not.toContain('Docker Agent 更新步骤')
+  expect(agentApi.update).not.toHaveBeenCalled()
+  await clickText('立即更新')
+  expect(agentApi.update).toHaveBeenCalledTimes(1)
+  expect(vi.mocked(agentApi.update).mock.calls[0][0]).toBe('shell-agent')
+ })
+
  it('labels mixed Agent cards by service type, including Surge rather than MosDNS', async () => {
   const services = [
    { id: 'router', name: 'Primary router', service_type: 'mihomo' },

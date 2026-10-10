@@ -31,6 +31,8 @@ type Config struct {
 	DeploymentHealthTimeout int    `json:"deployment_health_timeout,omitempty"`
 	HeartbeatInterval       int    `json:"heartbeat_interval"`
 	AgentID                 string `json:"agent_id,omitempty"`
+	UpgradeSchema           int    `json:"upgrade_schema,omitempty"`
+	AgentServiceUnit        string `json:"agent_service_unit,omitempty"`
 	Token                   string `json:"token,omitempty"`
 
 	// 监控功能配置（使用指针以区分未设置和 false）
@@ -79,7 +81,27 @@ func (c *Config) Save() error {
 	defer c.mu.Unlock()
 
 	// 使用 MarshalIndent 美化输出格式
-	data, err := json.MarshalIndent(c, "", "  ")
+	// Keep extension fields supplied by older/newer installers during registration.
+	values := map[string]interface{}{}
+	if old, readErr := os.ReadFile(c.filePath); readErr == nil {
+		if err := json.Unmarshal(old, &values); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(readErr) {
+		return readErr
+	}
+	known, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	var current map[string]interface{}
+	if err = json.Unmarshal(known, &current); err != nil {
+		return err
+	}
+	for key, value := range current {
+		values[key] = value
+	}
+	data, err := json.MarshalIndent(values, "", "  ")
 	if err != nil {
 		return err
 	}

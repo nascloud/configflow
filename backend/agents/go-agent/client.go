@@ -1,6 +1,7 @@
 package main
 
 import (
+	"agent/upgrade"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -9,7 +10,7 @@ import (
 	"time"
 )
 
-const AgentVersion = "1.2.0-go"
+const AgentVersion = upgrade.Version
 
 // 全局监控数据收集器
 var metricsCollector *MetricsCollector

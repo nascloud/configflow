@@ -27,6 +27,11 @@ class AgentDeploymentConflict(ValueError):
     """A profile binding cannot change during an unfinished deployment."""
 
 
+def _upgrade_busy(agent):
+    upgrade = agent.get('latest_upgrade') or {}
+    return bool(upgrade) and upgrade.get('status') not in ('succeeded', 'failed', 'rolled_back')
+
+
 class AgentManager:
     """Agent 管理器，负责 Agent 的注册、心跳、状态管理等"""
 
@@ -187,6 +192,8 @@ class AgentManager:
             for agent in agents:
                 if agent['id'] != agent_id:
                     continue
+                if _upgrade_busy(agent):
+                    raise AgentDeploymentConflict('Agent update is in progress; wait for confirmation before editing it')
                 if ('profile_id' in updates and updates['profile_id'] != agent.get('profile_id', 'default')
                         and any(task.get('status') not in ('succeeded', 'failed', 'rolled_back')
                                 for task in agent.get('deployments', {}).values())):
@@ -208,6 +215,9 @@ class AgentManager:
     def delete_agent(self, agent_id: str) -> bool:
         """删除 Agent"""
         def delete(agents):
+            agent = next((item for item in agents if item['id'] == agent_id), None)
+            if agent and _upgrade_busy(agent):
+                raise AgentDeploymentConflict('Agent 正在更新或等待恢复')
             initial_len = len(agents)
             agents[:] = [agent for agent in agents if agent['id'] != agent_id]
             return len(agents) < initial_len
@@ -307,6 +317,8 @@ class AgentManager:
             agent = next((item for item in agents if item['id'] == agent_id), None)
             if agent is None:
                 return {'success': False, 'message': 'Agent not found', 'http_status': 404}
+            if _upgrade_busy(agent):
+                return {'success': False, 'message': 'Agent update is in progress', 'http_status': 409}
             deployments = agent.setdefault('deployments', {})
             if deployment_id in deployments:
                 return {**deployments[deployment_id], 'existing': True}
@@ -580,6 +592,9 @@ class AgentManager:
         if not agent:
             return {'success': False, 'message': 'Agent not found'}
 
+        if _upgrade_busy(agent):
+            return {'success': False, 'message': 'Agent update is in progress'}
+
         agent_url = f"http://{agent['host']}:{agent['port']}/api/restart"
 
         try:
@@ -720,6 +735,9 @@ class AgentManager:
         agent = self.get_agent_by_id(agent_id)
         if not agent:
             return {'success': False, 'message': 'Agent not found'}
+
+        if _upgrade_busy(agent):
+            return {'success': False, 'message': 'Agent update is in progress'}
 
         agent_url = f"http://{agent['host']}:{agent['port']}/api/uninstall"
 
