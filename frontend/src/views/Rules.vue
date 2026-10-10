@@ -1,10 +1,8 @@
 <template>
   <div :class="reorder.active.value && 'cf-reordering'">
-    <ScopeBanner scope="profile" :profile-name="cfProfileName" />
 
     <PageHeader
       title="策略规则"
-      description="设置当前配置如何处理不同流量。规则从上到下匹配；这里的策略、顺序和启用状态不影响其他配置，规则集内容与规则库共用。"
     >
       <template #actions>
         <Button @click="showAddRuleDialog">
@@ -50,6 +48,59 @@
       @save="handleSaveOrder"
     />
 
+    <!-- 命中模拟：后端按真实规则与规则集内容逐条匹配，前端按顺序扫描到命中行 -->
+    <SectionCard v-if="!reorder.active.value && allRules.length" :padded="false" class="mb-3.5 overflow-hidden">
+      <form class="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3.5 p-5 max-md:grid-cols-[minmax(0,1fr)] max-md:p-4" @submit.prevent="simulate()">
+        <label class="min-w-0">
+          <span class="mb-2 block font-mono text-[11px] tracking-[0.14em] text-muted-foreground uppercase">命中模拟</span>
+          <Input
+            ref="simInput"
+            v-model="simQuery"
+            class="h-[46px] font-mono text-[16px]"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="输入域名或 IP，例如 api.anthropic.com"
+            aria-label="要模拟的域名或 IP"
+          />
+        </label>
+        <Button type="submit" class="h-[46px] px-5 shadow-glow" :disabled="simRunning">
+          <Loader2 v-if="simRunning" class="size-4 animate-spin" />
+          <Play v-else class="size-4" />
+          模拟
+        </Button>
+        <div class="col-span-full flex min-h-10 flex-wrap items-center gap-2 text-[13.5px] text-muted-foreground max-md:col-span-1">
+          <template v-if="simRunning">
+            <span class="live-dot" aria-hidden="true" />
+            <span class="font-mono">逐条匹配 {{ simQuery.trim() }} …</span>
+          </template>
+          <template v-else-if="simResult && simResult.matched">
+            <span class="chip font-mono">{{ simResult.query }}</span>
+            <span aria-hidden="true">→</span>
+            <span class="chip font-mono" :title="simResult.matched_line">
+              #{{ String(simResult.priority).padStart(2, '0') }} {{ simResult.item_type === 'ruleset' ? simResult.rule_name : simResult.matched_line }}
+            </span>
+            <span aria-hidden="true">→</span>
+            <span :class="cn('chip', policyChip(simResult.policy))">{{ simResult.policy }}</span>
+            <template v-if="simVia">
+              <span aria-hidden="true">→</span>
+              <span class="chip font-mono" :title="simVia.hint">{{ simVia.label }}</span>
+            </template>
+            <span class="ml-auto font-mono text-[11.5px]">{{ simResult.elapsed_time }} ms</span>
+          </template>
+          <template v-else-if="simResult">
+            <span class="chip font-mono">{{ simResult.query }}</span>
+            <span>未命中任何规则，将使用默认策略</span>
+          </template>
+          <template v-else-if="simSamples.length">
+            试试
+            <button v-for="sample in simSamples" :key="sample" type="button" class="chip font-mono" @click="simulate(sample)">
+              {{ sample }}
+            </button>
+          </template>
+        </div>
+      </form>
+    </SectionCard>
+
     <SectionCard v-if="displayList.length === 0" :padded="false">
       <EmptyState
         :icon="FileText"
@@ -65,6 +116,18 @@
 
     <!-- ===== 列表视图 ===== -->
     <SectionCard v-else-if="viewMode === 'list'" :padded="false">
+      <div
+        class="flex items-center gap-2.5 border-b border-border px-4 py-3 font-mono text-[10.5px] tracking-[0.12em] text-muted-foreground uppercase"
+        aria-hidden="true"
+      >
+        <span v-if="reorder.active.value" class="w-11" />
+        <span class="w-9">#</span>
+        <span class="w-[118px] max-md:w-[92px]">类型</span>
+        <span class="min-w-0 flex-1">匹配值</span>
+        <span class="w-[160px] max-lg:hidden">备注</span>
+        <span class="w-[120px] text-right">策略</span>
+        <span class="w-[136px]" />
+      </div>
       <div id="sortable-rules" ref="rulesContainer" class="flex flex-col">
         <div
           v-for="(item, cfIndex) in displayList"
@@ -90,6 +153,7 @@
               @down="reorder.moveDown(cfIndex)"
               @keydown="reorder.onHandleKeydown($event, cfIndex)"
             />
+            <span class="w-9 shrink-0 font-mono text-[11px] text-muted-foreground">{{ groupRange(item) }}</span>
             <Layers class="size-4 shrink-0 text-warning-accent" aria-hidden="true" />
             <span class="min-w-0 truncate text-[13px] font-semibold text-foreground">
               {{ item.groupName || item.groupDefaultName }}
@@ -98,29 +162,36 @@
             <Badge v-if="item.groupName" variant="outline" class="num shrink-0 text-[10.5px]">
               {{ item.count }} 个
             </Badge>
-            <Badge variant="secondary" class="ml-auto min-w-0 max-w-[160px] text-[10.5px]" :title="item.policy">
-              <span class="truncate">{{ item.policy }}</span>
-            </Badge>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              class="cf-reorder-mute shrink-0"
-              title="重命名"
-              aria-label="重命名分组"
-              @click.stop="showGroupRenameDialog(item)"
-            >
-              <Pencil class="size-4" />
-            </Button>
-            <ChevronDown class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span class="ml-auto flex w-[120px] shrink-0 justify-end">
+              <span :class="cn('chip max-w-full truncate', policyChip(item.policy))">{{ item.policy }}</span>
+            </span>
+            <span class="flex w-[136px] shrink-0 items-center justify-end gap-0.5">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                class="cf-reorder-mute shrink-0"
+                title="重命名"
+                aria-label="重命名分组"
+                @click.stop="showGroupRenameDialog(item)"
+              >
+                <Pencil class="size-4" />
+              </Button>
+              <span class="grid size-8 place-items-center" aria-hidden="true">
+                <ChevronDown class="size-4 text-muted-foreground" />
+              </span>
+            </span>
           </button>
 
           <!-- 普通行 -->
           <div
             v-else
+            :data-rule-key="item.uniqueId"
             :class="[
-              'flex items-center gap-2.5 border-0 border-b border-border/40 px-4 py-2.5 transition-colors hover:bg-accent/30',
-              item.isExpandedGroupItem && 'bg-background/40 pl-8',
-              !item.enabled && 'dark:opacity-55'
+              'rule-row flex items-center gap-2.5 border-0 border-b border-border/40 px-4 py-[11px] transition-colors hover:bg-accent/30',
+              item.isExpandedGroupItem && 'bg-background/40',
+              !item.enabled && 'opacity-55',
+              simScanKey === item.uniqueId && 'is-scan',
+              simMatchKey === item.uniqueId && 'is-match'
             ]"
           >
             <DragHandle
@@ -134,16 +205,15 @@
               @down="reorder.moveDown(cfIndex)"
               @keydown="reorder.onHandleKeydown($event, cfIndex)"
             />
-            <Badge
-              :variant="item.itemType === 'rule' ? 'brand' : 'info'"
-              class="w-12 shrink-0 justify-center text-[10.5px]"
-            >
-              {{ item.itemType === 'rule' ? '规则' : '规则集' }}
-            </Badge>
+            <span class="rule-index w-9 shrink-0 font-mono text-[11px] text-muted-foreground">
+              {{ String(rawIndex(item.uniqueId)).padStart(2, '0') }}
+            </span>
+            <span class="w-[118px] shrink-0 truncate font-mono text-[11px] text-muted-foreground max-md:w-[92px]">
+              {{ item.itemType === 'rule' ? item.rule_type : 'RULE-SET' }}
+            </span>
 
             <div class="flex min-w-0 flex-1 items-center gap-2">
               <template v-if="item.itemType === 'rule'">
-                <span class="shrink-0 font-mono text-[11.5px] text-info-accent">{{ item.rule_type }}</span>
                 <span class="min-w-0 truncate font-mono text-[12.5px] text-foreground" :title="item.value">
                   {{ item.value }}
                 </span>
@@ -162,28 +232,25 @@
                   aria-label="来自规则仓库"
                 />
               </template>
-              <span
-                v-if="item.remark"
-                class="hidden min-w-0 shrink truncate text-[11.5px] text-muted-foreground md:inline"
-                :title="item.remark"
-              >
-                {{ item.remark }}
-              </span>
             </div>
+            <span class="w-[160px] shrink-0 truncate text-[12px] text-muted-foreground max-lg:hidden" :title="item.remark">
+              {{ item.remark || '—' }}
+            </span>
 
-            <Badge variant="secondary" class="min-w-0 max-w-[160px] text-[10.5px]" :title="item.policy">
-              <span class="truncate">{{ item.policy }}</span>
-            </Badge>
+            <span class="flex w-[120px] shrink-0 justify-end">
+              <span :class="cn('chip max-w-full truncate', policyChip(item.policy))">{{ item.policy }}</span>
+            </span>
 
-            <div class="cf-reorder-mute flex shrink-0 items-center gap-0.5">
+            <div class="cf-reorder-mute flex w-[136px] shrink-0 items-center justify-end gap-0.5">
               <Button
                 v-if="item.isExpandedGroupItem && item.isFirstInGroup"
                 variant="ghost"
-                size="sm"
+                size="icon-sm"
+                title="收起分组"
+                aria-label="收起分组"
                 @click.stop="toggleGroup(item.groupId)"
               >
-                <ChevronUp class="size-3.5" />
-                收起分组
+                <ChevronUp class="size-4" />
               </Button>
               <Button
                 variant="ghost"
@@ -231,8 +298,8 @@
         data-reorder-item
         :data-id="item.uniqueId"
         :class="[
-          'relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card p-4 transition-colors duration-200',
-          item.isGroup ? 'border-warning-accent/35' : 'border-border',
+          'relative flex flex-col gap-3 overflow-hidden rounded-[18px] border bg-card/90 shadow-surface p-4 transition-all duration-300 hover:border-border-strong',
+          item.isGroup ? 'border-warning-accent/35' : 'border-border/35',
           item.isExpandedGroupItem && 'border-primary-accent/30',
           !item.isGroup && !item.enabled && 'dark:opacity-60'
         ]"
@@ -563,84 +630,6 @@
       </DialogContent>
     </Dialog>
 
-    <!-- ===== 规则索引 ===== -->
-    <Dialog v-model:open="ruleIndexDialogVisible">
-      <DialogContent class="max-w-[620px]">
-        <DialogHeader>
-          <DialogTitle>规则索引</DialogTitle>
-          <DialogDescription>输入域名或 IP，查询它会命中哪一条规则。</DialogDescription>
-        </DialogHeader>
-
-        <div class="flex flex-col gap-4">
-          <div class="flex items-center gap-2">
-            <Input
-              v-model="ruleIndexQuery"
-              class="bg-background/50 font-mono"
-              placeholder="例如 google.com 或 192.168.1.1"
-              @keyup.enter="performRuleIndexQuery"
-            />
-            <Button class="shrink-0" :disabled="ruleIndexLoading" @click="performRuleIndexQuery">
-              <Loader2 v-if="ruleIndexLoading" class="size-4 animate-spin" />
-              <Search v-else class="size-4" />
-              查询
-            </Button>
-          </div>
-
-          <div
-            v-if="ruleIndexResult"
-            class="rounded-xl border border-border/50 bg-background/40 p-4"
-          >
-            <template v-if="ruleIndexResult.matched">
-              <div class="mb-3 flex items-center gap-2">
-                <CircleCheck class="size-4 text-success-accent" aria-hidden="true" />
-                <span class="text-[14px] font-semibold text-foreground">{{ ruleIndexResult.rule_name }}</span>
-              </div>
-              <dl class="m-0 grid grid-cols-[88px_minmax(0,1fr)] gap-x-3 gap-y-2 text-[12.5px]">
-                <dt class="text-muted-foreground">规则类型</dt>
-                <dd class="m-0">
-                  <Badge :variant="ruleIndexResult.rule_type === 'rule' ? 'brand' : 'info'">
-                    {{ ruleIndexResult.rule_type === 'rule' ? '直接规则' : '规则集' }}
-                  </Badge>
-                </dd>
-                <dt class="text-muted-foreground">匹配规则</dt>
-                <dd class="m-0 font-mono break-all text-foreground">{{ ruleIndexResult.matched_line }}</dd>
-                <dt class="text-muted-foreground">执行策略</dt>
-                <dd class="m-0"><Badge :variant="policyTone(ruleIndexResult.policy)">{{ ruleIndexResult.policy }}</Badge></dd>
-                <dt class="text-muted-foreground">规则来源</dt>
-                <dd class="m-0 break-all text-foreground">{{ ruleIndexResult.source }}</dd>
-                <dt class="text-muted-foreground">优先级</dt>
-                <dd class="num m-0 text-foreground">第 {{ ruleIndexResult.priority }} 条</dd>
-                <dt class="text-muted-foreground">Behavior</dt>
-                <dd class="m-0 font-mono text-foreground">{{ ruleIndexResult.behavior }}</dd>
-                <template v-if="ruleIndexResult.elapsed_time !== undefined">
-                  <dt class="text-muted-foreground">索引耗时</dt>
-                  <dd class="num m-0 text-foreground">{{ ruleIndexResult.elapsed_time }} ms</dd>
-                </template>
-              </dl>
-            </template>
-
-            <template v-else>
-              <div class="mb-2 flex items-center gap-2">
-                <TriangleAlert class="size-4 text-warning-accent" aria-hidden="true" />
-                <span class="text-[14px] font-semibold text-foreground">未匹配任何规则</span>
-              </div>
-              <p class="m-0 text-[12.5px] text-muted-foreground">{{ ruleIndexResult.message }}</p>
-              <p
-                v-if="ruleIndexResult.elapsed_time !== undefined"
-                class="num mt-1 mb-0 text-[12px] text-muted-foreground"
-              >
-                索引耗时 {{ ruleIndexResult.elapsed_time }} ms
-              </p>
-            </template>
-          </div>
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" @click="ruleIndexDialogVisible = false">关闭</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-
     <!-- ===== 查找重复规则 ===== -->
     <Dialog v-model:open="duplicateDialogVisible">
       <DialogContent class="max-w-[720px]">
@@ -738,9 +727,7 @@ import ReorderBar from '@/components/shell/ReorderBar.vue'
 import DragHandle from '@/components/shell/DragHandle.vue'
 import { useReorder } from '@/composables/useReorder'
 import PageHeader from '@/components/common/PageHeader.vue'
-import ScopeBanner from '@/components/shell/ScopeBanner.vue'
-import { useProfileStore } from '@/stores/profile'
-import { ref, onMounted, onActivated, computed, watch } from 'vue'
+import { ref, onMounted, onActivated, computed, nextTick, watch } from 'vue'
 import { Motion } from 'motion-v'
 import {
   ArrowUpDown,
@@ -755,6 +742,7 @@ import {
   Layers,
   Loader2,
   Pencil,
+  Play,
   Plus,
   Search,
   Trash2,
@@ -795,7 +783,8 @@ import SectionCard from '@/components/common/SectionCard.vue'
 import ViewToggle from '@/components/common/ViewToggle.vue'
 import { notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
-import { ruleApi, ruleSetApi, proxyGroupApi } from '@/api'
+import { ruleApi, ruleSetApi, proxyGroupApi, nodeApi } from '@/api'
+import { cn } from '@/lib/utils'
 import type { Rule, RuleSet, ProxyGroup } from '@/types'
 import api from '@/api'
 import { getActiveProfileId } from '@/profileContext'
@@ -830,10 +819,6 @@ const RULE_TYPES = [
 const policyTone = (policy: string) =>
   policy === 'DIRECT' ? ('success' as const) : policy === 'REJECT' ? ('danger' as const) : ('brand' as const)
 
-const cfProfileStore = useProfileStore()
-const cfProfileName = computed(
-  () => cfProfileStore.activeProfile.value?.name || cfProfileStore.activeProfileId.value
-)
 const allRules = ref<any[]>([])  // 包含规则和规则集的合并数组
 const proxyGroups = ref<ProxyGroup[]>([])
 const ruleLibrary = ref<any[]>([])  // 规则仓库
@@ -846,12 +831,156 @@ const ruleDialogVisible = ref(false)
 const ruleSetDialogVisible = ref(false)
 const isEditRule = ref(false)
 const isEditRuleSet = ref(false)
-const viewMode = ref<'list' | 'card'>('card') // 默认卡片视图
+const viewMode = ref<'list' | 'card'>('list') // 默认表格视图，与匹配顺序一致
 const rulesContainer = ref<HTMLElement | null>(null)
 
-// 处理按钮点击
+// 「规则索引」入口改为聚焦页内的命中模拟
 const handleShowRuleIndex = () => {
-  showRuleIndexDialog()
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+  simInput.value?.$el?.focus?.()
+}
+
+/* ================================================================
+ * 命中模拟
+ * ================================================================ */
+const simInput = ref<any>(null)
+const simQuery = ref('')
+const simRunning = ref(false)
+const simResult = ref<any>(null)
+const simScanKey = ref('')
+const simMatchKey = ref('')
+const simVia = ref<{ label: string; hint: string } | null>(null)
+const latencyMap = ref<Record<string, { latency: number | null }>>({})
+let latencyLoaded = false
+/** 测速结果只在模拟命中策略组、需要推断出口节点时才读取 */
+const ensureLatency = async () => {
+  if (latencyLoaded) return
+  try {
+    const { data } = await nodeApi.latency()
+    latencyMap.value = data?.results || {}
+    latencyLoaded = true
+  } catch {
+    // 没有测速结果时只按策略组默认项推断
+  }
+}
+
+const policyChip = (policy: string) =>
+  policy === 'DIRECT' ? 'chip-ok font-mono' : policy === 'REJECT' ? 'chip-bad font-mono' : 'chip-acc'
+
+/** 原始顺序号（与匹配优先级一致，从 1 开始） */
+const rawIndexMap = computed(() => {
+  const map = new Map<string, number>()
+  allRules.value.forEach((r, i) => map.set(r.uniqueId || `${r.itemType}-${r.id}`, i + 1))
+  return map
+})
+const rawIndex = (key: string) => rawIndexMap.value.get(key) ?? 0
+const groupRange = (group: any) => {
+  const idx = (group.items || []).map((i: any) => rawIndex(i.uniqueId)).filter(Boolean)
+  if (!idx.length) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return idx.length > 1 ? `${pad(Math.min(...idx))}+` : pad(idx[0])
+}
+
+/** 示例取自用户自己的域名规则，不写死 */
+const simSamples = computed(() => {
+  const seen = new Set<string>()
+  for (const r of allRules.value) {
+    if (r.itemType !== 'rule' || !r.enabled) continue
+    if (!['DOMAIN', 'DOMAIN-SUFFIX'].includes(r.rule_type)) continue
+    const domain = r.rule_type === 'DOMAIN-SUFFIX' && !String(r.value).startsWith('www.') ? `www.${r.value}` : r.value
+    seen.add(domain)
+    if (seen.size >= 4) break
+  }
+  return [...seen]
+})
+
+const wait = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
+
+/** 命中的是策略组时，按其来源与正则取节点，再用最近测速推断出口节点 */
+const resolveVia = async (policy: string) => {
+  const group: any = proxyGroups.value.find(g => g.name === policy)
+  if (!group || group.follow_group) return null
+  const useAgg = (group.aggregations || []).length > 0
+  const sources = useAgg ? group.aggregations : group.subscriptions || []
+  if (!sources.length) return null
+  try {
+    const { data } = await proxyGroupApi.previewRegex({
+      source: useAgg ? 'aggregation' : 'subscription',
+      regex: (useAgg ? group.aggregation_regex : group.regex) || '.*',
+      ...(useAgg ? { aggregations: sources } : { subscriptions: sources })
+    }, profileId)
+    const nodes: any[] = data.nodes || []
+    if (!nodes.length) return null
+    await ensureLatency()
+    const reachable = nodes.filter(n => typeof latencyMap.value[n.name]?.latency === 'number')
+    const pick =
+      group.type === 'url-test'
+        ? [...reachable].sort((a, b) => (latencyMap.value[a.name].latency as number) - (latencyMap.value[b.name].latency as number))[0]
+        : group.type === 'fallback'
+          ? reachable[0]
+          : group.type === 'select'
+            ? nodes[0]
+            : null
+    if (!pick) return null
+    const ms = latencyMap.value[pick.name]?.latency
+    return {
+      label: typeof ms === 'number' ? `${pick.name} · ${ms}ms` : pick.name,
+      hint: group.type === 'select' ? '策略组默认选中' : '按最近测速推断'
+    }
+  } catch {
+    return null
+  }
+}
+
+const simulate = async (sample?: string) => {
+  if (sample) simQuery.value = sample
+  const query = simQuery.value.trim().replace(/^https?:\/\//, '').split('/')[0]
+  if (!query || simRunning.value) return
+  simRunning.value = true
+  simResult.value = null
+  simVia.value = null
+  simMatchKey.value = ''
+  try {
+    const { data } = await api.post('/rules/match-test', { query }, { ...profileRequestConfig, timeout: 120000 })
+    if (!data.success) throw new Error(data.message || '查询失败')
+
+    // 命中项在收起的分组里时先展开
+    const matchKey = data.matched && data.rule_id ? `${data.item_type}-${data.rule_id}` : ''
+    if (matchKey && viewMode.value === 'list') {
+      const group: any = allRulesAndSets.value.find(
+        (item: any) => item.isGroup && item.items?.some((i: any) => i.uniqueId === matchKey)
+      )
+      if (group && !expandedGroups.value.has(group.groupId)) toggleGroup(group.groupId)
+      await nextTick()
+    }
+
+    // 逐行扫描到命中行（未命中则扫完全部），总时长控制在 1.6s 内
+    const rows = Array.from(rulesContainer.value?.querySelectorAll<HTMLElement>('[data-rule-key]') || [])
+    const stop = matchKey ? rows.findIndex(r => r.dataset.ruleKey === matchKey) : rows.length - 1
+    const step = Math.max(16, Math.min(90, 1600 / Math.max(1, stop + 1)))
+    for (let i = 0; i <= stop && i < rows.length; i++) {
+      simScanKey.value = rows[i].dataset.ruleKey || ''
+      await wait(step)
+    }
+    simScanKey.value = ''
+    simMatchKey.value = matchKey
+    simResult.value = { ...data, query }
+
+    const row = rows[stop]
+    if (matchKey && row) {
+      const rect = row.getBoundingClientRect()
+      if (rect.top < 80 || rect.bottom > window.innerHeight) {
+        window.scrollTo({ top: window.scrollY + rect.top - window.innerHeight / 2, behavior: 'smooth' })
+      }
+    }
+    if (data.matched) simVia.value = await resolveVia(data.policy)
+  } catch (error: any) {
+    if (error.code === 'ECONNABORTED') notify.error('查询超时，请检查规则集配置是否正确')
+    else notify.error(error.response?.data?.message || error.message || '查询失败')
+  } finally {
+    simRunning.value = false
+    simScanKey.value = ''
+  }
 }
 
 // 规则索引相关
@@ -1550,3 +1679,18 @@ onActivated(() => {
   Promise.all([loadAllRules(), loadProxyGroups(), loadRuleLibrary()])
 })
 </script>
+
+<style scoped>
+.rule-row.is-scan {
+  background: var(--secondary);
+}
+
+.rule-row.is-match {
+  background: var(--primary-soft);
+  box-shadow: inset 3px 0 0 var(--primary-accent);
+}
+
+.rule-row.is-match .rule-index {
+  color: var(--primary-accent);
+}
+</style>

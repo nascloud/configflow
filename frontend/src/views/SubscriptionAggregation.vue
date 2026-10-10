@@ -1,14 +1,8 @@
 <template>
   <div :class="reorder.active.value && 'cf-reordering'">
-    <ScopeBanner
-      scope="resource"
-      :profile-name="cfProfileName"
-      description="所有配置共用这些聚合；修改会影响使用它的所有配置。"
-    />
 
     <PageHeader
       title="订阅聚合"
-      description="把多个订阅和节点合并，再到策略组中选择使用。"
     >
       <template #actions>
         <Button
@@ -21,7 +15,7 @@
           <ArrowUpDown class="size-4" />
           调整顺序
         </Button>
-        <Button @click="showAddDialog">
+        <Button class="shadow-glow" @click="showAddDialog">
           <Plus class="size-4" />
           添加聚合
         </Button>
@@ -61,8 +55,8 @@
         :data-id="aggregation.id"
         data-reorder-item
         :class="[
-          'relative flex flex-col gap-3 overflow-hidden rounded-xl border border-border bg-card p-4 transition-colors duration-200',
-          !aggregation.enabled && 'dark:opacity-60'
+          'relative flex flex-col gap-3 overflow-hidden rounded-[18px] border border-border bg-card/90 shadow-surface p-4 transition-all duration-300 hover:border-border-strong',
+          !aggregation.enabled && 'opacity-60'
         ]"
       >
         <header class="flex items-start gap-2.5">
@@ -187,7 +181,7 @@
 
     <!-- ===== 新增 / 编辑聚合 ===== -->
     <Dialog v-model:open="dialogVisible">
-      <DialogContent class="max-w-[760px]">
+      <DialogContent class="glass-strong hairline max-w-[760px] border-border/50">
         <DialogHeader>
           <DialogTitle>{{ isEdit ? '编辑聚合' : '添加聚合' }}</DialogTitle>
           <DialogDescription>选择要合并的订阅和节点，可按节点名称筛选。</DialogDescription>
@@ -276,7 +270,7 @@
 
     <!-- ===== 节点预览 ===== -->
     <Dialog v-model:open="previewDialogVisible">
-      <DialogContent class="max-w-[660px]">
+      <DialogContent class="glass-strong hairline max-w-[660px] border-border/50">
         <DialogHeader>
           <DialogTitle>节点预览</DialogTitle>
           <DialogDescription>
@@ -350,7 +344,7 @@
 
     <!-- ===== 单个订阅的节点列表 ===== -->
     <Dialog v-model:open="subscriptionNodesDialogVisible">
-      <DialogContent class="max-w-[600px]">
+      <DialogContent class="glass-strong hairline max-w-[600px] border-border/50">
         <DialogHeader>
           <DialogTitle>{{ currentSubscription.name }} · 节点列表</DialogTitle>
           <DialogDescription>
@@ -417,21 +411,15 @@ import LoadingRows from '@/components/common/LoadingRows.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
-import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import ReorderBar from '@/components/shell/ReorderBar.vue'
 import DragHandle from '@/components/shell/DragHandle.vue'
 import { useReorder } from '@/composables/useReorder'
 import { confirmDanger, notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
-import { useProfileStore } from '@/stores/profile'
 import api from '@/api'
 import * as yaml from 'js-yaml'
 
 
-const cfProfileStore = useProfileStore()
-const cfProfileName = computed(
-  () => cfProfileStore.activeProfile.value?.name || cfProfileStore.activeProfileId.value
-)
 interface Subscription {
   id: string
   name: string
@@ -745,3 +733,4 @@ onMounted(async () => {
   await Promise.all([loadSubscriptions(), loadNodes()])
 })
 </script>
+

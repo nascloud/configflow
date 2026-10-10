@@ -84,7 +84,9 @@ export const subscriptionApi = {
   create: (data: any) => api.post('/subscriptions', data),
   update: (id: string, data: any) => api.put(`/subscriptions/${id}`, data),
   delete: (id: string) => api.delete(`/subscriptions/${id}`),
-  fetch: (id: string, preview: boolean = false) => api.post(`/subscriptions/${id}/fetch`, { preview })
+  fetch: (id: string, preview: boolean = false) => api.post(`/subscriptions/${id}/fetch`, { preview }),
+  /** 最近 24 次拉取记录与 subscription-userinfo 流量信息 */
+  health: () => api.get('/subscriptions/health')
 }
 
 // 节点相关
@@ -92,7 +94,11 @@ export const nodeApi = {
   getAll: () => api.get('/nodes'),
   create: (data: any) => api.post('/nodes', data),
   update: (id: string, data: any) => api.put(`/nodes/${id}`, data),
-  delete: (id: string) => api.delete(`/nodes/${id}`)
+  delete: (id: string) => api.delete(`/nodes/${id}`),
+  /** 最近一次 TCP 延迟结果（按节点名） */
+  latency: () => api.get('/nodes/latency'),
+  /** 发起 TCP 延迟测试；names 为空测全部候选节点 */
+  testLatency: (names?: string[]) => api.post('/nodes/latency', names ? { names } : {}, { timeout: 120000 })
 }
 
 // 规则相关

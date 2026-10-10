@@ -1,87 +1,13 @@
 <template>
   <div class="min-w-0 [overflow-wrap:anywhere]">
-    <ScopeBanner scope="profile" :profile-name="cfProfileName" />
+    <PageHeader title="配置生成">
+      <template #actions>
+        <div id="generate-header-actions" class="contents" />
+      </template>
+    </PageHeader>
 
-    <PageHeader
-      title="配置生成"
-      description="将当前配置空间的设置生成 Mihomo、Surge、Loon 或 MosDNS 配置。可先预览再下载，或复制订阅链接到客户端。"
-    />
-
-    <!-- ===== 生成目标 ===== -->
-    <div class="mb-4 grid grid-cols-2 gap-3 max-[900px]:grid-cols-1">
-      <Motion
-        v-for="(target, index) in targets"
-        :key="target.key"
-        v-bind="listItem(index)"
-        class="relative flex min-w-0 flex-col gap-3.5 overflow-hidden rounded-xl border border-border bg-card p-5 max-md:p-4"
-      >
-        <header class="flex items-center gap-2.5">
-          <span
-            class="relative grid size-9 shrink-0 place-items-center rounded-lg border border-border/50 bg-background/50 text-primary-accent"
-          >
-            <span
-              class="absolute inset-0 rounded-lg bg-primary-soft"
-              aria-hidden="true"
-            />
-            <component :is="target.icon" class="relative size-4.5" :stroke-width="2" aria-hidden="true" />
-          </span>
-          <div class="min-w-0">
-            <p class="m-0 text-[14px] font-semibold text-foreground">{{ target.title }}</p>
-            <p class="mt-0.5 mb-0 text-[12px] text-muted-foreground">{{ target.desc }}</p>
-          </div>
-        </header>
-
-        <!-- 订阅 URL：只读展示 + 一键复制 -->
-        <div class="flex flex-col gap-1.5">
-          <div class="flex items-center gap-1.5">
-            <Input
-              :model-value="target.urlDisplay"
-              readonly
-              class="h-9 min-w-0 bg-background/50 font-mono text-[11.5px]"
-              placeholder="订阅链接"
-              :aria-label="`${target.title} 订阅链接`"
-            />
-            <Button
-              variant="outline"
-              size="icon"
-              class="size-9 shrink-0 border-border/60 bg-background/40"
-              :title="`复制 ${target.title} 订阅链接`"
-              :aria-label="`复制 ${target.title} 订阅链接`"
-              @click="copyUrl(target.url, target.title)"
-            >
-              <Copy class="size-4" />
-            </Button>
-          </div>
-          <p class="m-0 text-[11.5px] text-muted-foreground">将链接添加到客户端即可订阅。链接中的令牌同时拥有 MCP 管理权限，请勿公开分享。</p>
-        </div>
-
-        <div
-          :class="cn(
-            'mt-auto grid gap-1.5 max-[480px]:grid-cols-2',
-            target.actions.length === 4 ? 'grid-cols-4' : 'grid-cols-3'
-          )"
-        >
-          <Button
-            v-for="action in target.actions"
-            :key="action.label"
-            :variant="action.primary ? 'default' : 'outline'"
-            size="sm"
-            :class="cn(
-              'h-auto min-h-8 min-w-0 py-1.5',
-              target.actions.length === 4
-                ? 'gap-0.5 px-0.5 text-[11px] whitespace-nowrap max-[480px]:gap-1.5 max-[480px]:px-2.5 max-[480px]:text-sm'
-                : 'whitespace-normal'
-            )"
-            :disabled="action.loading"
-            @click="action.run"
-          >
-            <Loader2 v-if="action.loading" class="size-3.5 animate-spin" />
-            <component v-else :is="action.icon" class="size-3.5" />
-            {{ action.label }}
-          </Button>
-        </div>
-      </Motion>
-    </div>
+    <!-- ===== 生成工作台：目标切换 + 编译步骤 + 代码面板 ===== -->
+    <GenerateStudio :targets="studioTargets" @copy="copyUrl" />
 
     <!-- ===== 自定义基础配置 ===== -->
     <Dialog v-model:open="customConfigDialogVisible">
@@ -703,10 +629,9 @@
 
 <script setup lang="ts">
 import PageHeader from '@/components/common/PageHeader.vue'
-import ScopeBanner from '@/components/shell/ScopeBanner.vue'
+import GenerateStudio from '@/components/generate/GenerateStudio.vue'
 import { useProfileStore } from '@/stores/profile'
 import { ref, onMounted, computed, watch, nextTick } from 'vue'
-import { Motion } from 'motion-v'
 import {
   ChevronDown,
   ChevronUp,
@@ -753,8 +678,6 @@ import InfoNote from '@/components/common/InfoNote.vue'
 import LabeledDivider from '@/components/common/LabeledDivider.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
 import { notify } from '@/lib/feedback'
-import { listItem } from '@/lib/motion'
-import { cn } from '@/lib/utils'
 import { generateApi, customConfigApi, ruleApi, ruleSetApi, proxyGroupApi, serverDomainApi, configTokenApi } from '@/api'
 import YamlEditor from '@/components/YamlEditor.vue'
 import api from '@/api'
@@ -768,7 +691,6 @@ import Sortable from 'sortablejs'
 const cfProfileStore = useProfileStore()
 const profileId = activeProfileId.value
 const profileOptions = { headers: { 'X-ConfigFlow-Profile': profileId } }
-const cfProfileName = computed(() => cfProfileStore.profileName(profileId))
 interface DnsEntry {
   id: string
   mode: 'simple' | 'yaml'
@@ -1262,6 +1184,15 @@ const targets = computed(() => [
     ]
   }
 ])
+
+/* 工作台里的代码面板就是预览，原「预览」按钮不再单列 */
+const studioTargets = computed(() =>
+  targets.value.map(t => ({
+    ...t,
+    key: t.key as 'mihomo' | 'surge' | 'loon' | 'mosdns',
+    actions: t.actions.filter(action => action.label !== '预览')
+  }))
+)
 
 /* 直连与代理互斥：把已被对面选走的项从本列表里剔除（已选中的自己保留），
  * 取代原先「显示为禁用项」的做法，选择面板里不再出现点不动的行。 */

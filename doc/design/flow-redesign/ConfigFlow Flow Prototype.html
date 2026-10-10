@@ -1,0 +1,1408 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark" data-accent="clay">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ConfigFlow · Flow</title>
+<style>
+/* ============================================================
+   ConfigFlow · Flow 原型
+   设计语言：Claude 暖色系（象牙 / 炭黑 / 陶土橙）+ 衬线标题 + 流量粒子
+   所有数据均为示例数据，仅用于原型演示
+   ============================================================ */
+:root{
+  --serif:"Tiempos Headline","Copernicus","Iowan Old Style","Palatino","Songti SC","STSong","Noto Serif CJK SC",Georgia,serif;
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
+  --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  --ease:cubic-bezier(.22,1,.36,1);
+  --ease-spring:cubic-bezier(.34,1.56,.64,1);
+  --r-sm:8px;--r-md:12px;--r-lg:18px;--r-xl:24px;
+  --rail-w:236px;--top-h:60px;
+}
+[data-theme=dark]{
+  --bg:#191817;--bg-2:#1f1e1c;--surface:#242321;--surface-2:#2c2b28;--surface-3:#35332f;
+  --line:rgba(240,238,230,.075);--line-2:rgba(240,238,230,.14);
+  --fg:#f0eee6;--fg-2:#b6b2a6;--fg-3:#7c786e;
+  --olive:#97ad73;--sky:#7aa7d4;--kraft:#d9a984;--danger:#e0705e;
+  --glow-mix:lighter;--shadow:0 1px 0 rgba(255,255,255,.04) inset,0 18px 40px -20px rgba(0,0,0,.7);
+  --grain-op:.06;color-scheme:dark;
+}
+[data-theme=light]{
+  --bg:#f5f3ec;--bg-2:#efece3;--surface:#fbfaf6;--surface-2:#f0ede4;--surface-3:#e6e2d6;
+  --line:rgba(20,20,19,.08);--line-2:rgba(20,20,19,.15);
+  --fg:#1a1915;--fg-2:#5c5a52;--fg-3:#8e8b80;
+  --olive:#5f7a3a;--sky:#3f76ad;--kraft:#a8693c;--danger:#bf4636;
+  --glow-mix:source-over;--shadow:0 1px 0 rgba(255,255,255,.8) inset,0 14px 30px -18px rgba(60,40,20,.25);
+  --grain-op:.05;color-scheme:light;
+}
+[data-accent=clay]{--accent:#d97757;--accent-2:#eba184}
+[data-theme=light][data-accent=clay]{--accent:#c25e3c;--accent-2:#d97757}
+[data-accent=kraft]{--accent:#d4a27f;--accent-2:#e7c3a6}
+[data-theme=light][data-accent=kraft]{--accent:#a8693c;--accent-2:#c48a5f}
+[data-accent=sky]{--accent:#6a9bcc;--accent-2:#9cc0e3}
+[data-theme=light][data-accent=sky]{--accent:#3f76ad;--accent-2:#6a9bcc}
+:root{--accent-soft:color-mix(in oklch,var(--accent) 16%,transparent);--accent-line:color-mix(in oklch,var(--accent) 45%,transparent)}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--sans);font-size:14px;line-height:1.55;color:var(--fg);background:var(--bg);-webkit-font-smoothing:antialiased;overflow:hidden;transition:background .5s var(--ease),color .5s var(--ease)}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;border:0;background:none}
+::selection{background:var(--accent-soft)}
+.num{font-variant-numeric:tabular-nums}
+.mono{font-family:var(--mono)}
+.serif{font-family:var(--serif)}
+svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+
+/* ---------- 背景：暖光 + 点阵 + 颗粒 ---------- */
+.atmos{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+.atmos::before{content:"";position:absolute;inset:-20%;background:
+  radial-gradient(40% 35% at 78% 8%,color-mix(in oklch,var(--accent) 22%,transparent),transparent 70%),
+  radial-gradient(30% 30% at 10% 90%,color-mix(in oklch,var(--kraft) 10%,transparent),transparent 70%);
+  animation:drift 26s ease-in-out infinite alternate}
+.atmos::after{content:"";position:absolute;inset:0;background-image:radial-gradient(var(--line-2) 1px,transparent 1.2px);background-size:24px 24px;
+  -webkit-mask-image:radial-gradient(80% 60% at 60% 20%,#000 0%,transparent 75%);mask-image:radial-gradient(80% 60% at 60% 20%,#000 0%,transparent 75%);opacity:.55}
+.grain{position:fixed;inset:0;pointer-events:none;z-index:100;opacity:var(--grain-op);mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>")}
+body[data-texture=off] .grain,body[data-texture=off] .atmos::after{display:none}
+@keyframes drift{to{transform:translate3d(-4%,3%,0) scale(1.06)}}
+
+/* ---------- 应用壳 ---------- */
+.app{position:relative;z-index:1;display:grid;grid-template-columns:var(--rail-w) minmax(0,1fr);height:100vh;height:100dvh}
+.rail{display:flex;flex-direction:column;gap:6px;padding:18px 14px 14px;border-right:1px solid var(--line);background:color-mix(in oklch,var(--bg-2) 70%,transparent);backdrop-filter:blur(14px);min-height:0}
+.brand{display:flex;align-items:center;gap:10px;padding:2px 8px 14px}
+.brand-mark{width:30px;height:30px;color:var(--accent)}
+.brand-mark svg{width:100%;height:100%;overflow:visible}
+.brand-mark .rays{transform-origin:16px 16px;transition:transform 1.2s var(--ease)}
+.brand:hover .rays,.busy .brand-mark .rays{transform:rotate(90deg)}
+.busy .brand-mark .rays{animation:spin 1.6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.brand-name{font-family:var(--serif);font-size:19px;font-weight:600;letter-spacing:-.01em}
+.brand-name small{display:block;font-family:var(--mono);font-size:10px;font-weight:400;color:var(--fg-3);letter-spacing:.12em;text-transform:uppercase;margin-top:-2px}
+
+.profile-btn{display:flex;align-items:center;gap:10px;width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface);text-align:left;transition:border-color .2s,transform .2s var(--ease)}
+.profile-btn:hover{border-color:var(--line-2)}
+.profile-btn:active{transform:scale(.98)}
+.profile-ava{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-family:var(--serif);font-weight:600;background:var(--accent-soft);color:var(--accent);flex:none}
+.profile-btn .t{flex:1;min-width:0}
+.profile-btn .t b{display:block;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.profile-btn .t span{font-size:11px;color:var(--fg-3)}
+.profile-wrap{position:relative;margin-bottom:10px}
+.pop{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:30;padding:6px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface);box-shadow:0 20px 50px -18px rgba(0,0,0,.5);opacity:0;transform:translateY(-6px) scale(.98);pointer-events:none;transition:.22s var(--ease)}
+.pop.open{opacity:1;transform:none;pointer-events:auto}
+.pop button{display:flex;width:100%;align-items:center;gap:10px;padding:8px;border-radius:8px;text-align:left;font-size:13px}
+.pop button:hover{background:var(--surface-2)}
+.pop button .chk{margin-left:auto;color:var(--accent);opacity:0}
+.pop button.on .chk{opacity:1}
+
+.nav{flex:1;overflow:auto;min-height:0;scrollbar-width:none}
+.nav-h{display:flex;align-items:center;gap:8px;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-3);padding:14px 10px 6px;font-family:var(--mono)}
+.nav-h::after{content:"";flex:1;height:1px;background:var(--line)}
+.nav a{position:relative;display:flex;align-items:center;gap:11px;height:36px;padding:0 10px;border-radius:10px;color:var(--fg-2);text-decoration:none;font-size:13.5px;transition:color .2s,background .2s}
+.nav a:hover{color:var(--fg);background:var(--surface)}
+.nav a.on{color:var(--fg);background:var(--surface-2)}
+.nav a.on::before{content:"";position:absolute;left:-14px;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--accent);box-shadow:0 0 14px var(--accent)}
+.nav a.on svg{color:var(--accent)}
+.nav a .cnt{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--fg-3)}
+.nav a .pulse{margin-left:auto;width:6px;height:6px;border-radius:50%;background:var(--olive);box-shadow:0 0 0 0 var(--olive);animation:ping 2s infinite}
+@keyframes ping{0%{box-shadow:0 0 0 0 color-mix(in oklch,var(--olive) 60%,transparent)}100%{box-shadow:0 0 0 8px transparent}}
+
+.rail-foot{border-top:1px solid var(--line);padding:12px 6px 0;display:grid;gap:8px}
+.mini-meter{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--fg-3)}
+.mini-meter canvas{flex:1;height:22px;width:100%}
+.mini-meter b{font-family:var(--mono);font-weight:500;color:var(--fg-2);min-width:62px;text-align:right}
+
+.main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.topbar{height:var(--top-h);flex:none;display:flex;align-items:center;gap:14px;padding:0 28px;border-bottom:1px solid var(--line);background:color-mix(in oklch,var(--bg) 60%,transparent);backdrop-filter:blur(14px)}
+.crumb{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg-3);min-width:0}
+.crumb b{color:var(--fg);font-weight:600;white-space:nowrap}
+.crumb .sep{opacity:.5}
+.scope-tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;padding:3px 8px;border-radius:999px;border:1px solid var(--line-2);color:var(--fg-2);white-space:nowrap}
+.scope-tag[data-s=profile]{border-color:var(--accent-line);color:var(--accent);background:var(--accent-soft)}
+.scope-tag[data-s=resource]{border-color:color-mix(in oklch,var(--sky) 40%,transparent);color:var(--sky)}
+.top-sp{flex:1}
+.ticker{display:flex;align-items:center;gap:14px;padding:6px 12px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-family:var(--mono);font-size:12px;color:var(--fg-2)}
+.ticker span{display:flex;align-items:center;gap:5px}
+.ticker .dn{color:var(--accent)}
+.ticker .up{color:var(--olive)}
+.kbtn{display:flex;align-items:center;gap:10px;height:34px;padding:0 8px 0 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--fg-3);font-size:13px;transition:border-color .2s;min-width:200px}
+.kbtn:hover{border-color:var(--line-2);color:var(--fg-2)}
+.kbtn kbd,.kbd{margin-left:auto;font-family:var(--mono);font-size:11px;padding:2px 6px;border-radius:6px;border:1px solid var(--line-2);color:var(--fg-3);background:var(--bg-2)}
+.ibtn{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--fg-2);transition:.2s var(--ease)}
+.ibtn:hover{color:var(--fg);border-color:var(--line-2)}
+.ibtn:active{transform:scale(.94)}
+.demo-chip{font-family:var(--mono);font-size:10.5px;color:var(--kraft);border:1px dashed color-mix(in oklch,var(--kraft) 50%,transparent);padding:3px 8px;border-radius:999px;white-space:nowrap}
+
+.content{flex:1;overflow:auto;min-height:0;padding:30px 28px 80px;scroll-behavior:smooth}
+.view{display:none;max-width:1360px;margin:0 auto}
+.view.on{display:block;animation:viewIn .6s var(--ease)}
+@keyframes viewIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+/* ---------- 通用组件 ---------- */
+.page-h{display:flex;align-items:flex-end;gap:20px;flex-wrap:wrap;margin-bottom:26px}
+.page-h .tt{flex:1;min-width:260px}
+.eyebrow{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-3);margin-bottom:10px}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent);animation:blink 1.6s ease-in-out infinite}
+@keyframes blink{50%{opacity:.35}}
+h1.display{font-family:var(--serif);font-weight:500;font-size:clamp(30px,3.6vw,48px);line-height:1.12;letter-spacing:-.02em;text-wrap:balance}
+h1.display em{font-style:italic;color:var(--accent)}
+h2.title{font-family:var(--serif);font-weight:500;font-size:clamp(26px,2.6vw,34px);letter-spacing:-.015em;line-height:1.15}
+.sub{color:var(--fg-2);margin-top:8px;max-width:620px;text-wrap:pretty}
+
+.card{position:relative;border:1px solid var(--line);border-radius:var(--r-lg);background:color-mix(in oklch,var(--surface) 88%,transparent);box-shadow:var(--shadow)}
+.card-h{display:flex;align-items:center;gap:10px;padding:16px 18px 0}
+.card-h h3{font-size:13.5px;font-weight:600}
+.card-h .meta{margin-left:auto;font-size:12px;color:var(--fg-3);font-family:var(--mono)}
+.card-b{padding:14px 18px 18px}
+
+.btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 14px;border-radius:10px;font-size:13px;font-weight:500;border:1px solid var(--line-2);background:var(--surface);color:var(--fg);transition:transform .18s var(--ease),background .2s,border-color .2s,box-shadow .3s;white-space:nowrap;overflow:hidden}
+.btn:hover{border-color:color-mix(in oklch,var(--fg) 30%,transparent)}
+.btn:active{transform:scale(.97)}
+.btn:focus-visible,.ibtn:focus-visible,.kbtn:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.primary{background:var(--accent);border-color:transparent;color:#1a1310;box-shadow:0 8px 24px -10px var(--accent)}
+[data-theme=light] .btn.primary{color:#fff}
+.btn.primary:hover{box-shadow:0 10px 30px -8px var(--accent)}
+.btn.primary::after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.35) 50%,transparent 70%);transform:translateX(-120%)}
+.btn.primary:hover::after{transform:translateX(120%);transition:transform .8s var(--ease)}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--fg-2)}
+.btn.ghost:hover{background:var(--surface-2);color:var(--fg)}
+.btn[disabled]{opacity:.5;pointer-events:none}
+.btn.loading svg{animation:spin 1s linear infinite}
+
+.chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:999px;font-size:11.5px;border:1px solid var(--line-2);color:var(--fg-2);white-space:nowrap}
+.chip.acc{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}
+.chip.ok{color:var(--olive);border-color:color-mix(in oklch,var(--olive) 40%,transparent)}
+.chip.warn{color:var(--kraft);border-color:color-mix(in oklch,var(--kraft) 40%,transparent)}
+.chip.bad{color:var(--danger);border-color:color-mix(in oklch,var(--danger) 40%,transparent)}
+.chip.sky{color:var(--sky);border-color:color-mix(in oklch,var(--sky) 40%,transparent)}
+.chip.mono{font-family:var(--mono);font-size:11px}
+button.chip{transition:.2s var(--ease)}
+button.chip:hover{color:var(--fg)}
+button.chip.on{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+
+.seg{display:inline-flex;padding:3px;border-radius:12px;background:var(--surface-2);border:1px solid var(--line);position:relative}
+.seg button{position:relative;z-index:1;height:30px;padding:0 14px;border-radius:9px;font-size:13px;color:var(--fg-2);transition:color .25s}
+.seg button.on{color:var(--fg)}
+.seg .thumb{position:absolute;top:3px;bottom:3px;border-radius:9px;background:var(--surface);box-shadow:0 2px 10px -4px rgba(0,0,0,.4),0 0 0 1px var(--line-2);transition:left .35s var(--ease),width .35s var(--ease)}
+
+.input{height:36px;padding:0 12px;border-radius:10px;border:1px solid var(--line-2);background:var(--bg-2);outline:none;transition:border-color .2s,box-shadow .2s;min-width:0}
+.input:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
+.input.mono{font-family:var(--mono);font-size:13px}
+
+/* ---------- 总览：Flow Canvas ---------- */
+.hero{margin-bottom:22px}
+.hero-head{display:flex;align-items:center;gap:24px;flex-wrap:wrap;margin-bottom:22px}
+.hero-head .tt{flex:1;min-width:280px}
+.tp{display:flex;gap:28px}
+.tp-item{text-align:right}
+.tp-item small{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;color:var(--fg-3);text-transform:uppercase}
+.tp-item b{font-family:var(--serif);font-weight:500;font-size:40px;line-height:1;letter-spacing:-.02em}
+.tp-item b i{font-style:normal;font-family:var(--mono);font-size:12px;color:var(--fg-3);margin-left:4px;letter-spacing:0}
+.tp-item.dn b{color:var(--accent)}
+
+.flow-card{overflow:hidden}
+.flow-card::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:radial-gradient(60% 80% at 50% 0%,color-mix(in oklch,var(--accent) 8%,transparent),transparent 70%)}
+.flow-scroll{overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
+.flow{position:relative;min-width:980px;padding:22px 22px 18px}
+.flow>canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+.fcols{position:relative;z-index:1;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));column-gap:46px;min-height:400px}
+.fcol{display:flex;flex-direction:column;justify-content:space-around;gap:10px}
+.fcol-h{position:absolute;top:-4px;font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-3)}
+.fcol{position:relative;padding-top:20px}
+.fnode{position:relative;display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:12px;border:1px solid var(--line-2);background:color-mix(in oklch,var(--surface) 92%,transparent);backdrop-filter:blur(6px);cursor:pointer;transition:border-color .3s,box-shadow .4s,transform .3s var(--ease),opacity .3s}
+.fnode:hover{transform:translateY(-1px);border-color:var(--accent-line)}
+.fnode .ic{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;background:var(--surface-2);color:var(--fg-2);flex:none}
+.fnode .ic svg{width:15px;height:15px}
+.fnode .t{min-width:0;flex:1}
+.fnode .t b{display:block;font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fnode .t span{display:block;font-family:var(--mono);font-size:10.5px;color:var(--fg-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fnode.hit{border-color:var(--accent-line);box-shadow:0 0 0 1px var(--accent-soft),0 0 24px -6px var(--accent)}
+.fnode.dim{opacity:.32}
+.fnode.off .ic{color:var(--fg-3)}
+.fnode .st{width:7px;height:7px;border-radius:50%;background:var(--olive);flex:none;box-shadow:0 0 10px var(--olive)}
+.fnode.off .st{background:var(--fg-3);box-shadow:none}
+.fnode.pool{flex-direction:column;align-items:stretch;padding:14px}
+.pool .big{font-family:var(--serif);font-size:44px;line-height:1;font-weight:500;letter-spacing:-.03em}
+.pool .lbl{font-size:11px;color:var(--fg-3);font-family:var(--mono);margin-top:4px}
+.regions{display:grid;gap:5px;margin-top:12px}
+.rg{display:grid;grid-template-columns:24px 1fr 26px;align-items:center;gap:6px;font-family:var(--mono);font-size:10.5px;color:var(--fg-3)}
+.rg i{height:4px;border-radius:4px;background:var(--surface-3);overflow:hidden;position:relative}
+.rg i::after{content:"";position:absolute;inset:0;width:var(--w);background:linear-gradient(90deg,var(--accent),var(--accent-2));border-radius:4px;transform-origin:left;animation:grow 1.4s var(--ease) both}
+@keyframes grow{from{transform:scaleX(0)}}
+.fnode.engine{flex-direction:column;align-items:stretch;padding:14px;text-align:left}
+.engine .big{font-family:var(--serif);font-size:30px;line-height:1;font-weight:500}
+.engine .lbl{font-size:11px;color:var(--fg-3);font-family:var(--mono);margin-top:6px}
+.engine .scan{height:2px;margin-top:12px;border-radius:2px;background:var(--surface-3);overflow:hidden;position:relative}
+.engine .scan::after{content:"";position:absolute;top:0;bottom:0;width:40%;background:linear-gradient(90deg,transparent,var(--kraft),transparent);animation:scan 1.8s linear infinite}
+@keyframes scan{from{left:-40%}to{left:100%}}
+.flow-legend{display:flex;gap:16px;flex-wrap:wrap;align-items:center;padding:12px 22px;border-top:1px solid var(--line);font-size:12px;color:var(--fg-3)}
+.flow-legend span{display:flex;align-items:center;gap:6px}
+.flow-legend i{width:16px;height:2px;border-radius:2px;background:var(--c)}
+.flow-legend .hint{margin-left:auto}
+
+/* KPI */
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:22px}
+.kpi{padding:16px 18px 12px;cursor:pointer;transition:transform .35s var(--ease),border-color .3s;overflow:hidden}
+.kpi:hover{transform:translateY(-3px);border-color:var(--line-2)}
+.kpi .k-h{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--fg-2)}
+.kpi .k-h svg{width:15px;height:15px;color:var(--fg-3)}
+.kpi .k-h .scope-tag{margin-left:auto;font-size:9.5px;padding:2px 6px}
+.kpi .k-v{display:flex;align-items:baseline;gap:8px;margin-top:10px}
+.kpi .k-v b{font-family:var(--serif);font-weight:500;font-size:42px;line-height:1;letter-spacing:-.03em}
+.kpi .k-v span{font-family:var(--mono);font-size:11.5px;color:var(--olive)}
+.kpi canvas{display:block;width:100%;height:38px;margin-top:8px}
+
+.dash-grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:14px}
+.stream{height:360px;overflow:hidden;position:relative;-webkit-mask-image:linear-gradient(#000 70%,transparent);mask-image:linear-gradient(#000 70%,transparent)}
+.ev{display:grid;grid-template-columns:62px 22px 1fr auto;align-items:center;gap:10px;padding:10px 18px;border-top:1px solid var(--line);animation:evIn .7s var(--ease)}
+.ev:first-child{border-top:0}
+@keyframes evIn{from{opacity:0;transform:translateY(-14px);background:var(--accent-soft)}to{opacity:1;transform:none;background:transparent}}
+.ev time{font-family:var(--mono);font-size:11px;color:var(--fg-3)}
+.ev .dot{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;background:var(--surface-2);color:var(--fg-2)}
+.ev .dot svg{width:13px;height:13px}
+.ev .dot.acc{color:var(--accent);background:var(--accent-soft)}
+.ev .dot.ok{color:var(--olive)}
+.ev .dot.warn{color:var(--kraft)}
+.ev p{font-size:13px;color:var(--fg-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev p b{color:var(--fg);font-weight:500}
+.ev .tag{font-family:var(--mono);font-size:11px;color:var(--fg-3)}
+.health-row{display:grid;grid-template-columns:1fr auto;gap:6px 10px;padding:10px 0;border-top:1px solid var(--line)}
+.health-row:first-child{border-top:0;padding-top:0}
+.health-row b{font-size:13px;font-weight:500}
+.health-row span{font-family:var(--mono);font-size:12px;color:var(--fg-2)}
+.bars{grid-column:1/-1;display:flex;gap:2px;height:18px;align-items:flex-end}
+.bars i{flex:1;border-radius:2px;background:var(--olive);opacity:.75;height:var(--h);transition:height .6s var(--ease)}
+.bars i.w{background:var(--kraft)}
+.bars i.b{background:var(--danger)}
+.qa{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
+.qa button{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--bg-2);text-align:left;font-size:12.5px;color:var(--fg-2);transition:.25s var(--ease)}
+.qa button svg{color:var(--accent)}
+.qa button:hover{border-color:var(--accent-line);color:var(--fg);transform:translateY(-2px)}
+
+/* ---------- 订阅来源 ---------- */
+.subs{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.sub-card{padding:20px;overflow:hidden;transition:transform .35s var(--ease),border-color .3s}
+.sub-card:hover{transform:translateY(-3px);border-color:var(--line-2)}
+.sub-top{display:flex;gap:16px;align-items:center}
+.ring{position:relative;width:96px;height:96px;flex:none}
+.ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+.ring circle{fill:none;stroke-width:7}
+.ring .bg{stroke:var(--surface-3)}
+.ring .fg{stroke:url(#ringGrad);stroke-linecap:round;transition:stroke-dashoffset 1.6s var(--ease)}
+.ring .ct{position:absolute;inset:0;display:grid;place-content:center;text-align:center}
+.ring .ct b{font-family:var(--serif);font-size:24px;font-weight:500;line-height:1}
+.ring .ct span{font-family:var(--mono);font-size:10px;color:var(--fg-3);margin-top:3px}
+.sub-info{flex:1;min-width:0}
+.sub-info h4{font-family:var(--serif);font-size:20px;font-weight:500;letter-spacing:-.01em}
+.sub-info .row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.sub-stats{display:grid;grid-template-columns:repeat(3,1fr);margin-top:18px;border-top:1px solid var(--line);padding-top:14px}
+.sub-stats div small{display:block;font-size:11px;color:var(--fg-3)}
+.sub-stats div b{font-family:var(--mono);font-size:15px;font-weight:500}
+.sub-foot{display:flex;align-items:center;gap:8px;margin-top:16px}
+.sub-foot .when{font-size:11.5px;color:var(--fg-3);margin-right:auto}
+.sub-card .sweep{position:absolute;left:0;right:0;top:0;height:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);transform:translateX(-100%);opacity:0}
+.sub-card.pulling .sweep{opacity:1;animation:sweep 1s linear infinite}
+@keyframes sweep{to{transform:translateX(100%)}}
+.sub-card.add{display:grid;place-content:center;text-align:center;gap:10px;border-style:dashed;color:var(--fg-3);min-height:250px;background:transparent;box-shadow:none;cursor:pointer}
+.sub-card.add:hover{color:var(--accent);border-color:var(--accent-line)}
+.sub-card.add svg{width:28px;height:28px;margin:0 auto}
+
+/* ---------- 节点库 ---------- */
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+.toolbar .sp{flex:1}
+.filters{display:flex;gap:6px;flex-wrap:wrap}
+.node-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(212px,1fr));gap:10px}
+.ntile{position:relative;padding:12px 13px 10px;border-radius:14px;border:1px solid var(--line);background:color-mix(in oklch,var(--surface) 88%,transparent);overflow:hidden;transition:transform .3s var(--ease),border-color .3s,opacity .3s}
+.ntile:hover{transform:translateY(-2px);border-color:var(--line-2)}
+.ntile .nh{display:flex;align-items:center;gap:8px}
+.ntile .rc{font-family:var(--mono);font-size:10.5px;font-weight:600;width:28px;height:20px;display:grid;place-items:center;border-radius:6px;background:var(--surface-2);color:var(--fg-2)}
+.ntile .nm{font-size:12.5px;font-weight:500;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ntile .nb{display:flex;align-items:flex-end;justify-content:space-between;margin-top:12px}
+.ntile .lat{font-family:var(--serif);font-size:26px;line-height:1;font-weight:500;letter-spacing:-.02em}
+.ntile .lat small{font-family:var(--mono);font-size:10.5px;color:var(--fg-3);margin-left:3px}
+.ntile .lat.g{color:var(--olive)}.ntile .lat.y{color:var(--kraft)}.ntile .lat.r{color:var(--danger)}
+.ntile .proto{font-family:var(--mono);font-size:10.5px;color:var(--fg-3);text-align:right}
+.ntile .spark{display:flex;gap:2px;height:16px;align-items:flex-end;margin-top:8px}
+.ntile .spark i{flex:1;border-radius:1px;background:var(--line-2);height:var(--h)}
+.ntile.testing .lat{opacity:.25}
+.ntile.testing::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 30%,var(--accent-soft) 50%,transparent 70%);animation:shimmer 1s linear infinite}
+@keyframes shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.ntile.flash{animation:flash .9s var(--ease)}
+@keyframes flash{0%{box-shadow:0 0 0 0 var(--accent-line);border-color:var(--accent)}100%{box-shadow:0 0 0 12px transparent}}
+.ntile.hide{display:none}
+.empty{padding:60px 20px;text-align:center;color:var(--fg-3)}
+.empty b{display:block;font-family:var(--serif);font-size:22px;font-weight:500;color:var(--fg-2);margin-bottom:6px}
+
+/* ---------- 策略组 ---------- */
+.pg{display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px;align-items:start}
+.pg-list{padding:8px}
+.pg-item{display:flex;align-items:center;gap:10px;width:100%;padding:11px 12px;border-radius:12px;text-align:left;transition:background .2s}
+.pg-item:hover{background:var(--surface-2)}
+.pg-item.on{background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line-2)}
+.pg-item .gi{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;background:var(--bg-2);color:var(--fg-2);font-family:var(--mono);font-size:10px}
+.pg-item.on .gi{background:var(--accent-soft);color:var(--accent)}
+.pg-item .t{flex:1;min-width:0}
+.pg-item .t b{display:block;font-size:13px;font-weight:600}
+.pg-item .t span{font-family:var(--mono);font-size:11px;color:var(--fg-3)}
+.pg-item .n{font-family:var(--mono);font-size:12px;color:var(--fg-2)}
+.pipe{display:grid;grid-template-columns:minmax(0,.9fr) 34px minmax(0,1.1fr) 34px minmax(0,1.5fr);align-items:stretch;padding:20px}
+.stage{display:flex;flex-direction:column;gap:10px;min-width:0}
+.stage-h{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-3)}
+.stage-box{flex:1;border:1px solid var(--line);border-radius:14px;padding:12px;background:var(--bg-2);display:flex;flex-direction:column;gap:8px;min-width:0}
+.pipe-link{position:relative;align-self:center;height:2px;margin:0 4px;background:repeating-linear-gradient(90deg,var(--accent) 0 6px,transparent 6px 12px);background-size:24px 2px;animation:dash .6s linear infinite;opacity:.8}
+.pipe-link::after{content:"";position:absolute;right:-2px;top:-4px;border:5px solid transparent;border-left-color:var(--accent);border-right:0}
+@keyframes dash{to{background-position:24px 0}}
+.src{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);font-size:12.5px;background:var(--surface);transition:.2s}
+.src input{accent-color:var(--accent)}
+.src.off{opacity:.45}
+.regex-wrap{position:relative}
+.regex-wrap .input{width:100%;padding-left:28px}
+.regex-wrap::before{content:"/";position:absolute;left:12px;top:8px;font-family:var(--mono);color:var(--accent)}
+.regex-err{font-size:11.5px;color:var(--danger);min-height:16px}
+.funnel{display:flex;align-items:baseline;gap:8px}
+.funnel b{font-family:var(--serif);font-size:38px;line-height:1;font-weight:500}
+.funnel span{font-family:var(--mono);font-size:11.5px;color:var(--fg-3)}
+.matched{display:flex;flex-wrap:wrap;gap:6px;max-height:260px;overflow:auto;align-content:flex-start}
+.mnode{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:8px;border:1px solid var(--line);font-size:12px;background:var(--surface);animation:popIn .4s var(--ease-spring) both}
+.mnode i{font-style:normal;font-family:var(--mono);font-size:10.5px;color:var(--fg-3)}
+.mnode.win{border-color:var(--accent);background:var(--accent-soft);color:var(--fg);box-shadow:0 0 20px -6px var(--accent)}
+.mnode.win i{color:var(--accent)}
+@keyframes popIn{from{opacity:0;transform:scale(.8)}}
+.strategy{margin-top:auto;padding:12px;border-radius:12px;border:1px dashed var(--line-2);font-size:12.5px;color:var(--fg-2)}
+.strategy b{color:var(--fg)}
+
+/* ---------- 策略规则 + 命中模拟 ---------- */
+.sim{padding:20px;margin-bottom:14px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:end;overflow:hidden}
+.sim .input{width:100%;height:46px;font-size:16px;font-family:var(--mono)}
+.sim-out{grid-column:1/-1;display:flex;align-items:center;gap:12px;min-height:40px;font-size:13.5px;color:var(--fg-2)}
+.sim-out .route{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sim-out .route .ar{color:var(--fg-3)}
+.rtable{width:100%;border-collapse:collapse}
+.rtable th{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-3);font-weight:400;text-align:left;padding:12px 18px;border-bottom:1px solid var(--line)}
+.rtable td{padding:11px 18px;border-bottom:1px solid var(--line);font-size:13px;transition:background .15s}
+.rtable tr:last-child td{border-bottom:0}
+.rtable td.idx{font-family:var(--mono);font-size:11px;color:var(--fg-3);width:52px}
+.rtable td.val{font-family:var(--mono);font-size:12.5px}
+.rtable tr.scan td{background:var(--surface-2)}
+.rtable tr.match td{background:var(--accent-soft)}
+.rtable tr.match td.idx{color:var(--accent)}
+.rtable tr.match td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+.rtype{font-family:var(--mono);font-size:11px;color:var(--fg-2)}
+
+/* ---------- 配置生成 ---------- */
+.gen{display:grid;grid-template-columns:300px minmax(0,1fr);gap:14px;align-items:start}
+.steps{padding:18px;display:grid;gap:0}
+.step{position:relative;display:grid;grid-template-columns:26px 1fr;gap:12px;padding:0 0 20px}
+.step:last-child{padding-bottom:0}
+.step::before{content:"";position:absolute;left:12px;top:26px;bottom:2px;width:2px;background:var(--line-2)}
+.step:last-child::before{display:none}
+.step::after{content:"";position:absolute;left:12px;top:26px;width:2px;height:0;background:var(--accent);transition:height .5s var(--ease)}
+.step.done::after{height:calc(100% - 28px)}
+.step:last-child::after{display:none}
+.step .bul{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;border:1.5px solid var(--line-2);font-family:var(--mono);font-size:11px;color:var(--fg-3);background:var(--surface);transition:.3s var(--ease)}
+.step.run .bul{border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 5px var(--accent-soft)}
+.step.done .bul{background:var(--accent);border-color:var(--accent);color:#1a1310}
+.step b{display:block;font-size:13px;font-weight:600;margin-top:3px}
+.step span{font-size:12px;color:var(--fg-3);font-family:var(--mono)}
+.code{position:relative;overflow:hidden}
+.code-h{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.code-h .dots{display:flex;gap:6px}
+.code-h .dots i{width:10px;height:10px;border-radius:50%;background:var(--surface-3)}
+.code-h .fname{font-family:var(--mono);font-size:12px;color:var(--fg-2)}
+.code-h .sp{flex:1}
+.code pre{font-family:var(--mono);font-size:12.5px;line-height:1.7;padding:16px 0;height:520px;overflow:auto;counter-reset:ln;background:var(--bg-2)}
+.code pre .l{display:block;padding:0 18px 0 0;white-space:pre}
+.code pre .l::before{counter-increment:ln;content:counter(ln);display:inline-block;width:46px;padding-right:14px;text-align:right;color:var(--fg-3);opacity:.6}
+.code pre .l.new{animation:lineIn .35s var(--ease)}
+@keyframes lineIn{from{background:var(--accent-soft)}}
+.y-k{color:var(--accent-2)}.y-s{color:var(--olive)}.y-n{color:var(--sky)}.y-c{color:var(--fg-3);font-style:italic}.y-d{color:var(--fg-3)}
+.caret{display:inline-block;width:8px;height:15px;vertical-align:-3px;background:var(--accent);animation:blink 1s steps(1) infinite}
+.code .idle{position:absolute;inset:49px 0 0;display:grid;place-content:center;text-align:center;gap:10px;color:var(--fg-3);background:var(--bg-2)}
+.code .idle b{font-family:var(--serif);font-weight:500;font-size:24px;color:var(--fg-2)}
+
+/* ---------- Agent ---------- */
+.topo .fcols{grid-template-columns:1fr 1.2fr;min-height:300px;column-gap:200px}
+.topo .flow{min-width:640px}
+.hub{flex-direction:column;align-items:flex-start;padding:18px}
+.hub .brand-mark{width:40px;height:40px}
+.hub .big{font-family:var(--serif);font-size:22px;font-weight:500;margin-top:10px}
+.agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-top:14px}
+.ag{padding:18px}
+.ag-h{display:flex;align-items:center;gap:10px}
+.ag-h .st{width:9px;height:9px;border-radius:50%;background:var(--olive);box-shadow:0 0 0 0 var(--olive);animation:ping 2s infinite}
+.ag.off .ag-h .st{background:var(--fg-3);animation:none}
+.ag-h b{font-family:var(--serif);font-size:19px;font-weight:500}
+.ag-h .chip{margin-left:auto}
+.ag-host{font-family:var(--mono);font-size:11.5px;color:var(--fg-3);margin-top:4px}
+.meters{display:grid;gap:10px;margin:16px 0}
+.meter{display:grid;grid-template-columns:44px 1fr 40px;align-items:center;gap:10px;font-size:11.5px;color:var(--fg-3)}
+.meter i{height:6px;border-radius:6px;background:var(--surface-3);overflow:hidden}
+.meter i::after{content:"";display:block;height:100%;width:var(--w);border-radius:6px;background:linear-gradient(90deg,var(--olive),var(--kraft));transition:width 1s var(--ease)}
+.meter b{font-family:var(--mono);font-weight:500;color:var(--fg-2);text-align:right}
+.ag-foot{display:flex;align-items:center;gap:8px;padding-top:14px;border-top:1px solid var(--line)}
+.ag-foot .ver{font-family:var(--mono);font-size:12px;color:var(--fg-2);margin-right:auto}
+.ag-foot .ver em{font-style:normal;color:var(--accent)}
+
+/* ---------- 日志 ---------- */
+.term{background:#141312;color:#d9d5ca;border-color:rgba(255,255,255,.08)}
+[data-theme=light] .term{background:#1c1b19}
+.term-b{height:560px;overflow:auto;padding:14px 0;font-family:var(--mono);font-size:12.5px;line-height:1.75}
+.lg{display:grid;grid-template-columns:96px 56px 110px 1fr;gap:10px;padding:0 18px;white-space:nowrap;animation:fadeIn .4s}
+.lg:hover{background:rgba(255,255,255,.03)}
+.lg .ts{color:#7c786e}
+.lg .lv{font-weight:600}
+.lg .lv.INFO{color:#97ad73}.lg .lv.WARN{color:#d9a984}.lg .lv.ERROR{color:#e0705e}.lg .lv.DEBUG{color:#7aa7d4}
+.lg .md{color:#b6b2a6}
+.lg .ms{overflow:hidden;text-overflow:ellipsis}
+.lg.hide{display:none}
+@keyframes fadeIn{from{opacity:0}}
+
+.placeholder{padding:80px 24px;text-align:center;border-style:dashed;background:transparent;box-shadow:none}
+.placeholder b{display:block;font-family:var(--serif);font-size:26px;font-weight:500;margin-bottom:8px}
+.placeholder p{color:var(--fg-3);max-width:460px;margin:0 auto 18px;text-wrap:pretty}
+
+/* ---------- 命令面板 ---------- */
+.overlay{position:fixed;inset:0;z-index:60;background:color-mix(in oklch,var(--bg) 55%,transparent);backdrop-filter:blur(8px);display:grid;place-items:start center;padding:14vh 16px 16px;opacity:0;pointer-events:none;transition:opacity .25s}
+.overlay.open{opacity:1;pointer-events:auto}
+.cmdk{width:min(620px,100%);border:1px solid var(--line-2);border-radius:18px;background:var(--surface);box-shadow:0 40px 100px -30px rgba(0,0,0,.6);overflow:hidden;transform:translateY(-10px) scale(.98);transition:transform .3s var(--ease)}
+.overlay.open .cmdk{transform:none}
+.cmdk-in{display:flex;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line)}
+.cmdk-in input{flex:1;border:0;outline:0;background:none;font-size:16px}
+.cmdk-list{max-height:360px;overflow:auto;padding:8px}
+.cmdk-g{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-3);padding:10px 10px 6px}
+.cmdk-item{display:flex;align-items:center;gap:12px;width:100%;padding:10px;border-radius:10px;text-align:left;font-size:13.5px;color:var(--fg-2)}
+.cmdk-item svg{color:var(--fg-3)}
+.cmdk-item.sel{background:var(--surface-2);color:var(--fg)}
+.cmdk-item.sel svg{color:var(--accent)}
+.cmdk-item .kbd{margin-left:auto}
+
+/* ---------- Tweaks ---------- */
+.tweaks{position:fixed;right:20px;bottom:20px;z-index:70;width:280px;padding:16px;border:1px solid var(--line-2);border-radius:18px;background:color-mix(in oklch,var(--surface) 92%,transparent);backdrop-filter:blur(20px);box-shadow:0 30px 80px -24px rgba(0,0,0,.55);display:none}
+.tweaks.open{display:block;animation:viewIn .35s var(--ease)}
+.tweaks h4{display:flex;align-items:center;font-family:var(--serif);font-size:18px;font-weight:500;margin-bottom:12px}
+.tweaks h4 button{margin-left:auto}
+.tw{display:grid;gap:7px;margin-bottom:14px}
+.tw:last-child{margin-bottom:0}
+.tw label{font-size:11.5px;color:var(--fg-3);font-family:var(--mono);letter-spacing:.06em;display:flex}
+.tw label output{margin-left:auto;color:var(--fg-2)}
+.tw .seg{width:100%}
+.tw .seg button{flex:1;padding:0 8px}
+.swatches{display:flex;gap:8px}
+.swatches button{width:30px;height:30px;border-radius:50%;background:var(--c);box-shadow:0 0 0 2px var(--surface),0 0 0 3px transparent;transition:.2s}
+.swatches button.on{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--c)}
+input[type=range]{width:100%;accent-color:var(--accent)}
+
+/* ---------- Toast ---------- */
+.toasts{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:80;display:grid;gap:8px;justify-items:center;pointer-events:none}
+.toast{display:flex;align-items:center;gap:10px;padding:10px 16px;border-radius:12px;background:var(--fg);color:var(--bg);font-size:13px;box-shadow:0 20px 40px -14px rgba(0,0,0,.5);animation:toastIn .5s var(--ease-spring)}
+.toast svg{color:var(--accent)}
+.toast.out{animation:toastOut .3s var(--ease) forwards}
+@keyframes toastIn{from{opacity:0;transform:translateY(16px) scale(.94)}}
+@keyframes toastOut{to{opacity:0;transform:translateY(8px)}}
+
+/* ---------- 移动端 ---------- */
+.tabbar{display:none}
+@media (max-width:1180px){
+  .dash-grid{grid-template-columns:minmax(0,1fr)}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .pg,.gen{grid-template-columns:minmax(0,1fr)}
+  .ticker{display:none}
+}
+@media (max-width:860px){
+  body{overflow:auto}
+  .app{grid-template-columns:minmax(0,1fr);height:auto;min-height:100dvh}
+  .rail{display:none}
+  .main{min-height:100dvh}
+  .topbar{position:sticky;top:0;z-index:20;padding:0 16px;gap:10px}
+  .kbtn{min-width:0;padding:0 10px}.kbtn .lbl,.kbtn kbd{display:none}
+  .demo-chip,.crumb .scope-tag{display:none}
+  .content{padding:22px 16px calc(96px + env(safe-area-inset-bottom));overflow:visible}
+  .tp{gap:18px}.tp-item{text-align:left}.tp-item b{font-size:30px}
+  .kpis{gap:10px}.kpi .k-v b{font-size:32px}
+  .pipe{grid-template-columns:minmax(0,1fr);gap:8px}
+  .pipe-link{width:2px;height:24px;justify-self:center;margin:0;background:repeating-linear-gradient(180deg,var(--accent) 0 6px,transparent 6px 12px);background-size:2px 24px;animation:dashv .6s linear infinite}
+  .pipe-link::after{display:none}
+  @keyframes dashv{to{background-position:0 24px}}
+  .lg{grid-template-columns:70px 46px 1fr}.lg .md{display:none}
+  .term-b{height:60vh}
+  .rtable th:nth-child(4),.rtable td:nth-child(4){display:none}
+  .rtable td,.rtable th{padding:10px 12px}
+  .sim{grid-template-columns:minmax(0,1fr)}
+  .tabbar{display:grid;grid-template-columns:repeat(5,1fr);position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:40;height:62px;padding:6px;border:1px solid var(--line-2);border-radius:20px;background:color-mix(in oklch,var(--surface) 85%,transparent);backdrop-filter:blur(20px);box-shadow:0 20px 50px -20px rgba(0,0,0,.6)}
+  .tabbar a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-radius:14px;color:var(--fg-3);text-decoration:none;font-size:10.5px;min-height:44px}
+  .tabbar a.on{color:var(--accent);background:var(--accent-soft)}
+  .tweaks{left:16px;right:16px;width:auto;bottom:90px}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+body[data-motion=off] *,body[data-motion=off] *::before,body[data-motion=off] *::after{animation-play-state:paused!important}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--kraft)"/></linearGradient>
+    <symbol id="mark" viewBox="0 0 32 32"><g class="rays" stroke="currentColor" stroke-linecap="round" fill="none">
+      <path d="M16 16 L16 2.5" stroke-width="3.2"/><path d="M16 16 L25.5 6.5" stroke-width="2.4"/><path d="M16 16 L29.5 16" stroke-width="3.2"/><path d="M16 16 L26.6 24.2" stroke-width="2"/>
+      <path d="M16 16 L16 29.5" stroke-width="3.2"/><path d="M16 16 L6.5 25.5" stroke-width="2.4"/><path d="M16 16 L2.5 16" stroke-width="3.2"/><path d="M16 16 L5.4 7.8" stroke-width="2"/>
+      <path d="M16 16 L20.6 3.6" stroke-width="1.4"/><path d="M16 16 L28.4 20.6" stroke-width="1.4"/><path d="M16 16 L11.4 28.4" stroke-width="1.4"/><path d="M16 16 L3.6 11.4" stroke-width="1.4"/>
+    </g></symbol>
+  </defs>
+</svg>
+<div class="atmos"></div>
+<div class="grain"></div>
+
+<div class="app">
+  <aside class="rail">
+    <div class="brand"><span class="brand-mark"><svg><use href="#mark"/></svg></span><span class="brand-name">ConfigFlow<small>Proxy · Flow</small></span></div>
+    <div class="profile-wrap">
+      <button class="profile-btn" id="profileBtn" aria-haspopup="listbox">
+        <span class="profile-ava" id="profileAva">家</span>
+        <span class="t"><b id="profileName">家庭主网</b><span>配置空间</span></span>
+        <svg class="i" viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5"/></svg>
+      </button>
+      <div class="pop" id="profilePop"></div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="rail-foot">
+      <div class="mini-meter"><span>入</span><canvas id="railSpark"></canvas><b id="railRate">0 MB/s</b></div>
+      <div class="mini-meter"><span class="live-dot" style="width:6px;height:6px"></span><span>3 / 4 Agent 在线</span></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="crumb"><span class="scope-tag" id="crumbScope" data-s="overview">总览</span><b id="crumbTitle">数据统计</b></div>
+      <div class="top-sp"></div>
+      <div class="ticker num" title="示例吞吐"><span class="dn">↓ <b id="tkDn">0</b> MB/s</span><span class="up">↑ <b id="tkUp">0</b> MB/s</span><span id="tkConn">0 连接</span></div>
+      <span class="demo-chip">原型 · 示例数据</span>
+      <button class="kbtn" id="cmdkBtn"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span class="lbl">搜索页面与动作</span><kbd>⌘K</kbd></button>
+      <button class="ibtn" id="themeBtn" aria-label="切换主题"><svg class="i" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+      <button class="ibtn" id="tweakBtn" aria-label="Tweaks"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></button>
+    </header>
+
+    <main class="content" id="content">
+
+      <!-- ================= 总览 ================= -->
+      <section class="view" data-view="dashboard">
+        <div class="hero">
+          <div class="hero-head">
+            <div class="tt">
+              <div class="eyebrow" style="margin:0"><span class="live-dot"></span>实时流向 · <span class="pname">家庭主网</span></div>
+            </div>
+            <div class="tp num">
+              <div class="tp-item dn"><small>下行</small><b><span id="hDn">0</span><i>MB/s</i></b></div>
+              <div class="tp-item"><small>上行</small><b><span id="hUp">0</span><i>MB/s</i></b></div>
+              <div class="tp-item"><small>活跃连接</small><b><span id="hConn">0</span></b></div>
+            </div>
+          </div>
+          <div class="card flow-card">
+            <div class="flow-scroll"><div class="flow" id="flowMain">
+              <canvas></canvas>
+              <div class="fcols">
+                <div class="fcol"><div class="fcol-h">01 订阅来源</div>
+                  <div class="fnode" data-fid="s1" data-go="subscriptions"><span class="ic" data-ic="link"></span><span class="t"><b>云端机场 A</b><span>Mihomo · 126</span></span></div>
+                  <div class="fnode" data-fid="s2" data-go="subscriptions"><span class="ic" data-ic="link"></span><span class="t"><b>备用机场 B</b><span>通用 · 84</span></span></div>
+                  <div class="fnode" data-fid="s3" data-go="nodes"><span class="ic" data-ic="server"></span><span class="t"><b>自建节点</b><span>手动 · 6</span></span></div>
+                </div>
+                <div class="fcol"><div class="fcol-h">02 节点池</div>
+                  <div class="fnode pool" data-fid="pool" data-go="nodes">
+                    <div class="big num" data-count="216">0</div><div class="lbl">个节点 · 6 个地区</div>
+                    <div class="regions" id="regionBars"></div>
+                  </div>
+                </div>
+                <div class="fcol" id="flowGroups"><div class="fcol-h">03 策略组</div></div>
+                <div class="fcol"><div class="fcol-h">04 规则引擎</div>
+                  <div class="fnode engine" data-fid="rules" data-go="rules">
+                    <div class="big num">11<span style="font-size:15px;color:var(--fg-3)"> 条</span></div>
+                    <div class="lbl">3 规则集 · 首条命中</div>
+                    <div class="scan"></div>
+                  </div>
+                </div>
+                <div class="fcol"><div class="fcol-h">05 输出</div>
+                  <div class="fnode" data-fid="o1" data-go="generate"><span class="ic" data-ic="file"></span><span class="t"><b>Mihomo</b><span>config.yaml</span></span></div>
+                  <div class="fnode" data-fid="o2" data-go="generate"><span class="ic" data-ic="file"></span><span class="t"><b>Surge</b><span>surge.conf</span></span></div>
+                  <div class="fnode" data-fid="o3" data-go="generate"><span class="ic" data-ic="file"></span><span class="t"><b>MosDNS</b><span>config.yaml</span></span></div>
+                </div>
+                <div class="fcol" id="flowAgents"><div class="fcol-h">06 Agent</div></div>
+              </div>
+            </div></div>
+            <div class="flow-legend">
+              <span><i style="--c:var(--accent)"></i>订阅 → 节点</span>
+              <span><i style="--c:var(--kraft)"></i>策略 → 规则</span>
+              <span><i style="--c:var(--olive)"></i>下发 → Agent</span>
+              <span><i style="--c:var(--fg-3);opacity:.5"></i>离线</span>
+              
+            </div>
+          </div>
+        </div>
+
+        <div class="kpis" id="kpis"></div>
+
+        <div class="dash-grid">
+          <div class="card">
+            <div class="card-h"><span class="live-dot"></span><h3>事件流</h3><span class="meta" id="evCount">0 条</span></div>
+            <div class="stream" id="stream" style="margin-top:10px"></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>订阅健康 · 近 24 次拉取</h3><button class="btn ghost" style="margin-left:auto;height:28px;padding:0 8px" id="healthRefresh"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg></button></div>
+            <div class="card-b">
+              <div id="health"></div>
+              <div class="qa">
+                <button data-act="speedtest"><svg class="i" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>全部节点测速</button>
+                <button data-act="generate"><svg class="i" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>生成 Mihomo 配置</button>
+                <button data-act="pullall"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>拉取全部订阅</button>
+                <button data-act="pushall"><svg class="i" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>推送到全部 Agent</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 订阅来源 ================= -->
+      <section class="view" data-view="subscriptions">
+        <div class="page-h">
+          <div class="tt"><h2 class="title">订阅来源</h2></div>
+          <button class="btn" id="pullAll"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg>拉取全部</button>
+          <button class="btn primary"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加订阅</button>
+        </div>
+        <div class="subs" id="subs"></div>
+      </section>
+
+      <!-- ================= 节点库 ================= -->
+      <section class="view" data-view="nodes">
+        <div class="page-h">
+          <div class="tt"><h2 class="title">节点库</h2></div>
+          <button class="btn primary" id="speedBtn"><svg class="i" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>全部测速</button>
+        </div>
+        <div class="toolbar">
+          <input class="input" id="nodeQ" placeholder="搜索节点名称…" style="width:220px">
+          <div class="filters" id="regionF"></div>
+          <div class="sp"></div>
+          <div class="filters" id="protoF"></div>
+        </div>
+        <div class="node-grid" id="nodeGrid"></div>
+        <div class="empty" id="nodeEmpty" hidden>没有符合条件的节点</div>
+      </section>
+
+      <!-- ================= 策略组 ================= -->
+      <section class="view" data-view="proxy-groups">
+        <div class="page-h">
+          <div class="tt"><h2 class="title">策略组</h2></div>
+          <button class="btn primary"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>新建策略组</button>
+        </div>
+        <div class="pg">
+          <div class="card pg-list" id="pgList"></div>
+          <div class="card">
+            <div class="card-h"><h3 id="pgTitle">—</h3><span class="chip mono acc" id="pgType">select</span></div>
+            <div class="pipe">
+              <div class="stage"><div class="stage-h">来源</div><div class="stage-box" id="pgSrc"></div></div>
+              <div class="pipe-link"></div>
+              <div class="stage"><div class="stage-h">筛选</div><div class="stage-box">
+                <div class="regex-wrap"><input class="input mono" id="pgRegex" spellcheck="false"></div>
+                <div class="regex-err" id="pgErr"></div>
+                <div class="funnel"><b class="num" id="pgCount">0</b><span id="pgOf">/ 0 节点</span></div>
+                <div class="strategy" id="pgStrat"></div>
+              </div></div>
+              <div class="pipe-link"></div>
+              <div class="stage"><div class="stage-h">命中节点</div><div class="stage-box"><div class="matched" id="pgMatched"></div></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 策略规则 ================= -->
+      <section class="view" data-view="rules">
+        <div class="page-h">
+          <div class="tt"><h2 class="title">策略规则</h2></div>
+          <button class="btn primary"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加规则</button>
+        </div>
+        <div class="card sim">
+          <div><div class="eyebrow" style="margin-bottom:8px">命中模拟</div><input class="input" id="simQ" value="api.anthropic.com" spellcheck="false"></div>
+          <button class="btn primary" id="simBtn" style="height:46px;padding:0 20px"><svg class="i" viewBox="0 0 24 24"><path d="m6 4 14 8-14 8z"/></svg>模拟</button>
+          <div class="sim-out" id="simOut">试试 <button class="chip mono" data-q="www.youtube.com">www.youtube.com</button><button class="chip mono" data-q="github.com">github.com</button><button class="chip mono" data-q="www.bilibili.com">www.bilibili.com</button><button class="chip mono" data-q="ads.doubleclick.net">ads.doubleclick.net</button></div>
+        </div>
+        <div class="card" style="overflow:hidden">
+          <table class="rtable"><thead><tr><th>#</th><th>类型</th><th>匹配值</th><th>备注</th><th>策略</th></tr></thead><tbody id="rtBody"></tbody></table>
+        </div>
+      </section>
+
+      <!-- ================= 配置生成 ================= -->
+      <section class="view" data-view="generate">
+        <div class="page-h">
+          <div class="tt"><h2 class="title">配置生成</h2></div>
+          <div class="seg" id="genSeg"><span class="thumb"></span><button class="on" data-t="mihomo">Mihomo</button><button data-t="surge">Surge</button><button data-t="mosdns">MosDNS</button></div>
+        </div>
+        <div class="gen">
+          <div class="card steps" id="steps"></div>
+          <div class="card code">
+            <div class="code-h"><span class="dots"><i></i><i></i><i></i></span><span class="fname" id="genFile">config.yaml</span><span class="sp"></span>
+              <button class="btn ghost" id="genCopy" disabled style="height:30px"><svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>复制</button>
+              <button class="btn" id="genPush" disabled style="height:30px"><svg class="i" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>推送</button>
+              <button class="btn primary" id="genBtn" style="height:30px"><svg class="i" viewBox="0 0 24 24"><path d="m6 4 14 8-14 8z"/></svg>生成</button>
+            </div>
+            <pre id="genOut"></pre>
+            <div class="idle" id="genIdle"><span class="brand-mark" style="width:44px;height:44px;margin:0 auto;color:var(--accent)"><svg><use href="#mark"/></svg></span><b>准备就绪</b></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= Agent ================= -->
+      <section class="view" data-view="agents">
+        <div class="page-h">
+          <div class="tt"><h2 class="title">Agent</h2></div>
+          <button class="btn primary" id="pushAll"><svg class="i" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>推送到全部</button>
+        </div>
+        <div class="card flow-card topo">
+          <div class="flow-scroll"><div class="flow" id="flowTopo"><canvas></canvas>
+            <div class="fcols">
+              <div class="fcol"><div class="fnode hub" data-fid="hub"><span class="brand-mark"><svg><use href="#mark"/></svg></span><div class="big">ConfigFlow</div><div class="pool"><div class="lbl">配置版本 <span id="hubVer">v42</span> · 家庭主网</div></div></div></div>
+              <div class="fcol" id="topoAgents"></div>
+            </div>
+          </div></div>
+        </div>
+        <div class="agents" id="agents"></div>
+      </section>
+
+      <!-- ================= 日志 ================= -->
+      <section class="view" data-view="logs">
+        <div class="page-h">
+          <div class="tt"><h2 class="title">日志</h2></div>
+          <div class="filters" id="lvF"></div>
+          <button class="btn" id="logPause"><svg class="i" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg><span>暂停</span></button>
+        </div>
+        <div class="card term"><div class="term-b" id="term"></div></div>
+      </section>
+
+      <!-- 原型未展开页面 -->
+      <section class="view" data-view="placeholder">
+        <div class="page-h"><div class="tt"><h2 class="title" id="phTitle">—</h2></div></div>
+        <div class="card placeholder"><b>原型未展开</b><button class="btn" data-go="dashboard">回到总览</button></div>
+      </section>
+
+    </main>
+  </div>
+
+  <nav class="tabbar" id="tabbar"></nav>
+</div>
+
+<div class="overlay" id="cmdk"><div class="cmdk" role="dialog" aria-label="命令面板">
+  <div class="cmdk-in"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="cmdkQ" placeholder="跳转页面，或执行动作…" autocomplete="off"><span class="kbd">esc</span></div>
+  <div class="cmdk-list" id="cmdkList"></div>
+</div></div>
+
+<div class="tweaks" id="tweaks">
+  <h4>Tweaks <button class="ibtn" id="tweakClose" style="width:28px;height:28px" aria-label="关闭"><svg class="i" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></h4>
+  <div class="tw"><label>主题</label><div class="seg" id="twTheme"><span class="thumb"></span><button data-v="dark" class="on">炭黑</button><button data-v="light">象牙</button></div></div>
+  <div class="tw"><label>强调色</label><div class="swatches" id="twAccent"><button data-v="clay" style="--c:#d97757" class="on" aria-label="陶土"></button><button data-v="kraft" style="--c:#d4a27f" aria-label="牛皮纸"></button><button data-v="sky" style="--c:#6a9bcc" aria-label="天空"></button></div></div>
+  <div class="tw"><label>流量密度 <output id="twDensOut">1.0×</output></label><input type="range" id="twDens" min="0.2" max="3" step="0.1" value="1"></div>
+  <div class="tw"><label>动效</label><div class="seg" id="twMotion"><span class="thumb"></span><button data-v="on" class="on">流动</button><button data-v="off">静止</button></div></div>
+  <div class="tw"><label>纸感纹理</label><div class="seg" id="twTex"><span class="thumb"></span><button data-v="on" class="on">开启</button><button data-v="off">关闭</button></div></div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+(() => {
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const h = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+let seed = 7; const rnd = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+const pick = (a) => a[Math.floor(rnd() * a.length)];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+/* ---------------- 图标 ---------------- */
+const ICONS = {
+  dashboard: '<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  server: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+  merge: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 7v10M8 5.5c5 0 8 2.5 8 6.5M8 18.5c5 0 8-2.5 8-6.5"/>',
+  library: '<path d="M4 19.5V5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M8 7h7M8 11h5"/>',
+  groups: '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M6 8.5v1a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3v-1M12 12.5v3"/>',
+  rules: '<path d="M9 6h12M9 12h12M9 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>',
+  generate: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
+  layers: '<path d="m12 2 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>',
+  agent: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  logs: '<rect x="2.5" y="3.5" width="19" height="17" rx="2.5"/><path d="m7 9 3 3-3 3M12 15h5"/>',
+  file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>',
+  zap: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  alert: '<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
+  more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
+  moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  play: '<path d="m6 4 14 8-14 8z"/>', pause: '<path d="M9 5v14M15 5v14"/>'
+};
+const ico = (n, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24">${ICONS[n] || ''}</svg>`;
+$$('[data-ic]').forEach(el => el.innerHTML = ico(el.dataset.ic));
+
+/* ---------------- 示例数据 ---------------- */
+const NAV = [
+  { scope: 'overview', items: [{ id: 'dashboard', label: '数据统计', ic: 'dashboard' }] },
+  { scope: 'resource', title: '资源', items: [
+    { id: 'subscriptions', label: '订阅来源', ic: 'link', cnt: 3 },
+    { id: 'nodes', label: '节点库', ic: 'server', cnt: 216 },
+    { id: 'aggregation', label: '订阅聚合', ic: 'merge' },
+    { id: 'rule-library', label: '规则库', ic: 'library', cnt: 23 }] },
+  { scope: 'profile', title: '当前配置', items: [
+    { id: 'proxy-groups', label: '策略组', ic: 'groups', cnt: 6 },
+    { id: 'rules', label: '策略规则', ic: 'rules', cnt: 11 },
+    { id: 'generate', label: '配置生成', ic: 'generate' }] },
+  { scope: 'system', title: '系统', items: [
+    { id: 'profiles', label: '配置空间', ic: 'layers', cnt: 3 },
+    { id: 'agents', label: 'Agent', ic: 'agent', pulse: true },
+    { id: 'logs', label: '日志', ic: 'logs' }] }
+];
+const SCOPE_LABEL = { overview: '总览', resource: '资源', profile: '当前配置', system: '系统' };
+const PAGE = Object.fromEntries(NAV.flatMap(g => g.items.map(i => [i.id, { ...i, scope: g.scope }])));
+const PROFILES = [{ id: 'home', name: '家庭主网', ava: '家' }, { id: 'office', name: '办公室', ava: '办' }, { id: 'lab', name: '测试环境', ava: '测' }];
+
+const SUBS = [
+  { id: 's1', name: '云端机场 A', type: 'Mihomo', nodes: 126, used: 312.4, total: 500, expire: 43, interval: '6h', updated: '4 分钟前', hist: [] },
+  { id: 's2', name: '备用机场 B', type: '通用', nodes: 84, used: 171.8, total: 200, expire: 9, interval: '12h', updated: '38 分钟前', hist: [] },
+  { id: 's3', name: '自建节点', type: '手动', nodes: 6, used: null, total: null, expire: null, interval: '—', updated: '2 天前', hist: [] }
+];
+SUBS.forEach((s, k) => { for (let i = 0; i < 24; i++) { const r = rnd(); s.hist.push(k === 1 && (i === 7 || i === 15) ? 'b' : r > .9 ? 'w' : 'ok'); } });
+
+const REGIONS = [{ c: 'HK', n: '香港', w: 58 }, { c: 'JP', n: '日本', w: 41 }, { c: 'US', n: '美国', w: 44 }, { c: 'SG', n: '新加坡', w: 37 }, { c: 'TW', n: '台湾', w: 21 }, { c: 'KR', n: '韩国', w: 15 }];
+const PROTOS = ['Trojan', 'VMess', 'SS', 'Hysteria2', 'VLESS'];
+const LINES = ['IEPL', 'BGP', '直连', 'IPLC'];
+const NODES = [];
+REGIONS.forEach((r, ri) => {
+  const n = [8, 6, 7, 6, 4, 3][ri];
+  for (let i = 1; i <= n; i++) {
+    const base = { HK: 32, JP: 58, US: 168, SG: 64, TW: 46, KR: 72 }[r.c];
+    const lat = rnd() > .93 ? null : Math.round(base + rnd() * base * .9);
+    const sub = i === n && ri < 2 ? SUBS[2] : (rnd() > .4 ? SUBS[0] : SUBS[1]);
+    NODES.push({ id: `${r.c}${i}`, region: r.c, name: `${r.n} ${String(i).padStart(2, '0')} · ${pick(LINES)}`, proto: pick(PROTOS), lat, sub: sub.id, spark: Array.from({ length: 14 }, () => .2 + rnd() * .8) });
+  }
+});
+const GROUPS = [
+  { id: 'g1', name: '节点选择', type: 'select', subs: ['s1', 's2', 's3'], regex: '.*', desc: '手动选择，默认使用第一个命中节点。' },
+  { id: 'g2', name: '自动测速', type: 'url-test', subs: ['s1', 's2'], regex: '香港|新加坡', desc: '每 300s 测速，自动切到延迟最低的节点。' },
+  { id: 'g3', name: '故障转移', type: 'fallback', subs: ['s1'], regex: '日本.*(IEPL|IPLC)', desc: '按顺序检测，首个可用节点生效。' },
+  { id: 'g4', name: 'AI 服务', type: 'url-test', subs: ['s1', 's2'], regex: '美国', desc: '只用美国节点，自动选最快。' },
+  { id: 'g5', name: '流媒体', type: 'select', subs: ['s1', 's2'], regex: '香港|台湾|新加坡', desc: '解锁港台新区域内容。' },
+  { id: 'g6', name: '负载均衡', type: 'load-balance', subs: ['s1'], regex: 'IEPL', desc: '一致性哈希，同一目标固定走同一节点。' }
+];
+const RULESETS = {
+  'reject-ads': ['doubleclick.net', 'googlesyndication.com', 'adservice.google.com'],
+  'streaming': ['youtube.com', 'netflix.com', 'googlevideo.com', 'twitch.tv'],
+  'cn-domains': ['bilibili.com', 'baidu.com', 'taobao.com', 'qq.com', 'zhihu.com']
+};
+const RULES = [
+  { t: 'RULE-SET', v: 'reject-ads', p: 'REJECT', rm: '广告拦截' },
+  { t: 'DOMAIN-KEYWORD', v: 'openai', p: 'AI 服务', rm: '' },
+  { t: 'DOMAIN-SUFFIX', v: 'anthropic.com', p: 'AI 服务', rm: 'Claude API' },
+  { t: 'DOMAIN-SUFFIX', v: 'claude.ai', p: 'AI 服务', rm: '' },
+  { t: 'RULE-SET', v: 'streaming', p: '流媒体', rm: '视频站点' },
+  { t: 'DOMAIN-SUFFIX', v: 'github.com', p: '自动测速', rm: '开发' },
+  { t: 'DOMAIN-SUFFIX', v: 'google.com', p: '节点选择', rm: '' },
+  { t: 'DOMAIN-SUFFIX', v: 'apple.com', p: 'DIRECT', rm: '系统服务' },
+  { t: 'RULE-SET', v: 'cn-domains', p: 'DIRECT', rm: '国内域名' },
+  { t: 'GEOIP', v: 'CN', p: 'DIRECT', rm: 'no-resolve' },
+  { t: 'MATCH', v: '*', p: '节点选择', rm: '兜底' }
+];
+const AGENTS = [
+  { id: 'a1', name: '主路由', host: '192.168.1.1:9090', svc: 'mihomo', dep: 'docker', on: true, cpu: 12, mem: 38, ver: 'v42', vs: '1.19.2' },
+  { id: 'a2', name: '旁路由', host: '192.168.1.2:9090', svc: 'mihomo', dep: 'shell', on: true, cpu: 7, mem: 24, ver: 'v41', vs: '1.19.2' },
+  { id: 'a3', name: 'DNS 网关', host: '192.168.1.3:8338', svc: 'mosdns', dep: 'docker', on: true, cpu: 3, mem: 11, ver: 'v42', vs: '5.3.3' },
+  { id: 'a4', name: '办公室', host: '10.8.0.12:9090', svc: 'mihomo', dep: 'shell', on: false, cpu: 0, mem: 0, ver: 'v39', vs: '1.18.10' }
+];
+
+/* ---------------- 主题色读取 ---------------- */
+let PAL = {};
+const readPal = () => { const cs = getComputedStyle(document.documentElement); ['accent', 'accent-2', 'kraft', 'olive', 'sky', 'fg-3', 'line-2'].forEach(k => PAL[k] = cs.getPropertyValue('--' + k).trim()); PAL.dark = document.documentElement.dataset.theme === 'dark'; };
+readPal();
+const state = { density: 1, motion: true };
+
+/* ================================================================
+   Flow 引擎：DOM 节点 + Canvas 粒子
+   ================================================================ */
+const FLOWS = [];
+class Flow {
+  constructor(root, edges) {
+    this.root = root; this.cv = root.querySelector('canvas'); this.ctx = this.cv.getContext('2d');
+    this.edges = edges.map(([a, b, w = 1, c = 'accent', dead = false]) => ({ a, b, w, c, dead, acc: rnd(), geo: null }));
+    this.parts = []; this.focus = null; this.lit = null; this.hits = new Map();
+    new ResizeObserver(() => this.layout()).observe(root);
+    root.addEventListener('pointerover', e => { const n = e.target.closest('[data-fid]'); if (n && root.contains(n)) this.setFocus(n.dataset.fid); });
+    root.addEventListener('pointerleave', () => this.setFocus(null));
+    FLOWS.push(this);
+  }
+  el(id) { return this.root.querySelector(`[data-fid="${id}"]`); }
+  layout() {
+    const R = this.root.getBoundingClientRect(); if (!R.width) return;
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    this.W = R.width; this.H = R.height;
+    this.cv.width = R.width * dpr; this.cv.height = R.height * dpr; this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (const e of this.edges) {
+      const A = this.el(e.a)?.getBoundingClientRect(), B = this.el(e.b)?.getBoundingClientRect(); if (!A || !B) continue;
+      const p0 = [A.right - R.left, A.top + A.height / 2 - R.top], p3 = [B.left - R.left, B.top + B.height / 2 - R.top];
+      const dx = (p3[0] - p0[0]) * .55;
+      e.geo = [p0, [p0[0] + dx, p0[1]], [p3[0] - dx, p3[1]], p3];
+      e.len = Math.hypot(p3[0] - p0[0], p3[1] - p0[1]) * 1.1;
+    }
+  }
+  pt(g, t) { const u = 1 - t; const a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t; return [a * g[0][0] + b * g[1][0] + c * g[2][0] + d * g[3][0], a * g[0][1] + b * g[1][1] + c * g[2][1] + d * g[3][1]]; }
+  chain(id) {
+    if (!id) return null; const set = new Set([id]);
+    const walk = (dir) => { let grew = true; const seen = new Set([id]); while (grew) { grew = false; for (const e of this.edges) { const [f, t] = dir ? [e.a, e.b] : [e.b, e.a]; if (seen.has(f) && !seen.has(t)) { seen.add(t); set.add(t); grew = true; } } } };
+    walk(true); walk(false); return set;
+  }
+  setFocus(id) {
+    if (id === this.focus) return; this.focus = id; this.lit = this.chain(id);
+    $$('[data-fid]', this.root).forEach(n => n.classList.toggle('dim', !!this.lit && !this.lit.has(n.dataset.fid)));
+  }
+  burst(b, n = 14) { for (const e of this.edges) if (e.b === b && !e.dead) for (let i = 0; i < n; i++) this.spawn(e, -i * .06, 1.8); }
+  spawn(e, t = 0, boost = 1) { this.parts.push({ e, t, v: (150 + rnd() * 110) * boost / (e.len || 300), s: 1.2 + rnd() * 1.6 * boost, boost }); }
+  edgeOn(e) { return !this.lit || (this.lit.has(e.a) && this.lit.has(e.b)); }
+  step(dt) {
+    if (!this.W || !this.root.offsetParent) return;
+    const ctx = this.ctx; ctx.clearRect(0, 0, this.W, this.H);
+    // 底线
+    for (const e of this.edges) {
+      const g = e.geo; if (!g) continue; const on = this.edgeOn(e);
+      ctx.beginPath(); ctx.moveTo(...g[0]); ctx.bezierCurveTo(...g[1], ...g[2], ...g[3]);
+      ctx.setLineDash(e.dead ? [3, 5] : []); ctx.lineWidth = on && this.lit ? 1.6 : 1;
+      ctx.strokeStyle = e.dead ? PAL['fg-3'] : PAL[e.c]; ctx.globalAlpha = e.dead ? .35 : (on ? (this.lit ? .55 : .2) : .05); ctx.stroke();
+      if (state.motion && !e.dead) { e.acc += dt * e.w * state.density * 2.2; while (e.acc > 1) { e.acc -= 1; this.spawn(e); } }
+    }
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    if (!state.motion) { // 静止：每条边固定三个点
+      for (const e of this.edges) if (e.geo && !e.dead) for (const t of [.25, .5, .75]) { const p = this.pt(e.geo, t); ctx.fillStyle = PAL[e.c]; ctx.globalAlpha = this.edgeOn(e) ? .8 : .1; ctx.beginPath(); ctx.arc(p[0], p[1], 2, 0, 7); ctx.fill(); }
+      ctx.globalAlpha = 1; return;
+    }
+    ctx.globalCompositeOperation = PAL.dark ? 'lighter' : 'source-over';
+    const now = performance.now();
+    for (let i = this.parts.length - 1; i >= 0; i--) {
+      const p = this.parts[i]; p.t += p.v * dt;
+      if (p.t >= 1) {
+        this.parts.splice(i, 1);
+        const last = this.hits.get(p.e.b) || 0;
+        if (now - last > 380) { this.hits.set(p.e.b, now); const n = this.el(p.e.b); if (n) { n.classList.add('hit'); clearTimeout(n._ht); n._ht = setTimeout(() => n.classList.remove('hit'), 260); } }
+        continue;
+      }
+      if (p.t < 0 || !p.e.geo) continue;
+      const on = this.edgeOn(p.e), col = PAL[p.e.c];
+      const head = this.pt(p.e.geo, p.t), tail = this.pt(p.e.geo, Math.max(0, p.t - .07 * p.boost));
+      const gr = ctx.createLinearGradient(tail[0], tail[1], head[0], head[1]);
+      gr.addColorStop(0, 'transparent'); gr.addColorStop(1, col);
+      ctx.globalAlpha = on ? 1 : .08; ctx.strokeStyle = gr; ctx.lineWidth = p.s; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(...tail); ctx.lineTo(...head); ctx.stroke();
+      ctx.globalAlpha = on ? .22 : .03; ctx.fillStyle = col; ctx.beginPath(); ctx.arc(head[0], head[1], p.s * 3.2, 0, 7); ctx.fill();
+      ctx.globalAlpha = on ? 1 : .1; ctx.fillStyle = PAL.dark ? '#fff' : col; ctx.beginPath(); ctx.arc(head[0], head[1], p.s * .7, 0, 7); ctx.fill();
+    }
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  }
+}
+
+/* ---------------- 总览：流向图 ---------------- */
+const gCol = $('#flowGroups');
+GROUPS.slice(0, 5).forEach(g => gCol.append(h(`<div class="fnode" data-fid="${g.id}" data-go="proxy-groups" data-gid="${g.id}"><span class="ic">${ico('groups')}</span><span class="t"><b>${g.name}</b><span>${g.type}</span></span></div>`)));
+const aCol = $('#flowAgents');
+AGENTS.forEach(a => aCol.append(h(`<div class="fnode ${a.on ? '' : 'off'}" data-fid="${a.id}" data-go="agents"><span class="ic">${ico('agent')}</span><span class="t"><b>${a.name}</b><span>${a.svc}${a.on ? '' : ' · 离线'}</span></span><span class="st"></span></div>`)));
+$('#regionBars').innerHTML = REGIONS.map(r => `<div class="rg"><span>${r.c}</span><i style="--w:${Math.round(r.w / 58 * 100)}%"></i><span>${r.w}</span></div>`).join('');
+const mainEdges = [
+  ['s1', 'pool', 1.6], ['s2', 'pool', 1.1], ['s3', 'pool', .4],
+  ...GROUPS.slice(0, 5).map((g, i) => ['pool', g.id, [1.2, 1, .5, .8, .7][i]]),
+  ...GROUPS.slice(0, 5).map((g, i) => [g.id, 'rules', [1, .9, .4, .8, .6][i], 'kraft']),
+  ['rules', 'o1', 1.4, 'kraft'], ['rules', 'o2', .5, 'kraft'], ['rules', 'o3', .7, 'kraft'],
+  ['o1', 'a1', 1, 'olive'], ['o1', 'a2', .8, 'olive'], ['o3', 'a3', .7, 'olive'], ['o1', 'a4', 1, 'olive', true]
+];
+const flowMain = new Flow($('#flowMain'), mainEdges);
+
+/* ---------------- 吞吐 ---------------- */
+let tp = { dn: 38.2, up: 4.1, conn: 1284 };
+const railHist = Array.from({ length: 40 }, () => 30 + rnd() * 15);
+const tickTp = () => {
+  tp.dn = clamp(tp.dn + (rnd() - .5) * 6 * state.density, 8, 92); tp.up = clamp(tp.up + (rnd() - .5) * 1.2, .6, 14); tp.conn = Math.round(clamp(tp.conn + (rnd() - .5) * 60, 800, 2200));
+  [['#tkDn', '#hDn', tp.dn], ['#tkUp', '#hUp', tp.up]].forEach(([a, b, v]) => { $(a).textContent = v.toFixed(1); tween($(b), v, 1); });
+  $('#tkConn').textContent = tp.conn.toLocaleString() + ' 连接'; tween($('#hConn'), tp.conn, 0);
+  $('#railRate').textContent = tp.dn.toFixed(1) + ' MB/s'; railHist.push(tp.dn); railHist.shift(); drawSpark($('#railSpark'), railHist, PAL.accent);
+};
+function tween(el, to, dec = 0, dur = 700) {
+  const from = parseFloat(el.dataset.v ?? el.textContent.replace(/,/g, '')) || 0; el.dataset.v = to; const t0 = performance.now();
+  const f = (now) => { const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3), v = from + (to - from) * e; el.textContent = dec ? v.toFixed(dec) : Math.round(v).toLocaleString(); if (k < 1) requestAnimationFrame(f); };
+  requestAnimationFrame(f);
+}
+function drawSpark(cv, data, col, fill = true) {
+  const r = cv.getBoundingClientRect(); if (!r.width) return; const dpr = Math.min(devicePixelRatio || 1, 2);
+  cv.width = r.width * dpr; cv.height = r.height * dpr; const c = cv.getContext('2d'); c.scale(dpr, dpr);
+  const mn = Math.min(...data), mx = Math.max(...data), W = r.width, H = r.height - 2;
+  const xy = (v, i) => [i / (data.length - 1) * W, H - (v - mn) / (mx - mn || 1) * (H - 4) + 1];
+  c.beginPath(); data.forEach((v, i) => { const [x, y] = xy(v, i); i ? c.lineTo(x, y) : c.moveTo(x, y); });
+  c.strokeStyle = col; c.lineWidth = 1.5; c.lineJoin = 'round'; c.stroke();
+  if (fill) { c.lineTo(W, H + 2); c.lineTo(0, H + 2); c.closePath(); const g = c.createLinearGradient(0, 0, 0, H); g.addColorStop(0, col + '55'); g.addColorStop(1, col + '00'); c.fillStyle = g; c.fill(); }
+  const [lx, ly] = xy(data[data.length - 1], data.length - 1); c.fillStyle = col; c.beginPath(); c.arc(lx - 2, ly, 2.5, 0, 7); c.fill();
+}
+
+/* ---------------- KPI ---------------- */
+const KPIS = [
+  { k: '订阅来源', v: 3, d: '2 个有流量信息', ic: 'link', s: 'resource', go: 'subscriptions' },
+  { k: '节点', v: 216, d: '可用 94%', ic: 'server', s: 'resource', go: 'nodes' },
+  { k: '策略组', v: 6, d: '11 条规则', ic: 'groups', s: 'profile', go: 'proxy-groups' },
+  { k: '在线 Agent', v: 3, d: '/ 4 台', ic: 'agent', s: 'system', go: 'agents' }
+];
+$('#kpis').innerHTML = KPIS.map((k, i) => `<div class="card kpi" data-go="${k.go}" tabindex="0"><div class="k-h">${ico(k.ic)}${k.k}<span class="scope-tag" data-s="${k.s}">${SCOPE_LABEL[k.s]}</span></div><div class="k-v"><b class="num" data-count="${k.v}">0</b><span>${k.d}</span></div><canvas data-ks="${i}"></canvas></div>`).join('');
+const kpiData = KPIS.map(() => Array.from({ length: 24 }, (_, i) => 20 + Math.sin(i / 3 + rnd() * 2) * 8 + rnd() * 10));
+const drawKpis = () => $$('[data-ks]').forEach(cv => drawSpark(cv, kpiData[cv.dataset.ks], [PAL.accent, PAL.sky, PAL.kraft, PAL.olive][cv.dataset.ks]));
+
+/* ---------------- 事件流 ---------------- */
+const EVT = [
+  () => ({ ic: 'link', c: 'acc', m: `订阅 <b>${pick(SUBS.slice(0, 2)).name}</b> 拉取完成`, tag: `${120 + Math.round(rnd() * 10)} 节点` }),
+  () => ({ ic: 'zap', c: 'ok', m: `<b>自动测速</b> 切换至 ${pick(NODES.filter(n => /香港|新加坡/.test(n.name))).name}`, tag: `${30 + Math.round(rnd() * 30)}ms` }),
+  () => ({ ic: 'agent', c: '', m: `Agent <b>${pick(AGENTS.slice(0, 3)).name}</b> 心跳`, tag: `CPU ${Math.round(3 + rnd() * 15)}%` }),
+  () => ({ ic: 'rules', c: '', m: `<b>${pick(['api.anthropic.com', 'github.com', 'www.youtube.com', 'claude.ai'])}</b> 命中 ${pick(['AI 服务', '自动测速', '流媒体'])}`, tag: pick(['DOMAIN-SUFFIX', 'RULE-SET']) }),
+  () => ({ ic: 'library', c: '', m: `规则集 <b>${pick(Object.keys(RULESETS))}</b> 缓存已更新`, tag: '200 OK' }),
+  () => ({ ic: 'alert', c: 'warn', m: `Agent <b>办公室</b> 心跳超时`, tag: '离线 3h' })
+];
+let evN = 0;
+const pushEv = (e) => {
+  const d = new Date(), t = d.toTimeString().slice(0, 8);
+  const row = h(`<div class="ev"><time>${t}</time><span class="dot ${e.c}">${ico(e.ic)}</span><p>${e.m}</p><span class="tag">${e.tag}</span></div>`);
+  const s = $('#stream'); s.prepend(row); while (s.children.length > 12) s.lastElementChild.remove();
+  $('#evCount').textContent = `${++evN} 条`;
+};
+
+/* ---------------- 健康 ---------------- */
+const renderHealth = () => {
+  $('#health').innerHTML = SUBS.map(s => { const ok = s.hist.filter(x => x === 'ok').length; return `<div class="health-row"><b>${s.name}</b><span>${Math.round(ok / s.hist.length * 100)}% 可用</span><div class="bars">${s.hist.map(x => `<i class="${x === 'w' ? 'w' : x === 'b' ? 'b' : ''}" style="--h:${x === 'b' ? 30 : x === 'w' ? 60 : 70 + Math.round(rnd() * 30)}%"></i>`).join('')}</div></div>`; }).join('');
+};
+renderHealth();
+$('#healthRefresh').onclick = () => { SUBS.forEach(s => { s.hist.shift(); s.hist.push(rnd() > .92 ? 'w' : 'ok'); }); renderHealth(); toast('健康数据已刷新'); };
+
+/* ---------------- 订阅来源 ---------------- */
+const renderSubs = () => {
+  const C = 2 * Math.PI * 42;
+  $('#subs').innerHTML = SUBS.map(s => {
+    const has = s.total != null, pct = has ? s.used / s.total : 0, left = has ? s.total - s.used : 0;
+    const exp = s.expire == null ? '' : s.expire <= 10 ? `<span class="chip warn">${s.expire} 天后到期</span>` : `<span class="chip">${s.expire} 天后到期</span>`;
+    return `<div class="card sub-card" data-sid="${s.id}"><div class="sweep"></div>
+      <div class="sub-top">
+        <div class="ring"><svg viewBox="0 0 96 96"><circle class="bg" cx="48" cy="48" r="42"/><circle class="fg" cx="48" cy="48" r="42" stroke-dasharray="${C}" stroke-dashoffset="${C}" data-off="${C * (1 - pct)}"/></svg>
+          <div class="ct">${has ? `<b class="num">${Math.round(pct * 100)}<small style="font-size:12px">%</small></b><span>已用</span>` : `<b>∞</b><span>不计量</span>`}</div></div>
+        <div class="sub-info"><h4>${s.name}</h4><div class="row"><span class="chip mono">${s.type}</span>${exp}${pct > .8 ? '<span class="chip bad">余量不足</span>' : ''}</div></div>
+      </div>
+      <div class="sub-stats"><div><small>节点</small><b class="num" data-count="${s.nodes}">0</b></div><div><small>剩余流量</small><b class="num">${has ? left.toFixed(1) + ' GB' : '—'}</b></div><div><small>更新间隔</small><b>${s.interval}</b></div></div>
+      <div class="sub-foot"><span class="when">上次拉取 · <span class="w">${s.updated}</span></span><button class="btn ghost" style="height:30px">编辑</button><button class="btn" data-pull="${s.id}" style="height:30px">${ico('refresh')}拉取</button></div></div>`;
+  }).join('') + `<div class="card sub-card add">${ico('link')}<div>添加订阅来源</div></div>`;
+  requestAnimationFrame(() => requestAnimationFrame(() => $$('#subs .ring .fg').forEach(c => c.style.strokeDashoffset = c.dataset.off)));
+  countUp($('#subs'));
+};
+const pullSub = (id) => new Promise(res => {
+  const card = $(`[data-sid="${id}"]`); if (!card) return res();
+  const btn = $('[data-pull]', card); btn.classList.add('loading'); btn.disabled = true; card.classList.add('pulling');
+  setTimeout(() => {
+    card.classList.remove('pulling'); btn.classList.remove('loading'); btn.disabled = false;
+    const s = SUBS.find(x => x.id === id); s.updated = '刚刚'; $('.w', card).textContent = '刚刚';
+    const b = $('[data-count]', card); b.dataset.v = 0; tween(b, s.nodes, 0, 900);
+    flowMain.burst('pool', 8); pushEv({ ic: 'link', c: 'acc', m: `订阅 <b>${s.name}</b> 拉取完成`, tag: `${s.nodes} 节点` }); res();
+  }, 1100 + rnd() * 900);
+});
+$('#subs').addEventListener('click', e => { const b = e.target.closest('[data-pull]'); if (b) pullSub(b.dataset.pull).then(() => toast(`「${SUBS.find(s => s.id === b.dataset.pull).name}」已更新`)); });
+const pullAll = async () => { go('subscriptions'); await new Promise(r => setTimeout(r, 300)); await Promise.all(SUBS.map(s => pullSub(s.id))); toast('全部订阅已拉取'); };
+$('#pullAll').onclick = pullAll;
+
+/* ---------------- 节点库 ---------------- */
+const nf = { q: '', region: null, proto: null };
+const latCls = (l) => l == null ? 'r' : l < 80 ? 'g' : l < 180 ? 'y' : 'r';
+$('#regionF').innerHTML = `<button class="chip on" data-r="">全部</button>` + REGIONS.map(r => `<button class="chip" data-r="${r.c}">${r.n}</button>`).join('');
+$('#protoF').innerHTML = PROTOS.map(p => `<button class="chip mono" data-p="${p}">${p}</button>`).join('');
+const renderNodes = () => {
+  $('#nodeGrid').innerHTML = NODES.map((n, i) => `<div class="ntile" data-nid="${n.id}" data-i="${i}">
+    <div class="nh"><span class="rc">${n.region}</span><span class="nm">${n.name}</span></div>
+    <div class="nb"><span class="lat ${latCls(n.lat)}">${n.lat == null ? '超时' : `${n.lat}<small>ms</small>`}</span><span class="proto">${n.proto}<br>${SUBS.find(s => s.id === n.sub).name}</span></div>
+    <div class="spark">${n.spark.map(v => `<i style="--h:${Math.round(v * 100)}%"></i>`).join('')}</div></div>`).join('');
+  filterNodes();
+};
+const filterNodes = () => {
+  let shown = 0;
+  $$('#nodeGrid .ntile').forEach(el => { const n = NODES[el.dataset.i]; const ok = (!nf.q || n.name.includes(nf.q)) && (!nf.region || n.region === nf.region) && (!nf.proto || n.proto === nf.proto); el.classList.toggle('hide', !ok); shown += ok; });
+  $('#nodeEmpty').hidden = shown > 0;
+};
+$('#nodeQ').oninput = e => { nf.q = e.target.value.trim(); filterNodes(); };
+$('#regionF').onclick = e => { const b = e.target.closest('[data-r]'); if (!b) return; nf.region = b.dataset.r || null; $$('#regionF .chip').forEach(c => c.classList.toggle('on', c === b)); filterNodes(); };
+$('#protoF').onclick = e => { const b = e.target.closest('[data-p]'); if (!b) return; const on = nf.proto === b.dataset.p; nf.proto = on ? null : b.dataset.p; $$('#protoF .chip').forEach(c => c.classList.toggle('on', !on && c === b)); filterNodes(); };
+let testing = false;
+const speedTest = () => {
+  if (testing) return; go('nodes'); testing = true; const btn = $('#speedBtn'); btn.classList.add('loading'); btn.disabled = true;
+  const tiles = $$('#nodeGrid .ntile:not(.hide)'); const cols = Math.max(1, Math.round($('#nodeGrid').clientWidth / 222));
+  tiles.forEach(t => t.classList.add('testing'));
+  let done = 0;
+  tiles.forEach((t, i) => {
+    const r = Math.floor(i / cols), c = i % cols, delay = 300 + Math.hypot(r, c) * 170 + rnd() * 160;
+    setTimeout(() => {
+      const n = NODES[t.dataset.i]; const base = n.lat ?? 200; n.lat = rnd() > .95 ? null : Math.max(12, Math.round(base * (.75 + rnd() * .5)));
+      n.spark.shift(); n.spark.push(n.lat == null ? .1 : clamp(1 - n.lat / 300, .1, 1));
+      const l = $('.lat', t); l.className = `lat ${latCls(n.lat)}`; l.innerHTML = n.lat == null ? '超时' : `${n.lat}<small>ms</small>`;
+      $('.spark', t).innerHTML = n.spark.map(v => `<i style="--h:${Math.round(v * 100)}%"></i>`).join('');
+      t.classList.remove('testing'); t.classList.add('flash'); setTimeout(() => t.classList.remove('flash'), 900);
+      if (++done === tiles.length) { testing = false; btn.classList.remove('loading'); btn.disabled = false; const best = NODES.filter(x => x.lat).sort((a, b) => a.lat - b.lat)[0]; toast(`测速完成 · 最快 ${best.name} ${best.lat}ms`); pushEv({ ic: 'zap', c: 'ok', m: `全部测速完成，最快 <b>${best.name}</b>`, tag: `${best.lat}ms` }); }
+    }, delay);
+  });
+};
+$('#speedBtn').onclick = speedTest;
+
+/* ---------------- 策略组 ---------------- */
+let curG = GROUPS[0];
+const STRAT = { select: '手动选择', 'url-test': '自动测速', fallback: '故障转移', 'load-balance': '负载均衡' };
+$('#pgList').innerHTML = GROUPS.map(g => `<button class="pg-item" data-g="${g.id}"><span class="gi">${g.type.slice(0, 3).toUpperCase()}</span><span class="t"><b>${g.name}</b><span>${STRAT[g.type]}</span></span><span class="n num" data-gn="${g.id}"></span></button>`).join('');
+const matchG = (g) => { let re; try { re = new RegExp(g.regex); } catch { return null; } return NODES.filter(n => g.subs.includes(n.sub) && re.test(n.name)); };
+const renderG = () => {
+  const g = curG; $$('.pg-item').forEach(b => b.classList.toggle('on', b.dataset.g === g.id));
+  $('#pgTitle').textContent = g.name; $('#pgType').textContent = g.type;
+  $('#pgSrc').innerHTML = SUBS.map(s => `<label class="src ${g.subs.includes(s.id) ? '' : 'off'}"><input type="checkbox" data-s="${s.id}" ${g.subs.includes(s.id) ? 'checked' : ''}>${s.name}<span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--fg-3)">${NODES.filter(n => n.sub === s.id).length}</span></label>`).join('');
+  if (document.activeElement !== $('#pgRegex')) $('#pgRegex').value = g.regex;
+  renderMatch();
+};
+const renderMatch = () => {
+  const g = curG, m = matchG(g), pool = NODES.filter(n => g.subs.includes(n.sub)).length;
+  $('#pgErr').textContent = m ? '' : '正则无效，保留上一次结果';
+  if (!m) return;
+  tween($('#pgCount'), m.length, 0, 400); $('#pgOf').textContent = `/ ${pool} 节点`;
+  const win = g.type === 'url-test' ? [...m].filter(n => n.lat).sort((a, b) => a.lat - b.lat)[0] : g.type === 'fallback' || g.type === 'select' ? m.find(n => n.lat) : null;
+  $('#pgMatched').innerHTML = m.length ? m.map((n, i) => `<span class="mnode ${n === win ? 'win' : ''}" style="animation-delay:${Math.min(i, 24) * 18}ms">${n.name}<i>${n.lat ?? '—'}</i></span>`).join('') : `<span style="color:var(--fg-3);font-size:12.5px">没有节点命中这个正则。</span>`;
+  $('#pgStrat').innerHTML = `<b>${STRAT[g.type]}</b> · ${g.desc}${win ? `<br>当前生效：<b style="color:var(--accent)">${win.name}</b>` : g.type === 'load-balance' ? `<br>流量分摊到 <b>${m.length}</b> 个节点` : ''}`;
+  $$('[data-gn]').forEach(el => { const mm = matchG(GROUPS.find(x => x.id === el.dataset.gn)); el.textContent = mm ? mm.length : '!'; });
+};
+$('#pgList').onclick = e => { const b = e.target.closest('[data-g]'); if (b) { curG = GROUPS.find(g => g.id === b.dataset.g); renderG(); } };
+$('#pgRegex').oninput = e => { curG.regex = e.target.value; renderMatch(); };
+$('#pgSrc').onchange = e => { const id = e.target.dataset.s; if (!id) return; curG.subs = e.target.checked ? [...curG.subs, id] : curG.subs.filter(x => x !== id); e.target.closest('.src').classList.toggle('off', !e.target.checked); renderMatch(); };
+
+/* ---------------- 策略规则 ---------------- */
+const polChip = (p) => p === 'REJECT' ? `<span class="chip bad mono">REJECT</span>` : p === 'DIRECT' ? `<span class="chip ok mono">DIRECT</span>` : `<span class="chip acc">${p}</span>`;
+$('#rtBody').innerHTML = RULES.map((r, i) => `<tr data-ri="${i}"><td class="idx">${String(i + 1).padStart(2, '0')}</td><td class="rtype">${r.t}</td><td class="val">${r.v}</td><td style="color:var(--fg-3)">${r.rm || '—'}</td><td>${polChip(r.p)}</td></tr>`).join('');
+const ruleHit = (r, d) => {
+  const suf = (s) => d === s || d.endsWith('.' + s);
+  switch (r.t) {
+    case 'DOMAIN-SUFFIX': return suf(r.v);
+    case 'DOMAIN-KEYWORD': return d.includes(r.v);
+    case 'RULE-SET': return RULESETS[r.v].some(suf);
+    case 'GEOIP': return d.endsWith('.cn');
+    case 'MATCH': return true;
+  }
+};
+let simming = false;
+const simulate = async () => {
+  if (simming) return; const d = $('#simQ').value.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0]; if (!d) return;
+  simming = true; const rows = $$('#rtBody tr'); rows.forEach(r => r.classList.remove('scan', 'match'));
+  $('#simOut').innerHTML = `<span class="live-dot"></span><span class="mono">逐条匹配 ${d} …</span>`;
+  for (let i = 0; i < RULES.length; i++) {
+    rows[i].classList.add('scan'); await new Promise(r => setTimeout(r, state.motion ? 110 : 0)); rows[i].classList.remove('scan');
+    if (ruleHit(RULES[i], d)) {
+      rows[i].classList.add('match'); const r = RULES[i]; const g = GROUPS.find(x => x.name === r.p); const m = g && matchG(g); const via = m && (g.type === 'url-test' ? [...m].filter(n => n.lat).sort((a, b) => a.lat - b.lat)[0] : m.find(n => n.lat));
+      $('#simOut').innerHTML = `<div class="route"><span class="chip mono">${d}</span><span class="ar">→</span><span class="chip mono">#${String(i + 1).padStart(2, '0')} ${r.t}</span><span class="ar">→</span>${polChip(r.p)}${via ? `<span class="ar">→</span><span class="chip mono">${via.name} · ${via.lat}ms</span>` : ''}</div>`;
+      break;
+    }
+  }
+  simming = false;
+};
+$('#simBtn').onclick = simulate;
+$('#simQ').onkeydown = e => { if (e.key === 'Enter') simulate(); };
+$('#simOut').onclick = e => { const b = e.target.closest('[data-q]'); if (b) { $('#simQ').value = b.dataset.q; simulate(); } };
+
+/* ---------------- 配置生成 ---------------- */
+let genT = 'mihomo', cfgVer = 42;
+const STEPS = [['收集资源', '3 订阅 · 216 节点'], ['解析节点', 'sub-store 转换'], ['组装策略组', '6 组 · 正则筛选'], ['编译规则', '11 条 · 3 规则集'], ['写出配置', '']];
+const FILES = { mihomo: 'config.yaml', surge: 'surge.conf', mosdns: 'mosdns.yaml' };
+const renderSteps = (cur = -1) => { $('#steps').innerHTML = STEPS.map((s, i) => `<div class="step ${i < cur ? 'done' : i === cur ? 'run' : ''}"><span class="bul">${i < cur ? ico('check') : i + 1}</span><div><b>${s[0]}</b><span>${i === 4 ? FILES[genT] : s[1]}</span></div></div>`).join(''); };
+const genText = (t) => {
+  const nodes = NODES.slice(0, 5);
+  if (t === 'surge') return ['# ConfigFlow · Surge · 家庭主网 · v' + (cfgVer + 1), '[General]', 'loglevel = notify', 'dns-server = 223.5.5.5, 119.29.29.29', 'skip-proxy = 127.0.0.1, 192.168.0.0/16, localhost', '', '[Proxy]', ...nodes.map(n => `${n.name} = ${n.proto.toLowerCase()}, ${n.region.toLowerCase()}.example.net, 443, password=***`), '', '[Proxy Group]', ...GROUPS.map(g => `${g.name} = ${g.type === 'url-test' ? 'url-test' : g.type === 'fallback' ? 'fallback' : g.type === 'load-balance' ? 'load-balance' : 'select'}, policy-regex-filter=${g.regex}`), '', '[Rule]', ...RULES.map(r => r.t === 'MATCH' ? `FINAL,${r.p}` : r.t === 'RULE-SET' ? `RULE-SET,https://rules.example/${r.v}.list,${r.p}` : `${r.t},${r.v},${r.p}`)];
+  if (t === 'mosdns') return ['# ConfigFlow · MosDNS · 家庭主网 · v' + (cfgVer + 1), 'log:', '  level: info', 'plugins:', '  - tag: cn_domains', '    type: domain_set', '    args:', '      files: ["./rules/cn-domains.txt"]', '  - tag: forward_local', '    type: forward', '    args:', '      upstreams:', '        - addr: "udp://223.5.5.5"', '  - tag: forward_remote', '    type: forward', '    args:', '      upstreams:', '        - addr: "tls://1.1.1.1"', '  - tag: main', '    type: sequence', '    args:', '      - matches: qname $cn_domains', '        exec: $forward_local', '      - exec: $forward_remote', 'servers:', '  - exec: main', '    listeners:', '      - protocol: udp', '        addr: ":53"'];
+  return ['# ConfigFlow · Mihomo · 家庭主网 · v' + (cfgVer + 1), 'mixed-port: 7890', 'allow-lan: true', 'mode: rule', 'log-level: info', 'external-controller: 0.0.0.0:9090', '', 'proxy-providers:', ...SUBS.slice(0, 2).flatMap(s => [`  ${s.id}:`, '    type: http', `    url: "https://sub.example/${s.id}"`, `    interval: ${s.interval === '6h' ? 21600 : 43200}`, '    health-check: { enable: true, url: "https://www.gstatic.com/generate_204", interval: 300 }']), '', 'proxies:', ...nodes.map(n => `  - { name: "${n.name}", type: ${n.proto.toLowerCase()}, server: ${n.region.toLowerCase()}.example.net, port: 443 }`), '', 'proxy-groups:', ...GROUPS.flatMap(g => [`  - name: "${g.name}"`, `    type: ${g.type}`, `    use: [${g.subs.filter(s => s !== 's3').join(', ')}]`, `    filter: "${g.regex}"`, ...(g.type === 'url-test' ? ['    url: "https://www.gstatic.com/generate_204"', '    interval: 300'] : [])]), '', 'rule-providers:', ...Object.keys(RULESETS).flatMap(k => [`  ${k}:`, '    type: http', '    behavior: domain', `    url: "https://rules.example/${k}.yaml"`, '    interval: 86400']), '', 'rules:', ...RULES.map(r => `  - ${r.t === 'MATCH' ? `MATCH,${r.p}` : `${r.t},${r.v},${r.p}${r.t === 'GEOIP' ? ',no-resolve' : ''}`}`)];
+};
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const hl = (line) => {
+  if (/^\s*#/.test(line)) return `<span class="y-c">${esc(line)}</span>`;
+  if (/^\[.*\]$/.test(line)) return `<span class="y-k">${esc(line)}</span>`;
+  let s = esc(line);
+  s = s.replace(/("[^"]*")/g, '<span class="y-s">$1</span>');
+  s = s.replace(/^(\s*-?\s*)([\w.-]+)(:)(?=\s|$)/, '$1<span class="y-k">$2</span><span class="y-d">$3</span>');
+  s = s.replace(/^([\w -]+)( = )/, '<span class="y-k">$1</span><span class="y-d">$2</span>');
+  s = s.replace(/(:\s)(\d+|true|false)(\s*$|,)/g, '$1<span class="y-n">$2</span>$3');
+  s = s.replace(/\b(DIRECT|REJECT|MATCH|FINAL)\b/g, '<span class="y-n">$1</span>');
+  return s;
+};
+let genning = false;
+const generate = async () => {
+  if (genning) return; genning = true; go('generate');
+  const out = $('#genOut'); out.innerHTML = ''; $('#genIdle').style.display = 'none';
+  ['#genCopy', '#genPush'].forEach(s => $(s).disabled = true); $('#genBtn').disabled = true; document.body.classList.add('busy');
+  const wait = (ms) => new Promise(r => setTimeout(r, state.motion ? ms : 0));
+  for (let i = 0; i < 4; i++) { renderSteps(i); await wait(420 + rnd() * 260); }
+  renderSteps(4);
+  const lines = genText(genT);
+  for (let i = 0; i < lines.length; i++) {
+    out.querySelector('.caret')?.remove();
+    const l = h(`<span class="l new">${hl(lines[i]) || ' '}</span>`); l.insertAdjacentHTML('beforeend', '<span class="caret"></span>'); out.append(l);
+    out.scrollTop = out.scrollHeight; await wait(i < 3 ? 60 : 16);
+  }
+  out.querySelector('.caret')?.remove(); renderSteps(5); out.scrollTop = 0;
+  ['#genCopy', '#genPush', '#genBtn'].forEach(s => $(s).disabled = false); document.body.classList.remove('busy'); genning = false;
+  cfgVer++; $('#hubVer').textContent = 'v' + cfgVer;
+  flowMain.burst(genT === 'mosdns' ? 'o3' : genT === 'surge' ? 'o2' : 'o1', 10);
+  toast(`${FILES[genT]} 已生成 · ${lines.length} 行 · v${cfgVer}`);
+};
+$('#genBtn').onclick = generate;
+$('#genCopy').onclick = () => { navigator.clipboard?.writeText(genText(genT).join('\n')).catch(() => { }); toast('已复制到剪贴板'); };
+$('#genPush').onclick = () => { pushAll(); };
+const segInit = (seg, on) => {
+  const th = $('.thumb', seg); const place = () => { const b = $('button.on', seg); if (!b) return; th.style.left = b.offsetLeft + 'px'; th.style.width = b.offsetWidth + 'px'; };
+  seg.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; $$('button', seg).forEach(x => x.classList.toggle('on', x === b)); place(); on(b); });
+  seg._place = place; requestAnimationFrame(place); return place;
+};
+segInit($('#genSeg'), b => { genT = b.dataset.t; $('#genFile').textContent = FILES[genT]; $('#genOut').innerHTML = ''; $('#genIdle').style.display = ''; renderSteps(-1); ['#genCopy', '#genPush'].forEach(s => $(s).disabled = true); });
+renderSteps(-1);
+
+/* ---------------- Agent ---------------- */
+$('#topoAgents').innerHTML = AGENTS.map(a => `<div class="fnode ${a.on ? '' : 'off'}" data-fid="t${a.id}"><span class="ic">${ico('agent')}</span><span class="t"><b>${a.name}</b><span>${a.host}</span></span><span class="st"></span></div>`).join('');
+const flowTopo = new Flow($('#flowTopo'), AGENTS.map(a => ['hub', 't' + a.id, a.on ? .7 : 0, a.svc === 'mosdns' ? 'sky' : 'olive', !a.on]));
+const renderAgents = () => {
+  $('#agents').innerHTML = AGENTS.map(a => `<div class="card ag ${a.on ? '' : 'off'}" data-aid="${a.id}">
+    <div class="ag-h"><span class="st"></span><b>${a.name}</b><span class="chip mono ${a.svc === 'mosdns' ? 'sky' : ''}">${a.svc} ${a.vs}</span></div>
+    <div class="ag-host">${a.host} · ${a.dep}</div>
+    <div class="meters"><div class="meter">CPU<i style="--w:${a.cpu}%"></i><b>${a.on ? a.cpu + '%' : '—'}</b></div><div class="meter">内存<i style="--w:${a.mem}%"></i><b>${a.on ? a.mem + '%' : '—'}</b></div></div>
+    <div class="ag-foot"><span class="ver">配置 <em>${a.ver}</em>${a.ver !== 'v' + cfgVer && a.on ? ' · 待更新' : ''}</span>${a.on ? `<button class="btn" data-push="${a.id}" style="height:30px">${ico('send')}推送</button>` : `<span class="chip">离线 3h</span>`}</div></div>`).join('');
+};
+const pushAgent = (id) => new Promise(res => {
+  const a = AGENTS.find(x => x.id === id); if (!a.on) return res();
+  const b = $(`[data-push="${id}"]`); b?.classList.add('loading');
+  flowTopo.burst('t' + id, 16); flowMain.burst(id, 8);
+  setTimeout(() => { a.ver = 'v' + cfgVer; renderAgents(); pushEv({ ic: 'send', c: 'acc', m: `配置 <b>v${cfgVer}</b> 已推送至 ${a.name}`, tag: '200 OK' }); res(); }, 1300);
+});
+$('#agents').onclick = e => { const b = e.target.closest('[data-push]'); if (b) pushAgent(b.dataset.push).then(() => toast(`已推送至「${AGENTS.find(a => a.id === b.dataset.push).name}」`)); };
+const pushAll = async () => { go('agents'); await new Promise(r => setTimeout(r, 350)); await Promise.all(AGENTS.filter(a => a.on).map(a => pushAgent(a.id))); toast(`v${cfgVer} 已推送到 3 台在线 Agent · 1 台离线跳过`); };
+$('#pushAll').onclick = pushAll;
+setInterval(() => { AGENTS.forEach(a => { if (a.on) { a.cpu = Math.round(clamp(a.cpu + (rnd() - .5) * 8, 2, 60)); a.mem = Math.round(clamp(a.mem + (rnd() - .5) * 3, 8, 80)); } }); if (curView === 'agents') $$('#agents .ag').forEach(c => { const a = AGENTS.find(x => x.id === c.dataset.aid); const m = $$('.meter', c); if (!a.on) return; m[0].querySelector('i').style.setProperty('--w', a.cpu + '%'); m[0].querySelector('b').textContent = a.cpu + '%'; m[1].querySelector('i').style.setProperty('--w', a.mem + '%'); m[1].querySelector('b').textContent = a.mem + '%'; }); }, 2000);
+
+/* ---------------- 日志 ---------------- */
+const LV = ['INFO', 'WARN', 'ERROR', 'DEBUG']; const lvOn = new Set(LV); let logPaused = false;
+$('#lvF').innerHTML = LV.map(l => `<button class="chip mono on" data-lv="${l}">${l}</button>`).join('');
+$('#lvF').onclick = e => { const b = e.target.closest('[data-lv]'); if (!b) return; const l = b.dataset.lv; lvOn.has(l) ? lvOn.delete(l) : lvOn.add(l); b.classList.toggle('on', lvOn.has(l)); $$('#term .lg').forEach(r => r.classList.toggle('hide', !lvOn.has(r.dataset.lv))); };
+$('#logPause').onclick = () => { logPaused = !logPaused; $('#logPause').innerHTML = logPaused ? `${ico('play')}<span>继续</span>` : `${ico('pause')}<span>暂停</span>`; };
+const LOGS = [
+  ['INFO', 'scheduler', () => `subscription ${pick(['s1', 's2'])} refreshed, ${120 + Math.round(rnd() * 8)} proxies`],
+  ['INFO', 'agent', () => `heartbeat from ${pick(['192.168.1.1', '192.168.1.2', '192.168.1.3'])} ok in ${Math.round(4 + rnd() * 20)}ms`],
+  ['DEBUG', 'generator', () => `proxy-group "${pick(GROUPS).name}" matched ${Math.round(6 + rnd() * 20)} proxies`],
+  ['INFO', 'rule-library', () => `rule-set ${pick(Object.keys(RULESETS))} cached (etag unchanged)`],
+  ['WARN', 'agent', () => `heartbeat timeout: 10.8.0.12:9090 (last seen 3h ago)`],
+  ['DEBUG', 'sub-store', () => `convert ${pick(PROTOS).toLowerCase()} uri → mihomo proxy`],
+  ['ERROR', 'scheduler', () => `fetch https://sub.example/s2 failed: read timeout (retry 1/3)`],
+  ['INFO', 'api', () => `GET /api/stats 200 ${Math.round(3 + rnd() * 30)}ms`]
+];
+const pushLog = () => {
+  if (logPaused) return; const [lv, md, f] = rnd() > .93 ? LOGS[6] : pick(LOGS); const t = new Date().toTimeString().slice(0, 8) + '.' + String(Math.floor(rnd() * 1000)).padStart(3, '0');
+  const term = $('#term'); const stick = term.scrollHeight - term.scrollTop - term.clientHeight < 40;
+  const r = h(`<div class="lg ${lvOn.has(lv) ? '' : 'hide'}" data-lv="${lv}"><span class="ts">${t}</span><span class="lv ${lv}">${lv}</span><span class="md">[${md}]</span><span class="ms">${esc(f())}</span></div>`);
+  term.append(r); while (term.children.length > 300) term.firstElementChild.remove(); if (stick) term.scrollTop = term.scrollHeight;
+};
+for (let i = 0; i < 40; i++) pushLog();
+
+/* ---------------- 导航 / 路由 ---------------- */
+$('#nav').innerHTML = NAV.map(g => `${g.title ? `<div class="nav-h">${g.title}</div>` : ''}${g.items.map(i => `<a href="#/${i.id}" data-nav="${i.id}">${ico(i.ic)}${i.label}${i.pulse ? '<span class="pulse"></span>' : i.cnt != null ? `<span class="cnt">${i.cnt}</span>` : ''}</a>`).join('')}`).join('');
+const TABS = [['dashboard', '总览', 'dashboard'], ['subscriptions', '订阅', 'link'], ['nodes', '节点', 'server'], ['generate', '生成', 'generate'], ['__more', '更多', 'more']];
+$('#tabbar').innerHTML = TABS.map(([id, l, ic]) => `<a href="${id === '__more' ? '#' : '#/' + id}" data-tab="${id}">${ico(ic)}${l}</a>`).join('');
+$('#tabbar').addEventListener('click', e => { const a = e.target.closest('[data-tab="__more"]'); if (a) { e.preventDefault(); openCmdk(); } });
+const BUILT = new Set(['dashboard', 'subscriptions', 'nodes', 'proxy-groups', 'rules', 'generate', 'agents', 'logs']);
+let curView = null; const entered = new Set();
+function go(id) { if (location.hash !== '#/' + id) location.hash = '#/' + id; else route(); }
+function route() {
+  const id = (location.hash.replace('#/', '') || 'dashboard'); const p = PAGE[id] ? id : 'dashboard'; const meta = PAGE[p];
+  const vid = BUILT.has(p) ? p : 'placeholder';
+  $$('.view').forEach(v => v.classList.toggle('on', v.dataset.view === vid));
+  $$('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === p));
+  $$('[data-tab]').forEach(a => a.classList.toggle('on', a.dataset.tab === p));
+  $('#crumbScope').textContent = SCOPE_LABEL[meta.scope]; $('#crumbScope').dataset.s = meta.scope; $('#crumbTitle').textContent = meta.label;
+  if (vid === 'placeholder') $('#phTitle').textContent = meta.label;
+  document.title = `${meta.label} · ConfigFlow`;
+  curView = p; $('#content').scrollTop = 0;
+  requestAnimationFrame(() => {
+    FLOWS.forEach(f => f.layout());
+    if (p === 'dashboard') { drawKpis(); if (!entered.has(p)) countUp($('[data-view=dashboard]')); }
+    if (p === 'subscriptions') renderSubs();
+    if (p === 'nodes' && !entered.has(p)) renderNodes();
+    if (p === 'proxy-groups') renderG();
+    if (p === 'agents') renderAgents();
+    if (p === 'logs') $('#term').scrollTop = 1e9;
+    $('#genSeg')._place?.();
+    entered.add(p);
+  });
+}
+function countUp(root) { $$('[data-count]', root).forEach(el => { el.dataset.v = 0; tween(el, +el.dataset.count, 0, 1400); }); }
+addEventListener('hashchange', route);
+document.addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (g && !e.target.closest('a')) { if (g.dataset.gid) curG = GROUPS.find(x => x.id === g.dataset.gid); go(g.dataset.go); } const q = e.target.closest('[data-act]'); if (q) ACTIONS[q.dataset.act]?.(); });
+document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.matches('.kpi')) go(e.target.dataset.go); });
+
+/* ---------------- 配置空间切换 ---------------- */
+let curP = PROFILES[0];
+const renderPop = () => { $('#profilePop').innerHTML = PROFILES.map(p => `<button data-p="${p.id}" class="${p === curP ? 'on' : ''}"><span class="profile-ava" style="width:24px;height:24px;font-size:12px">${p.ava}</span>${p.name}<svg class="i chk" viewBox="0 0 24 24">${ICONS.check}</svg></button>`).join(''); };
+renderPop();
+$('#profileBtn').onclick = (e) => { e.stopPropagation(); $('#profilePop').classList.toggle('open'); };
+$('#profilePop').onclick = e => { const b = e.target.closest('[data-p]'); if (!b) return; curP = PROFILES.find(p => p.id === b.dataset.p); $('#profileName').textContent = curP.name; $('#profileAva').textContent = curP.ava; $$('.pname').forEach(el => el.textContent = curP.name); renderPop(); $('#profilePop').classList.remove('open'); toast(`已切换到配置空间「${curP.name}」`); flowMain.burst('pool', 12); };
+document.addEventListener('click', e => { if (!e.target.closest('.profile-wrap')) $('#profilePop').classList.remove('open'); });
+
+/* ---------------- 主题 / Tweaks ---------------- */
+const setTheme = (t) => { document.documentElement.dataset.theme = t; $('#themeBtn').innerHTML = ico(t === 'dark' ? 'moon' : 'sun'); $$('#twTheme button').forEach(b => b.classList.toggle('on', b.dataset.v === t)); $('#twTheme')._place?.(); requestAnimationFrame(() => { readPal(); drawKpis(); }); try { localStorage.setItem('cf-theme', t); } catch { } };
+$('#themeBtn').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+$('#tweakBtn').onclick = () => { $('#tweaks').classList.toggle('open'); requestAnimationFrame(() => $$('#tweaks .seg').forEach(s => s._place?.())); };
+$('#tweakClose').onclick = () => $('#tweaks').classList.remove('open');
+segInit($('#twTheme'), b => setTheme(b.dataset.v));
+segInit($('#twMotion'), b => { state.motion = b.dataset.v === 'on'; document.body.dataset.motion = b.dataset.v; });
+segInit($('#twTex'), b => document.body.dataset.texture = b.dataset.v);
+$('#twAccent').onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; document.documentElement.dataset.accent = b.dataset.v; $$('#twAccent button').forEach(x => x.classList.toggle('on', x === b)); requestAnimationFrame(() => { readPal(); drawKpis(); }); };
+$('#twDens').oninput = e => { state.density = +e.target.value; $('#twDensOut').textContent = state.density.toFixed(1) + '×'; };
+if (matchMedia('(prefers-reduced-motion: reduce)').matches) { state.motion = false; }
+try { const t = localStorage.getItem('cf-theme'); if (t) setTheme(t); else setTheme('dark'); } catch { setTheme('dark'); }
+
+/* ---------------- 命令面板 ---------------- */
+const ACTIONS = { speedtest: speedTest, generate: () => { genT = 'mihomo'; generate(); }, pullall: pullAll, pushall: pushAll };
+const CMDS = [
+  ...NAV.flatMap(g => g.items.map(i => ({ g: '页面', label: i.label, ic: i.ic, run: () => go(i.id), kw: i.id }))),
+  { g: '动作', label: '全部节点测速', ic: 'zap', run: speedTest, kw: 'speed test' },
+  { g: '动作', label: '生成 Mihomo 配置', ic: 'generate', run: ACTIONS.generate, kw: 'generate build' },
+  { g: '动作', label: '拉取全部订阅', ic: 'refresh', run: pullAll, kw: 'pull refresh' },
+  { g: '动作', label: '推送到全部 Agent', ic: 'send', run: pushAll, kw: 'push deploy' },
+  { g: '动作', label: '切换明暗主题', ic: 'moon', run: () => $('#themeBtn').click(), kw: 'theme dark light' }
+];
+let cmdSel = 0, cmdRes = [];
+const renderCmdk = () => {
+  const q = $('#cmdkQ').value.trim().toLowerCase();
+  cmdRes = CMDS.filter(c => !q || c.label.toLowerCase().includes(q) || c.kw.includes(q)); cmdSel = clamp(cmdSel, 0, Math.max(0, cmdRes.length - 1));
+  let last = ''; $('#cmdkList').innerHTML = cmdRes.length ? cmdRes.map((c, i) => `${c.g !== last ? (last = c.g, `<div class="cmdk-g">${c.g}</div>`) : ''}<button class="cmdk-item ${i === cmdSel ? 'sel' : ''}" data-ci="${i}">${ico(c.ic)}${c.label}${i === cmdSel ? '<span class="kbd">↵</span>' : ''}</button>`).join('') : `<div class="empty" style="padding:30px">没有匹配项</div>`;
+  const sel = $('#cmdkList .sel'); if (sel) { const L = $('#cmdkList'); if (sel.offsetTop < L.scrollTop) L.scrollTop = sel.offsetTop - 8; else if (sel.offsetTop + sel.offsetHeight > L.scrollTop + L.clientHeight) L.scrollTop = sel.offsetTop + sel.offsetHeight - L.clientHeight + 8; }
+};
+function openCmdk() { $('#cmdk').classList.add('open'); $('#cmdkQ').value = ''; cmdSel = 0; renderCmdk(); setTimeout(() => $('#cmdkQ').focus(), 30); }
+const closeCmdk = () => $('#cmdk').classList.remove('open');
+const runCmd = (i) => { const c = cmdRes[i]; if (!c) return; closeCmdk(); c.run(); };
+$('#cmdkBtn').onclick = openCmdk;
+$('#cmdk').onclick = e => { if (e.target.id === 'cmdk') closeCmdk(); const b = e.target.closest('[data-ci]'); if (b) runCmd(+b.dataset.ci); };
+$('#cmdkQ').oninput = () => { cmdSel = 0; renderCmdk(); };
+$('#cmdkQ').onkeydown = e => { if (e.key === 'ArrowDown') { cmdSel++; renderCmdk(); e.preventDefault(); } else if (e.key === 'ArrowUp') { cmdSel--; renderCmdk(); e.preventDefault(); } else if (e.key === 'Enter') runCmd(cmdSel); };
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('#cmdk').classList.contains('open') ? closeCmdk() : openCmdk(); }
+  else if (e.key === 'Escape') { closeCmdk(); $('#tweaks').classList.remove('open'); }
+  else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && curView === 'generate') generate();
+});
+
+/* ---------------- Toast ---------------- */
+function toast(msg) { const t = h(`<div class="toast">${ico('check')}<span></span></div>`); t.querySelector('span').textContent = msg; $('#toasts').append(t); setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, 2600); }
+
+/* ---------------- 主循环 ---------------- */
+let last = performance.now();
+const loop = (now) => { const dt = Math.min(.05, (now - last) / 1000); last = now; if (!document.hidden) FLOWS.forEach(f => f.step(dt)); requestAnimationFrame(loop); };
+requestAnimationFrame(loop);
+setInterval(() => { if (!document.hidden) tickTp(); }, 1200);
+setInterval(() => { if (!document.hidden && state.motion) pushEv(pick(EVT)()); }, 2600);
+setInterval(() => { if (!document.hidden) pushLog(); }, 650);
+addEventListener('resize', () => { drawKpis(); $$('.seg').forEach(s => s._place?.()); });
+
+for (let i = 0; i < 6; i++) pushEv(EVT[i % 5]());
+route(); tickTp();
+})();
+</script>
+</body>
+</html>

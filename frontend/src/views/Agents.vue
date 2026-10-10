@@ -1,38 +1,31 @@
 <template>
   <div>
-    <ScopeBanner
-      scope="system"
-      description="所有配置空间共用此 Agent 列表。每个 Agent 只绑定一个配置空间，推送以其绑定的配置为准。"
-    />
 
     <PageHeader
       title="Agent"
-      description="在目标机器安装 Agent 后，可在这里推送配置、重启服务和查看运行状态。"
     >
       <template #actions>
         <Button variant="outline" class="border-border/60 bg-background/40" @click="loadAgents">
           <RefreshCw class="size-4" />
           刷新
         </Button>
-        <Button @click="handleGenerateScript">
+        <Button variant="outline" class="border-border/60 bg-background/40" @click="handleGenerateScript">
           <FileText class="size-4" />
           生成安装脚本
         </Button>
+        <Button class="shadow-glow" :disabled="pushingAll || !onlineCount" @click="pushAll">
+          <Loader2 v-if="pushingAll" class="size-4 animate-spin" />
+          <Send v-else class="size-4" />
+          推送到全部
+        </Button>
       </template>
     </PageHeader>
-
-    <!-- 统计 -->
-    <div class="mb-4 grid grid-cols-3 gap-3 max-[640px]:grid-cols-1">
-      <StatTile label="总 Agent 数" :value="agents.length" :icon="Server" tone="primary" />
-      <StatTile label="在线" :value="onlineCount" :icon="CircleCheck" tone="success" />
-      <StatTile label="离线" :value="offlineCount" :icon="TriangleAlert" tone="warning" />
-    </div>
 
     <SectionCard v-if="agents.length === 0" :padded="false">
       <EmptyState
         :icon="Server"
         title="暂无 Agent"
-        description="点击「生成安装脚本」，复制命令到目标机器执行。安装并连接成功后，Agent 会显示在这里。"
+        description="生成安装脚本并在目标机器上执行，Agent 注册后会出现在这里。"
       >
         <Button @click="handleGenerateScript">
           <FileText class="size-4" />
@@ -41,157 +34,203 @@
       </EmptyState>
     </SectionCard>
 
-    <div v-else class="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-3 max-md:grid-cols-1">
-      <Motion
-        v-for="(agent, index) in agents"
-        :key="agent.id"
-        v-bind="listItem(index)"
-        class="relative flex flex-col gap-3.5 overflow-hidden rounded-xl border border-border bg-card p-5 transition-colors duration-200"
-      >
-        <header class="flex flex-wrap items-center gap-2">
-          <StatusDot
-            :tone="agent.status === 'online' ? 'success' : 'muted'"
-            :pulse="agent.status === 'online'"
-          />
-          <p class="m-0 min-w-0 flex-1 truncate text-[14px] font-semibold text-foreground">
-            {{ agent.name }}
-          </p>
-          <Badge :variant="agent.service_type === 'mihomo' ? 'brand' : 'info'" class="text-[10.5px]">
-            {{ serviceTypeLabels[agent.service_type] }}
-          </Badge>
-          <Badge v-if="agent.deployment_method" variant="outline" class="text-[10.5px]">
-            {{ agent.deployment_method === 'shell' ? 'Shell' : agent.deployment_method === 'docker' ? 'Docker' : agent.deployment_method }}
-          </Badge>
-        </header>
-
-        <dl class="m-0 grid grid-cols-[76px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[12.5px]">
-          <dt class="text-muted-foreground">地址</dt>
-          <dd class="m-0 truncate font-mono text-foreground">{{ agent.host }}:{{ agent.port }}</dd>
-          <dt class="text-muted-foreground">配置版本</dt>
-          <dd class="m-0 truncate font-mono text-foreground">{{ agent.config_version || 'N/A' }}</dd>
-          <dt class="text-muted-foreground">最近联系</dt>
-          <dd class="m-0 truncate text-foreground">{{ formatTime(agent.last_heartbeat) }}</dd>
-          <dt class="text-muted-foreground">Agent 版本</dt>
-          <dd class="m-0 truncate font-mono text-foreground">{{ agent.version || 'N/A' }}</dd>
-        </dl>
-
-        <FormField label="绑定配置空间">
-          <Select
-            :model-value="agent.profile_id || 'default'"
-            :disabled="bindingAgentId === agent.id || profileBindingBlocked(agent.id)"
-            @update:model-value="value => handleAgentProfileChange(agent, String(value))"
-          >
-            <SelectTrigger class="data-[size=default]:h-auto min-h-8 w-full min-w-0 bg-background/50 py-1.5 text-[12.5px] [&_[data-slot=select-value]]:line-clamp-none" :aria-label="`绑定配置空间 ${agent.name}`">
-              <SelectValue class="min-w-0 whitespace-normal break-all text-left" />
-            </SelectTrigger>
-            <SelectContent class="max-w-[calc(100vw-32px)]">
-              <SelectItem v-for="profile in profiles" :key="profile.id" :value="profile.id" class="whitespace-normal break-all">
-                {{ profile.name }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </FormField>
-
-        <!-- 系统监控指标 -->
-        <section
-          v-if="agent.system_metrics"
-          class="flex flex-col gap-2.5 rounded-lg border border-border/40 bg-background/40 p-3"
+    <template v-else>
+      <!-- 拓扑：ConfigFlow → 各 Agent，每台设备一条下发通道 -->
+      <SectionCard :padded="false" class="mb-3.5" role="region" aria-label="下发拓扑">
+        <FlowMap
+          ref="topology"
+          :columns="topoColumns"
+          :edges="topoEdges"
+          :height="Math.max(260, agents.length * 72)"
+          :min-width="isNarrow ? 560 : 640"
+          columns-template="minmax(0,1fr) minmax(0,1.2fr)"
+          :gap-x="isNarrow ? 90 : 200"
         >
-          <div class="flex items-center gap-2">
-            <span class="text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
-              系统监控
+          <template #node="{ node }">
+            <span v-if="node.kind === 'hub'" class="group flex flex-col items-start p-[18px]">
+              <BrandMark class="size-10 text-primary" :busy="pushingAll" />
+              <span class="font-display mt-2.5 text-[22px] font-medium">ConfigFlow</span>
+              <span class="mt-1 font-mono text-[10.5px] text-muted-foreground">
+                配置版本 v{{ activeRevision }} · {{ activeProfileName }}
+              </span>
             </span>
-            <Button variant="ghost" size="sm" class="ml-auto" @click="showMetricsDetail(agent)">
-              <ChartLine class="size-3.5" />
-              详情
+          </template>
+        </FlowMap>
+      </SectionCard>
+
+      <div class="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3.5 max-md:grid-cols-1">
+        <Motion
+          v-for="(agent, index) in agents"
+          :key="agent.id"
+          v-bind="listItem(index)"
+          :class="cn(
+            'relative flex flex-col overflow-hidden rounded-[18px] border border-border bg-card/90 p-[18px] shadow-surface',
+            agent.status !== 'online' && 'opacity-80'
+          )"
+        >
+          <header class="flex items-center gap-2.5">
+            <span
+              :class="cn('size-[9px] shrink-0 rounded-full', agent.status === 'online' ? 'agent-pulse bg-success-accent' : 'bg-muted-foreground/60')"
+              :title="agent.status === 'online' ? '在线' : '离线'"
+            />
+            <p class="font-display m-0 min-w-0 flex-1 truncate text-[19px] font-medium" :title="agent.name">{{ agent.name }}</p>
+            <Badge variant="outline" :class="cn('chip font-mono', agent.service_type === 'mosdns' && 'chip-sky')">{{ serviceTypeLabels[agent.service_type] || agent.service_type }}</Badge>
+            <span class="font-mono text-[11px] text-muted-foreground">{{ agent.version || '' }}</span>
+          </header>
+          <p class="mt-1 mb-0 truncate font-mono text-[11.5px] text-muted-foreground">
+            {{ agent.host }}:{{ agent.port }}
+            · {{ agent.deployment_method === 'shell' ? 'shell' : agent.deployment_method === 'docker' ? 'docker' : agent.deployment_method || '—' }}
+            · 心跳 {{ formatTime(agent.last_heartbeat) }}
+          </p>
+
+          <!-- 资源占用：CPU / 内存 / 磁盘 -->
+          <div class="my-4 grid gap-2.5">
+            <div
+              v-for="metric in metricsOf(agent)"
+              :key="metric.label"
+              class="grid grid-cols-[44px_1fr_44px] items-center gap-2.5 text-[11.5px] text-muted-foreground"
+              :title="metric.detail || undefined"
+            >
+              {{ metric.label }}
+              <i class="block h-1.5 overflow-hidden rounded-full bg-accent">
+                <span
+                  class="block h-full rounded-full transition-[width] duration-1000 ease-(--ease-flow)"
+                  :style="{ width: `${agent.system_metrics ? Math.min(100, metric.percent) : 0}%`, background: metric.color }"
+                />
+              </i>
+              <b class="text-right font-mono font-medium text-foreground/80">{{ agent.system_metrics ? metric.text : '—' }}</b>
+            </div>
+            <div v-if="agent.system_metrics" class="flex gap-4 font-mono text-[11px] text-muted-foreground">
+              <span>↑ {{ flowsOf(agent)[0].value }}</span>
+              <span>↓ {{ flowsOf(agent)[1].value }}</span>
+              <Button variant="ghost" size="sm" class="-my-1 ml-auto h-6 px-1.5 text-[11px]" @click="showMetricsDetail(agent)">
+                <ChartLine class="size-3" />
+                监控
+              </Button>
+            </div>
+          </div>
+
+          <div class="mb-3.5 flex items-center gap-2 text-[11.5px] text-muted-foreground">
+            配置空间
+            <Select
+              :model-value="agent.profile_id || 'default'"
+              :disabled="bindingAgentId === agent.id || profileBindingBlocked(agent.id)"
+              @update:model-value="value => handleAgentProfileChange(agent, String(value))"
+            >
+              <SelectTrigger class="h-7 min-w-0 flex-1 bg-background/50 text-[12px]" :aria-label="`${agent.name} 绑定的配置空间`">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent class="glass-strong">
+                <SelectItem v-for="profile in profiles" :key="profile.id" :value="profile.id">
+                  {{ profile.name }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <!-- 事务发布与在线更新的进度：结果由 useAgentDeployments / useAgentUpgrades 轮询 -->
+          <section
+            v-if="deployments[agent.id]"
+            class="mb-3 rounded-xl border border-border bg-background/50 p-3 text-[12.5px]"
+            aria-live="polite"
+          >
+            <p class="m-0 flex items-center gap-2 font-medium">
+              <Loader2 v-if="deploymentBusy(agent.id)" class="size-3.5 animate-spin text-primary-accent" />
+              {{ deploymentLabels[deployments[agent.id].status] || deployments[agent.id].status }}
+            </p>
+            <p v-if="deployments[agent.id].not_recorded" class="mt-1 mb-0 text-muted-foreground">后端暂未记录此发布，正在继续查询。可使用原发布编号重新提交。</p>
+            <p v-else-if="deployments[agent.id].query_error" class="mt-1 mb-0 text-muted-foreground">暂时无法确认结果，正在重新查询。</p>
+            <p v-if="deployments[agent.id].error || deployments[agent.id].rollback_error" class="mt-1 mb-0 break-words text-destructive-accent">
+              {{ deployments[agent.id].error }} {{ deployments[agent.id].rollback_error }}
+            </p>
+            <Button v-if="deployments[agent.id].status === 'ready'" variant="outline" size="sm" class="mt-2" @click="activateDeployment(agent.id)">应用并启动</Button>
+            <Button v-if="deployments[agent.id].status === 'rollback_failed'" variant="outline" size="sm" class="mt-2" @click="refreshDeployment(agent.id)">查询恢复状态</Button>
+            <Button v-if="deployments[agent.id].not_recorded || deployments[agent.id].retrying" variant="outline" size="sm" class="mt-2" :disabled="deployments[agent.id].retrying" @click="retryDeployment(agent.id)">{{ deployments[agent.id].retrying ? '正在重新提交…' : '重试同一次发布' }}</Button>
+          </section>
+
+          <section
+            v-if="upgrades[agent.id]"
+            class="mb-3 rounded-xl border border-border bg-background/50 p-3 text-[12.5px]"
+            aria-live="polite"
+          >
+            <p class="m-0 font-medium">{{ upgradeLabels[upgrades[agent.id].status] || upgrades[agent.id].status }} · {{ upgrades[agent.id].target_version }}</p>
+            <p v-if="upgrades[agent.id].error" class="mt-1 mb-0 break-words text-destructive-accent">{{ upgrades[agent.id].error }}</p>
+            <Button variant="outline" size="sm" class="mt-2" @click="refreshUpgrade(agent.id)">查询更新结果</Button>
+          </section>
+
+          <div v-if="agent.has_update" class="mb-3 flex items-center gap-2 rounded-xl border border-primary-accent/30 bg-primary-soft/40 px-3 py-2 text-[12px]">
+            <span class="min-w-0 flex-1 text-muted-foreground">
+              {{ agent.deployment_method === 'docker'
+                ? '有新版 Agent，按步骤拉取镜像并重建容器'
+                : agent.upgrade_available ? '有新版 Agent 可在线更新' : '更新文件或安装方式尚未就绪，请先确认 ConfigFlow 主服务已更新' }}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              class="h-7 shrink-0"
+              :disabled="agent.deployment_method !== 'docker' && (!agent.upgrade_available || upgradeBusy(agent.id) || deploymentBusy(agent.id))"
+              @click="updateAgent(agent)"
+            >
+              <Download class="size-3.5" />
+              更新
             </Button>
           </div>
 
-          <div v-for="metric in metricsOf(agent)" :key="metric.label" class="flex flex-col gap-1">
-            <div class="flex items-baseline gap-2 text-[12px]">
-              <span class="text-muted-foreground">{{ metric.label }}</span>
-              <span class="num ml-auto font-medium" :style="{ color: metric.color }">
-                {{ metric.text }}
-              </span>
-            </div>
-            <!-- 用原生进度条而不是引第三方组件：只需要一条带阈值配色的细条 -->
-            <div class="h-1.5 overflow-hidden rounded-full bg-border/60">
-              <div
-                class="h-full rounded-full transition-[width] duration-500 ease-[cubic-bezier(0.32,0.72,0,1)]"
-                :style="{ width: `${Math.min(100, metric.percent)}%`, backgroundColor: metric.color }"
-              />
-            </div>
-            <p v-if="metric.detail" class="num m-0 text-[11px] text-muted-foreground">
-              {{ metric.detail }}
-            </p>
-          </div>
-
-          <div class="grid grid-cols-2 gap-2 border-0 border-t border-border/40 pt-2.5">
-            <div v-for="flow in flowsOf(agent)" :key="flow.label" class="min-w-0">
-              <p class="m-0 text-[11px] text-muted-foreground">{{ flow.label }}</p>
-              <p class="num m-0 truncate text-[12.5px] font-medium text-foreground">{{ flow.value }}</p>
-            </div>
-          </div>
-        </section>
-
-        <section v-if="deployments[agent.id]" class="rounded-lg border border-border/50 p-3 text-sm" aria-live="polite">
-          <p class="m-0 font-medium">{{ deploymentLabels[deployments[agent.id].status] || deployments[agent.id].status }}</p>
-          <p v-if="deployments[agent.id].not_recorded" class="mt-1 text-muted-foreground">后端暂未记录此发布，正在继续查询。可使用原发布编号重新提交。</p>
-          <p v-else-if="deployments[agent.id].query_error" class="mt-1 text-muted-foreground">暂时无法确认结果，正在重新查询。</p>
-          <p v-if="deployments[agent.id].error || deployments[agent.id].rollback_error" class="mt-1 break-words text-destructive">
-            {{ deployments[agent.id].error }} {{ deployments[agent.id].rollback_error }}
-          </p>
-          <Button v-if="deployments[agent.id].status === 'ready'" variant="outline" size="sm" class="mt-2" @click="activateDeployment(agent.id)">应用并启动</Button>
-          <Button v-if="deployments[agent.id].status === 'rollback_failed'" variant="outline" size="sm" class="mt-2" @click="refreshDeployment(agent.id)">查询恢复状态</Button>
-          <Button v-if="deployments[agent.id].not_recorded || deployments[agent.id].retrying" variant="outline" size="sm" class="mt-2" :disabled="deployments[agent.id].retrying" @click="retryDeployment(agent.id)">{{ deployments[agent.id].retrying ? '正在重新提交…' : '重试同一次发布' }}</Button>
-        </section>
-
-        <section v-if="upgrades[agent.id]" class="rounded-lg border border-border/50 p-3 text-sm" aria-live="polite">
-          <p class="m-0 font-medium">{{ upgradeLabels[upgrades[agent.id].status] || upgrades[agent.id].status }} · {{ upgrades[agent.id].target_version }}</p>
-          <p v-if="upgrades[agent.id].error" class="mt-1 break-words text-destructive">{{ upgrades[agent.id].error }}</p>
-          <Button variant="outline" size="sm" class="mt-2" @click="refreshUpgrade(agent.id)">查询更新结果</Button>
-        </section>
-        <p v-if="agent.has_update && agent.deployment_method === 'docker'" class="text-xs text-muted-foreground">有新版 Agent，点击“更新”查看拉取镜像、保留数据卷重建容器的步骤。</p>
-        <p v-else-if="agent.has_update && !agent.upgrade_available" class="text-xs text-muted-foreground">更新文件或安装方式尚未就绪，请先确认 ConfigFlow 主服务已更新。</p>
-
-        <footer class="mt-auto flex flex-wrap items-center gap-1 border-0 border-t border-border/50 pt-3">
-          <Button variant="ghost" size="sm" :disabled="upgradeBusy(agent.id) || deploymentBusy(agent.id) || deployments[agent.id]?.status === 'rollback_failed'" @click="pushConfig(agent)">
-            <Upload class="size-3.5" />
-            推送配置
-          </Button>
-          <Button variant="ghost" size="sm" :disabled="upgradeBusy(agent.id) || deploymentBusy(agent.id) || deployments[agent.id]?.status === 'rollback_failed'" @click="restartAgent(agent)">
-            <RotateCw class="size-3.5" />
-            重启服务
-          </Button>
-          <Button variant="ghost" size="sm" @click="viewLogs(agent)">
-            <ScrollText class="size-3.5" />
-            日志
-          </Button>
-          <Button v-if="agent.has_update" variant="ghost" size="sm" class="text-primary-accent" :disabled="agent.deployment_method !== 'docker' && (!agent.upgrade_available || upgradeBusy(agent.id) || deploymentBusy(agent.id))" @click="updateAgent(agent)">
-            <Download class="size-3.5" />
-            更新
-          </Button>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger as-child>
-              <Button variant="ghost" size="icon-sm" class="ml-auto" title="更多操作" aria-label="更多操作">
-                <MoreHorizontal class="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem class="text-destructive-accent" @select="uninstallAgent(agent)">
-                <Trash2 class="size-4" />
-                卸载 Agent
-              </DropdownMenuItem>
-              <DropdownMenuItem :disabled="!isHeartbeatExpired(agent)" @select="deleteAgent(agent)">
-                <X class="size-4" />
-                删除记录
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </footer>
-      </Motion>
-    </div>
+          <footer class="mt-auto flex items-center gap-2 border-t border-border pt-3.5">
+            <span class="mr-auto min-w-0 truncate font-mono text-[12px] text-muted-foreground" :title="`配置哈希 ${agent.config_version || '—'}`">
+              配置 <em class="not-italic text-primary-accent">{{ syncOf(agent).label }}</em>
+              <template v-if="syncOf(agent).stale"> · 待更新</template>
+            </span>
+            <Button
+              v-if="agent.status === 'online'"
+              variant="outline"
+              size="sm"
+              class="h-[30px]"
+              :disabled="pushingIds.has(agent.id) || upgradeBusy(agent.id) || deploymentBusy(agent.id) || deployments[agent.id]?.status === 'rollback_failed'"
+              @click="pushConfig(agent)"
+            >
+              <Loader2 v-if="pushingIds.has(agent.id) || deploymentBusy(agent.id)" class="size-3.5 animate-spin" />
+              <Send v-else class="size-3.5" />
+              推送
+            </Button>
+            <span v-else class="chip">离线 {{ formatTime(agent.last_heartbeat) }}</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger as-child>
+                <Button variant="ghost" size="icon-sm" class="size-[30px]" :aria-label="`${agent.name} 的更多操作`">
+                  <MoreHorizontal class="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" class="glass-strong min-w-[160px]">
+                <DropdownMenuItem @select="viewLogs(agent)">
+                  <ScrollText class="size-4" />
+                  日志
+                </DropdownMenuItem>
+                <DropdownMenuItem v-if="agent.system_metrics" @select="showMetricsDetail(agent)">
+                  <ChartLine class="size-4" />
+                  监控详情
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  :disabled="upgradeBusy(agent.id) || deploymentBusy(agent.id) || deployments[agent.id]?.status === 'rollback_failed'"
+                  @select="restartAgent(agent)"
+                >
+                  <RotateCw class="size-4" />
+                  重启服务
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" @select="uninstallAgent(agent)">
+                  <Trash2 class="size-4" />
+                  卸载 Agent
+                </DropdownMenuItem>
+                <DropdownMenuItem :disabled="!isHeartbeatExpired(agent)" @select="deleteAgent(agent)">
+                  <X class="size-4" />
+                  删除记录
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </footer>
+        </Motion>
+      </div>
+    </template>
 
     <DockerAgentUpdateDialog v-if="dockerUpdateAgent" :agent="dockerUpdateAgent" @close="dockerUpdateAgent = null" @refresh="loadAgents" />
 
@@ -592,10 +631,16 @@
 </template>
 
 <script setup lang="ts">
-import ScopeBanner from '@/components/shell/ScopeBanner.vue'
+import { useChartPalette, withAlpha } from '@/lib/chartPalette'
 import PageHeader from '@/components/common/PageHeader.vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { useMediaQuery } from '@vueuse/core'
+import BrandMark from '@/components/common/BrandMark.vue'
+import FlowMap, { type FlowColumn, type FlowEdge, type FlowTone } from '@/components/dashboard/FlowMap.vue'
+import { consumeAction } from '@/lib/actions'
+import { cn } from '@/lib/utils'
 import DockerAgentUpdateDialog from '@/components/agents/DockerAgentUpdateDialog.vue'
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { Motion } from 'motion-v'
 import {
   ChartLine,
@@ -609,6 +654,7 @@ import {
   RefreshCw,
   RotateCw,
   ScrollText,
+  Send,
   Server,
   Trash2,
   TriangleAlert,
@@ -630,6 +676,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
@@ -756,6 +803,8 @@ const offlineCount = computed(() => {
 })
 
 // CPU 使用率图表配置
+const chartPalette = useChartPalette()
+
 const cpuChartOption = computed(() => {
   const timestamps = metricsHistory.value.map(m => {
     const date = new Date(m.timestamp)
@@ -808,13 +857,13 @@ const cpuChartOption = computed(() => {
           type: 'linear',
           x: 0, y: 0, x2: 0, y2: 1,
           colorStops: [
-            { offset: 0, color: 'rgba(64, 158, 255, 0.3)' },
-            { offset: 1, color: 'rgba(64, 158, 255, 0.05)' }
+            { offset: 0, color: withAlpha(chartPalette.value.primary, 0.3) },
+            { offset: 1, color: withAlpha(chartPalette.value.primary, 0.05) }
           ]
         }
       },
-      lineStyle: { color: '#409EFF' },
-      itemStyle: { color: '#409EFF' }
+      lineStyle: { color: chartPalette.value.primary },
+      itemStyle: { color: chartPalette.value.primary }
     }]
   }
 })
@@ -872,13 +921,13 @@ const memoryChartOption = computed(() => {
           type: 'linear',
           x: 0, y: 0, x2: 0, y2: 1,
           colorStops: [
-            { offset: 0, color: 'rgba(103, 194, 58, 0.3)' },
-            { offset: 1, color: 'rgba(103, 194, 58, 0.05)' }
+            { offset: 0, color: withAlpha(chartPalette.value.success, 0.3) },
+            { offset: 1, color: withAlpha(chartPalette.value.success, 0.05) }
           ]
         }
       },
-      lineStyle: { color: '#67C23A' },
-      itemStyle: { color: '#67C23A' }
+      lineStyle: { color: chartPalette.value.success },
+      itemStyle: { color: chartPalette.value.success }
     }]
   }
 })
@@ -936,13 +985,13 @@ const diskChartOption = computed(() => {
           type: 'linear',
           x: 0, y: 0, x2: 0, y2: 1,
           colorStops: [
-            { offset: 0, color: 'rgba(230, 162, 60, 0.3)' },
-            { offset: 1, color: 'rgba(230, 162, 60, 0.05)' }
+            { offset: 0, color: withAlpha(chartPalette.value.warning, 0.3) },
+            { offset: 1, color: withAlpha(chartPalette.value.warning, 0.05) }
           ]
         }
       },
-      lineStyle: { color: '#E6A23C' },
-      itemStyle: { color: '#E6A23C' }
+      lineStyle: { color: chartPalette.value.warning },
+      itemStyle: { color: chartPalette.value.warning }
     }]
   }
 })
@@ -1002,16 +1051,16 @@ const networkChartOption = computed(() => {
         type: 'line',
         smooth: true,
         data: uploadData,
-        lineStyle: { color: '#409EFF' },
-        itemStyle: { color: '#409EFF' }
+        lineStyle: { color: chartPalette.value.primary },
+        itemStyle: { color: chartPalette.value.primary }
       },
       {
         name: '下载',
         type: 'line',
         smooth: true,
         data: downloadData,
-        lineStyle: { color: '#67C23A' },
-        itemStyle: { color: '#67C23A' }
+        lineStyle: { color: chartPalette.value.success },
+        itemStyle: { color: chartPalette.value.success }
       }
     ]
   }
@@ -1079,13 +1128,13 @@ const trafficChartOption = computed(() => {
             type: 'linear',
             x: 0, y: 0, x2: 0, y2: 1,
             colorStops: [
-              { offset: 0, color: 'rgba(64, 158, 255, 0.3)' },
-              { offset: 1, color: 'rgba(64, 158, 255, 0.05)' }
+              { offset: 0, color: withAlpha(chartPalette.value.primary, 0.3) },
+              { offset: 1, color: withAlpha(chartPalette.value.primary, 0.05) }
             ]
           }
         },
-        lineStyle: { color: '#409EFF' },
-        itemStyle: { color: '#409EFF' }
+        lineStyle: { color: chartPalette.value.primary },
+        itemStyle: { color: chartPalette.value.primary }
       },
       {
         name: '下载',
@@ -1097,13 +1146,13 @@ const trafficChartOption = computed(() => {
             type: 'linear',
             x: 0, y: 0, x2: 0, y2: 1,
             colorStops: [
-              { offset: 0, color: 'rgba(103, 194, 58, 0.3)' },
-              { offset: 1, color: 'rgba(103, 194, 58, 0.05)' }
+              { offset: 0, color: withAlpha(chartPalette.value.success, 0.3) },
+              { offset: 1, color: withAlpha(chartPalette.value.success, 0.05) }
             ]
           }
         },
-        lineStyle: { color: '#67C23A' },
-        itemStyle: { color: '#67C23A' }
+        lineStyle: { color: chartPalette.value.success },
+        itemStyle: { color: chartPalette.value.success }
       }
     ]
   }
@@ -1240,10 +1289,10 @@ const formatBytesShort = (bytes: number | undefined) => {
 
 // 获取进度条颜色
 const getProgressColor = (percent: number | undefined) => {
-  if (percent === undefined || percent === null) return '#409EFF'
-  if (percent < 60) return '#67C23A' // 绿色
-  if (percent < 80) return '#E6A23C' // 橙色
-  return '#F56C6C' // 红色
+  if (percent === undefined || percent === null) return chartPalette.value.primary
+  if (percent < 60) return chartPalette.value.success // 绿色
+  if (percent < 80) return chartPalette.value.warning // 橙色
+  return chartPalette.value.danger // 红色
 }
 
 /* ---------- 新 UI 的派生数据 ---------- */
@@ -1757,30 +1806,74 @@ const fallbackCopy = (text: string) => {
 }
 
 // 推送配置
-const pushConfig = async (agent: Agent) => {
-  if (deploymentBusy(agent.id)) return
-  const deploymentId = createDeploymentId()
-  const loadingToast = notify.loading('正在准备并上传发布文件...')
-  deployments[agent.id] = { deployment_id: deploymentId, status: 'preparing' }
+const pushingIds = ref<Set<string>>(new Set())
+const pushingAll = ref(false)
 
+type PushOutcome = 'submitted' | 'done' | 'failed' | 'busy'
+
+/**
+ * 推送：数据包沿拓扑通道送出；mihomo / mosdns 走事务发布，结果由 useAgentDeployments 跟踪并提示，
+ * 这里只处理「提交」本身的成败。
+ */
+const pushOne = async (agent: Agent, quiet = false): Promise<PushOutcome> => {
+  if (deploymentBusy(agent.id)) return 'busy'
+  const deploymentId = createDeploymentId()
+  deployments[agent.id] = { deployment_id: deploymentId, status: 'preparing' }
+  pushingIds.value = new Set([...pushingIds.value, agent.id])
+  topology.value?.burst(`agent:${agent.id}`, 16)
   try {
     const { data } = await agentApi.pushConfig(agent.id, deploymentId)
-    if (data.deployment_id) trackDeployment(agent.id, data)
-    else {
-      delete deployments[agent.id]
-      notify.success('配置推送成功')
-      void loadAgents()
+    if (data.deployment_id) {
+      trackDeployment(agent.id, data)
+      return 'submitted'
     }
+    delete deployments[agent.id]
+    return 'done'
   } catch (error: any) {
-    if (error.response?.data?.deployment_id) trackDeployment(agent.id, error.response.data)
-    else if (!error.response) trackDeployment(agent.id, { deployment_id: deploymentId, status: 'unknown' })
-    else {
-      delete deployments[agent.id]
-      notify.error(error.response?.data?.message || '配置发布失败')
+    if (error.response?.data?.deployment_id) {
+      trackDeployment(agent.id, error.response.data)
+      return 'submitted'
+    }
+    if (!error.response) {
+      trackDeployment(agent.id, { deployment_id: deploymentId, status: 'unknown' })
+      return 'submitted'
+    }
+    delete deployments[agent.id]
+    if (!quiet) notify.error(`「${agent.name}」配置发布失败`, error.response?.data?.message)
+    return 'failed'
+  } finally {
+    const next = new Set(pushingIds.value)
+    next.delete(agent.id)
+    pushingIds.value = next
+  }
+}
+
+const pushConfig = async (agent: Agent) => {
+  if (deploymentBusy(agent.id)) return
+  const loadingToast = notify.loading('正在准备并上传发布文件...')
+  try {
+    if ((await pushOne(agent)) === 'done') {
+      notify.success(`已推送至「${agent.name}」`)
+      void loadAgents()
     }
   } finally {
     notify.dismiss(loadingToast)
   }
+}
+
+const pushAll = async () => {
+  const online = agents.value.filter(a => a.status === 'online' && !deploymentBusy(a.id))
+  if (!online.length || pushingAll.value) return
+  pushingAll.value = true
+  const results = await Promise.all(online.map(agent => pushOne(agent, true)))
+  pushingAll.value = false
+  const sent = results.filter(r => r === 'submitted' || r === 'done').length
+  const failed = results.filter(r => r === 'failed').length
+  const skipped = agents.value.length - online.length
+  const tail = `${failed ? ` · ${failed} 台失败` : ''}${skipped ? ` · ${skipped} 台离线或发布中跳过` : ''}`
+  if (failed) notify.warning(`已向 ${sent} 台 Agent 提交推送${tail}`)
+  else notify.success(`已向 ${sent} 台 Agent 提交推送${tail}`)
+  void loadAgents()
 }
 
 // 重启 Agent
@@ -2078,13 +2171,81 @@ const stopAutoRefresh = () => {
   }
 }
 
-onMounted(() => {
-  loadAgents()
-  refreshProfiles().catch(() => undefined)
+/* ---------- 拓扑与配置版本 ---------- */
+const topology = ref<InstanceType<typeof FlowMap> | null>(null)
+const isNarrow = useMediaQuery('(max-width: 640px)')
+const profileStore = useProfileStore()
+
+const revisionOf = (profileId?: string) =>
+  Number((profiles.value.find(p => p.id === (profileId || 'default')) as any)?.revision || 0)
+const activeRevision = computed(() => revisionOf(profileStore.activeProfileId.value))
+const activeProfileName = computed(
+  () => profileStore.activeProfile.value?.name || profileStore.activeProfileId.value
+)
+
+/** Agent 记录的推送修订号与其配置空间当前修订号对比；旧版本推送没有记录时只显示哈希 */
+const syncOf = (agent: any) => {
+  const current = revisionOf(agent.profile_id)
+  if (typeof agent.config_revision !== 'number') {
+    return { label: agent.config_version && agent.config_version !== '0' ? agent.config_version : '未推送', stale: false }
+  }
+  return { label: `v${agent.config_revision}`, stale: agent.config_revision < current }
+}
+
+const topoColumns = computed<FlowColumn[]>(() => [
+  { key: 'hub', title: '配置中心', nodes: [{ id: 'hub', title: 'ConfigFlow', kind: 'hub', fit: true }] },
+  {
+    key: 'agents',
+    title: 'Agent',
+    nodes: agents.value.map(a => ({
+      id: `agent:${a.id}`,
+      title: a.name,
+      meta: `${a.host}:${a.port}`,
+      icon: Server,
+      status: (a.status === 'online' ? 'online' : 'offline') as 'online' | 'offline'
+    }))
+  }
+])
+
+const topoEdges = computed<FlowEdge[]>(() =>
+  agents.value.map(a => ({
+    from: 'hub',
+    to: `agent:${a.id}`,
+    weight: 0.7,
+    tone: (a.service_type === 'mosdns' ? 'info' : 'success') as FlowTone,
+    dead: a.status !== 'online'
+  }))
+)
+
+/* 推送与跨页动作 */
+const router = useRouter()
+const runPending = () => {
+  if (consumeAction(router, 'push-all')) pushAll()
+}
+watch(() => router?.currentRoute.value.query.run, run => run === 'push-all' && runPending())
+
+onMounted(async () => {
+  await Promise.all([loadAgents(), refreshProfiles().catch(() => undefined)])
   startAutoRefresh()
+  runPending()
 })
 
 onUnmounted(() => {
   stopAutoRefresh()
 })
 </script>
+
+<style scoped>
+.agent-pulse {
+  animation: agent-ping 2s infinite;
+}
+
+@keyframes agent-ping {
+  0% {
+    box-shadow: 0 0 0 0 oklch(from var(--success-accent) l c h / 60%);
+  }
+  100% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+</style>

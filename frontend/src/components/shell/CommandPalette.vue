@@ -16,7 +16,16 @@
         </CommandItem>
       </CommandGroup>
       <CommandSeparator />
-      <CommandGroup heading="操作">
+      <CommandGroup heading="动作">
+        <CommandItem
+          v-for="action in ACTIONS"
+          :key="action.id"
+          :value="`${ACTION_LABEL[action.id]} ${action.keywords}`"
+          @select="onAction(action.id)"
+        >
+          <component :is="action.icon" class="size-4 text-muted-foreground" aria-hidden="true" />
+          <span>{{ ACTION_LABEL[action.id] }}</span>
+        </CommandItem>
         <CommandItem value="切换主题 theme dark light" @select="onToggleTheme">
           <SunMoon class="size-4 text-muted-foreground" aria-hidden="true" />
           <span>切换深浅主题</span>
@@ -29,7 +38,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { SunMoon } from '@lucide/vue'
+import { Download, RefreshCw, Send, SunMoon, Zap } from '@lucide/vue'
 import {
   CommandDialog,
   CommandEmpty,
@@ -43,6 +52,7 @@ import {
 import { NAV_GROUPS, type NavGroup, type NavItem } from '@/navigation'
 import { iconOf } from '@/lib/icons'
 import { useThemeStore } from '@/stores/theme'
+import { ACTION_LABEL, runAction, type AppAction } from '@/lib/actions'
 
 const props = defineProps<{ subscriptionAggregationEnabled: boolean }>()
 
@@ -59,6 +69,18 @@ const visibleItems = (group: NavGroup): NavItem[] =>
 const go = (path: string): void => {
   open.value = false
   router.push(path)
+}
+
+const ACTIONS: Array<{ id: AppAction; icon: typeof Zap; keywords: string }> = [
+  { id: 'speedtest', icon: Zap, keywords: 'speed test latency 延迟' },
+  { id: 'generate-mihomo', icon: Download, keywords: 'generate build mihomo' },
+  { id: 'pull-all', icon: RefreshCw, keywords: 'pull refresh subscription' },
+  { id: 'push-all', icon: Send, keywords: 'push deploy agent' }
+]
+
+const onAction = (id: AppAction): void => {
+  open.value = false
+  runAction(router, id)
 }
 
 const onToggleTheme = (): void => {

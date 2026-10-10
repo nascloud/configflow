@@ -1,11 +1,7 @@
 <template>
   <div :class="reorder.active.value && 'cf-reordering'">
-    <ScopeBanner
-      scope="resource"
-      description="修改节点会影响使用它的所有配置。若只想组合前置和落地节点，请在策略组中创建代理链，不会修改原节点。"
-    />
 
-    <PageHeader title="节点库" description="查看和管理从订阅获取或手动添加的节点。">
+    <PageHeader title="节点库">
       <template #actions>
         <Button
           v-if="!reorder.active.value"
@@ -21,27 +17,18 @@
           <FilePlus2 class="size-4" />
           批量添加
         </Button>
-        <Button @click="showAddDialog">
+        <Button variant="outline" class="border-border/60 bg-background/40" @click="showAddDialog">
           <Plus class="size-4" />
           添加节点
+        </Button>
+        <Button class="shadow-glow" :disabled="testing || reorder.active.value" @click="speedTest">
+          <Zap :class="cn('size-4', testing && 'animate-pulse')" />
+          {{ testing ? '测速中…' : '全部测速' }}
         </Button>
       </template>
     </PageHeader>
 
     <Toolbar v-model:search="keyword" placeholder="搜索名称、地址或备注…">
-      <template #filters>
-        <Select v-model="protocolFilter" :disabled="reorder.active.value">
-          <SelectTrigger class="h-9 w-[150px] border-input bg-card text-[13px] dark:border-transparent">
-            <SelectValue placeholder="全部协议" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部协议</SelectItem>
-            <SelectItem v-for="p in protocolOptions" :key="p" :value="p">
-              {{ p.toUpperCase() }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </template>
 
       <template #actions>
         <Button
@@ -67,6 +54,40 @@
       </template>
     </Toolbar>
 
+    <!-- 地区 / 协议筛选：点一次只看这一类，再点取消 -->
+    <div v-if="!reorder.active.value && (nodes.length || subNodes.length)" class="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div v-if="subNodes.length" class="flex flex-wrap gap-1.5" role="group" aria-label="按来源筛选">
+        <button type="button" class="chip" :aria-pressed="sourceFilter === 'all'" @click="sourceFilter = 'all'">全部来源</button>
+        <button type="button" class="chip" :aria-pressed="sourceFilter === 'library'" @click="sourceFilter = 'library'">节点库</button>
+        <button type="button" class="chip" :aria-pressed="sourceFilter === 'subscription'" @click="sourceFilter = 'subscription'">订阅节点</button>
+      </div>
+      <div class="flex flex-wrap gap-1.5" role="group" aria-label="按地区筛选">
+        <button type="button" class="chip" :aria-pressed="!regionFilter" @click="regionFilter = null">全部</button>
+        <button
+          v-for="region in regionOptions"
+          :key="region.code"
+          type="button"
+          class="chip"
+          :aria-pressed="regionFilter === region.code"
+          @click="regionFilter = regionFilter === region.code ? null : region.code"
+        >
+          {{ region.name }}
+        </button>
+      </div>
+      <div class="ml-auto flex flex-wrap gap-1.5" role="group" aria-label="按协议筛选">
+        <button
+          v-for="p in protocolOptions"
+          :key="p"
+          type="button"
+          class="chip font-mono"
+          :aria-pressed="protocolFilter === p"
+          @click="protocolFilter = protocolFilter === p ? 'all' : p"
+        >
+          {{ p.toUpperCase() }}
+        </button>
+      </div>
+    </div>
+
     <ReorderBar
       :active="reorder.active.value"
       :saving="reorder.saving.value"
@@ -75,7 +96,7 @@
       @save="handleSaveOrder"
     />
 
-    <SectionCard v-if="visibleNodes.length === 0" :padded="false">
+    <SectionCard v-if="tileNodes.length === 0" :padded="false">
       <EmptyState :icon="Network" title="没有匹配的节点" :description="nodesEmptyText">
         <Button @click="showAddDialog">
           <Plus class="size-4" />
@@ -107,7 +128,7 @@
           :key="node.id || node.name"
           :data-name="node.name"
           data-reorder-item
-          :class="!node.enabled && 'dark:opacity-55'"
+          :class="!node.enabled && 'opacity-55'"
         >
           <TableCell v-if="reorder.active.value">
             <DragHandle
@@ -188,25 +209,28 @@
       </TableBody>
     </DataTableShell>
 
-    <!-- ===== 卡片视图 ===== -->
+    <!-- ===== 延迟磁贴（默认） ===== -->
     <div
       v-else
       ref="nodesContainer"
-      class="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3 max-md:grid-cols-1"
+      class="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-2.5 max-[420px]:grid-cols-1"
     >
       <Motion
-        v-for="(node, cfIndex) in visibleNodes"
-        :key="node.id || node.name"
-        v-bind="listItem(cfIndex)"
+        v-for="(node, cfIndex) in tileNodes"
+        :key="node.readonly ? `sub:${node.name}` : node.id || node.name"
+        v-bind="listItem(Math.min(cfIndex, 24))"
         :data-name="node.name"
-        data-reorder-item
-        :class="[
-          'relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card p-4 transition-colors duration-200',
-          selectedNodeIds.has(node.id) ? 'border-primary-accent' : 'border-border',
-          !node.enabled && 'dark:opacity-60'
-        ]"
+        :data-tile="cfIndex"
+        :data-reorder-item="node.readonly ? undefined : ''"
+        :class="cn(
+          'node-tile group relative overflow-hidden rounded-[14px] border bg-card/90 px-[13px] pt-3 pb-2.5 transition-[transform,border-color,opacity] duration-300 ease-(--ease-flow) hover:-translate-y-0.5 hover:border-border-strong',
+          selectedNodeIds.has(node.id) ? 'border-primary-accent/55' : 'border-border',
+          !node.enabled && 'opacity-55',
+          testingNames.has(node.name) && 'is-testing',
+          flashNames.has(node.name) && 'is-flash'
+        )"
       >
-        <header class="flex items-start gap-2.5">
+        <header class="flex items-center gap-2">
           <DragHandle
             v-if="reorder.active.value"
             :label="node.name || node.id"
@@ -219,87 +243,133 @@
             @keydown="reorder.onHandleKeydown($event, cfIndex)"
           />
           <Checkbox
-            class="cf-reorder-mute mt-0.5"
+            v-else-if="selectedNodeIds.size > 0 && !node.readonly"
+            class="cf-reorder-mute"
             :model-value="selectedNodeIds.has(node.id)"
             :aria-label="`选择 ${node.name}`"
             @update:model-value="toggleNodeSelection(node.id)"
           />
-          <div class="min-w-0 flex-1">
-            <p class="m-0 truncate text-[14px] font-semibold text-foreground" :title="node.name">
-              {{ node.name }}
-            </p>
-            <p
-              v-if="node.remark"
-              class="mt-0.5 mb-0 truncate text-[12px] text-muted-foreground"
-              :title="node.remark"
-            >
-              {{ node.remark }}
-            </p>
-          </div>
+          <span class="grid h-5 w-7 shrink-0 place-items-center rounded-md bg-secondary font-mono text-[10.5px] font-semibold text-muted-foreground">
+            {{ regionOf(node.name).code === '其他' ? '··' : regionOf(node.name).code }}
+          </span>
+          <span class="min-w-0 flex-1 truncate text-[12.5px] font-medium" :title="node.remark ? `${node.name} · ${node.remark}` : node.name">
+            {{ node.name }}
+          </span>
+          <Button
+            v-if="node.readonly"
+            variant="ghost"
+            size="icon-sm"
+            class="-my-1 -mr-1.5 size-7 shrink-0 opacity-60 group-hover:opacity-100"
+            :title="`单独测速 ${node.name}`"
+            :aria-label="`单独测速 ${node.name}`"
+            :disabled="testing"
+            @click="testOne(node)"
+          >
+            <Zap class="size-3.5" />
+          </Button>
+          <template v-else-if="!reorder.active.value">
+          <!-- 高频操作直接放在卡片上，悬停显示；其余收进「更多」 -->
           <Button
             variant="ghost"
             size="icon-sm"
-            class="cf-reorder-mute shrink-0"
-            :class="node.enabled ? 'text-success-accent' : 'text-muted-foreground'"
+            :class="cn(
+              '-my-1 size-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100',
+              node.enabled ? 'text-success-accent' : 'text-muted-foreground'
+            )"
             :title="node.enabled ? '停用' : '启用'"
             :aria-label="node.enabled ? `停用 ${node.name}` : `启用 ${node.name}`"
             :disabled="savingStatus[node.id]"
             @click="handleToggle(node)"
           >
-            <component :is="node.enabled ? Eye : EyeOff" class="size-4" />
-          </Button>
-        </header>
-
-        <div class="cf-reorder-mute flex flex-wrap items-center gap-1.5">
-          <Badge variant="outline" class="font-mono text-[10.5px]">
-            {{ getProtocol(node.proxy_string) }}
-          </Badge>
-          <Badge v-if="node.subscription_name" variant="info" class="max-w-[180px] truncate text-[10.5px]">
-            {{ node.subscription_name }}
-          </Badge>
-        </div>
-
-        <div class="cf-reorder-mute">
-          <button
-            type="button"
-            class="flex w-full cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 text-[11.5px] font-medium tracking-[0.04em] text-muted-foreground uppercase transition-colors hover:text-foreground"
-            @click="toggleNodeExpand(node.id)"
-          >
-            <Link2 class="size-3.5" aria-hidden="true" />
-            节点字符串
-            <ChevronDown
-              class="ml-auto size-3.5 transition-transform duration-200"
-              :class="expandedNodes.has(node.id) && 'rotate-180'"
-              aria-hidden="true"
-            />
-          </button>
-          <pre
-            v-show="expandedNodes.has(node.id)"
-            class="mt-2 max-h-40 overflow-auto rounded-lg border border-border/50 bg-background/50 p-2.5 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap text-muted-foreground"
-          >{{ formatProxyStringForDisplay(node.proxy_string) }}</pre>
-        </div>
-
-        <footer class="cf-reorder-mute mt-auto flex items-center gap-2 border-0 border-t border-border/50 pt-3">
-          <Button variant="ghost" size="sm" @click="editNode(node)">
-            <Pencil class="size-3.5" />
-            编辑
+            <component :is="node.enabled ? Eye : EyeOff" class="size-3.5" />
           </Button>
           <Button
             variant="ghost"
-            size="sm"
-            class="ml-auto text-destructive-accent hover:bg-destructive-soft"
-            @click="deleteNode(node)"
+            size="icon-sm"
+            class="-my-1 size-7 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100"
+            title="编辑"
+            :aria-label="`编辑 ${node.name}`"
+            @click="editNode(node)"
           >
-            <Trash2 class="size-3.5" />
-            删除
+            <Pencil class="size-3.5" />
           </Button>
-        </footer>
+          <DropdownMenu>
+            <DropdownMenuTrigger as-child>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                class="cf-reorder-mute -my-1 -mr-1.5 size-7 shrink-0 opacity-60 group-hover:opacity-100"
+                :aria-label="`${node.name} 的更多操作`"
+              >
+                <MoreHorizontal class="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" class="glass-strong min-w-[168px]">
+              <DropdownMenuItem @select="testOne(node)">
+                <Zap class="size-4" />
+                单独测速
+              </DropdownMenuItem>
+              <DropdownMenuItem @select="viewingNode = node">
+                <Link2 class="size-4" />
+                节点字符串
+              </DropdownMenuItem>
+              <DropdownMenuItem @select="toggleNodeSelection(node.id)">
+                <CheckSquare class="size-4" />
+                {{ selectedNodeIds.has(node.id) ? '取消选择' : '选择' }}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" @select="deleteNode(node)">
+                <Trash2 class="size-4" />
+                删除
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          </template>
+        </header>
+
+        <div class="cf-reorder-mute mt-3 flex items-end justify-between gap-2">
+          <span :class="cn('font-display text-[26px] leading-none font-medium tracking-[-0.02em]', latencyTone(node.name))">
+            <template v-if="latencyOf(node.name) === undefined"><span class="text-[18px] text-muted-foreground">未测速</span></template>
+            <template v-else-if="latencyOf(node.name) === null">超时</template>
+            <template v-else>{{ latencyOf(node.name) }}<small class="ml-0.5 font-mono text-[10.5px] text-muted-foreground">ms</small></template>
+          </span>
+          <span class="min-w-0 text-right font-mono text-[10.5px] leading-snug text-muted-foreground">
+            {{ nodeProtocol(node) }}<br />
+            <span class="block max-w-[110px] truncate">{{ node.subscription_name || '手动添加' }}</span>
+          </span>
+        </div>
+
+        <!-- 最近 14 次延迟：越快越高；超时画一截红色短柱 -->
+        <div class="cf-reorder-mute mt-2 flex h-4 items-end gap-0.5" aria-hidden="true">
+          <i
+            v-for="(bar, i) in historyBars(node.name)"
+            :key="i"
+            :class="cn('flex-1 rounded-[1px]', bar === null ? 'bg-destructive-accent/70' : bar < 0 ? 'bg-border-strong' : 'bg-border-strong')"
+            :style="{ height: `${bar === null ? 18 : bar < 0 ? 12 : Math.round(bar * 100)}%` }"
+          />
+        </div>
       </Motion>
     </div>
 
+    <!-- 节点字符串 -->
+    <Dialog :open="!!viewingNode" @update:open="v => !v && (viewingNode = null)">
+      <DialogContent class="glass-strong max-w-[680px]">
+        <DialogHeader>
+          <DialogTitle>{{ viewingNode?.name }}</DialogTitle>
+          <DialogDescription>节点字符串</DialogDescription>
+        </DialogHeader>
+        <pre
+          class="max-h-[60dvh] overflow-auto rounded-lg border border-border bg-background/60 p-3 font-mono text-[12px] leading-relaxed break-all whitespace-pre-wrap text-muted-foreground"
+        >{{ viewingNode ? formatProxyStringForDisplay(viewingNode.proxy_string) : '' }}</pre>
+        <DialogFooter>
+          <Button variant="outline" @click="viewingNode = null">关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
     <!-- ===== 新增 / 编辑节点 ===== -->
     <Dialog v-model:open="dialogVisible">
-      <DialogContent class="max-w-[720px]">
+      <DialogContent class="glass-strong hairline max-w-[720px] border-border/50">
         <DialogHeader>
           <DialogTitle>{{ isEdit ? '编辑节点' : '添加节点' }}</DialogTitle>
           <DialogDescription>填写节点名称，粘贴节点链接或 JSON / YAML 配置。</DialogDescription>
@@ -351,7 +421,7 @@
 
     <!-- ===== 批量添加 ===== -->
     <Dialog v-model:open="batchDialogVisible">
-      <DialogContent class="max-w-[780px]">
+      <DialogContent class="glass-strong hairline max-w-[780px] border-border/50">
         <DialogHeader>
           <DialogTitle>批量添加节点</DialogTitle>
           <DialogDescription>粘贴多个节点链接或配置，系统会自动识别格式并导入。</DialogDescription>
@@ -390,16 +460,30 @@ import { onUnmounted, watch, ref, computed, onMounted, nextTick } from 'vue'
 import { Motion } from 'motion-v'
 import {
   ArrowUpDown,
+  CheckSquare,
   ChevronDown,
   Eye,
   EyeOff,
   FilePlus2,
   Link2,
+  MoreHorizontal,
   Network,
   Pencil,
   Plus,
-  Trash2
+  Trash2,
+  Zap
 } from '@lucide/vue'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
+import { useRouter } from 'vue-router'
+import { cn } from '@/lib/utils'
+import { consumeAction } from '@/lib/actions'
+import { OTHER_REGION, regionOf } from '@/lib/regions'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -431,7 +515,6 @@ import Toolbar from '@/components/common/Toolbar.vue'
 import ViewToggle from '@/components/common/ViewToggle.vue'
 import ReorderBar from '@/components/shell/ReorderBar.vue'
 import DragHandle from '@/components/shell/DragHandle.vue'
-import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import { useReorder } from '@/composables/useReorder'
 import { confirm, confirmDanger, notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
@@ -452,7 +535,6 @@ const form = ref<Partial<ProxyNode>>({
   enabled: true,
   remark: ''
 })
-
 
 // 节点字符串展开/收起状态
 const expandedNodes = ref<Set<string>>(new Set())
@@ -1098,7 +1180,7 @@ const readView = (): ViewMode => {
   } catch {
     // 存储不可用时用默认视图
   }
-  return 'list'
+  return 'card'
 }
 
 const viewMode = ref<ViewMode>(readView())
@@ -1119,6 +1201,159 @@ const effectiveView = computed<ViewMode>(() => (isNarrow.value ? 'card' : viewMo
 
 const keyword = ref('')
 const protocolFilter = ref('all')
+const regionFilter = ref<string | null>(null)
+const sourceFilter = ref<'all' | 'library' | 'subscription'>('all')
+
+/* ---------- 订阅节点：只读，与节点库一起测速与筛选 ---------- */
+const subNodes = ref<any[]>([])
+const loadSubscriptionNodes = async () => {
+  try {
+    const { data: subs } = await api.get('/subscriptions')
+    const ids = (subs || []).filter((s: any) => s.enabled !== false && s.id).map((s: any) => s.id)
+    if (!ids.length) {
+      subNodes.value = []
+      return
+    }
+    const { data } = await api.post('/proxy-groups/preview-regex', {
+      source: 'subscription',
+      regex: '.*',
+      subscriptions: ids
+    })
+    const libraryNames = new Set(nodes.value.map(n => n.name))
+    subNodes.value = (data.nodes || [])
+      .filter((n: any) => n.source_type === 'subscription' && !libraryNames.has(n.name))
+      .map((n: any) => ({ ...n, enabled: true, readonly: true }))
+  } catch {
+    subNodes.value = []
+  }
+}
+
+const matchesFilters = (n: any) => {
+  if (protocolFilter.value !== 'all') {
+    const p = (n.type || getProtocol(n.proxy_string) || '').toString().toLowerCase()
+    if (p !== protocolFilter.value) return false
+  }
+  if (regionFilter.value && regionOf(n.name).code !== regionFilter.value) return false
+  const q = keyword.value.trim().toLowerCase()
+  if (!q) return true
+  return [n.name, n.server, n.remark, n.subscription_name].some(v => String(v || '').toLowerCase().includes(q))
+}
+
+/** 磁贴：节点库在前、订阅节点在后；排序模式只显示可排序的节点库 */
+const tileNodes = computed<any[]>(() => {
+  if (reorder.active.value) return visibleNodes.value
+  const library = sourceFilter.value === 'subscription' ? [] : visibleNodes.value
+  const fromSubs = sourceFilter.value === 'library' ? [] : subNodes.value.filter(matchesFilters)
+  return [...library, ...fromSubs]
+})
+
+/* ---------- 地区 ---------- */
+const regionOptions = computed(() => {
+  const counts = new Map<string, { code: string; name: string; count: number }>()
+  ;[...nodes.value, ...subNodes.value].forEach(n => {
+    const r = regionOf(n.name)
+    const item = counts.get(r.code) || { ...r, count: 0 }
+    item.count++
+    counts.set(r.code, item)
+  })
+  // 「其他」放最后，其余按数量排
+  return [...counts.values()].sort((a, b) =>
+    a.code === OTHER_REGION.code ? 1 : b.code === OTHER_REGION.code ? -1 : b.count - a.count
+  )
+})
+
+/* ---------- 延迟（服务端 TCP 握手，按节点名） ---------- */
+interface LatencyRecord {
+  latency: number | null
+  tested_at?: string
+  history?: Array<number | null>
+}
+const router = useRouter()
+const latencyMap = ref<Record<string, LatencyRecord>>({})
+const testing = ref(false)
+const testingNames = ref<Set<string>>(new Set())
+const flashNames = ref<Set<string>>(new Set())
+const viewingNode = ref<any>(null)
+
+const latencyOf = (name: string): number | null | undefined => latencyMap.value[name]?.latency
+const latencyTone = (name: string): string => {
+  const v = latencyOf(name)
+  if (v === undefined) return ''
+  if (v === null) return 'text-destructive-accent'
+  return v < 80 ? 'text-success-accent' : v < 180 ? 'text-warning-accent' : 'text-destructive-accent'
+}
+/** 14 格：已有记录按 1 - ms/300 归一（越快越高），不足的格子用 -1 占位 */
+const historyBars = (name: string): Array<number | null> => {
+  const records = (latencyMap.value[name]?.history || []).slice(-14)
+  const pad = Array.from({ length: 14 - records.length }, () => -1)
+  return [...pad, ...records.map(v => (v === null ? null : Math.min(1, Math.max(0.12, 1 - v / 300))))]
+}
+
+const loadLatency = async () => {
+  try {
+    const { data } = await nodeApi.latency()
+    latencyMap.value = data?.results || {}
+  } catch {
+    // 没有历史结果时显示「未测速」
+  }
+}
+
+/** 测速：请求一次拿到全部结果，再按网格距离从左上角波纹式逐个揭晓 */
+const runLatency = async (targets: any[]) => {
+  const names = targets.filter(n => n.enabled !== false).map(n => n.name)
+  if (!names.length || testing.value) return
+  testing.value = true
+  testingNames.value = new Set(names)
+  try {
+    const { data } = await nodeApi.testLatency(names)
+    const results: Record<string, LatencyRecord> = data?.results || {}
+    const missing: string[] = data?.missing || []
+    const grid = nodesContainer.value
+    const cols = Math.max(1, Math.round((grid?.clientWidth || 222) / 222))
+    const order = tileNodes.value.map(n => n.name)
+    await Promise.all(
+      names.map(
+        name =>
+          new Promise<void>(resolve => {
+            const i = Math.max(0, order.indexOf(name))
+            const delay = 120 + Math.hypot(Math.floor(i / cols), i % cols) * 110
+            window.setTimeout(() => {
+              if (results[name]) latencyMap.value = { ...latencyMap.value, [name]: results[name] }
+              const nextTesting = new Set(testingNames.value)
+              nextTesting.delete(name)
+              testingNames.value = nextTesting
+              flashNames.value = new Set([...flashNames.value, name])
+              window.setTimeout(() => {
+                const nextFlash = new Set(flashNames.value)
+                nextFlash.delete(name)
+                flashNames.value = nextFlash
+              }, 900)
+              resolve()
+            }, delay)
+          })
+      )
+    )
+    const measured = Object.entries(results).filter(([, r]) => r.latency !== null)
+    const timeouts = Object.keys(results).length - measured.length
+    const best = measured.sort((a, b) => (a[1].latency as number) - (b[1].latency as number))[0]
+    if (best) {
+      notify.success(
+        `测速完成 · 最快 ${best[0]} ${best[1].latency}ms`,
+        [timeouts && `${timeouts} 个超时`, missing.length && `${missing.length} 个无法解析地址`].filter(Boolean).join('，') || undefined
+      )
+    } else {
+      notify.warning('测速完成，没有节点可达', missing.length ? `${missing.length} 个无法解析地址` : undefined)
+    }
+  } catch (error: any) {
+    notify.error(error.response?.data?.message || '测速失败')
+  } finally {
+    testing.value = false
+    testingNames.value = new Set()
+  }
+}
+
+const speedTest = () => runLatency(effectiveView.value === 'list' ? visibleNodes.value : tileNodes.value)
+const testOne = (node: any) => runLatency([node])
 
 const nodeProtocol = (node: any): string => {
   const raw = node.type || getProtocol(node.proxy_string) || ''
@@ -1132,7 +1367,7 @@ const nodeAddress = (node: any): string => {
 
 const protocolOptions = computed(() => {
   const set = new Set<string>()
-  nodes.value.forEach(n => {
+  ;[...nodes.value, ...subNodes.value].forEach(n => {
     const p = (n.type || getProtocol(n.proxy_string) || '').toString().toLowerCase()
     if (p) set.add(p)
   })
@@ -1148,6 +1383,7 @@ const visibleNodes = computed(() => {
       const p = (n.type || getProtocol(n.proxy_string) || '').toString().toLowerCase()
       if (p !== protocolFilter.value) return false
     }
+    if (regionFilter.value && regionOf(n.name).code !== regionFilter.value) return false
     if (!q) return true
     return [n.name, n.server, n.remark, n.subscription_name]
       .some(v => String(v || '').toLowerCase().includes(q))
@@ -1155,7 +1391,7 @@ const visibleNodes = computed(() => {
 })
 
 const nodesEmptyText = computed(() =>
-  nodes.value.length === 0 ? '添加节点链接或配置，也可一次粘贴多个节点批量添加。' : '试试其他关键词，或调整协议筛选。'
+  nodes.value.length === 0 ? '添加节点链接或配置，也可一次粘贴多个节点批量添加。' : '试试其他关键词，或调整筛选条件。'
 )
 
 /* ---------- 统一拖动排序 ---------- */
@@ -1181,13 +1417,60 @@ const handleSaveOrder = async () => {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   syncNarrow()
   window.addEventListener('resize', syncNarrow)
-  loadNodes()
+  await Promise.all([loadNodes(), loadLatency()])
+  await loadSubscriptionNodes()
+  if (consumeAction(router, 'speedtest')) speedTest()
 })
+
+// 已在本页时从命令面板触发
+watch(
+  () => router?.currentRoute.value.query.run,
+  run => {
+    if (run === 'speedtest' && consumeAction(router, 'speedtest')) speedTest()
+  }
+)
 
 onUnmounted(() => {
   window.removeEventListener('resize', syncNarrow)
 })
 </script>
+
+<style scoped>
+.node-tile.is-testing > * {
+  opacity: 0.35;
+}
+
+.node-tile.is-testing::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, var(--primary-soft) 50%, transparent 70%);
+  animation: tile-shimmer 1s linear infinite;
+}
+
+.node-tile.is-flash {
+  animation: tile-flash 0.9s var(--ease-flow);
+}
+
+@keyframes tile-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes tile-flash {
+  0% {
+    border-color: var(--primary-accent);
+    box-shadow: 0 0 0 0 oklch(from var(--primary-accent) l c h / 45%);
+  }
+  100% {
+    box-shadow: 0 0 0 12px transparent;
+  }
+}
+</style>

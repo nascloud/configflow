@@ -19,6 +19,14 @@ from backend.utils.sub_store_client import (
     proxies_to_nodes,
 )
 from backend.utils.url_utils import safe_exception_details
+from backend.utils import subscription_health
+
+# 由服务端计算、不属于订阅配置本身的字段；前端整对象回写时要剥掉，避免落进配置文件
+DERIVED_FIELDS = ('cached_node_count', 'cached_updated_at', 'traffic', 'traffic_at', 'last_fetch')
+
+
+def _strip_derived(sub):
+    return {k: v for k, v in (sub or {}).items() if k not in DERIVED_FIELDS}
 
 
 def validate_subscription_fields(data):
@@ -39,9 +47,15 @@ def handle_subscriptions():
     config_data = get_shared_config()
 
     if request.method == 'GET':
+        health = subscription_health.load_health()
         subscriptions_with_cache = []
         for sub in config_data['subscriptions']:
-            sub_copy = dict(sub)
+            sub_copy = _strip_derived(sub)
+            entry = health.get(sub.get('id', '')) or {}
+            history = entry.get('history') or []
+            sub_copy['traffic'] = entry.get('traffic')
+            sub_copy['traffic_at'] = entry.get('traffic_at')
+            sub_copy['last_fetch'] = history[-1] if history else None
             cache = load_subscription_cache(sub.get('id', ''))
             if cache:
                 sub_copy['cached_node_count'] = cache.get('count')
@@ -53,7 +67,7 @@ def handle_subscriptions():
         return jsonify(subscriptions_with_cache)
 
     elif request.method == 'POST':
-        sub = request.json
+        sub = _strip_derived(request.json)
         error = validate_subscription_fields(sub)
         if error:
             return error
@@ -73,12 +87,13 @@ def handle_subscription(sub_id):
     if request.method == 'DELETE':
         config_data['subscriptions'] = [s for s in subs if s['id'] != sub_id]
         save_shared_config(config_data)
+        subscription_health.forget(sub_id)
         return jsonify({'success': True})
 
     elif request.method == 'PUT':
         for i, s in enumerate(subs):
             if s['id'] == sub_id:
-                new_data = request.json
+                new_data = _strip_derived(request.json)
                 error = validate_subscription_fields(new_data)
                 if error:
                     return error
@@ -109,6 +124,26 @@ def reorder_subscriptions():
     except Exception as e:
         current_app.logger.error("订阅操作失败: %s", safe_exception_details(e))
         return jsonify({'success': False, 'message': '订阅操作失败'}), 500
+
+
+@subscriptions_bp.route('/health', methods=['GET'])
+@require_auth
+def subscriptions_health():
+    """所有订阅的最近拉取记录与流量信息"""
+    config_data = get_shared_config()
+    health = subscription_health.load_health()
+    items = []
+    for sub in config_data.get('subscriptions', []):
+        entry = health.get(sub.get('id', '')) or {}
+        items.append({
+            'id': sub.get('id'),
+            'name': sub.get('name'),
+            'enabled': sub.get('enabled', True),
+            'history': entry.get('history') or [],
+            'traffic': entry.get('traffic'),
+            'traffic_at': entry.get('traffic_at'),
+        })
+    return jsonify({'success': True, 'items': items, 'size': subscription_health.HISTORY_SIZE})
 
 
 @subscriptions_bp.route('/<sub_id>/nodes', methods=['GET'])
@@ -171,6 +206,13 @@ def fetch_subscription(sub_id):
                 'url': sub.get('url')
             }
         )
+        # 拉取成功后尽力读取流量信息，读不到不影响结果
+        subscription_health.record_fetch(
+            sub_id,
+            ok=True,
+            count=len(nodes),
+            traffic=subscription_health.fetch_userinfo(sub.get('url')),
+        )
         if source == 'rendered_yaml':
             current_app.logger.info(f"成功直接复用订阅 URL 返回的 Sub-Store YAML 并写入缓存: {sub['name']}, 节点数: {len(nodes)}")
         elif source == 'sub_store':
@@ -190,9 +232,11 @@ def fetch_subscription(sub_id):
             nodes = cache.get('nodes', [])
             cache_payload = cache
             from_cache = True
+            subscription_health.record_fetch(sub_id, ok=False, from_cache=True, count=len(nodes))
             current_app.logger.info(f"使用本地缓存数据: {sub['name']}, 节点数: {len(nodes)}")
         else:
             # 既没有从URL获取成功，也没有本地缓存
+            subscription_health.record_fetch(sub_id, ok=False)
             return jsonify({
                 'success': False,
                 'message': f'从订阅URL获取失败: {fetch_error}，且本地无缓存数据'
@@ -468,6 +512,7 @@ def get_subscription_proxies(sub_id):
                         'url': sub_url
                     })
                     cache_updated = True
+                    subscription_health.record_fetch(sub_id, ok=True, count=len(nodes))
                     if source == 'rendered_yaml':
                         current_app.logger.info(f"成功直接复用订阅 URL 返回的 Sub-Store YAML 并更新缓存: {sub_name}, 节点数: {len(proxies)}")
                     elif source == 'sub_store':
@@ -486,6 +531,13 @@ def get_subscription_proxies(sub_id):
         # 如果从 Sub-Store 获取失败或没有URL，则从本地缓存加载并转换
         if proxies is None:
             cache = load_subscription_cache(sub_id)
+            if sub_url:
+                subscription_health.record_fetch(
+                    sub_id,
+                    ok=False,
+                    from_cache=bool(cache),
+                    count=(cache or {}).get('count') or 0,
+                )
             if not cache:
                 return jsonify({
                     'success': False,

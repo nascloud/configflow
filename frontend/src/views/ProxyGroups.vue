@@ -1,10 +1,8 @@
 <template>
   <div :class="reorder.active.value && 'cf-reordering'">
-    <ScopeBanner scope="profile" :profile-name="cfProfileName" />
 
     <PageHeader
       title="策略组"
-      description="为当前配置选择要使用的订阅、节点和聚合，也可创建代理链。"
     >
       <template #actions>
         <Button
@@ -17,7 +15,7 @@
           <ArrowUpDown class="size-4" />
           调整顺序
         </Button>
-        <Button @click="showAddDialog">
+        <Button class="shadow-glow" @click="showAddDialog">
           <Plus class="size-4" />
           添加策略组
         </Button>
@@ -36,7 +34,7 @@
       <EmptyState
         :icon="LayoutGrid"
         title="还没有策略组"
-        description="先添加策略组并选择节点，再在策略规则中指定哪些流量使用它。"
+        description="策略组决定流量走哪些节点，是规则生效的落点。"
       >
         <Button @click="showAddDialog">
           <Plus class="size-4" />
@@ -45,246 +43,242 @@
       </EmptyState>
     </SectionCard>
 
-    <div
-      v-else
-      ref="groupsContainer"
-      class="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3 max-md:grid-cols-1"
-    >
-      <Motion
-        v-for="(group, cfIndex) in proxyGroups"
-        :key="group.id || group.name"
-        v-bind="listItem(cfIndex)"
-        :data-name="group.name"
-        data-reorder-item
-        :class="[
-          'relative flex flex-col gap-3 overflow-hidden rounded-xl border border-border bg-card p-4 transition-colors duration-200',
-          !group.enabled && 'dark:opacity-60'
-        ]"
-      >
-        <header class="flex items-center gap-2.5">
-          <DragHandle
-            v-if="reorder.active.value"
-            :label="group.name || group.id"
-            :index="cfIndex"
-            :total="proxyGroups.length"
-            :position="reorder.positionLabel(cfIndex)"
-            :grabbed="reorder.grabbedIndex.value === cfIndex"
-            @up="reorder.moveUp(cfIndex)"
-            @down="reorder.moveDown(cfIndex)"
-            @keydown="reorder.onHandleKeydown($event, cfIndex)"
-          />
-          <span v-if="getGroupIcon(group.name)" class="shrink-0 text-[18px] leading-none">
-            {{ getGroupIcon(group.name) }}
-          </span>
-          <p class="m-0 min-w-0 flex-1 truncate text-[14px] font-semibold text-foreground">
-            {{ getGroupNameWithoutIcon(group.name) }}
-          </p>
-          <Badge v-if="group.follow_group" variant="warning" class="shrink-0">跟随</Badge>
-          <Badge v-else variant="outline" class="shrink-0 text-[10.5px]">
-            {{ getGroupTypeLabel(group.type) }}
-          </Badge>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            class="cf-reorder-mute shrink-0"
-            :class="group.enabled ? 'text-success-accent' : 'text-muted-foreground'"
-            :title="group.enabled ? '停用' : '启用'"
-            :aria-label="group.enabled ? `停用 ${group.name}` : `启用 ${group.name}`"
-            :disabled="group.id ? savingStatus[group.id] : false"
-            @click="handleToggle(group)"
+    <div v-else class="grid grid-cols-[280px_minmax(0,1fr)] items-start gap-3.5 max-[1180px]:grid-cols-[minmax(0,1fr)]">
+      <!-- 左：策略组列表 -->
+      <SectionCard :padded="false" class="p-2">
+        <div ref="groupsContainer" class="flex flex-col gap-0.5" role="list" aria-label="策略组">
+          <div
+            v-for="(group, cfIndex) in proxyGroups"
+            :key="group.id || group.name"
+            :data-name="group.name"
+            data-reorder-item
+            role="listitem"
+            class="group/row flex items-center gap-1"
           >
-            <component :is="group.enabled ? Eye : EyeOff" class="size-4" />
-          </Button>
+            <DragHandle
+              v-if="reorder.active.value"
+              :label="group.name || group.id"
+              :index="cfIndex"
+              :total="proxyGroups.length"
+              :position="reorder.positionLabel(cfIndex)"
+              :grabbed="reorder.grabbedIndex.value === cfIndex"
+              @up="reorder.moveUp(cfIndex)"
+              @down="reorder.moveDown(cfIndex)"
+              @keydown="reorder.onHandleKeydown($event, cfIndex)"
+            />
+            <button
+              type="button"
+              :aria-current="selectedKey === keyOf(group) ? 'true' : undefined"
+              :class="cn(
+                'flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-xl px-3 py-[11px] text-left transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+                selectedKey === keyOf(group) ? 'bg-secondary shadow-[inset_0_0_0_1px_var(--border-strong)]' : 'hover:bg-secondary',
+                group.enabled === false && 'opacity-55'
+              )"
+              @click="selectGroup(group)"
+            >
+              <span
+                :class="cn(
+                  'grid size-8 shrink-0 place-items-center rounded-[9px] font-mono text-[10px]',
+                  selectedKey === keyOf(group) ? 'bg-primary-soft text-primary-accent' : 'bg-background/70 text-muted-foreground'
+                )"
+              >
+                {{ group.follow_group ? 'FOL' : String(group.type || 'sel').slice(0, 3).toUpperCase() }}
+              </span>
+              <span class="min-w-0 flex-1">
+                <b class="block truncate text-[13px] font-semibold">{{ group.name }}</b>
+                <span class="font-mono text-[11px] text-muted-foreground">
+                  {{ group.follow_group ? '跟随' : getGroupTypeLabel(group.type) }}
+                </span>
+              </span>
+              <span class="num font-mono text-[12px] text-muted-foreground" :title="'命中节点数'">
+                {{ matchCounts[keyOf(group)] ?? '' }}
+              </span>
+            </button>
+            <Button
+              v-if="!reorder.active.value"
+              variant="ghost"
+              size="icon-sm"
+              class="shrink-0 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 max-md:opacity-100"
+              :title="`编辑 ${group.name}`"
+              @click="editGroup(group)"
+            >
+              <Pencil class="size-3.5" aria-hidden="true" />
+              <span class="sr-only">编辑</span>
+            </Button>
+            <Button
+              v-if="!reorder.active.value"
+              variant="ghost"
+              size="icon-sm"
+              class="shrink-0 text-destructive-accent opacity-0 transition-opacity group-hover/row:opacity-100 hover:bg-destructive-soft focus-visible:opacity-100 max-md:opacity-100"
+              :title="`删除 ${group.name}`"
+              @click="deleteGroup(group)"
+            >
+              <Trash2 class="size-3.5" aria-hidden="true" />
+              <span class="sr-only">删除</span>
+            </Button>
+          </div>
+        </div>
+      </SectionCard>
+
+      <!-- 右：来源 → 筛选 → 命中节点 -->
+      <SectionCard v-if="selected" :padded="false">
+        <header class="flex flex-wrap items-center gap-2.5 px-[18px] pt-4">
+          <h2 class="m-0 truncate text-[13.5px] font-semibold">{{ selected.name }}</h2>
+          <span v-if="selected.follow_group" class="chip chip-warn">跟随</span>
+          <span v-else class="chip chip-acc font-mono">{{ selected.type }}</span>
+          <div class="ml-auto flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              :class="selected.enabled ? 'text-success-accent' : 'text-muted-foreground'"
+              :title="selected.enabled ? '停用' : '启用'"
+              :aria-label="selected.enabled ? `停用 ${selected.name}` : `启用 ${selected.name}`"
+              :disabled="selected.id ? savingStatus[selected.id] : false"
+              @click="handleToggle(selected)"
+            >
+              <component :is="selected.enabled ? Eye : EyeOff" class="size-4" />
+            </Button>
+            <Button variant="ghost" size="sm" @click="editGroup(selected)">
+              <Pencil class="size-3.5" />
+              编辑
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              class="text-destructive-accent hover:bg-destructive-soft"
+              :aria-label="`删除 ${selected.name}`"
+              title="删除"
+              @click="deleteGroup(selected)"
+            >
+              <Trash2 class="size-4" />
+            </Button>
+          </div>
         </header>
-        <div v-if="group.type === 'chain'" class="min-w-0 text-xs text-muted-foreground">
-          <Badge variant="outline">仅 Mihomo</Badge>
-          <p class="mt-2 whitespace-normal break-all">{{ chainSummary(group) }}</p>
+
+        <!-- 代理链：前置 → 落地，没有来源与正则 -->
+        <div v-if="selected.type === 'chain'" class="flex flex-col gap-3 p-5 max-md:p-4">
+          <div class="flex flex-wrap items-center gap-2 text-[13px]">
+            <template v-if="selected.chain">
+              <span class="chip font-mono">{{ entryLabel(selected.chain.entry) }}</span>
+              <span class="pipe-link w-10" aria-hidden="true" />
+              <span class="chip chip-acc font-mono">{{ entryLabel(selected.chain.exit) }}</span>
+            </template>
+            <span v-else class="text-muted-foreground">链配置不可用</span>
+          </div>
+          <p class="m-0 text-[12.5px] text-muted-foreground">
+            流量先经过前置，再由落地访问目标。仅 Mihomo 支持，不能导出为 Surge。
+          </p>
         </div>
 
-        <Collapsible
-          v-if="group.type !== 'chain'"
-          class="cf-reorder-mute"
-          :open="isCardExpanded(group.id || group.name)"
-          @update:open="toggleCardExpand(group.id || group.name)"
-        >
-          <div class="flex items-center gap-2 rounded-lg border border-border/40 bg-background/40 px-3 py-2">
-            <span class="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground">
-              {{ getSourceSummary(group) }}
-            </span>
-            <CollapsibleTrigger as-child>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                class="size-6 shrink-0"
-                :title="isCardExpanded(group.id || group.name) ? '收起详情' : '展开详情'"
-                :aria-label="isCardExpanded(group.id || group.name) ? '收起详情' : '展开详情'"
-              >
-                <ChevronDown
-                  class="size-3.5 transition-transform duration-200"
-                  :class="isCardExpanded(group.id || group.name) && 'rotate-180'"
-                />
-              </Button>
-            </CollapsibleTrigger>
+        <div v-else class="pipe grid grid-cols-[minmax(0,0.9fr)_34px_minmax(0,1.1fr)_34px_minmax(0,1.5fr)] items-stretch p-5 max-md:grid-cols-[minmax(0,1fr)] max-md:gap-2 max-md:p-4">
+          <!-- 来源 -->
+          <div class="flex min-w-0 flex-col gap-2.5">
+            <div class="font-mono text-[10.5px] tracking-[0.14em] text-muted-foreground uppercase">来源</div>
+            <div class="flex flex-1 flex-col gap-2 rounded-[14px] border border-border bg-background/60 p-3">
+              <p v-if="selected.follow_group" class="m-0 text-[12.5px] text-muted-foreground">
+                跟随「<b class="text-foreground">{{ getFollowGroupName(selected.follow_group) || '—' }}</b>」，节点与其保持一致。
+              </p>
+              <template v-else>
+                <label
+                  v-for="option in sourceOptions"
+                  :key="option.id"
+                  :class="cn(
+                    'flex cursor-pointer items-center gap-2 rounded-[10px] border border-border bg-card px-2.5 py-2 text-[12.5px] transition-opacity',
+                    !draft.sources.includes(option.id) && 'opacity-50'
+                  )"
+                >
+                  <Checkbox
+                    :model-value="draft.sources.includes(option.id)"
+                    @update:model-value="toggleDraftSource(option.id)"
+                  />
+                  <span class="min-w-0 flex-1 truncate">{{ option.name }}</span>
+                  <span class="font-mono text-[11px] text-muted-foreground">{{ option.count ?? '' }}</span>
+                </label>
+                <p v-if="!sourceOptions.length" class="m-0 text-[12px] text-muted-foreground">
+                  {{ draft.kind === 'aggregation' ? '没有可用的聚合' : '还没有订阅' }}
+                </p>
+                <div v-if="extraSources.length" class="flex flex-wrap gap-1.5 pt-1">
+                  <span v-for="extra in extraSources" :key="extra" class="chip">{{ extra }}</span>
+                </div>
+              </template>
+            </div>
           </div>
 
-          <CollapsibleContent class="mt-2.5 flex flex-col gap-2.5">
-            <template v-if="group.follow_group">
-              <GroupField label="跟随策略" :icon="GitBranch">
-                {{ getFollowGroupName(group.follow_group) || '-' }}
-              </GroupField>
-            </template>
+          <div class="pipe-link" aria-hidden="true" />
 
-            <template v-else>
-              <GroupField v-if="hasAggregations(group)" label="聚合来源" :icon="Share2">
-                <div class="flex flex-wrap gap-1">
-                  <Badge
-                    v-for="aggName in getAggregationsList(group)"
-                    :key="aggName"
-                    variant="warning"
-                    class="max-w-full whitespace-normal break-all text-[10.5px]"
-                  >
-                    {{ aggName }}
-                  </Badge>
-                  <span v-if="!getAggregationsList(group).length" class="text-[12px] text-muted-foreground">无</span>
-                </div>
-              </GroupField>
+          <!-- 筛选 -->
+          <div class="flex min-w-0 flex-col gap-2.5">
+            <div class="font-mono text-[10.5px] tracking-[0.14em] text-muted-foreground uppercase">筛选</div>
+            <div class="flex flex-1 flex-col gap-2 rounded-[14px] border border-border bg-background/60 p-3">
+              <div class="relative">
+                <span class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 font-mono text-primary-accent">/</span>
+                <Input
+                  v-model="draft.regex"
+                  class="pl-7 font-mono text-[13px]"
+                  spellcheck="false"
+                  placeholder="不填则全部节点"
+                  :disabled="!!selected.follow_group"
+                  aria-label="正则过滤"
+                />
+              </div>
+              <p class="m-0 min-h-4 text-[11.5px] text-destructive-accent">{{ preview.error }}</p>
+              <div class="flex items-baseline gap-2">
+                <b class="font-display text-[38px] leading-none font-medium"><AnimatedNumber :value="preview.nodes.length" /></b>
+                <span class="font-mono text-[11.5px] text-muted-foreground">/ {{ preview.total }} 节点</span>
+              </div>
+              <div class="mt-auto rounded-xl border border-dashed border-border-strong p-3 text-[12.5px] text-muted-foreground">
+                <b class="text-foreground">{{ selected.follow_group ? '跟随' : getGroupTypeLabel(selected.type) }}</b>
+                · {{ strategyText }}
+                <template v-if="winner">
+                  <br />{{ selected.type === 'select' ? '默认选中' : '按测速预计生效' }}：
+                  <b class="text-primary-accent">{{ winner.name }}</b>
+                </template>
+              </div>
+            </div>
+          </div>
 
-              <GroupField
-                v-if="hasAggregations(group) && getAggregationSubscriptions(group)"
-                label="包含订阅"
-                :icon="Link2"
-              >
-                {{ getAggregationSubscriptions(group) }}
-              </GroupField>
+          <div class="pipe-link" aria-hidden="true" />
 
-              <GroupField
-                v-if="hasAggregations(group) && getAggregationNodes(group)"
-                label="包含节点"
-                :icon="Network"
-              >
-                {{ getAggregationNodes(group) }}
-              </GroupField>
+          <!-- 命中节点 -->
+          <div class="flex min-w-0 flex-col gap-2.5">
+            <div class="font-mono text-[10.5px] tracking-[0.14em] text-muted-foreground uppercase">
+              命中节点
+              <Loader2 v-if="preview.loading" class="ml-1 inline size-3 animate-spin" />
+            </div>
+            <div class="flex flex-1 flex-col gap-2 rounded-[14px] border border-border bg-background/60 p-3">
+              <div class="flex max-h-[260px] flex-wrap content-start gap-1.5 overflow-auto">
+                <span
+                  v-for="(node, i) in preview.nodes"
+                  :key="node.name"
+                  :class="cn(
+                    'matched-node inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-[12px]',
+                    winner && winner.name === node.name && 'is-winner'
+                  )"
+                  :style="{ animationDelay: `${Math.min(i, 24) * 18}ms` }"
+                >
+                  {{ node.name }}
+                  <i class="font-mono text-[10.5px] not-italic text-muted-foreground">{{ latencyLabel(node.name) }}</i>
+                </span>
+                <span v-if="!preview.nodes.length && !preview.loading" class="text-[12.5px] text-muted-foreground">
+                  {{ selected.follow_group ? '跟随策略组不单独筛选节点。' : draft.sources.length ? '没有节点命中这个正则。' : '先选择至少一个来源。' }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
 
-              <GroupField v-if="group.aggregation_regex" label="聚合正则" :icon="Filter">
-                <div class="flex items-center gap-2">
-                  <code
-                    class="min-w-0 flex-1 truncate rounded-md border border-border/50 bg-background/50 px-2 py-1 font-mono text-[11.5px]"
-                  >
-                    {{ group.aggregation_regex }}
-                  </code>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    class="shrink-0 border-border/60 bg-background/40"
-                    :disabled="regexPreviewLoading && regexPreviewSource === 'aggregation'"
-                    @click.stop="previewSavedRegexMatches(group, 'aggregation')"
-                  >
-                    <Eye class="size-3.5" />
-                    预览
-                  </Button>
-                </div>
-              </GroupField>
-
-              <GroupField
-                v-if="hasSubscriptions(group) && !hasAggregations(group)"
-                label="订阅来源"
-                :icon="Link2"
-              >
-                {{ getSubscriptionDisplay(group) }}
-              </GroupField>
-
-              <GroupField v-if="group.regex && hasSubscriptions(group)" label="订阅正则" :icon="Filter">
-                <div class="flex items-center gap-2">
-                  <code
-                    class="min-w-0 flex-1 truncate rounded-md border border-border/50 bg-background/50 px-2 py-1 font-mono text-[11.5px]"
-                  >
-                    {{ group.regex }}
-                  </code>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    class="shrink-0 border-border/60 bg-background/40"
-                    :disabled="regexPreviewLoading && regexPreviewSource === 'subscription'"
-                    @click.stop="previewSavedRegexMatches(group, 'subscription')"
-                  >
-                    <Eye class="size-3.5" />
-                    预览
-                  </Button>
-                </div>
-              </GroupField>
-
-              <GroupField
-                v-if="hasManualNodes(group) && !hasAggregations(group)"
-                label="节点来源"
-                :icon="Network"
-              >
-                {{ getManualNodesDisplay(group) }}
-              </GroupField>
-
-              <GroupField v-if="hasIncludeGroups(group)" label="策略组来源" :icon="LayoutGrid">
-                <div class="flex flex-wrap gap-1">
-                  <Badge
-                    v-for="name in getIncludeGroupsList(group)"
-                    :key="name"
-                    variant="info"
-                    class="max-w-full whitespace-normal break-all text-[10.5px]"
-                  >
-                    {{ name }}
-                  </Badge>
-                </div>
-              </GroupField>
-
-              <GroupField
-                v-if="hasManualNodes(group) && hasIncludeGroups(group)"
-                label="节点顺序"
-                :icon="ArrowUpDown"
-              >
-                {{ getProxyOrderLabel(group.proxy_order) }}
-              </GroupField>
-
-              <GroupField v-if="group.type !== 'select'" label="测试 URL" :icon="Link2">
-                <span class="font-mono text-[11.5px]">{{ group.url || '-' }}</span>
-              </GroupField>
-
-              <GroupField v-if="group.type !== 'select'" label="测试间隔" :icon="Timer">
-                <span class="num">{{ group.interval || '-' }} 秒</span>
-              </GroupField>
-
-              <GroupField
-                v-if="group.type === 'load-balance' && group.strategy"
-                label="负载策略"
-                :icon="Scale"
-              >
-                {{ getStrategyLabel(group.strategy) }}
-              </GroupField>
-
-              <GroupField
-                v-if="group.type === 'load-balance' && group.lazy !== undefined"
-                label="懒加载"
-                :icon="Scale"
-              >
-                {{ group.lazy ? '是' : '否' }}
-              </GroupField>
-            </template>
-          </CollapsibleContent>
-        </Collapsible>
-
-        <footer class="cf-reorder-mute mt-auto flex items-center gap-1 border-0 border-t border-border/50 pt-3">
-          <Button variant="ghost" size="sm" @click="editGroup(group)">
-            <Pencil class="size-3.5" />
-            编辑
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            class="ml-auto text-destructive-accent hover:bg-destructive-soft"
-            @click="deleteGroup(group)"
-          >
-            <Trash2 class="size-3.5" />
-            删除
+        <footer
+          v-if="draftDirty && selected.type !== 'chain'"
+          class="flex items-center gap-2 border-t border-border px-5 py-3 text-[12.5px] text-muted-foreground"
+        >
+          来源或正则有改动，保存后进入配置
+          <Button variant="ghost" size="sm" class="ml-auto" @click="resetDraft">还原</Button>
+          <Button size="sm" :disabled="draftSaving || !!preview.error" @click="saveDraft">
+            <Loader2 v-if="draftSaving" class="size-3.5 animate-spin" />
+            保存
           </Button>
         </footer>
-      </Motion>
+      </SectionCard>
     </div>
 
     <!-- ===== 新增 / 编辑策略组 ===== -->
@@ -628,8 +622,6 @@ import ReorderBar from '@/components/shell/ReorderBar.vue'
 import DragHandle from '@/components/shell/DragHandle.vue'
 import { useReorder } from '@/composables/useReorder'
 import PageHeader from '@/components/common/PageHeader.vue'
-import ScopeBanner from '@/components/shell/ScopeBanner.vue'
-import { useProfileStore } from '@/stores/profile'
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import {
   ArrowUpDown,
@@ -641,6 +633,7 @@ import {
   GripVertical,
   LayoutGrid,
   Link2,
+  Loader2,
   Network,
   Pencil,
   Plus,
@@ -650,6 +643,8 @@ import {
   Trash2
 } from '@lucide/vue'
 import { Motion } from 'motion-v'
+import { cn } from '@/lib/utils'
+import AnimatedNumber from '@/components/common/AnimatedNumber.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -688,10 +683,6 @@ import Sortable from 'sortablejs'
 
 const profileId = getActiveProfileId()
 const profileRequest = { headers: { 'X-ConfigFlow-Profile': profileId } }
-const cfProfileStore = useProfileStore()
-const cfProfileName = computed(
-  () => cfProfileStore.profiles.value.find(profile => profile.id === profileId)?.name || profileId
-)
 const proxyGroups = ref<ProxyGroup[]>([])
 const nodes = ref<ProxyNode[]>([])
 const subscriptions = ref<Subscription[]>([])
@@ -1912,11 +1903,329 @@ const handleSaveOrder = async () => {
   }
 }
 
-onMounted(() => {
-  loadProxyGroups()
-  loadResources()
+/* ================================================================
+ * 来源 → 筛选 → 命中节点：选中策略组的实时管道
+ * ================================================================ */
+const keyOf = (group: ProxyGroup) => group.id || group.name
+const selectedKey = ref<string>('')
+const selected = computed(() => proxyGroups.value.find(g => keyOf(g) === selectedKey.value) || null)
+
+type SourceKind = 'subscription' | 'aggregation'
+const draft = ref<{ kind: SourceKind; sources: string[]; regex: string }>({
+  kind: 'subscription',
+  sources: [],
+  regex: ''
 })
 
+/** 有聚合引用的策略组按聚合筛选，否则按订阅筛选，与生成配置时的取数口径一致 */
+const kindOf = (group: ProxyGroup): SourceKind =>
+  ((group as any).aggregations || []).length ? 'aggregation' : 'subscription'
+
+const draftFrom = (group: ProxyGroup) => {
+  const kind = kindOf(group)
+  return {
+    kind,
+    sources: [...((kind === 'aggregation' ? (group as any).aggregations : group.subscriptions) || [])],
+    regex: (kind === 'aggregation' ? (group as any).aggregation_regex : group.regex) || ''
+  }
+}
+
+const selectGroup = (group: ProxyGroup) => {
+  selectedKey.value = keyOf(group)
+  draft.value = draftFrom(group)
+}
+
+const resetDraft = () => {
+  if (selected.value) draft.value = draftFrom(selected.value)
+}
+
+const draftDirty = computed(() => {
+  if (!selected.value || selected.value.follow_group) return false
+  const base = draftFrom(selected.value)
+  return (
+    base.regex !== draft.value.regex ||
+    base.sources.length !== draft.value.sources.length ||
+    base.sources.some(id => !draft.value.sources.includes(id))
+  )
+})
+
+const toggleDraftSource = (id: string) => {
+  const list = draft.value.sources
+  draft.value.sources = list.includes(id) ? list.filter(x => x !== id) : [...list, id]
+}
+
+const sourceOptions = computed(() => {
+  if (draft.value.kind === 'aggregation') {
+    return aggregations.value
+      .filter(a => a.enabled !== false)
+      .map(a => ({ id: a.id, name: a.name, count: aggregationCounts.value[a.id] }))
+  }
+  return subscriptions.value.map(s => ({
+    id: s.id,
+    name: s.name,
+    count: typeof s.cached_node_count === 'number' ? s.cached_node_count : undefined
+  }))
+})
+
+/** 不参与正则筛选的其他来源，只做提示 */
+const extraSources = computed(() => {
+  const g = selected.value as any
+  if (!g) return []
+  const extras: string[] = []
+  const manual = (g.manual_nodes || []).length
+  if (manual) extras.push(`手动节点 ${manual}`)
+  for (const name of getIncludeGroupsList(g)) extras.push(`策略 · ${name}`)
+  return extras
+})
+
+const aggregationCounts = ref<Record<string, number>>({})
+
+/* ---------- 预览 ---------- */
+const preview = ref<{ nodes: any[]; total: number; loading: boolean; error: string }>({
+  nodes: [],
+  total: 0,
+  loading: false,
+  error: ''
+})
+
+const requestPreview = async (kind: SourceKind, sources: string[], regex: string) => {
+  const { data } = await proxyGroupApi.previewRegex({
+    source: kind,
+    regex: regex || '.*',
+    ...(kind === 'aggregation' ? { aggregations: sources } : { subscriptions: sources })
+  }, profileId)
+  return data
+}
+
+let previewTimer: number | undefined
+let previewSeq = 0
+const refreshPreview = () => {
+  clearTimeout(previewTimer)
+  const group = selected.value
+  if (!group || group.follow_group || !draft.value.sources.length) {
+    preview.value = { nodes: [], total: 0, loading: false, error: '' }
+    return
+  }
+  // 正则先在本地校验，非法时保留上一次结果
+  try {
+    new RegExp(draft.value.regex || '.*')
+  } catch {
+    preview.value = { ...preview.value, error: '正则无效，保留上一次结果' }
+    return
+  }
+  preview.value = { ...preview.value, loading: true, error: '' }
+  const seq = ++previewSeq
+  previewTimer = window.setTimeout(async () => {
+    try {
+      const data = await requestPreview(draft.value.kind, draft.value.sources, draft.value.regex)
+      if (seq !== previewSeq) return
+      preview.value = { nodes: data.nodes || [], total: data.total_candidates || 0, loading: false, error: '' }
+      if (!draftDirty.value) matchCounts.value = { ...matchCounts.value, [keyOf(group)]: data.count ?? 0 }
+    } catch (error: any) {
+      if (seq !== previewSeq) return
+      preview.value = { ...preview.value, loading: false, error: error.response?.data?.message || '预览失败' }
+    }
+  }, 280)
+}
+
+watch([selectedKey, () => draft.value.sources, () => draft.value.regex], refreshPreview, { deep: true })
+
+/* ---------- 每个策略组的命中数（列表右侧），限并发逐个计算 ---------- */
+const matchCounts = ref<Record<string, number>>({})
+
+const computeMatchCounts = async () => {
+  const queue = proxyGroups.value.filter(g => !g.follow_group)
+  const worker = async () => {
+    while (queue.length) {
+      const group = queue.shift()!
+      const d = draftFrom(group)
+      if (!d.sources.length) continue
+      try {
+        const data = await requestPreview(d.kind, d.sources, d.regex)
+        matchCounts.value = { ...matchCounts.value, [keyOf(group)]: data.count ?? 0 }
+      } catch {
+        // 单个失败不影响其他
+      }
+    }
+  }
+  await Promise.all([worker(), worker(), worker()])
+}
+
+/* ---------- 延迟与预计生效节点 ---------- */
+const latencyMap = ref<Record<string, { latency: number | null }>>({})
+const latencyLabel = (name: string) => {
+  const r = latencyMap.value[name]
+  if (!r) return '—'
+  return r.latency === null ? '超时' : String(r.latency)
+}
+
+const winner = computed(() => {
+  const group = selected.value
+  const nodes = preview.value.nodes
+  if (!group || !nodes.length) return null
+  const reachable = nodes.filter(n => typeof latencyMap.value[n.name]?.latency === 'number')
+  if (group.type === 'url-test') {
+    return [...reachable].sort(
+      (a, b) => (latencyMap.value[a.name].latency as number) - (latencyMap.value[b.name].latency as number)
+    )[0] || null
+  }
+  if (group.type === 'fallback') return reachable[0] || null
+  if (group.type === 'select') return nodes[0]
+  return null
+})
+
+const strategyText = computed(() => {
+  const group = selected.value as any
+  if (!group) return ''
+  if (group.follow_group) return '节点与被跟随的策略组保持一致。'
+  switch (group.type) {
+    case 'url-test':
+      return `每 ${group.interval || 300}s 测速，自动切到延迟最低的节点。`
+    case 'fallback':
+      return '按顺序检测，首个可用节点生效。'
+    case 'load-balance':
+      return `${getStrategyLabel(group.strategy || 'consistent-hashing')}，流量分摊到 ${preview.value.nodes.length} 个节点。`
+    default:
+      return '手动选择，默认使用第一个命中节点。'
+  }
+})
+
+/* ---------- 保存管道里的改动 ---------- */
+const draftSaving = ref(false)
+const saveDraft = async () => {
+  const group = selected.value as any
+  if (!group?.id) return
+  draftSaving.value = true
+  const patch =
+    draft.value.kind === 'aggregation'
+      ? { aggregations: draft.value.sources, aggregation_regex: draft.value.regex }
+      : { subscriptions: draft.value.sources, regex: draft.value.regex }
+  try {
+    await proxyGroupApi.update(group.id, { ...group, ...patch }, profileId)
+    Object.assign(group, patch)
+    matchCounts.value = { ...matchCounts.value, [keyOf(group)]: preview.value.nodes.length }
+    notify.success(`「${group.name}」已保存`)
+  } catch (error: any) {
+    notify.error(error.response?.data?.message || '保存失败')
+  } finally {
+    draftSaving.value = false
+  }
+}
+
+/** 聚合节点数只在查看聚合来源的策略组时才统计，每个页面只取一次 */
+let aggregationCountsLoaded = false
+const loadAggregationCounts = async () => {
+  if (aggregationCountsLoaded || !aggregations.value.length) return
+  aggregationCountsLoaded = true
+  for (const agg of aggregations.value) {
+    try {
+      const { data } = await api.get(`/aggregations/${agg.id}/count`)
+      aggregationCounts.value = { ...aggregationCounts.value, [agg.id]: data.total_count ?? 0 }
+    } catch {
+      // 计数失败只是不显示数字
+    }
+  }
+}
+
+// 列表变化（新增、删除、重排后重载）时保证始终有一个选中项
+watch(proxyGroups, groups => {
+  if (!groups.length) {
+    selectedKey.value = ''
+    return
+  }
+  if (!groups.some(g => keyOf(g) === selectedKey.value)) selectGroup(groups[0])
+})
+
+onMounted(async () => {
+  await Promise.all([loadProxyGroups(), loadResources()])
+  try {
+    const { data } = await nodeApi.latency()
+    latencyMap.value = data?.results || {}
+  } catch {
+    // 没有测速结果时只显示节点名
+  }
+  computeMatchCounts()
+})
+
+// 聚合列表可能晚于选中项加载完成，两者任一变化都再检查一次
+watch([() => draft.value.kind, aggregations], ([kind]) => {
+  if (kind === 'aggregation') loadAggregationCounts()
+}, { immediate: true })
+
 onUnmounted(() => {
+  clearTimeout(previewTimer)
 })
 </script>
+
+<style scoped>
+.pipe-link {
+  position: relative;
+  align-self: center;
+  height: 2px;
+  margin: 0 4px;
+  background: repeating-linear-gradient(90deg, var(--primary-accent) 0 6px, transparent 6px 12px);
+  background-size: 24px 2px;
+  opacity: 0.8;
+  animation: pipe-dash 0.6s linear infinite;
+}
+
+.pipe-link::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  right: -2px;
+  border: 5px solid transparent;
+  border-right: 0;
+  border-left-color: var(--primary-accent);
+}
+
+@keyframes pipe-dash {
+  to {
+    background-position: 24px 0;
+  }
+}
+
+@media (max-width: 767.98px) {
+  .pipe-link {
+    justify-self: center;
+    width: 2px;
+    height: 24px;
+    margin: 0;
+    background: repeating-linear-gradient(180deg, var(--primary-accent) 0 6px, transparent 6px 12px);
+    background-size: 2px 24px;
+    animation-name: pipe-dash-v;
+  }
+
+  .pipe-link::after {
+    display: none;
+  }
+
+  @keyframes pipe-dash-v {
+    to {
+      background-position: 0 24px;
+    }
+  }
+}
+
+.matched-node {
+  animation: node-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.matched-node.is-winner {
+  border-color: var(--primary-accent);
+  background: var(--primary-soft);
+  color: var(--foreground);
+  box-shadow: 0 0 20px -6px var(--primary-accent);
+}
+
+.matched-node.is-winner i {
+  color: var(--primary-accent);
+}
+
+@keyframes node-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+</style>

@@ -19,7 +19,7 @@ const theme = ref<ThemeMode>(readStored())
 /* 地址栏底色跟随 theme.css 的 --background，避免颜色在两处各写一遍而走样。
  * 读不到（样式尚未就绪）时回落到与当前 token 等价的近似值。
  */
-const FALLBACK_BG: Record<ThemeMode, string> = { dark: '#0e0e11', light: '#f7f7f8' }
+const FALLBACK_BG: Record<ThemeMode, string> = { dark: '#191817', light: '#f5f3ec' }
 
 const apply = (mode: ThemeMode): void => {
   document.documentElement.dataset.theme = mode

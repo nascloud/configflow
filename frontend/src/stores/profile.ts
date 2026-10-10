@@ -9,6 +9,8 @@ export interface Profile {
   description?: string
   created_at?: string
   updated_at?: string
+  /** 配置内容的修订号，每次内容变化 +1 */
+  revision?: number
 }
 
 const profiles = ref<Profile[]>([])

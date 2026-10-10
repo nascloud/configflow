@@ -1,10 +1,7 @@
 <template>
   <div :class="reorder.active.value && 'cf-reordering'">
-    <ScopeBanner scope="resource" :profile-name="cfProfileName" description="所有配置共用这些订阅；可在当前配置的策略组中选择使用。" />
-
     <PageHeader
       title="订阅来源"
-      description="添加订阅链接并更新节点。修改订阅会影响使用它的所有配置。"
     >
       <template #actions>
         <Button
@@ -15,9 +12,9 @@
         >
           <Loader2 v-if="isRefreshing" class="size-4 animate-spin" />
           <RefreshCw v-else class="size-4" />
-          批量更新
+          拉取全部
         </Button>
-        <Button :disabled="reorder.active.value" @click="showAddDialog">
+        <Button class="shadow-glow" :disabled="reorder.active.value" @click="showAddDialog">
           <Plus class="size-4" />
           添加订阅
         </Button>
@@ -27,10 +24,10 @@
     <Toolbar v-model:search="keyword" placeholder="搜索订阅名称或地址…">
       <template #filters>
         <Select v-model="statusFilter" :disabled="reorder.active.value">
-          <SelectTrigger class="h-9 w-[132px] border-input bg-card text-[13px] dark:border-transparent" aria-label="按状态筛选">
+          <SelectTrigger class="h-9 w-[132px] border-transparent bg-background/50 text-[13px]" aria-label="按状态筛选">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent class="glass-strong">
             <SelectItem value="all">全部状态</SelectItem>
             <SelectItem value="enabled">已启用</SelectItem>
             <SelectItem value="disabled">已停用</SelectItem>
@@ -96,7 +93,7 @@
           :key="sub.id"
           :data-id="sub.id"
           data-reorder-item
-          :class="!sub.enabled && 'dark:opacity-55'"
+          :class="!sub.enabled && 'opacity-55'"
         >
           <TableCell v-if="reorder.active.value">
             <DragHandle
@@ -176,11 +173,11 @@
       </TableBody>
     </DataTableShell>
 
-    <!-- ===== 卡片视图（移动端与可选） ===== -->
+    <!-- ===== 卡片视图（默认） ===== -->
     <div
       v-else
       ref="subscriptionsContainer"
-      class="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3 max-md:grid-cols-1"
+      class="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3.5 max-md:grid-cols-1"
     >
       <Motion
         v-for="(sub, index) in visibleSubscriptions"
@@ -189,14 +186,76 @@
         :data-id="sub.id"
         data-reorder-item
         :class="cn(
-          'relative overflow-hidden rounded-xl border border-border bg-card transition-colors duration-200',
-          !sub.enabled && 'dark:opacity-60'
+          'relative overflow-hidden rounded-[18px] border border-border bg-card/90 p-5 shadow-surface transition-[transform,border-color] duration-350 ease-(--ease-flow) hover:-translate-y-[3px] hover:border-border-strong max-md:p-4',
+          !sub.enabled && 'opacity-60'
         )"
       >
-        <div class="card-header flex items-center gap-2 px-4 pt-3.5 pb-2">
+        <!-- 拉取中：顶部一道扫描光 -->
+        <span
+          v-if="subscriptionStatus[sub.id]?.status === 'loading'"
+          class="sub-sweep pointer-events-none absolute inset-x-0 top-0 h-0.5"
+          aria-hidden="true"
+        />
+
+        <div class="card-header flex items-center gap-4">
           <span v-if="reorder.active.value" class="text-xs tabular-nums text-muted-foreground">{{ index + 1 }}</span>
-          <span :class="cn('size-1.5 shrink-0 rounded-full', dotTone(sub))" aria-hidden="true" />
-          <div class="card-title min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{{ sub.name }}</div>
+
+          <!-- 流量环：subscription-userinfo 的已用比例；服务商不提供时显示不计量 -->
+          <div v-if="!reorder.active.value" class="card-stats relative size-24 shrink-0">
+            <svg viewBox="0 0 96 96" class="size-full -rotate-90" aria-hidden="true">
+              <defs>
+                <linearGradient :id="`ring-${index}`" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="var(--primary)" />
+                  <stop offset="1" stop-color="var(--accent-2)" />
+                </linearGradient>
+              </defs>
+              <circle cx="48" cy="48" r="42" fill="none" stroke="var(--accent)" stroke-width="7" />
+              <circle
+                cx="48"
+                cy="48"
+                r="42"
+                fill="none"
+                :stroke="`url(#ring-${index})`"
+                stroke-width="7"
+                stroke-linecap="round"
+                :stroke-dasharray="RING"
+                :stroke-dashoffset="ringOffset(sub)"
+                class="transition-[stroke-dashoffset] duration-1600 ease-(--ease-flow)"
+              />
+            </svg>
+            <div class="absolute inset-0 grid place-content-center text-center">
+              <template v-if="traffic(sub).metered">
+                <b class="font-display text-[24px] leading-none font-medium">
+                  {{ Math.round(traffic(sub).ratio * 100) }}<small class="text-[12px]">%</small>
+                </b>
+                <span class="mt-0.5 font-mono text-[10px] text-muted-foreground">已用</span>
+              </template>
+              <template v-else>
+                <b class="font-display text-[24px] leading-none font-medium">∞</b>
+                <span class="mt-0.5 font-mono text-[10px] text-muted-foreground">不计量</span>
+              </template>
+            </div>
+          </div>
+
+          <div class="card-title-group min-w-0 flex-1">
+            <h3 class="card-title font-display m-0 truncate text-[20px] leading-tight font-medium tracking-[-0.01em]">
+              {{ sub.name }}
+            </h3>
+            <div v-if="!reorder.active.value" class="card-meta mt-2 flex flex-wrap gap-1.5">
+              <span class="chip font-mono">{{ getTypeLabel(sub.type) }}</span>
+              <span
+                v-if="traffic(sub).expireDays !== null"
+                :class="cn('chip', traffic(sub).expireDays! <= 10 && 'chip-warn')"
+              >
+                {{ traffic(sub).expireDays! > 0 ? `${traffic(sub).expireDays} 天后到期` : '已到期' }}
+              </span>
+              <span v-if="traffic(sub).ratio > 0.8" class="chip chip-bad">余量不足</span>
+              <span v-if="subscriptionStatus[sub.id]?.status === 'error'" class="chip chip-bad" :title="subscriptionStatus[sub.id]?.error">
+                拉取失败
+              </span>
+              <span v-if="!sub.enabled" class="chip">已停用</span>
+            </div>
+          </div>
 
           <DragHandle
             v-if="reorder.active.value"
@@ -209,64 +268,88 @@
             @down="reorder.moveDown(index)"
             @keydown="reorder.onHandleKeydown($event, index)"
           />
-          <Button
-            v-else
-            variant="ghost"
-            size="icon-sm"
-            class="cf-reorder-mute shrink-0"
-            :class="sub.enabled ? 'text-primary-accent' : 'text-muted-foreground'"
-            :aria-label="sub.enabled ? `停用 ${sub.name}` : `启用 ${sub.name}`"
-            @click="handleToggle(sub)"
-          >
-            <Eye v-if="sub.enabled" class="size-4" />
-            <EyeOff v-else class="size-4" />
-          </Button>
         </div>
 
         <template v-if="!reorder.active.value">
-          <div class="card-meta flex flex-wrap items-center gap-1.5 px-4 pb-2">
-            <Badge :variant="typeTone(sub.type)">{{ getTypeLabel(sub.type) }}</Badge>
-            <Badge :variant="statusTone(subscriptionStatus[sub.id])">{{ statusText(sub) }}</Badge>
-            <span class="text-xs text-muted-foreground">更新周期 {{ formatInterval(sub.interval) }}</span>
+          <div class="card-section mt-[18px] grid grid-cols-3 border-t border-border pt-3.5">
+            <div>
+              <small class="block text-[11px] text-muted-foreground">节点</small>
+              <b class="font-mono text-[15px] font-medium">
+                <AnimatedNumber v-if="nodeCount(sub) !== '—'" :value="Number(nodeCount(sub))" />
+                <template v-else>—</template>
+              </b>
+            </div>
+            <div>
+              <small class="block text-[11px] text-muted-foreground">剩余流量</small>
+              <b class="font-mono text-[15px] font-medium">
+                {{ traffic(sub).left !== null ? formatBytes(traffic(sub).left) : '—' }}
+              </b>
+            </div>
+            <div>
+              <small class="block text-[11px] text-muted-foreground">更新间隔</small>
+              <b class="font-mono text-[15px] font-medium">{{ sub.interval ? formatInterval(sub.interval) : '—' }}</b>
+            </div>
           </div>
 
-          <div class="flex items-center gap-2 px-4 pb-2">
-            <span class="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{{ getDisplayUrl(sub) }}</span>
-            <button
-              type="button"
-              class="shrink-0 cursor-pointer border-0 bg-transparent text-xs font-medium text-primary-accent hover:underline"
-              @click="toggleUrlReveal(sub.id)"
-            >
-              {{ revealedUrls[sub.id] ? '隐藏' : '显示原文' }}
-            </button>
-          </div>
-
-          <div class="card-actions flex items-center gap-1 border-0 border-t border-border/50 px-3 py-2">
-            <Button variant="ghost" size="sm" @click="handleFetchSubscription(sub)">
-              <Network class="size-3.5" />
-              获取节点
-            </Button>
-            <Button variant="ghost" size="sm" @click="editSubscription(sub)">
-              <Pencil class="size-3.5" />
-              编辑
-            </Button>
+          <div class="card-actions mt-4 flex items-center gap-2">
+            <span class="mr-auto min-w-0 truncate text-[11.5px] text-muted-foreground">
+              上次拉取 · {{ lastFetchText(sub) }}
+            </span>
+            <Button variant="ghost" size="sm" class="h-[30px]" :aria-label="`编辑 ${sub.name}`" @click="editSubscription(sub)">编辑</Button>
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
-              class="ml-auto text-destructive-accent hover:bg-destructive-soft hover:text-destructive-accent"
-              @click="deleteSubscription(sub)"
+              class="h-[30px]"
+              :disabled="subscriptionStatus[sub.id]?.status === 'loading'"
+              @click="pullOne(sub)"
             >
-              <Trash2 class="size-3.5" />
-              删除
+              <RefreshCw :class="cn('size-3.5', subscriptionStatus[sub.id]?.status === 'loading' && 'animate-spin')" />
+              拉取
             </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger as-child>
+                <Button variant="ghost" size="icon-sm" class="size-[30px]" :aria-label="`${sub.name} 的更多操作`">
+                  <MoreHorizontal class="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" class="glass-strong min-w-[160px]">
+                <DropdownMenuItem @select="handleFetchSubscription(sub)">
+                  <Network class="size-4" />
+                  查看节点
+                </DropdownMenuItem>
+                <DropdownMenuItem @select="copyUrl(sub)">
+                  <Copy class="size-4" />
+                  复制地址
+                </DropdownMenuItem>
+                <DropdownMenuItem @select="handleToggle(sub)">
+                  <component :is="sub.enabled ? EyeOff : Eye" class="size-4" />
+                  {{ sub.enabled ? '停用' : '启用' }}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" @select="deleteSubscription(sub)">
+                  <Trash2 class="size-4" />
+                  删除
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </template>
       </Motion>
+
+      <button
+        v-if="!reorder.active.value && !keyword && statusFilter === 'all'"
+        type="button"
+        class="grid min-h-[250px] cursor-pointer place-content-center gap-2.5 rounded-[18px] border border-dashed border-border-strong bg-transparent text-center text-muted-foreground transition-colors hover:border-primary-accent/50 hover:text-primary-accent focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+        @click="showAddDialog"
+      >
+        <Link2 class="mx-auto size-7" :stroke-width="1.75" />
+        <span>添加订阅来源</span>
+      </button>
     </div>
 
     <!-- 添加/编辑对话框 -->
     <Dialog v-model:open="dialogVisible">
-      <DialogContent class="sm:max-w-[640px]" @pointer-down-outside.prevent>
+      <DialogContent class="glass-strong hairline border-border/50 sm:max-w-[640px]" @pointer-down-outside.prevent>
         <DialogHeader>
           <DialogTitle>{{ isEdit ? '编辑订阅' : '添加订阅' }}</DialogTitle>
           <DialogDescription>填写订阅名称和链接，设置节点更新间隔。</DialogDescription>
@@ -284,7 +367,7 @@
                 <SelectTrigger id="sub-type" class="w-full bg-background/50">
                   <SelectValue placeholder="请选择订阅类型" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent class="glass-strong">
                   <SelectItem value="universal">通用</SelectItem>
                   <SelectItem value="mihomo">Mihomo</SelectItem>
                   <SelectItem value="surge">Surge</SelectItem>
@@ -344,7 +427,7 @@
 
     <!-- 节点预览对话框 -->
     <Dialog v-model:open="nodesPreviewVisible">
-      <DialogContent class="sm:max-w-[800px]">
+      <DialogContent class="glass-strong hairline border-border/50 sm:max-w-[800px]">
         <DialogHeader>
           <DialogTitle>节点预览</DialogTitle>
           <DialogDescription>共 {{ previewNodes.length }} 个节点</DialogDescription>
@@ -384,7 +467,6 @@
 </template>
 
 <script setup lang="ts">
-import { useProfileStore } from '@/stores/profile'
 import { computed, ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import {
   ArrowUpDown,
@@ -394,6 +476,7 @@ import {
   EyeOff,
   Link2,
   Loader2,
+  MoreHorizontal,
   Network,
   Pencil,
   Plus,
@@ -427,7 +510,17 @@ import type { Subscription } from '@/types'
 import api from '@/api'
 import yaml from 'js-yaml'
 import PageHeader from '@/components/common/PageHeader.vue'
-import ScopeBanner from '@/components/shell/ScopeBanner.vue'
+import AnimatedNumber from '@/components/common/AnimatedNumber.vue'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
+import { useRouter } from 'vue-router'
+import { consumeAction } from '@/lib/actions'
+import { formatBytes, relativeTime, trafficSummary } from '@/lib/format'
 import ReorderBar from '@/components/shell/ReorderBar.vue'
 import DragHandle from '@/components/shell/DragHandle.vue'
 import { useReorder } from '@/composables/useReorder'
@@ -442,10 +535,17 @@ import { confirm, confirmDanger, notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
 
 
-const cfProfileStore = useProfileStore()
-const cfProfileName = computed(
-  () => cfProfileStore.activeProfile.value?.name || cfProfileStore.activeProfileId.value
-)
+const router = useRouter()
+
+/* ---------- 流量环与拉取信息 ---------- */
+const RING = 2 * Math.PI * 42
+const traffic = (sub: Subscription) => trafficSummary((sub as any).traffic)
+const ringOffset = (sub: Subscription) => {
+  const t = traffic(sub)
+  return RING * (1 - (t.metered ? t.ratio : 0))
+}
+const lastFetchText = (sub: Subscription) =>
+  relativeTime((sub as any).last_fetch?.at || (sub as any).cached_updated_at)
 const subscriptions = ref<Subscription[]>([])
 const subscriptionsContainer = ref<HTMLElement | null>(null)
 const dialogVisible = ref(false)
@@ -545,12 +645,13 @@ const formatNodeToYaml = (node: any) => {
   return yaml.dump(proxy, { indent: 2, lineWidth: -1 }).trim()
 }
 
-const loadSubscriptions = async () => {
+const loadSubscriptions = async (keepStatus = false) => {
   try {
     const { data } = await subscriptionApi.getAll()
     subscriptions.value = data
-    // 初始化订阅状态
+    // 初始化订阅状态；刷新时保留刚拿到的失败状态，避免被缓存值覆盖
     subscriptions.value.forEach(sub => {
+      if (keepStatus && subscriptionStatus.value[sub.id]?.status === 'error') return
       if (revealedUrls.value[sub.id] === undefined) {
         revealedUrls.value[sub.id] = false
       }
@@ -618,9 +719,29 @@ const fetchAllSubscriptionsInBackground = async () => {
     })
 
     await Promise.allSettled(promises)
+    // 拉取会更新流量信息与拉取记录，整体刷新一次列表
+    await loadSubscriptions(true)
   } finally {
     isRefreshing.value = false
   }
+}
+
+/** 单个订阅后台拉取：卡片顶部扫描光，完成后节点数重新滚动 */
+const pullOne = async (sub: Subscription) => {
+  const previous = subscriptionStatus.value[sub.id]
+  subscriptionStatus.value[sub.id] = { status: 'loading', count: previous?.count, updatedAt: previous?.updatedAt }
+  try {
+    const { data } = await subscriptionApi.fetch(sub.id, true)
+    if (!data.success) throw new Error(data.message || '拉取失败')
+    const count = data.cached_count ?? (data.nodes?.length || 0)
+    subscriptionStatus.value[sub.id] = { status: 'success', count, updatedAt: data.cached_updated_at ?? null }
+    notify.success(data.from_cache ? `「${sub.name}」拉取失败，已使用缓存` : `「${sub.name}」已更新 · ${count} 节点`)
+  } catch (error: any) {
+    const message = error.response?.data?.message || error.message || '拉取失败'
+    subscriptionStatus.value[sub.id] = { status: 'error', error: message, count: previous?.count, updatedAt: previous?.updatedAt }
+    notify.error(message)
+  }
+  await loadSubscriptions(true)
 }
 
 const checkSubStoreUrl = async (): Promise<boolean> => {
@@ -837,7 +958,7 @@ const readView = (): ViewMode => {
   } catch {
     // 存储不可用时用默认视图
   }
-  return 'list'
+  return 'card'
 }
 
 const viewMode = ref<ViewMode>(readView())
@@ -964,9 +1085,34 @@ onMounted(async () => {
   syncNarrow()
   window.addEventListener('resize', syncNarrow)
   await loadSubscriptions()
+  if (consumeAction(router, 'pull-all')) fetchAllSubscriptionsInBackground()
 })
+
+// 已在本页时从命令面板触发
+watch(
+  () => router?.currentRoute.value.query.run,
+  run => {
+    if (run === 'pull-all' && consumeAction(router, 'pull-all')) fetchAllSubscriptionsInBackground()
+  }
+)
 
 onUnmounted(() => {
   window.removeEventListener('resize', syncNarrow)
 })
 </script>
+
+<style scoped>
+.sub-sweep {
+  background: linear-gradient(90deg, transparent, var(--primary-accent), transparent);
+  animation: sub-sweep 1s linear infinite;
+}
+
+@keyframes sub-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+</style>

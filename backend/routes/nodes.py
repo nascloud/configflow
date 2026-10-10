@@ -92,3 +92,23 @@ def reorder_nodes():
         raise
     except Exception as exc:
         return jsonify({'success': False, 'message': str(exc)}), 500
+
+
+@nodes_bp.route('/latency', methods=['GET', 'POST'])
+@require_auth
+def node_latency():
+    """节点延迟：GET 取最近结果，POST 发起测试（body.names 为空则测全部候选节点）"""
+    from backend.utils.node_latency import load_results, run_tests
+
+    if request.method == 'GET':
+        return jsonify({'success': True, 'results': load_results()})
+
+    payload = request.get_json(silent=True) or {}
+    names = payload.get('names')
+    if names is not None and (
+        not isinstance(names, list) or not all(isinstance(n, str) for n in names)
+    ):
+        return jsonify({'success': False, 'message': 'names 必须是字符串数组'}), 400
+
+    outcome = run_tests(names)
+    return jsonify({'success': True, **outcome})
