@@ -33,6 +33,25 @@ def handle_nodes():
         return jsonify({'success': True, 'data': node})
 
 
+@nodes_bp.route('/parse-lines', methods=['POST'])
+@require_auth
+def parse_node_lines():
+    """把 Surge / Loon / QX 等客户端的节点行（snell 等没有通用 URI 的协议）通过内置
+    Sub-Store 转成 mihomo 节点，供批量添加保存为结构化 YAML。"""
+    from backend.utils.sub_store_client import convert_proxy_string
+    data = request.get_json(silent=True)
+    lines = data.get('lines') if isinstance(data, dict) else None
+    if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+        return jsonify({'success': False, 'message': 'lines 必须是字符串数组'}), 400
+    if len(lines) > 500:
+        return jsonify({'success': False, 'message': '单次最多解析 500 行'}), 400
+    results = []
+    for line in lines:
+        proxy = convert_proxy_string(line.strip()) if line.strip() else None
+        results.append({'proxy': proxy} if proxy else {'error': '无法识别的节点格式'})
+    return jsonify({'success': True, 'results': results})
+
+
 @nodes_bp.route('/<node_id>', methods=['DELETE', 'PUT'])
 @require_auth
 def handle_node(node_id):
