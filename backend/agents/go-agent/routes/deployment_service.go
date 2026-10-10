@@ -621,8 +621,9 @@ func probeMihomoProxy(address, kind string) error {
 		}
 		return nil
 	}
-	// An invalid CONNECT authority is rejected locally by the HTTP proxy, avoiding
-	// reliance on any external host, provider or DNS route during this probe.
+	// Probe without a routable destination, so health does not depend on DNS or
+	// an external provider. Mihomo can acknowledge CONNECT before rejecting its
+	// invalid target; that acknowledgement still verifies the proxy handshake.
 	if _, e = io.WriteString(c, "CONNECT / HTTP/1.1\r\nHost: /\r\nConnection: close\r\n\r\n"); e != nil {
 		return e
 	}
@@ -631,8 +632,11 @@ func probeMihomoProxy(address, kind string) error {
 		return e
 	}
 	response.Body.Close()
-	if response.StatusCode != 400 && response.StatusCode != 403 && response.StatusCode != 405 && response.StatusCode != 407 {
-		return fmt.Errorf("unexpected HTTP proxy response")
+	// Do not accept a generic 200 OK from an unrelated HTTP server occupying
+	// the proxy port. Mihomo emits this specific CONNECT acknowledgement.
+	established := response.StatusCode == http.StatusOK && strings.EqualFold(response.Status, "200 Connection established")
+	if !established && response.StatusCode != 400 && response.StatusCode != 403 && response.StatusCode != 405 && response.StatusCode != 407 {
+		return fmt.Errorf("unexpected HTTP proxy response: %s", response.Status)
 	}
 	return nil
 }

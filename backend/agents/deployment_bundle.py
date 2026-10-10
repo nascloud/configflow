@@ -95,7 +95,7 @@ def _fetch_bytes(url, config):
             response.close()
 
 
-def materialize_rule(url, config, base_url, *, depth=0):
+def materialize_rule(url, config, base_url, *, depth=0, raw_mosdns=False):
     if depth > 3:
         raise DeploymentPreparationError('Recursive rule callback')
     parsed = urlsplit(url)
@@ -106,7 +106,9 @@ def materialize_rule(url, config, base_url, *, depth=0):
         original = parse_qs(parsed.query).get('url', [''])[0]
         if not original:
             raise DeploymentPreparationError('Rule conversion callback has no source')
-        return convert_mosdns_rules(materialize_rule(original, config, base_url, depth=depth + 1))
+        value = materialize_rule(original, config, base_url, depth=depth + 1, raw_mosdns=raw_mosdns)
+        # The final consuming plugin chooses domain/IP conversion for bundles.
+        return value if raw_mosdns else convert_mosdns_rules(value)
     rule = _local_rule(url, config, base_url)
     if rule is not None:
         if rule.get('source_type') == 'content':
@@ -114,12 +116,14 @@ def materialize_rule(url, config, base_url, *, depth=0):
         source = rule.get('url', '')
         if source == url:
             raise DeploymentPreparationError('Rule callback refers to itself')
-        return materialize_rule(source, config, base_url, depth=depth + 1)
+        return materialize_rule(source, config, base_url, depth=depth + 1, raw_mosdns=raw_mosdns)
     return _fetch_bytes(url, config)
 
 
-def convert_mosdns_rules(content):
-    """Convert supported textual sources; reject invalid/binary source formats."""
+def convert_mosdns_rules(content, rule_type='domain_set'):
+    """Convert text for the final MosDNS domain_set or ip_set consumer."""
+    if rule_type not in ('domain_set', 'ip_set'):
+        raise DeploymentPreparationError('Unsupported MosDNS rule plugin type')
     try:
         text = content.decode('utf-8-sig')
     except UnicodeError:
@@ -141,18 +145,32 @@ def convert_mosdns_rules(content):
         line = line.strip()
         if not line or line.startswith('#'):
             continue
-        if re.match(r'^(domain|full|keyword|regexp|ip):', line):
+        if rule_type == 'ip_set':
+            if re.match(r'^(domain|full|keyword|regexp):', line):
+                continue
+            value = line[3:].strip() if line.startswith('ip:') else line
+            if ',' in line:
+                kind, value, *_ = [part.strip() for part in line.split(',')]
+                if kind not in ('IP-CIDR', 'IP-CIDR6'):
+                    continue
+            try:
+                ipaddress.ip_network(value, strict=False)
+            except ValueError:
+                raise DeploymentPreparationError('Invalid IP network in MosDNS ip_set rule source') from None
+            converted.append(value)
+            continue
+        if line.startswith('ip:'):
+            continue
+        if re.match(r'^(domain|full|keyword|regexp):', line):
             converted.append(line)
         elif ',' in line:
-            kind, value, *_ = [part.strip() for part in line.split(',')]
+            # Match the existing rule-proxy conversion, including commas inside
+            # DOMAIN-REGEX expressions such as repetition bounds {1,3}.
+            kind, value = [part.strip() for part in line.split(',', 1)]
             if kind in mapping:
                 converted.append(f'{mapping[kind]}:{value}')
-            elif kind in ('IP-CIDR', 'IP-CIDR6'):
-                try:
-                    ipaddress.ip_network(value, strict=False)
-                except ValueError:
-                    raise DeploymentPreparationError('Invalid IP network in rule source') from None
-                converted.append(value)
+            # Domain consumers omit IP/process rules, as rule-proxy did for
+            # Clash input. In particular, a bare IPv6 CIDR cannot load in domain_set.
         elif line.startswith('+.'):
             converted.append('domain:' + line[2:])
         elif line.startswith('*.'):
@@ -162,7 +180,7 @@ def convert_mosdns_rules(content):
         else:
             try:
                 ipaddress.ip_network(line, strict=False)
-                converted.append(line)
+                # Raw address/CIDR lists must not reach a domain_set either.
             except ValueError:
                 if '.' not in line or any(c.isspace() for c in line) or '<' in line or '>' in line:
                     raise DeploymentPreparationError('Unrecognized MosDNS rule source content') from None
@@ -180,6 +198,20 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
     main = yaml.safe_load(config_content)
     if not isinstance(main, dict):
         raise DeploymentPreparationError('Generated configuration must be a YAML mapping')
+    rule_types = {}
+    if service == 'mosdns':
+        for plugin in main.get('plugins', []):
+            rule_type = plugin.get('type')
+            if rule_type not in ('domain_set', 'ip_set'):
+                continue
+            args = plugin.get('args') or {}
+            if not isinstance(args, dict) or not isinstance(args.get('files', []), list):
+                raise DeploymentPreparationError('MosDNS file references must be a list')
+            for reference in args.get('files', []):
+                path = relative_path(reference)
+                if path in rule_types and rule_types[path] != rule_type:
+                    raise DeploymentPreparationError('MosDNS file is used by both domain_set and ip_set: ' + path)
+                rule_types[path] = rule_type
     files = {}
 
     def add(path, value, role):
@@ -187,6 +219,8 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
         value = value.encode('utf-8') if isinstance(value, str) else value
         if not isinstance(value, bytes):
             raise DeploymentPreparationError('Missing deployment file content')
+        if path in rule_types:
+            value = convert_mosdns_rules(value, rule_types[path])
         if len(value) > MAX_FILE_BYTES:
             raise DeploymentPreparationError('Deployment file exceeds size limit')
         if path in files:
@@ -220,7 +254,8 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
             downloads.append({'name': name, 'url': definition['url'], 'local_path': path})
     def download(item):
         try:
-            value = materialize_rule(item.get('url', ''), config, base_url)
+            value = materialize_rule(item.get('url', ''), config, base_url,
+                                     raw_mosdns=relative_path(item['local_path']) in rule_types)
         except DeploymentPreparationError as exc:
             raise DeploymentPreparationError(f"Rule {item.get('name', 'unnamed')}: {exc}") from None
         return item, value
