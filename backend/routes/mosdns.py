@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from flask import request, jsonify
 
 from backend.converters.mihomo import apply_github_proxy_domain
+from backend.converters.mosdns import RULE_PARTS, convert_rule_content_for_mosdns
 from backend.routes import mosdns_bp as bp
 from backend.common.auth import require_auth
 from backend.common.config import get_config, save_config
@@ -479,10 +480,14 @@ def mosdns_rule_proxy():
        - example.com → full:example.com (精确匹配)
        - ip -> ip
 
-    注意：如果内容已经是 mosdns 格式，则直接返回，不进行转换
+    3. part 参数（可选）：
+       - 不传：兼容旧行为，域名规则 + 裸 IP 行
+       - domain：只返回域名规则（domain_set）
+       - ip：只返回 IP/CIDR，含 Clash 的 IP-CIDR/IP-CIDR6（ip_set）
+
+    注意：如果内容已经是 mosdns 格式，则只按 part 过滤，不进行转换
     """
     try:
-        import re
         import requests
 
         config_data = get_config()
@@ -493,6 +498,9 @@ def mosdns_rule_proxy():
         original_url = request.args.get('url')
         if not original_url:
             return jsonify({'success': False, 'message': 'URL parameter is required'}), 400
+        part = request.args.get('part') or None
+        if part is not None and part not in RULE_PARTS:
+            return jsonify({'success': False, 'message': 'Invalid part parameter'}), 400
 
         original_content = _local_content_rule(original_url, config_data)
         if original_content is None:
@@ -511,126 +519,8 @@ def mosdns_rule_proxy():
                 if not original_content:
                     return jsonify({'success': False, 'message': 'Failed to fetch original URL'}), 500
 
-        # 检测内容格式
-        # 如果内容已经是 mosdns 格式，则直接返回
-        # mosdns 格式特征：domain:xxx / full:xxx / keyword:xxx / regexp:xxx
-        is_mosdns_format = False
-        is_yaml_format = False
-        sample_lines = []
-
-        # 检查是否是 YAML 格式
-        if 'payload:' in original_content:
-            is_yaml_format = True
-        else:
-            for line in original_content.split('\n')[:20]:  # 检查前20行
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                sample_lines.append(line)
-
-                # 检查是否是 mosdns 格式（使用冒号分隔）
-                if ':' in line:
-                    parts = line.split(':', 1)
-                    if len(parts) == 2:
-                        rule_type = parts[0].strip().lower()
-                        # mosdns 支持的规则类型
-                        if rule_type in ['domain', 'full', 'keyword', 'regexp', 'ip']:
-                            is_mosdns_format = True
-                            break
-
-        # 如果已经是 mosdns 格式，直接返回原内容
-        if is_mosdns_format:
-            return original_content, 200, {'Content-Type': 'text/plain; charset=utf-8'}
-
-        # 准备规则行列表
-        rule_lines = []
-
-        # 如果是 YAML 格式，解析 payload
-        if is_yaml_format:
-            import yaml
-            try:
-                data = yaml.safe_load(original_content)
-                if data and 'payload' in data:
-                    rule_lines = data['payload']
-            except Exception as e:
-                # YAML 解析失败，尝试按文本方式处理
-                logger.warning(f"Failed to parse YAML, falling back to text mode: {str(e)}")
-                is_yaml_format = False
-
-        # 如果不是 YAML 格式或 YAML 解析失败，按文本行处理
-        if not is_yaml_format:
-            rule_lines = original_content.split('\n')
-
-        # 进行格式转换（Clash/List -> mosdns）
-        converted_lines = []
-        for line in rule_lines:
-            # 如果是字符串，去除空白；如果不是，跳过
-            if isinstance(line, str):
-                line = line.strip()
-            else:
-                continue
-
-            # 跳过空行和注释
-            if not line or line.startswith('#'):
-                continue
-
-            # 检测并转换 Clash 格式（包含逗号）
-            if ',' in line:
-                parts = line.split(',', 1)
-                if len(parts) == 2:
-                    rule_type = parts[0].strip()
-                    value = parts[1].strip()
-
-                    # 转换规则类型（Clash -> mosdns，mosdns 用冒号）
-                    if rule_type == 'DOMAIN-SUFFIX':
-                        converted_lines.append(f"domain:{value}")
-                    elif rule_type == 'DOMAIN':
-                        converted_lines.append(f"full:{value}")
-                    elif rule_type == 'DOMAIN-KEYWORD':
-                        converted_lines.append(f"keyword:{value}")
-                    elif rule_type == 'DOMAIN-REGEX':
-                        converted_lines.append(f"regexp:{value}")
-                    # 其他类型的规则被移除（不添加到结果中）
-
-            # 检测并转换 List 格式（通配符格式）
-            else:
-                # +.example.com → domain:example.com (匹配域名及所有子域名)
-                if line.startswith('+.'):
-                    domain = line[2:]  # 移除 +. 前缀
-                    converted_lines.append(f"domain:{domain}")
-
-                # .example.com → regexp:.+\.example\.com$ (仅匹配子域名，不匹配域名本身)
-                elif line.startswith('.') and not line.startswith('..'):
-                    domain = line[1:]  # 移除 . 前缀
-                    # 转义域名中的点号，构造正则表达式
-                    escaped_domain = re.escape(domain)
-                    converted_lines.append(f"regexp:.+\\.{escaped_domain}$")
-
-                # *.example.com → regexp:^[^.]+\.example\.com$ (仅匹配直接子域名)
-                elif line.startswith('*.'):
-                    domain = line[2:]  # 移除 *. 前缀
-                    # 转义域名中的点号，构造正则表达式
-                    escaped_domain = re.escape(domain)
-                    converted_lines.append(f"regexp:^[^.]+\\.{escaped_domain}$")
-
-                # example.com → full:example.com (精确匹配)
-                # 但如果是 IP 地址，则保持原样
-                else:
-                    # 检查是否是 IP 地址（支持 IPv4、IPv6 和 CIDR）
-                    try:
-                        import ipaddress
-                        # 尝试解析为 IP 地址或 CIDR 网段
-                        ipaddress.ip_network(line, strict=False)
-                        # 如果是 IP 地址
-                        converted_lines.append(line)
-                    except ValueError:
-                        # 不是有效的 IP 地址，当作域名处理
-                        # 验证是否是有效域名（简单检查）
-                        if '.' in line and not line.startswith('.') and not line.endswith('.'):
-                            converted_lines.append(f"full:{line}")
-
-        # 返回转换后的内容
-        converted_content = '\n'.join(converted_lines)
+        # 格式转换（Clash/List/YAML -> mosdns），按 part 拆分域名 / IP
+        converted_content = convert_rule_content_for_mosdns(original_content, part)
         return converted_content, 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
     except ValueError as e:

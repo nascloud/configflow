@@ -171,16 +171,202 @@ def split_rules_and_rulesets(config_data: Dict[str, Any]) -> tuple:
     return rules, rule_sets
 
 
-def _build_rule_proxy_url(config_data: Dict[str, Any], effective_base_url: str, url: str) -> str:
+def _build_rule_proxy_url(config_data: Dict[str, Any], effective_base_url: str, url: str,
+                          part: str = None) -> str:
     endpoint = profile_api_path(config_data, '/mosdns/rule-proxy')
     if endpoint == '/mosdns/rule-proxy':
         endpoint = f'/api{endpoint}'
     query = {'url': url}
+    if part:
+        query['part'] = part
     rule_proxy_token = config_data.get('system_config', {}).get('rule_proxy_token', '')
     if not isinstance(rule_proxy_token, str) or not rule_proxy_token:
         raise ValueError('MosDNS rule proxy requires a rule proxy token')
     query['token'] = rule_proxy_token
     return append_url_query(f"{effective_base_url}{endpoint}", query)
+
+
+RULE_PART_DOMAIN = 'domain'
+RULE_PART_IP = 'ip'
+RULE_PARTS = (RULE_PART_DOMAIN, RULE_PART_IP)
+
+_MOSDNS_DOMAIN_PREFIXES = ('domain', 'full', 'keyword', 'regexp')
+_CLASH_DOMAIN_PREFIXES = {
+    'DOMAIN-SUFFIX': 'domain',
+    'DOMAIN': 'full',
+    'DOMAIN-KEYWORD': 'keyword',
+    'DOMAIN-REGEX': 'regexp',
+}
+_CLASH_IP_TYPES = ('IP-CIDR', 'IP-CIDR6')
+
+
+def _is_ip_or_cidr(value: str) -> bool:
+    import ipaddress
+    try:
+        ipaddress.ip_network(value, strict=False)
+        return True
+    except ValueError:
+        return False
+
+
+def _ruleset_parts(behavior: str) -> List[str]:
+    """规则集在 MosDNS 中需要拆出的文件部分：classical 混合规则集拆成域名 + IP 两份"""
+    if behavior == 'ipcidr':
+        return [RULE_PART_IP]
+    if behavior == 'classical':
+        return [RULE_PART_DOMAIN, RULE_PART_IP]
+    return [RULE_PART_DOMAIN]
+
+
+def _ruleset_local_path(rule_set: Dict[str, Any], part: str) -> str:
+    # 混合规则集的 IP 部分单独落盘，域名部分沿用原文件名保持兼容
+    suffix = '_ip' if part == RULE_PART_IP and rule_set.get('behavior') == 'classical' else ''
+    return f"./rules/{rule_set['name']}{suffix}.txt"
+
+
+def _ruleset_ip_tag(rule_set: Dict[str, Any], ruleset_tag: str) -> str:
+    return f"{ruleset_tag}_ip" if rule_set.get('behavior') == 'classical' else ruleset_tag
+
+
+def _ruleset_files(config_data: Dict[str, Any], effective_base_url: str,
+                   rule_set: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """规则集需要的本地文件及其下载地址（rule-proxy 会转换为 MosDNS 文本格式）"""
+    behavior = rule_set.get('behavior', 'domain')
+    url = rule_set.get('url', '')
+    # 如果 URL 是相对路径，动态拼接 server_domain
+    if url and url.startswith('/') and effective_base_url:
+        url = f"{effective_base_url}{url}"
+
+    files = []
+    for part in _ruleset_parts(behavior):
+        download_url = None
+        if url:
+            download_url = _build_rule_proxy_url(
+                config_data, effective_base_url, url,
+                # 纯域名规则集保持旧 URL，不带 part 参数
+                part=None if behavior not in ('ipcidr', 'classical') else part,
+            )
+        files.append({
+            'part': part,
+            'url': download_url,
+            'local_path': _ruleset_local_path(rule_set, part),
+        })
+    return files
+
+
+def _join_rule_lines(lines: List[str], part: str = None) -> str:
+    # 拆分后某部分为空时（如混合规则集没有 IP 行）返回注释行：
+    # Agent 预获取把空内容视为失败并回退到 URL 下载，非空可直接落盘；MosDNS 会忽略注释
+    if not lines and part:
+        return f"# no {part} rules"
+    return '\n'.join(lines)
+
+
+def convert_rule_content_for_mosdns(content: str, part: str = None) -> str:
+    """把 Clash / List / YAML payload 规则转换为 MosDNS 文本格式
+
+    part:
+        None     兼容旧行为：域名规则 + 裸 IP 行（Clash 的 IP-CIDR 行丢弃）
+        'domain' 只输出域名规则（domain_set 使用）
+        'ip'     只输出 IP/CIDR（ip_set 使用），包括 Clash 的 IP-CIDR/IP-CIDR6
+    """
+    import re
+
+    want_domain = part in (None, RULE_PART_DOMAIN)
+    want_ip = part in (None, RULE_PART_IP)
+    want_clash_ip = part == RULE_PART_IP
+
+    # 已经是 mosdns 格式（domain:/full:/keyword:/regexp:）时只按 part 过滤
+    is_mosdns_format = False
+    is_yaml_format = 'payload:' in content
+    if not is_yaml_format:
+        sample_count = 0
+        for line in content.split('\n'):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            sample_count += 1
+            if sample_count > 20:
+                break
+            if ':' in line:
+                prefix = line.split(':', 1)[0].strip().lower()
+                if prefix in _MOSDNS_DOMAIN_PREFIXES or prefix == 'ip':
+                    is_mosdns_format = True
+                    break
+
+    if is_mosdns_format:
+        if part is None:
+            return content
+        kept = []
+        for line in content.split('\n'):
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            if _is_ip_or_cidr(stripped):
+                if want_ip:
+                    kept.append(stripped)
+            elif want_domain:
+                kept.append(stripped)
+        return _join_rule_lines(kept, part)
+
+    rule_lines = []
+    if is_yaml_format:
+        try:
+            data = yaml.safe_load(content)
+            if isinstance(data, dict) and 'payload' in data:
+                rule_lines = data['payload'] or []
+            else:
+                is_yaml_format = False
+        except Exception:
+            # YAML 解析失败，按文本方式处理
+            is_yaml_format = False
+    if not is_yaml_format:
+        rule_lines = content.split('\n')
+
+    converted = []
+    for line in rule_lines:
+        if not isinstance(line, str):
+            continue
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+
+        if ',' in line:
+            # Clash 格式：TYPE,value[,no-resolve / 策略]
+            fields = [field.strip() for field in line.split(',')]
+            rule_type, value = fields[0].upper(), fields[1]
+            if not value:
+                continue
+            if rule_type in _CLASH_DOMAIN_PREFIXES:
+                if want_domain:
+                    converted.append(f"{_CLASH_DOMAIN_PREFIXES[rule_type]}:{value}")
+            elif rule_type in _CLASH_IP_TYPES:
+                if want_clash_ip and _is_ip_or_cidr(value):
+                    converted.append(value)
+            # 其他类型（GEOIP/PROCESS-NAME 等）MosDNS 无法表达，丢弃
+            continue
+
+        # List 格式
+        if _is_ip_or_cidr(line):
+            if want_ip:
+                converted.append(line)
+            continue
+        if not want_domain:
+            continue
+        if line.startswith('+.'):
+            # +.example.com → 匹配域名及所有子域名
+            converted.append(f"domain:{line[2:]}")
+        elif line.startswith('.') and not line.startswith('..'):
+            # .example.com → 仅匹配子域名
+            converted.append(f"regexp:.+\\.{re.escape(line[1:])}$")
+        elif line.startswith('*.'):
+            # *.example.com → 仅匹配直接子域名
+            converted.append(f"regexp:^[^.]+\\.{re.escape(line[2:])}$")
+        elif '.' in line and not line.endswith('.'):
+            # example.com → 精确匹配
+            converted.append(f"full:{line}")
+
+    return _join_rule_lines(converted, part)
 
 
 def parse_dns_upstreams(dns_config: str) -> List[Dict[str, Any]]:
@@ -336,22 +522,15 @@ def get_mosdns_ruleset_downloads(config_data: Dict[str, Any], base_url: str = ''
         if rule_set_id not in configured_ruleset_ids:
             continue
 
-        url = rule_set.get('url', '')
-
-        # 如果 URL 是相对路径，动态拼接 server_domain
-        if url and url.startswith('/') and effective_base_url:
-            url = f"{effective_base_url}{url}"
-
-        # 构建下载 URL（使用代理接口）
         # rule-proxy 会将所有格式转换为 MosDNS 文本格式，所以始终使用 .txt 扩展名
-        if url:
-            download_url = _build_rule_proxy_url(config_data, effective_base_url, url)
-
-            downloads.append({
-                'name': rule_set['name'],
-                'url': download_url,
-                'local_path': f"./rules/{rule_set['name']}.txt"
-            })
+        # 混合规则集会拆成域名、IP 两个文件
+        for ruleset_file in _ruleset_files(config_data, effective_base_url, rule_set):
+            if ruleset_file['url']:
+                downloads.append({
+                    'name': rule_set['name'],
+                    'url': ruleset_file['url'],
+                    'local_path': ruleset_file['local_path']
+                })
 
     return downloads
 
@@ -622,55 +801,26 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
         if not rule_set or not rule_set.get('enabled', True):
             continue
 
-        behavior = rule_set.get('behavior', 'domain')
-        url = rule_set.get('url', '')
-
-        # 如果 URL 是相对路径，动态拼接 server_domain
-        if url and url.startswith('/') and effective_base_url:
-            url = f"{effective_base_url}{url}"
-
-        # 使用代理接口转换规则格式
-        # rule-proxy 会将所有格式转换为 MosDNS 文本格式，所以始终使用 .txt 扩展名
-        if url:
-            # 构建代理 URL - 用于下载规则文件
-            download_url = _build_rule_proxy_url(config_data, effective_base_url, url)
-        else:
-            download_url = None
-
-        # 使用本地文件路径
-        # Agent 会将规则文件下载到这个路径
-        local_path = f"./rules/{rule_set['name']}.txt"
-
-        # 保存下载信息（可以在返回值中包含这些信息，供 agent 使用）
-        if download_url:
-            ruleset_downloads.append({
-                'name': rule_set['name'],
-                'url': download_url,
-                'local_path': local_path
-            })
-
         ruleset_tag = ruleset_tag_map.get(
             rule_set_id,
             (rule_set.get('name') or _normalize_ruleset_id(rule_set_id))
         )
 
-        # 为每个规则集创建独立的插件
-        if behavior == 'ipcidr':
-            # IP 类型规则集
+        # 为每个规则集创建独立的插件（Agent 会将规则文件下载到 local_path）
+        # 混合规则集（classical）拆成 domain_set + ip_set，IP 部分 tag 加 _ip 后缀
+        for ruleset_file in _ruleset_files(config_data, effective_base_url, rule_set):
+            if ruleset_file['url']:
+                ruleset_downloads.append({
+                    'name': rule_set['name'],
+                    'url': ruleset_file['url'],
+                    'local_path': ruleset_file['local_path']
+                })
+            is_ip = ruleset_file['part'] == RULE_PART_IP
             plugins.append({
-                'tag': ruleset_tag,
-                'type': 'ip_set',
+                'tag': _ruleset_ip_tag(rule_set, ruleset_tag) if is_ip else ruleset_tag,
+                'type': 'ip_set' if is_ip else 'domain_set',
                 'args': {
-                    'files': [local_path]
-                }
-            })
-        else:
-            # 域名类型规则集
-            plugins.append({
-                'tag': ruleset_tag,
-                'type': 'domain_set',
-                'args': {
-                    'files': [local_path]
+                    'files': [ruleset_file['local_path']]
                 }
             })
 
@@ -1039,6 +1189,16 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
     rule_sets_map = {rs.get('id'): rs for rs in rule_sets_list}
 
     rule_match_entries: List[Dict[str, Any]] = []
+    # IP 类匹配（规则集 / 混合规则集的 IP 部分 / 单条 IP 规则），按规则顺序收集，
+    # 统一放到域名匹配之后、默认转发之前，基于国内 DNS 的应答 IP 判断
+    ip_match_entries: List[Dict[str, Any]] = []
+
+    def _ip_match_entry(ip_tag: str, is_direct: bool) -> Dict[str, Any]:
+        return {
+            'matches': [f"resp_ip ${ip_tag}"],
+            # 命中直连 IP 直接采用国内应答；命中代理 IP 丢弃应答改走国外 DNS
+            'exec': 'accept' if is_direct else 'goto ip_requery_proxy'
+        }
 
     # 记录头部自定义 match 的插入位置（在 custom_hosts 之后）
     head_match_insert_index = len(sequence)
@@ -1064,10 +1224,14 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
                 item_id,
                 (rule_set.get('name') or _normalize_ruleset_id(item_id))
             )
-            if behavior == 'ipcidr':
-                # IP 类规则集在主序列中无效：此处尚未向上游查询，
-                # 没有响应可供 resp_ip 匹配，规则永远不会命中。
-                # IP 维度的分流由 Mihomo 的 IP 规则负责，此处跳过。
+            is_direct_ruleset = item_id in direct_ruleset_ids
+            if not (is_direct_ruleset or item_id in proxy_ruleset_ids):
+                continue
+            if RULE_PART_IP in _ruleset_parts(behavior):
+                ip_match_entries.append(
+                    _ip_match_entry(_ruleset_ip_tag(rule_set, tag), is_direct_ruleset)
+                )
+            if RULE_PART_DOMAIN not in _ruleset_parts(behavior):
                 continue
             match_expr = f"qname ${tag}"
 
@@ -1100,10 +1264,9 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
             # 标记为已添加
             added_merged_tags.add(rule_tag)
 
-            # IP 类规则在主序列中无效：此处尚未向上游查询，
-            # 没有响应可供 resp_ip 匹配，规则永远不会命中。
-            # IP 维度的分流由 Mihomo 的 IP 规则负责，此处跳过。
+            # IP 类规则需要应答 IP，延后到 IP 匹配阶段
             if 'ip_rules' in rule_tag:
+                ip_match_entries.append(_ip_match_entry(rule_tag, rule_tag == 'direct_ip_rules'))
                 continue
 
             # 域名规则使用 qname
@@ -1131,10 +1294,36 @@ def generate_mosdns_config(config_data: Dict[str, Any], base_url: str = '') -> s
         sequence.extend(rule_match_entries)
         sequence.extend(parsed_custom_matches)
 
-    # 第五步：默认转发
+    default_forward = mosdns_config_data.get('default_forward', 'forward_remote')
+
+    # 第五步：IP 匹配
+    # 域名规则都未命中时，先用国内 DNS 解析，再按应答 IP 依次匹配 IP 规则：
+    # 命中直连 IP 采用国内应答，命中代理 IP 改走国外 DNS 重新解析
+    if ip_match_entries:
+        plugins.append({
+            'tag': 'ip_requery_proxy',
+            'type': 'sequence',
+            'args': [
+                {'exec': 'drop_resp'},
+                {'exec': 'goto proxy_dns_seq'}
+            ]
+        })
+        sequence.append({'exec': 'query_summary forward_local'})
+        sequence.append({'exec': '$forward_local'})
+        sequence.extend(ip_match_entries)
+        if default_forward == 'forward_local':
+            # 已有国内应答，无需再查一次
+            sequence.append({
+                'matches': ['has_resp'],
+                'exec': 'accept'
+            })
+        else:
+            # 未命中任何 IP 规则，丢弃国内应答，交给默认的国外 DNS
+            sequence.append({'exec': 'drop_resp'})
+
+    # 第六步：默认转发
     # 如果前面的规则都不匹配，则使用此默认规则
     # 这确保所有查询都能得到响应（从嵌套结构中读取）
-    default_forward = mosdns_config_data.get('default_forward', 'forward_remote')
 
     # 根据配置使用不同的默认转发策略
     if default_forward == 'forward_local':
