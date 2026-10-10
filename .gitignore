@@ -59,3 +59,6 @@ private_key.pem
 /backend/agents/go-agent/config.test.json
 /backend/agents/go-agent/test_local.sh
 /backend/agents/go-agent/test_metrics.go
+
+.bosun-uploads/
+/providers/
