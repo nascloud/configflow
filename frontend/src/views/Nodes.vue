@@ -118,8 +118,9 @@
           <TableHead>名称</TableHead>
           <TableHead class="w-28">协议</TableHead>
           <TableHead>地址</TableHead>
+          <TableHead class="w-24 text-right">延迟</TableHead>
           <TableHead class="w-40">来源</TableHead>
-          <TableHead class="w-32 text-right">操作</TableHead>
+          <TableHead class="w-40 text-right">操作</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody ref="nodesContainer">
@@ -169,11 +170,31 @@
             <Badge variant="outline" class="font-mono text-[10.5px]">{{ nodeProtocol(node) }}</Badge>
           </TableCell>
           <TableCell class="font-mono text-[12px] text-muted-foreground">{{ nodeAddress(node) }}</TableCell>
+          <TableCell
+            :class="cn('num text-right font-mono text-[12px] transition-colors', latencyTone(node.name), flashNames.has(node.name) && 'bg-primary-soft/40')"
+            :title="testedAtLabel(node.name)"
+          >
+            <Loader2 v-if="testingNames.has(node.name)" class="ml-auto size-3.5 animate-spin text-muted-foreground" />
+            <span v-else-if="unresolvedNames.has(node.name)" class="text-muted-foreground" title="无法从节点字符串解析出地址和端口">无法解析</span>
+            <span v-else-if="latencyOf(node.name) === undefined" class="text-muted-foreground">未测速</span>
+            <template v-else-if="latencyOf(node.name) === null">超时</template>
+            <template v-else>{{ latencyOf(node.name) }}<small class="ml-0.5 text-[10.5px] text-muted-foreground">ms</small></template>
+          </TableCell>
           <TableCell class="truncate text-[12.5px] text-muted-foreground">
             {{ node.subscription_name || '手动添加' }}
           </TableCell>
           <TableCell class="cf-reorder-mute text-right">
             <div class="flex items-center justify-end gap-0.5">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                :aria-label="`单独测速 ${node.name}`"
+                title="单独测速"
+                :disabled="testing || !node.enabled"
+                @click="testOne(node)"
+              >
+                <Zap class="size-4" />
+              </Button>
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -329,7 +350,8 @@
 
         <div class="cf-reorder-mute mt-3 flex items-end justify-between gap-2">
           <span :class="cn('font-display text-[26px] leading-none font-medium tracking-[-0.02em]', latencyTone(node.name))">
-            <template v-if="latencyOf(node.name) === undefined"><span class="text-[18px] text-muted-foreground">未测速</span></template>
+            <template v-if="unresolvedNames.has(node.name)"><span class="text-[18px] text-muted-foreground" title="无法从节点字符串解析出地址和端口">无法解析</span></template>
+            <template v-else-if="latencyOf(node.name) === undefined"><span class="text-[18px] text-muted-foreground">未测速</span></template>
             <template v-else-if="latencyOf(node.name) === null">超时</template>
             <template v-else>{{ latencyOf(node.name) }}<small class="ml-0.5 font-mono text-[10.5px] text-muted-foreground">ms</small></template>
           </span>
@@ -466,6 +488,7 @@ import {
   EyeOff,
   FilePlus2,
   Link2,
+  Loader2,
   MoreHorizontal,
   Network,
   Pencil,
@@ -1273,9 +1296,15 @@ const latencyMap = ref<Record<string, LatencyRecord>>({})
 const testing = ref(false)
 const testingNames = ref<Set<string>>(new Set())
 const flashNames = ref<Set<string>>(new Set())
+/** 最近一次测速中服务端解析不出 server:port 的节点 */
+const unresolvedNames = ref<Set<string>>(new Set())
 const viewingNode = ref<any>(null)
 
 const latencyOf = (name: string): number | null | undefined => latencyMap.value[name]?.latency
+const testedAtLabel = (name: string): string | undefined => {
+  const at = latencyMap.value[name]?.tested_at
+  return at ? `测于 ${new Date(at).toLocaleString()}` : undefined
+}
 const latencyTone = (name: string): string => {
   const v = latencyOf(name)
   if (v === undefined) return ''
@@ -1308,15 +1337,22 @@ const runLatency = async (targets: any[]) => {
     const { data } = await nodeApi.testLatency(names)
     const results: Record<string, LatencyRecord> = data?.results || {}
     const missing: string[] = data?.missing || []
+    const unresolved = new Set(unresolvedNames.value)
+    names.forEach(name => unresolved.delete(name))
+    missing.forEach(name => unresolved.add(name))
+    unresolvedNames.value = unresolved
     const grid = nodesContainer.value
     const cols = Math.max(1, Math.round((grid?.clientWidth || 222) / 222))
-    const order = tileNodes.value.map(n => n.name)
+    const order = (effectiveView.value === 'list' ? visibleNodes.value : tileNodes.value).map(n => n.name)
     await Promise.all(
       names.map(
         name =>
           new Promise<void>(resolve => {
             const i = Math.max(0, order.indexOf(name))
-            const delay = 120 + Math.hypot(Math.floor(i / cols), i % cols) * 110
+            // 表格按行依次揭晓（封顶避免长列表等太久）；磁贴按网格距离波纹式揭晓
+            const delay = effectiveView.value === 'list'
+              ? 120 + Math.min(i, 20) * 60
+              : 120 + Math.hypot(Math.floor(i / cols), i % cols) * 110
             window.setTimeout(() => {
               if (results[name]) latencyMap.value = { ...latencyMap.value, [name]: results[name] }
               const nextTesting = new Set(testingNames.value)
