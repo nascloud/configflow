@@ -24,8 +24,8 @@
           <Segmented
             block
             label="主题"
-            :model-value="theme"
-            :options="[{ value: 'dark', label: '炭黑' }, { value: 'light', label: '象牙' }]"
+            :model-value="preference"
+            :options="[{ value: 'system', label: '跟随系统' }, { value: 'dark', label: '炭黑' }, { value: 'light', label: '象牙' }]"
             @update:model-value="setTheme"
           />
         </div>
@@ -98,14 +98,14 @@ import { X } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import Segmented from '@/components/common/Segmented.vue'
 import { usePreferences, type AccentName } from '@/stores/preferences'
-import { useThemeStore, type ThemeMode } from '@/stores/theme'
+import { useThemeStore, type ThemePreference } from '@/stores/theme'
 
 defineProps<{ open: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const { prefs } = usePreferences()
-const { theme, setTheme: applyTheme } = useThemeStore()
-const setTheme = (mode: string) => applyTheme(mode as ThemeMode)
+const { preference, setTheme: applyTheme } = useThemeStore()
+const setTheme = (mode: string) => applyTheme(mode as ThemePreference)
 
 /* 色板只是预览色块，真实取值在 theme.css 的 data-accent 变体里 */
 const SWATCHES: Array<{ value: AccentName; label: string; color: string }> = [
