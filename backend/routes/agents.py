@@ -6,9 +6,11 @@ import hmac
 import json
 import math
 import os
+from urllib.parse import urlsplit, urlunsplit
 from flask import request, jsonify, send_file
 
 from backend.agents.config_generator import generate_agent_config
+from backend.agents.manager import AgentDeploymentConflict
 from backend.agents.version import (
     LATEST_AGENT_VERSION,
     compare_versions,
@@ -27,6 +29,7 @@ from backend.common.utils import str_to_bool
 from backend.utils.logger import get_logger
 from backend.utils.url_utils import safe_url_for_log
 from backend.utils.strategy_references import StrategyReferenceError
+from backend.utils.rule_fetch import is_internal_rule_url, request_rule
 
 logger = get_logger(__name__)
 
@@ -140,7 +143,7 @@ def get_install_script():
         from backend.agents.install_script import generate_lightweight_install_script
 
         # 获取参数
-        agent_name = request.args.get('name', 'My Agent')
+        agent_name = request.args.get('name', 'My-Agent')
         service_type = request.args.get('type', 'mihomo')
         agent_port = request.args.get('port', 8080, type=int)
         agent_ip = request.args.get('agent_ip', '').strip()  # 可选的 Agent IP
@@ -202,11 +205,18 @@ def get_install_script():
                 agent_ip=agent_ip,
                 config_path=config_path,
                 restart_command=restart_command,
-                binary_download_url=binary_download_url
+                binary_download_url=binary_download_url,
+                **{key: request.args.get(key, '').strip() for key in (
+                    'service_manager', 'service_unit', 'service_binary', 'stop_command',
+                    'start_command', 'status_command', 'health_url', 'health_dns_address', 'health_dns_name')},
+                deployment_health_timeout=request.args.get('deployment_health_timeout', 30, type=int),
             )
 
         logger.info(f"安装脚本生成成功，长度: {len(script)} 字符")
         return script, 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
 
     except FileNotFoundError as e:
         import traceback
@@ -455,6 +465,8 @@ def handle_agent_item(agent_id):
                 return jsonify({'success': True, 'data': result}), 200
             else:
                 return jsonify({'success': False, 'message': 'Agent not found'}), 404
+        except AgentDeploymentConflict as exc:
+            return jsonify({'success': False, 'message': str(exc)}), 409
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -671,7 +683,7 @@ def get_docker_agent_run():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
-def _prefetch_download_contents(downloads, base_url, *, validation_urls=()):
+def _prefetch_download_contents(downloads, base_url, *, validation_urls=(), config_data=None):
     """预获取所有下载项的文件内容，写入 item['content']
 
     Args:
@@ -683,18 +695,40 @@ def _prefetch_download_contents(downloads, base_url, *, validation_urls=()):
 
     import requests
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    if config_data is None:
+        from backend.common.config import get_system_config
+        config_data = get_system_config()
+    # Capture the callback origin before entering workers, which have no Flask
+    # request context. Only known API callbacks receive the loopback rewrite.
+    callback_settings = dict(config_data.get('system_config', {}))
+    if base_url:
+        callback_settings['server_domain'] = base_url
+    callback_config = {'system_config': callback_settings}
+    callback_base = callback_settings.get('server_domain', '')
 
     def fetch_one(item):
         url = item.get('url', '')
         if not url:
             return
         try:
-            # Backend 自身 URL：替换为内部地址避免外部网络绕行
-            fetch_url = url
-            if base_url and url.startswith(base_url):
-                fetch_url = url.replace(base_url, 'http://127.0.0.1:5001', 1)
-
-            resp = requests.get(fetch_url, timeout=30)
+            if is_internal_rule_url(url, callback_config):
+                parsed = urlsplit(url)
+                prefix = urlsplit(callback_base).path.rstrip('/')
+                fetch_url = urlunsplit((
+                    'http', '127.0.0.1:5001', parsed.path[len(prefix):], parsed.query, '',
+                ))
+                internal_config = {'system_config': {
+                    **callback_settings, 'server_domain': 'http://127.0.0.1:5001',
+                }}
+                # This recognized callback is direct even when environment
+                # proxies are set; request_rule also contains its redirects.
+                resp = request_rule(fetch_url, timeout=30, config_data=internal_config)
+            elif url in validation_urls:
+                # Legacy provider prefetch keeps its existing transport; the
+                # rule-only setting must not affect subscription providers.
+                resp = requests.get(url, timeout=30)
+            else:
+                resp = request_rule(url, timeout=30, config_data=config_data)
             if resp.status_code == 400 and url in validation_urls:
                 raise StrategyReferenceError('Provider validation failed (HTTP 400)')
             resp.raise_for_status()
@@ -715,212 +749,137 @@ def _prefetch_download_contents(downloads, base_url, *, validation_urls=()):
 @bp.route('/<agent_id>/push-config', methods=['POST'])
 @require_auth
 def push_config_to_agent(agent_id):
-    """主动推送配置到 Agent"""
-    try:
-        logger.info(f"开始推送配置到 Agent: {agent_id}")
+    """Prepare one profile snapshot and publish a complete transactional archive."""
+    from copy import deepcopy
+    import uuid
+    import yaml
+    from backend.agents.deployment_bundle import build_deployment_bundle, DeploymentPreparationError
+    from backend.utils.provider_delivery import prepare_provider_bundle, commit_provider_bundle
 
-        agent_manager = get_agent_manager()
+    agent_manager = get_agent_manager()
+    deployment_id = None
+    owns_preparation = False
+    try:
         agent = agent_manager.get_agent_by_id(agent_id)
         if not agent:
-            logger.error(f"Agent not found: {agent_id}")
             return jsonify({'success': False, 'message': 'Agent not found'}), 404
-
-        # 获取 base_url（优先使用前端传递的，否则从请求头构建）
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'success': False, 'message': 'Expected a JSON object'}), 400
         base_url = data.get('base_url', '').strip()
-
         if not base_url:
-            # 如果前端没有传递，则从请求头构建
             scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
             host = request.headers.get('X-Forwarded-Host', request.host)
-            base_url = f"{scheme}://{host}"
-
-        logger.info(f"Agent: {agent.get('name')}, Service Type: {agent.get('service_type')}, Base URL: {safe_url_for_log(base_url)}")
-
+            base_url = f'{scheme}://{host}'
         profile_id = agent.get('profile_id', 'default')
         try:
-            config_data = get_config(profile_id)
+            config_data = deepcopy(get_config(profile_id))
         except ProfileRepositoryError as exc:
             return jsonify({'success': False, 'message': f'Agent profile unavailable: {exc}'}), 409
-
-        # 根据 service_type 生成配置
         service_type = agent.get('service_type', 'mihomo')
-        provider_downloads = []  # Provider 下载信息（Mihomo 需要）
-        ruleset_downloads = []  # 规则集下载信息（Mihomo 和 MosDNS 需要）
-        custom_files = []  # 自定义文件列表（仅 MosDNS 需要）
-
-        try:
-            if service_type == 'mihomo':
-                logger.info("生成 Mihomo 配置...")
-                # Agent 在局域网内，注入 MosDNS 自定义 Hosts 让内网域名直达；
-                # 订阅/下载配置（可能被在外设备使用）不注入
-                # Provider bytes are materialized once below and pass the same
-                # global bundle gate as converter preflight before publication.
-                config_content = generate_mihomo_config(config_data, base_url=base_url,
-                                                        sync_lan_hosts=True, preflight_providers=False)
-
-                # 获取 provider 下载信息
-                import yaml
-                provider_downloads = get_mihomo_provider_downloads(config_data, base_url=base_url,
-                                                                  main_config=yaml.safe_load(config_content))
-                logger.info(f"需要下载 {len(provider_downloads)} 个 provider 文件")
-
-                # 获取 ruleset 下载信息
-                ruleset_downloads = get_mihomo_ruleset_downloads(config_data, base_url=base_url)
-                logger.info(f"需要下载 {len(ruleset_downloads)} 个 ruleset 文件")
-            elif service_type == 'mosdns':
-                logger.info("生成 MosDNS 配置...")
-                config_content = generate_mosdns_config(config_data, base_url=base_url)
-
-                # 获取规则集下载信息
-                ruleset_downloads = get_mosdns_ruleset_downloads(config_data, base_url=base_url)
-                logger.info(f"需要下载 {len(ruleset_downloads)} 个规则集文件")
-
-                # 获取自定义文件列表（hosts 和单个规则）
-                custom_files = get_mosdns_custom_files(config_data)
-                logger.info(f"需要写入 {len(custom_files)} 个自定义文件")
-            elif service_type == 'surge':
-                logger.info("生成 Surge 配置...")
-                config_content = generate_surge_config(config_data, base_url=base_url)
-            else:
-                logger.error(f"Unsupported service type: {service_type}")
-                return jsonify({'success': False, 'message': f'Unsupported service type: {service_type}'}), 400
-
-            logger.info(f"配置生成成功，长度: {len(config_content)} 字符")
-        except StrategyReferenceError as gen_error:
-            return jsonify({'success': False, 'message': str(gen_error)}), 400
-        except Exception as gen_error:
-            import traceback
-            error_detail = traceback.format_exc()
-            logger.error(f"生成配置失败: {gen_error}")
-            logger.error(f"错误详情: {error_detail}")
-            return jsonify({'success': False, 'message': f'配置生成失败: {str(gen_error)}'}), 500
-
-        # Prepare actual provider bytes against the exact generated main graph.
-        # Do not HTTP-refetch our own routes with an independently resolved scope.
-        if service_type == 'mihomo' and provider_downloads:
-            import yaml
-            from backend.utils.provider_delivery import prepare_provider_bundle, commit_provider_bundle
-            bundle = prepare_provider_bundle(config_data, yaml.safe_load(config_content),
-                                             render_all=True, allow_transport_fallback=True)
-            commit_provider_bundle(profile_id, bundle)
-            provider_downloads = [{key: item[key] for key in ('name', 'url', 'local_path', 'content')}
-                                  for item in bundle]
-
-        # 预获取所有文件内容，随配置一起推送给 Agent（避免 Agent 逐个下载）
-        if ruleset_downloads:
-            server_domain = config_data.get('system_config', {}).get('server_domain', '').strip()
-            effective_base_url = server_domain or base_url
-            all_downloads = ruleset_downloads
-            logger.info(f"预获取 {len(all_downloads)} 个文件内容...")
-            _prefetch_download_contents(all_downloads, effective_base_url,
-                                        validation_urls={d['url'] for d in provider_downloads})
-            prefetched_count = sum(1 for d in all_downloads if d.get('content'))
-            logger.info(f"预获取完成: {prefetched_count}/{len(all_downloads)} 个文件成功")
-
-        # 推送到 Agent
-        logger.info(f"推送配置到 Agent: {agent.get('host')}:{agent.get('port')}")
-
-        # Agent 的配置更新是异步的：HTTP 200 只代表任务已启动，此时旧配置可能
-        # 已被清理而新配置尚未写入。因此重启交给 Agent 在落盘后自行执行，
-        # 服务端不再在收到响应后立即重启（那样会让服务读到不完整配置而启动失败）。
-        restart_requested = data.get('restart', True)
-        agent_version = agent.get('version') or ''
-        agent_supports_self_restart = _supports_self_restart(agent_version)
-
-        # 准备额外数据
-        extra_data = {}
-        if restart_requested and agent_supports_self_restart:
-            extra_data['restart_after_update'] = True
+        if service_type == 'surge':
+            content = generate_surge_config(config_data, base_url=base_url)
+            restart = data.get('restart', True)
+            self_restart = _supports_self_restart(agent.get('version') or '')
+            extra = {'restart_after_update': True} if restart and self_restart else None
+            result = agent_manager.push_config_to_agent(agent_id, content, extra_data=extra)
+            if result.get('success'):
+                result['profile_id'] = profile_id
+                if restart:
+                    result['restart'] = ({'success': True, 'message': 'Restart delegated to agent after config is written'}
+                                         if self_restart else agent_manager.restart_agent_service(agent_id))
+            return jsonify(result), 200 if result.get('success') else 500
+        if service_type not in ('mihomo', 'mosdns'):
+            return jsonify({'success': False, 'message': 'Unsupported service type'}), 400
+        activate = data.get('restart', True)
+        if not isinstance(activate, bool):
+            return jsonify({'success': False, 'message': 'restart must be a boolean'}), 400
+        deployment_id = data.get('deployment_id') or uuid.uuid4().hex
+        reservation = agent_manager.begin_deployment(agent_id, deployment_id)
+        if isinstance(reservation, dict):
+            if not reservation.get('success'):
+                return jsonify(reservation), reservation.get('http_status', 409)
+            if reservation.get('existing'):
+                return _deployment_response(agent_manager.get_deployment(agent_id, deployment_id))
+        owns_preparation = True
+        provider_downloads, custom_files, prepared_providers = [], [], []
         if service_type == 'mihomo':
-            # Mihomo 需要下载 providers 和 rulesets
-            if provider_downloads or ruleset_downloads:
-                # Agent 需要创建 providers 和 ruleset 目录
-                extra_data['directories'] = ['providers', 'ruleset']
-                if provider_downloads:
-                    extra_data['provider_downloads'] = provider_downloads
-                if ruleset_downloads:
-                    extra_data['ruleset_downloads'] = ruleset_downloads
-
-                log_parts = []
-                if provider_downloads:
-                    log_parts.append(f"{len(provider_downloads)} 个 provider 下载")
-                if ruleset_downloads:
-                    log_parts.append(f"{len(ruleset_downloads)} 个 ruleset 下载")
-                log_parts.append("目录创建指令")
-
-                logger.info(f"准备推送配置，包含 {', '.join(log_parts)}")
-        elif service_type == 'mosdns':
-            # MosDNS 需要下载 rulesets 和写入自定义文件
-            # Agent 需要在配置文件同级目录创建 rules 文件夹
-            extra_data['directories'] = ['rules']
-            if ruleset_downloads:
-                extra_data['ruleset_downloads'] = ruleset_downloads
-            if custom_files:
-                extra_data['custom_files'] = custom_files
-
-            log_parts = []
-            if ruleset_downloads:
-                log_parts.append(f"{len(ruleset_downloads)} 个规则集下载")
-            if custom_files:
-                log_parts.append(f"{len(custom_files)} 个自定义文件")
-            log_parts.append("目录创建指令")
-
-            logger.info(f"准备推送配置，包含 {', '.join(log_parts)}")
-
-        result = agent_manager.push_config_to_agent(agent_id, config_content, extra_data=extra_data or None)
-
-        # 处理推送结果
-        if result['success']:
-            result['profile_id'] = profile_id
-            logger.info(f"配置推送成功: {agent_id}")
-            if service_type == 'mihomo':
-                # 在返回结果中包含下载信息（用于前端显示）
-                if provider_downloads or ruleset_downloads:
-                    result['directories'] = ['providers', 'ruleset']
-                if provider_downloads:
-                    result['provider_downloads'] = provider_downloads
-                if ruleset_downloads:
-                    result['ruleset_downloads'] = ruleset_downloads
-            elif service_type == 'mosdns':
-                # 在返回结果中包含规则集下载信息和目录创建信息（用于前端显示）
-                result['directories'] = ['rules']
-                if ruleset_downloads:
-                    result['ruleset_downloads'] = ruleset_downloads
-
-            # 重启由 Agent 在配置落盘后自行完成（见 restart_after_update）。
-            # 旧版 Agent 不认识该字段，只能退回服务端触发重启——那样存在竞态，
-            # 因此仅在旧版上保留，并提示升级。
-            if restart_requested and not agent_supports_self_restart:
-                logger.warning(
-                    f"Agent {agent.get('name')} 版本 {agent_version or '未知'} 不支持落盘后自重启，"
-                    f"退回服务端触发重启（存在与异步写入的竞态，建议升级 Agent 至 {LATEST_AGENT_VERSION}）"
-                )
-                restart_result = agent_manager.restart_agent_service(agent_id)
-                result['restart'] = restart_result
-                if not restart_result.get('success'):
-                    logger.warning(
-                        f"配置已推送但服务重启失败: {restart_result.get('message')}，"
-                        f"需手动重启服务后新配置才会生效"
-                    )
-            elif restart_requested:
-                result['restart'] = {
-                    'success': True,
-                    'message': 'Restart delegated to agent after config is written',
-                }
+            config_content = generate_mihomo_config(config_data, base_url=base_url,
+                                                    sync_lan_hosts=True, preflight_providers=False)
+            main = yaml.safe_load(config_content)
+            provider_downloads = get_mihomo_provider_downloads(config_data, base_url=base_url, main_config=main)
+            ruleset_downloads = get_mihomo_ruleset_downloads(config_data, base_url=base_url)
+            if provider_downloads:
+                prepared_providers = prepare_provider_bundle(config_data, main, render_all=True,
+                                                               allow_transport_fallback=False)
+                provider_downloads = [{key: item[key] for key in ('name', 'url', 'local_path', 'content')}
+                                      for item in prepared_providers]
         else:
-            logger.error(f"配置推送失败: {result.get('message')}")
+            config_content = generate_mosdns_config(config_data, base_url=base_url)
+            ruleset_downloads = get_mosdns_ruleset_downloads(config_data, base_url=base_url)
+            custom_files = get_mosdns_custom_files(config_data)
+        bundle = build_deployment_bundle(agent, config_data, config_content,
+                                         provider_downloads=provider_downloads,
+                                         ruleset_downloads=ruleset_downloads,
+                                         custom_files=custom_files, base_url=base_url,
+                                         deployment_id=deployment_id)
+        # Publish caches only after all files and the exact graph are ready.
+        if prepared_providers:
+            commit_provider_bundle(profile_id, prepared_providers)
+        extra_data = {'deployment_bundle': bundle, 'activate': activate,
+                      'provider_downloads': provider_downloads, 'ruleset_downloads': ruleset_downloads,
+                      'custom_files': custom_files}
+        result = agent_manager.push_config_to_agent(agent_id, config_content, extra_data=extra_data)
+        result['profile_id'] = profile_id
+        result['file_count'] = len(bundle.manifest['files'])
+        result['provider_count'] = len(provider_downloads)
+        result['rule_count'] = len(ruleset_downloads)
+        return _deployment_response(result)
+    except (StrategyReferenceError, DeploymentPreparationError, ValueError) as exc:
+        result = {'success': False, 'status': 'failed', 'message': str(exc)}
+        if deployment_id:
+            agent_manager.record_deployment(agent_id, deployment_id, result)
+            result['deployment_id'] = deployment_id
+        return jsonify(result), 400
+    except Exception as exc:
+        # Do not expose transport exceptions containing subscription credentials.
+        logger.error('Agent deployment preparation failed (%s)', type(exc).__name__)
+        result = {'success': False, 'status': 'failed', 'message': 'Deployment preparation failed'}
+        if deployment_id:
+            agent_manager.record_deployment(agent_id, deployment_id, result)
+            result['deployment_id'] = deployment_id
+        return jsonify(result), 500
+    finally:
+        if owns_preparation:
+            agent_manager.finish_deployment_preparation(agent_id, deployment_id)
 
-        return jsonify(result), 200 if result['success'] else 500
 
-    except StrategyReferenceError as e:
-        return jsonify({'success': False, 'message': str(e)}), 400
-    except Exception as e:
-        import traceback
-        error_detail = traceback.format_exc()
-        logger.error(f"推送配置异常: {e}")
-        logger.error(f"错误详情: {error_detail}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+def _deployment_response(result):
+    status = result.get('status')
+    code = result.get('http_status')
+    if not code:
+        if not result.get('success'):
+            code = 409 if status in ('rolled_back', 'rollback_failed') else 500
+        elif status and status not in ('succeeded', 'failed', 'rolled_back', 'rollback_failed'):
+            code = 202
+        else:
+            code = 200
+    return jsonify(result), code
+
+
+@bp.route('/<agent_id>/deployments/<deployment_id>', methods=['GET'])
+@require_auth
+def get_agent_deployment(agent_id, deployment_id):
+    result = get_agent_manager().get_deployment(agent_id, deployment_id)
+    # A terminal failure is still a successfully retrieved task, not a failed poll.
+    code = 200 if result.get('status') in ('succeeded', 'failed', 'rolled_back', 'rollback_failed') else result.get('http_status', 200)
+    return jsonify(result), code
+
+
+@bp.route('/<agent_id>/deployments/<deployment_id>/activate', methods=['POST'])
+@require_auth
+def activate_agent_deployment(agent_id, deployment_id):
+    return _deployment_response(get_agent_manager().activate_deployment(agent_id, deployment_id))
 
 
 @bp.route('/<agent_id>/metrics', methods=['GET'])

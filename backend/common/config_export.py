@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, Optional
 
 
 SENSITIVE_SYSTEM_CONFIG_FIELDS = frozenset(
-    {"rule_proxy_token", "retired_rule_proxy_tokens"}
+    {"rule_proxy_token", "retired_rule_proxy_tokens", "rule_fetch_proxy"}
 )
 _REDACTED = "[REDACTED]"
 
@@ -155,4 +155,3 @@ def sanitize_config_for_output(config: Dict[str, Any]) -> Dict[str, Any]:
     return sanitize_external_payload(
         config, system_config if isinstance(system_config, dict) else None
     )
-

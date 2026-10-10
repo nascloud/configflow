@@ -3,35 +3,46 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
 // Config 结构体完整定义了 agent 的所有配置项
 type Config struct {
-	ServerURL          string `json:"server_url"`
-	AgentName          string `json:"agent_name"`
-	AgentHost          string `json:"agent_host"`
-	AgentPort          int    `json:"agent_port"`
-	AgentIP            string `json:"agent_ip,omitempty"` // omitempty: 如果为空则不在JSON中显示
-	ServiceType        string `json:"service_type"`
-	DeploymentMethod   string `json:"deployment_method,omitempty"`
-	ServiceName        string `json:"service_name"`
-	ConfigPath         string `json:"config_path"`
-	RestartCommand     string `json:"restart_command"`
-	HeartbeatInterval  int    `json:"heartbeat_interval"`
-	AgentID            string `json:"agent_id,omitempty"`
-	Token              string `json:"token,omitempty"`
+	ServerURL               string `json:"server_url"`
+	AgentName               string `json:"agent_name"`
+	AgentHost               string `json:"agent_host"`
+	AgentPort               int    `json:"agent_port"`
+	AgentIP                 string `json:"agent_ip,omitempty"` // omitempty: 如果为空则不在JSON中显示
+	ServiceType             string `json:"service_type"`
+	DeploymentMethod        string `json:"deployment_method,omitempty"`
+	ServiceName             string `json:"service_name"`
+	ConfigPath              string `json:"config_path"`
+	RestartCommand          string `json:"restart_command"`
+	ServiceManager          string `json:"service_manager,omitempty"`
+	ServiceBinary           string `json:"service_binary,omitempty"`
+	ServiceUnit             string `json:"service_unit,omitempty"`
+	StopCommand             string `json:"stop_command,omitempty"`
+	StartCommand            string `json:"start_command,omitempty"`
+	StatusCommand           string `json:"status_command,omitempty"`
+	HealthURL               string `json:"health_url,omitempty"`
+	HealthDNSAddress        string `json:"health_dns_address,omitempty"`
+	HealthDNSName           string `json:"health_dns_name,omitempty"`
+	DeploymentHealthTimeout int    `json:"deployment_health_timeout,omitempty"`
+	HeartbeatInterval       int    `json:"heartbeat_interval"`
+	AgentID                 string `json:"agent_id,omitempty"`
+	Token                   string `json:"token,omitempty"`
 
 	// 监控功能配置（使用指针以区分未设置和 false）
-	EnableMetrics      *bool  `json:"enable_metrics,omitempty"` // 是否启用系统监控，默认 true
+	EnableMetrics *bool `json:"enable_metrics,omitempty"` // 是否启用系统监控，默认 true
 
 	// MosDNS 特殊功能字段
-	Directories       []string               `json:"directories,omitempty"`
-	RulesetDownloads  []RulesetDownloadItem  `json:"ruleset_downloads,omitempty"`
+	Directories      []string              `json:"directories,omitempty"`
+	RulesetDownloads []RulesetDownloadItem `json:"ruleset_downloads,omitempty"`
 
 	// 用于保护配置文件读写的互斥锁
-	mu sync.Mutex `json:"-"` // - 表示不参与JSON序列化
-	filePath string `json:"-"`
+	mu       sync.Mutex `json:"-"` // - 表示不参与JSON序列化
+	filePath string     `json:"-"`
 }
 
 // RulesetDownloadItem 定义规则集下载项的结构
@@ -44,20 +55,20 @@ type RulesetDownloadItem struct {
 // LoadConfig 从指定路径加载配置
 func LoadConfig(path string) (*Config, error) {
 	var cfg Config
-	
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
-	
+
 	if cfg.HeartbeatInterval == 0 {
 		cfg.HeartbeatInterval = 30 // 设置默认心跳间隔
 	}
-	
+
 	cfg.filePath = path
 	return &cfg, nil
 }
@@ -73,7 +84,35 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	return os.WriteFile(c.filePath, data, 0644)
+	// Registration writes must not truncate the boot recovery configuration.
+	f, err := os.CreateTemp(filepath.Dir(c.filePath), ".agent-config-")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(data)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err = os.Rename(tmp, c.filePath); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(c.filePath))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // IsMetricsEnabled 检查是否启用系统监控

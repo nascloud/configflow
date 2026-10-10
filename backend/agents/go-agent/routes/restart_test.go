@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,7 +50,7 @@ func TestFailedSecretCommandDoesNotLeakLogsOutputOrError(t *testing.T) {
 func TestRestartHandlerDoesNotReturnFailedCommandOutput(t *testing.T) {
 	const commandSecret = "handler-command-secret"
 	const outputSecret = "handler-output-secret"
-	cfg := &Config{RestartCommand: "printf " + outputSecret + "; false # " + commandSecret}
+	cfg := &Config{ConfigPath: filepath.Join(t.TempDir(), "config.yaml"), RestartCommand: "printf " + outputSecret + "; false # " + commandSecret}
 	request := httptest.NewRequest(http.MethodPost, "/restart", nil)
 	recorder := httptest.NewRecorder()
 

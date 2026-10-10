@@ -1137,7 +1137,8 @@
   ],
   "system_config": {
     "server_domain": "",
-    "github_proxy_domain": ""
+    "github_proxy_domain": "",
+    "rule_fetch_proxy": ""
   },
   "mosdns": {
     "direct_rulesets": [

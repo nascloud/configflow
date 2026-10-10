@@ -9,6 +9,7 @@ from backend.routes import generate_bp
 from backend.common.auth import require_auth
 from backend.common.config import get_config, get_repository
 from backend.utils.strategy_references import StrategyReferenceError
+from backend.utils.rule_fetch import request_rule
 from backend.converters.mihomo import generate_mihomo_config
 from backend.converters.surge import generate_surge_config
 from backend.converters.loon import generate_loon_config
@@ -114,7 +115,12 @@ def generate_mosdns():
 
         # 构建 ZIP 包含 config.yaml 与 rules 下的所有规则
         zip_buffer = io.BytesIO()
-        session = requests.Session()
+        # Generated callback URLs use this origin even when the frontend's
+        # base_url differs from the current Flask request's host.
+        fetch_config = {'system_config': {
+            **config_data.get('system_config', {}),
+            'server_domain': config_data.get('system_config', {}).get('server_domain', '').strip() or base_url,
+        }}
 
         def _write_to_zip(zip_file, arcname, content):
             normalized_name = arcname.lstrip('./')
@@ -149,10 +155,10 @@ def generate_mosdns():
                     download_url = f"{base_url.rstrip('/')}{download_url}"
 
                 try:
-                    response = session.get(download_url, timeout=20)
+                    response = request_rule(download_url, timeout=20, config_data=fetch_config)
                     response.raise_for_status()
-                except requests.exceptions.RequestException as fetch_error:
-                    return jsonify({'success': False, 'message': f'规则下载失败: {fetch_error}'}), 500
+                except (requests.exceptions.RequestException, ValueError):
+                    return jsonify({'success': False, 'message': '规则下载失败'}), 500
 
                 _write_to_zip(zip_file, local_path, response.text)
 

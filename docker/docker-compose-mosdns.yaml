@@ -16,6 +16,8 @@ services:
       - "53:53/udp"   # DNS UDP
 
     volumes:
+      # Agent identity persists across container recreation; journals live under each service volume.
+      - ./config/agent:/opt/configflow-agent
       # !! 重要 !!: 将宿主机配置目录挂载到容器
       # 如果目录不存在，Docker 会自动创建
       - ./mosdns:/etc/mosdns

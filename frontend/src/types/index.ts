@@ -87,6 +87,7 @@ export interface Agent {
   last_heartbeat: string
   version: string
   config_version: string
+  latest_deployment?: import('@/composables/useAgentDeployments').AgentDeployment
   enabled: boolean
   profile_id?: string
   has_update?: boolean

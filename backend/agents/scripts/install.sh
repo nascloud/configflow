@@ -4,6 +4,9 @@
 # 服务类型：{service_type}
 # Agent 名称：{agent_name}
 
+# Legacy Shell Agent does not implement transactional package deployment.
+echo "提示：此为旧版 Shell Agent，不支持打包校验与失败回滚。事务发布请使用 Go Agent 安装脚本（同样通过 Shell 安装）。"
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'

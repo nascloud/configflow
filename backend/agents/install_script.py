@@ -137,9 +137,9 @@ def generate_docker_agent_compose(
         ])
 
     # 卷映射
-    volumes = []
+    volumes = [f"{data_dir}/agent:/opt/configflow-agent"]
     if enable_mihomo:
-        volumes.append(f"{data_dir}/mihomo:/root/.config/mihomo")
+        volumes.append(f"{data_dir}/mihomo:/etc/mihomo")
     if enable_mosdns:
         volumes.append(f"{data_dir}/mosdns:/etc/mosdns")
 
@@ -247,9 +247,9 @@ def generate_docker_agent_run(
 
     # 构建卷映射
     volumes_args = ""
-    volumes = []
+    volumes = [f"-v {data_dir}/agent:/opt/configflow-agent"]
     if enable_mihomo:
-        volumes.append(f"-v {data_dir}/mihomo:/root/.config/mihomo")
+        volumes.append(f"-v {data_dir}/mihomo:/etc/mihomo")
     if enable_mosdns:
         volumes.append(f"-v {data_dir}/mosdns:/etc/mosdns")
         

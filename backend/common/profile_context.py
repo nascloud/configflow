@@ -107,6 +107,15 @@ def install_profile_context(app) -> None:
                 return response
             if payload is not None:
                 sanitized = sanitize_external_payload(payload)
+                # The authenticated settings editor needs its proxy URL for edits.
+                # Keep credentials hidden in other metadata and shared exports.
+                if (
+                    endpoint == "settings.handle_rule_fetch_proxy"
+                    and response.status_code == 200
+                    and isinstance(payload, dict)
+                    and isinstance(payload.get("rule_fetch_proxy"), str)
+                ):
+                    sanitized["rule_fetch_proxy"] = payload["rule_fetch_proxy"]
                 # A successful self-registration may disclose exactly one top-level
                 # credential. Nested Agent records and every other API stay scrubbed.
                 if (

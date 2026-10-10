@@ -31,8 +31,8 @@ def test_later_invalid_provider_preserves_all_earlier_staged_caches(tmp_path, mo
     assert before == {s: load_subscription_cache(s) for s in ('s', 's2')}
 
 
-@pytest.mark.parametrize('chain,expected', [('none', 200), ('managed', 400)])
-def test_unavailable_subscription_retains_only_legacy_no_chain_url_fallback(tmp_path, monkeypatch, chain, expected):
+@pytest.mark.parametrize('chain,expected', [('none', 400), ('managed', 400)])
+def test_unavailable_subscription_blocks_publication_for_all_graphs(tmp_path, monkeypatch, chain, expected):
     import requests
     app, repo = make_app(tmp_path)
     seed_profile(repo, chain=chain)
@@ -44,12 +44,7 @@ def test_unavailable_subscription_retains_only_legacy_no_chain_url_fallback(tmp_
     manager = agent_manager(monkeypatch)
     response = app.test_client().post('/api/agents/a/push-config', json={'restart': False})
     assert response.status_code == expected
-    if expected == 200:
-        delivered = manager.push_config_to_agent.call_args.kwargs['extra_data']['provider_downloads'][0]
-        assert delivered['content'] == ''
-        assert delivered['url'].endswith('/subscriptions/s/proxies')
-    else:
-        manager.push_config_to_agent.assert_not_called()
+    manager.push_config_to_agent.assert_not_called()
 
 
 def test_provider_discovered_chain_cannot_use_unvalidated_url_fallback(tmp_path, monkeypatch):

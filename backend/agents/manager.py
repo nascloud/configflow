@@ -2,6 +2,11 @@
 import secrets
 import hashlib
 import hmac
+import re
+import os
+import fcntl
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 import requests
@@ -18,6 +23,10 @@ def _constant_time_ascii_equal(provided: Any, expected: Any) -> bool:
         return False
 
 
+class AgentDeploymentConflict(ValueError):
+    """A profile binding cannot change during an unfinished deployment."""
+
+
 class AgentManager:
     """Agent 管理器，负责 Agent 的注册、心跳、状态管理等"""
 
@@ -29,6 +38,9 @@ class AgentManager:
             repository: system/profile 配置仓库
         """
         self.repository = repository
+        self._preparing_deployments = set()
+        self._preparation_files = {}
+        self._deployment_lock = threading.RLock()
 
         # 初始化监控历史管理器
         self.metrics_history = MetricsHistory()
@@ -97,6 +109,8 @@ class AgentManager:
                     'enabled': True,
                     'created_at': existing_agent.get('created_at', datetime.now().isoformat()),
                     'updated_at': datetime.now().isoformat(),
+                    'deployments': existing_agent.get('deployments', {}),
+                    'latest_deployment': existing_agent.get('latest_deployment'),
                 }
                 agents[agents.index(existing_agent)] = updated_agent
                 return {'id': agent_id, 'status': 'online', 'is_new': False}
@@ -173,6 +187,12 @@ class AgentManager:
             for agent in agents:
                 if agent['id'] != agent_id:
                     continue
+                if ('profile_id' in updates and updates['profile_id'] != agent.get('profile_id', 'default')
+                        and any(task.get('status') not in ('succeeded', 'failed', 'rolled_back')
+                                for task in agent.get('deployments', {}).values())):
+                    # Runs under the same repository transaction lock used by
+                    # begin_deployment, so a concurrent preparation cannot race.
+                    raise AgentDeploymentConflict('Agent has an unfinished deployment; finish or recover it before changing profile')
                 # 更新允许的字段
                 allowed_fields = ['name', 'host', 'port', 'enabled', 'service_type', 'profile_id']
                 for field in allowed_fields:
@@ -253,6 +273,223 @@ class AgentManager:
 
         return self._update_agents(update)
 
+    def _preparation_file(self, agent_id, deployment_id):
+        root = self.repository.data_dir / '.agent-deployment-locks'
+        root.mkdir(mode=0o700, exist_ok=True)
+        key = hashlib.sha256((agent_id + '/' + deployment_id).encode()).hexdigest()
+        return open(root / key, 'a+b')
+
+    def finish_deployment_preparation(self, agent_id, deployment_id):
+        key = (agent_id, deployment_id)
+        with self._deployment_lock:
+            self._preparing_deployments.discard(key)
+            handle = self._preparation_files.pop(key, None)
+            if handle:
+                handle.close()
+
+    def _preparation_running(self, agent_id, deployment_id):
+        if (agent_id, deployment_id) in self._preparing_deployments:
+            return True
+        # The preparation request and polling request may use different workers.
+        # Process death releases this lock; an in-memory flag cannot prove that.
+        with self._preparation_file(agent_id, deployment_id) as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+        return False
+
+    def begin_deployment(self, agent_id, deployment_id):
+        """Persist a profile-bound task before preparing or sending its artifacts."""
+        if not isinstance(deployment_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', deployment_id):
+            raise ValueError('Invalid deployment ID')
+        def begin(agents):
+            agent = next((item for item in agents if item['id'] == agent_id), None)
+            if agent is None:
+                return {'success': False, 'message': 'Agent not found', 'http_status': 404}
+            deployments = agent.setdefault('deployments', {})
+            if deployment_id in deployments:
+                return {**deployments[deployment_id], 'existing': True}
+            active = next((item for item in deployments.values() if item.get('status') not in
+                           ('succeeded', 'failed', 'rolled_back')), None)
+            if active:
+                return {'success': False, 'message': 'Agent already has an unfinished deployment',
+                        'deployment_id': active['deployment_id'], 'status': active['status'], 'http_status': 409}
+            record = {'success': True, 'deployment_id': deployment_id, 'status': 'preparing',
+                      'profile_id': agent.get('profile_id', 'default'), 'created_at': datetime.now().isoformat()}
+            handle = self._preparation_file(agent_id, deployment_id)
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+                return {'success': False, 'message': 'Deployment preparation already running', 'http_status': 409}
+            self._preparation_files[(agent_id, deployment_id)] = handle
+            deployments[deployment_id] = record
+            agent['latest_deployment'] = record.copy()
+            # Bound history, retaining failed records as well as the active task.
+            for key in list(deployments)[:-30]:
+                del deployments[key]
+            return record.copy()
+        with self._deployment_lock:
+            try:
+                result = self._update_agents(begin)
+            except Exception:
+                self.finish_deployment_preparation(agent_id, deployment_id)
+                raise
+            if result.get('success') and not result.get('existing'):
+                self._preparing_deployments.add((agent_id, deployment_id))
+            return result
+
+    def record_deployment(self, agent_id, deployment_id, updates):
+        """Only a confirmed successful activation changes the displayed version."""
+        def record(agents):
+            agent = next((item for item in agents if item['id'] == agent_id), None)
+            if agent is None:
+                return {'success': False, 'message': 'Agent not found'}
+            state = agent.get('deployments', {}).get(deployment_id)
+            if state is None:
+                return {'success': False, 'message': 'Deployment not found', 'http_status': 404}
+            if state.get('status') in ('succeeded', 'failed', 'rolled_back') and updates.get('status', state['status']) != state['status']:
+                # An upload response or overlapping poll may arrive after a
+                # newer terminal result. Never regress a confirmed transaction.
+                return state.copy()
+            if updates.get('status') and updates.get('status') != 'unknown' and not updates.get('http_status'):
+                state.pop('http_status', None)
+                if 'message' not in updates:
+                    state.pop('message', None)
+            # Never let an upstream response replace task ownership or identity.
+            for key in ('status', 'message', 'error', 'failed_stage', 'rollback_error', 'config_version',
+                        'success', 'sha256', 'submitted', 'previous_running', 'health', 'http_status'):
+                if key in updates:
+                    state[key] = updates[key]
+            state['updated_at'] = datetime.now().isoformat()
+            if state.get('status') == 'succeeded':
+                agent['config_version'] = state.get('config_version', agent.get('config_version', '0'))
+            if (agent.get('latest_deployment') or {}).get('deployment_id') == deployment_id:
+                agent['latest_deployment'] = state.copy()
+            return state.copy()
+        return self._update_agents(record)
+
+    def _deployment_request(self, agent, method, suffix, **kwargs):
+        url = f"http://{agent['host']}:{agent['port']}/api/{suffix}"
+        headers = {'Authorization': f'Bearer {agent["token"]}'}
+        headers.update(kwargs.pop('headers', {}))
+        timeout = kwargs.pop('timeout', (5, 30))
+        retry_busy = method == 'post' and (suffix == 'deployments' or
+                     (suffix.startswith('deployments/') and suffix.endswith('/activate')))
+        deadline = time.monotonic() + 2
+        for attempt in range(21):
+            # Only this exact lock rejection proves no mutation was accepted.
+            # Network errors and every other 409 retain their original outcome.
+            response = getattr(requests, method)(url, headers=headers, timeout=timeout, **kwargs)
+            try:
+                result = response.json()
+            except (ValueError, TypeError):
+                result = {'success': False, 'message': f'Agent returned HTTP {response.status_code}'}
+            if not isinstance(result, dict):
+                result = {'success': False, 'message': 'Invalid Agent response'}
+            if response.status_code >= 400:
+                result['success'] = False
+                result['http_status'] = response.status_code
+            busy = response.status_code == 409 and result.get('message') == 'another service operation is in progress'
+            response.close()
+            remaining = deadline - time.monotonic()
+            if not retry_busy or not busy or attempt == 20 or remaining <= 0:
+                return result
+            time.sleep(min(.1, remaining))
+
+    def get_deployment(self, agent_id, deployment_id):
+        agent = self.get_agent_by_id(agent_id)
+        if not agent:
+            return {'success': False, 'message': 'Agent not found', 'http_status': 404}
+        state = agent.get('deployments', {}).get(deployment_id)
+        if not state:
+            return {'success': False, 'message': 'Deployment not found', 'http_status': 404}
+        if state.get('profile_id') != agent.get('profile_id', 'default'):
+            return {'success': False, 'message': 'Deployment belongs to a different profile', 'http_status': 409}
+        if state.get('status') in ('succeeded', 'failed', 'rolled_back'):
+            return state
+        if not state.get('submitted'):
+            if self._preparation_running(agent_id, deployment_id):
+                return state
+            return self.record_deployment(agent_id, deployment_id, {
+                'success': False, 'status': 'failed', 'message': 'Preparation interrupted before upload; current service unchanged'})
+        try:
+            result = self._deployment_request(agent, 'get', f'deployments/{deployment_id}')
+            if result.get('http_status') == 404:
+                return self.record_deployment(agent_id, deployment_id, {
+                    'success': False, 'status': 'failed', 'message': 'Agent has no record of the uploaded deployment'})
+            if result.get('http_status') or not isinstance(result.get('status'), str):
+                return {**state, 'message': 'Deployment status temporarily unavailable', 'pending': True}
+            return self.record_deployment(agent_id, deployment_id, result)
+        except requests.RequestException:
+            return {**state, 'message': 'Deployment status temporarily unavailable', 'pending': True}
+
+    def activate_deployment(self, agent_id, deployment_id):
+        state = self.get_deployment(agent_id, deployment_id)
+        if state.get('http_status') or state.get('status') != 'ready':
+            return {**state, 'success': False, 'message': 'Deployment must be ready before activation', 'http_status': 409}
+        agent = self.get_agent_by_id(agent_id)
+        try:
+            result = self._deployment_request(agent, 'post', f'deployments/{deployment_id}/activate')
+            if result.get('http_status'):
+                return result
+            return self.record_deployment(agent_id, deployment_id, result)
+        except requests.RequestException:
+            return self.record_deployment(agent_id, deployment_id, {
+                'success': True, 'status': 'unknown', 'message': 'Activation sent; awaiting Agent status'})
+
+    def publish_deployment(self, agent_id, bundle, *, activate=True):
+        agent = self.get_agent_by_id(agent_id)
+        if not agent:
+            return {'success': False, 'message': 'Agent not found', 'http_status': 404}
+        deployment_id = bundle.manifest['deployment_id']
+        if deployment_id not in agent.get('deployments', {}):
+            result = self.begin_deployment(agent_id, deployment_id)
+            if not result.get('success'):
+                return result
+        try:
+            if agent.get('profile_id', 'default') != bundle.manifest['profile_id']:
+                raise ValueError('Agent profile changed during preparation')
+            capability = self._deployment_request(agent, 'get', 'capabilities', timeout=5)
+            if 1 not in capability.get('deployment_protocols', []) or capability.get('service_type') != agent.get('service_type'):
+                return self.record_deployment(agent_id, deployment_id, {
+                    'success': False, 'status': 'failed', 'http_status': 409,
+                    'message': 'Agent does not support transactional deployments; upgrade the Shell-installed or Docker Agent first'})
+            from .deployment_bundle import retarget_config_path
+            bundle = retarget_config_path(bundle, capability.get('config_path', 'config.yaml'))
+            previous = self.get_agent_by_id(agent_id).get('deployments', {}).get(deployment_id, {})
+            if previous.get('status') in ('failed', 'rolled_back') and not previous.get('submitted'):
+                return previous
+            if previous.get('submitted'):
+                if previous.get('sha256') != bundle.sha256:
+                    return {'success': False, 'deployment_id': deployment_id, 'http_status': 409,
+                            'message': 'Deployment ID already belongs to different content'}
+                return self.get_deployment(agent_id, deployment_id)
+            # Persist before the request: a lost response can still be reconciled.
+            self.record_deployment(agent_id, deployment_id, {
+                'success': True, 'status': 'uploading', 'submitted': True,
+                'sha256': bundle.sha256, 'config_version': bundle.config_version})
+            result = self._deployment_request(agent, 'post', 'deployments', data=bundle.archive, timeout=(10, 120), headers={
+                'Content-Type': 'application/gzip', 'X-Deployment-ID': deployment_id,
+                'X-Content-SHA256': bundle.sha256, 'X-Activate': 'true' if activate else 'false'})
+            if result.get('http_status'):
+                result.setdefault('status', 'failed')
+            elif not isinstance(result.get('status'), str):
+                result = {'success': True, 'status': 'unknown', 'message': 'Upload accepted; awaiting valid Agent status'}
+            return self.record_deployment(agent_id, deployment_id, result)
+        except requests.RequestException:
+            agent = self.get_agent_by_id(agent_id)
+            state = agent.get('deployments', {}).get(deployment_id, {})
+            submitted = state.get('submitted', False)
+            return self.record_deployment(agent_id, deployment_id, {
+                'success': submitted, 'status': 'unknown' if submitted else 'failed',
+                'message': 'Upload outcome unknown; query deployment status' if submitted else 'Unable to query Agent deployment capabilities'})
+        except ValueError as exc:
+            return self.record_deployment(agent_id, deployment_id, {'success': False, 'status': 'failed', 'message': str(exc)})
+        finally:
+            self.finish_deployment_preparation(agent_id, deployment_id)
+
     def push_config_to_agent(self, agent_id: str, config_content: str, extra_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         主动推送配置到 Agent
@@ -270,6 +507,12 @@ class AgentManager:
         agent = self.get_agent_by_id(agent_id)
         if not agent:
             return {'success': False, 'message': 'Agent not found'}
+
+        if agent.get('service_type', 'mihomo') in ('mihomo', 'mosdns'):
+            bundle = (extra_data or {}).get('deployment_bundle')
+            if bundle is None:
+                return {'success': False, 'message': 'A complete deployment bundle is required', 'http_status': 409}
+            return self.publish_deployment(agent_id, bundle, activate=(extra_data or {}).get('activate', True))
 
         # 构建 Agent 的 URL
         agent_url = f"http://{agent['host']}:{agent['port']}/api/config/update"

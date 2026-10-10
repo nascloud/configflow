@@ -10,6 +10,7 @@ import re
 from typing import Dict, Any
 from backend.common.config import get_repository
 from backend.utils.url_utils import safe_url_for_log
+from backend.utils.rule_fetch import request_rule
 
 
 def get_rules_dir() -> str:
@@ -83,7 +84,7 @@ def save_rule_to_local(rule: Dict[str, Any]) -> str:
 
         try:
             logger.info(f"Fetching rule content from {safe_url_for_log(url)}")
-            response = requests.get(url, timeout=10)
+            response = request_rule(url, timeout=10)
             response.raise_for_status()
 
             get_repository().write_shared_text(
@@ -93,9 +94,9 @@ def save_rule_to_local(rule: Dict[str, Any]) -> str:
 
             logger.info(f"Downloaded and saved rule from {safe_url_for_log(url)} to {filepath}")
 
-        except requests.RequestException as e:
+        except (requests.RequestException, ValueError) as e:
             logger.error(f"Failed to download rule from {safe_url_for_log(url)}")
-            # 下载失败时抛出异常，不创建占位符文件
-            raise
+            # 调用方可能将异常写入 HTTP 响应或日志，不能携带代理凭据。
+            raise requests.RequestException(f'Rule download failed ({type(e).__name__})') from None
 
     return filename

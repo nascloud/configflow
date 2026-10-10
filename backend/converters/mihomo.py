@@ -1,6 +1,7 @@
 """Mihomo (Clash Meta) 配置生成器"""
 import re
 import yaml
+from urllib.parse import urlsplit
 from typing import Dict, Any, List, Optional
 from backend.utils.logger import get_logger
 from backend.utils.proxy_utils import fix_proxy_fields
@@ -90,9 +91,8 @@ def apply_github_proxy_domain(url: str, config_data: Dict[str, Any]) -> str:
         'api.github.com'
     ]
 
-    # 检查URL是否包含GitHub域名
-    contains_github = any(domain in url for domain in github_domains)
-    if not contains_github:
+    # 仅改写 GitHub 源站；内部回调的查询参数也可能包含 GitHub URL。
+    if urlsplit(url).hostname not in github_domains:
         return url
 
     # 确保代理地址格式正确
@@ -103,6 +103,9 @@ def apply_github_proxy_domain(url: str, config_data: Dict[str, Any]) -> str:
     # 确保代理地址以 / 结尾
     if not proxy_url.endswith('/'):
         proxy_url += '/'
+
+    if url.startswith(proxy_url):
+        return url
 
     # 拼接格式：代理地址/原地址
     result_url = f'{proxy_url}{url}'
@@ -985,6 +988,9 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
             if original_url and (original_url.endswith('.yaml') or original_url.endswith('.yml')):
                 rule_format = 'yaml'
                 path_extension = 'yaml'
+            elif original_url and original_url.split('?', 1)[0].endswith('.mrs'):
+                rule_format = 'mrs'
+                path_extension = 'mrs'
 
             rule_providers[rule_set['name']] = {
                 'type': 'http',
@@ -1134,6 +1140,8 @@ def get_mihomo_ruleset_downloads(config_data: Dict[str, Any], base_url: str = ''
             path_extension = 'list'
             if original_url and (original_url.endswith('.yaml') or original_url.endswith('.yml')):
                 path_extension = 'yaml'
+            elif original_url and original_url.split('?', 1)[0].endswith('.mrs'):
+                path_extension = 'mrs'
 
             downloads.append({
                 'name': rule_set['name'],

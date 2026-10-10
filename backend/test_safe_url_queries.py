@@ -83,8 +83,8 @@ def test_generated_go_installer_does_not_print_binary_download_url():
         agent_name="probe", service_type="mihomo", binary_download_url=secret_url,
     )
     assert "URL: $BINARY_URL" not in script
-    assert 'wget -O /tmp/configflow-agent "$BINARY_URL"' in script
-    assert 'curl -L -o /tmp/configflow-agent "$BINARY_URL"' in script
+    assert 'wget -q -O "$BINARY_TMP" "$BINARY_URL"' in script
+    assert 'curl -fsL -o "$BINARY_TMP" "$BINARY_URL"' in script
 
 
 def _provider_config(profile_id=None):

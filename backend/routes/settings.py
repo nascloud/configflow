@@ -12,6 +12,42 @@ from backend.common.config import get_repository, get_system_config, save_system
 from backend.common.config_export import contains_internal_rule_proxy_token
 from backend.version import get_version_info
 from backend.utils.url_utils import safe_url_for_log
+from backend.utils.rule_fetch import normalize_rule_fetch_proxy
+
+
+@settings_bp.route('/settings/rule-fetch-proxy', methods=['GET', 'POST'])
+@require_auth
+def handle_rule_fetch_proxy():
+    """Global HTTP proxy for rule downloads and their connectivity checks."""
+    config_data = get_system_config()
+    if request.method == 'GET':
+        return jsonify({
+            'rule_fetch_proxy': config_data.get('system_config', {}).get('rule_fetch_proxy', '')
+        })
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or 'rule_fetch_proxy' not in data:
+        return jsonify({'success': False, 'message': '请提供规则下载代理，留空可清除设置'}), 400
+
+    try:
+        proxy = normalize_rule_fetch_proxy(data['rule_fetch_proxy'])
+    except ValueError:
+        return jsonify({
+            'success': False,
+            'message': '规则下载代理须为有效的 HTTP/HTTPS 代理地址，或留空使用现有网络',
+        }), 400
+
+    try:
+        config_data.setdefault('system_config', {})['rule_fetch_proxy'] = proxy
+        save_system_config(config_data)
+    except Exception as error:
+        current_app.logger.error(
+            'Failed to update rule download proxy: exception_type=%s', type(error).__name__
+        )
+        return jsonify({'success': False, 'message': '保存规则下载代理失败'}), 500
+
+    current_app.logger.info('Rule download proxy %s', 'enabled' if proxy else 'cleared')
+    return jsonify({'success': True, 'rule_fetch_proxy': proxy})
 
 
 @settings_bp.route('/server-domain', methods=['GET', 'POST'])

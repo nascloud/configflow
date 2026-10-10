@@ -184,7 +184,7 @@ def _assert_generated_default_url_authenticates(repository, monkeypatch):
     assert parse_qs(parsed.query)["token"] == [token]
     monkeypatch.setattr("backend.routes.mosdns._fetch_remote_content", lambda url: "domain:example.com")
     monkeypatch.setattr(
-        "backend.routes.mosdns.socket.getaddrinfo",
+        "socket.getaddrinfo",
         lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
     )
     app = Flask(__name__)
@@ -235,7 +235,7 @@ def test_generated_profile_rule_proxy_url_downloads_with_auth_enabled(tmp_path, 
         lambda url: fetched.append(url) or "domain:example.com",
     )
     monkeypatch.setattr(
-        "backend.routes.mosdns.socket.getaddrinfo",
+        "socket.getaddrinfo",
         lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
     )
     app = Flask(__name__)
@@ -346,7 +346,7 @@ def test_local_rule_refresh_uses_shared_repository_write(tmp_path, monkeypatch):
     monkeypatch.setattr(repository, "write_shared_text", write_shared_text)
     monkeypatch.setattr(
         "backend.routes.rules.requests.get",
-        lambda url, timeout: type("Response", (), {"status_code": 200, "text": "DOMAIN,remote.test"})(),
+        lambda url, timeout, **kwargs: type("Response", (), {"status_code": 200, "text": "DOMAIN,remote.test"})(),
     )
 
     response = app.test_client().get(
@@ -430,7 +430,7 @@ def test_ruleset_content_cache_uses_shared_repository_write(tmp_path, monkeypatc
     monkeypatch.setattr(repository, "write_shared_text", write_shared_text)
     monkeypatch.setattr(
         "backend.routes.rules.requests.get",
-        lambda url, timeout: type("Response", (), {"status_code": 200, "text": "DOMAIN,remote.test"})(),
+        lambda url, timeout, **kwargs: type("Response", (), {"status_code": 200, "text": "DOMAIN,remote.test"})(),
     )
 
     with app.test_request_context("/", headers={"X-ConfigFlow-Profile": "alpha"}):

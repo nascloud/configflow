@@ -408,6 +408,7 @@ def test_new_repository_rotates_equal_factory_tokens(tmp_path, monkeypatch):
     assert repository.get_system()["system_config"] == {
         "server_domain": "",
         "github_proxy_domain": "",
+        "rule_fetch_proxy": "",
         "config_token": "factory-shared-token",
         "rule_proxy_token": "generated-new-token",
         "retired_rule_proxy_tokens": ["factory-shared-token"],
@@ -697,6 +698,7 @@ def test_partial_system_metadata_save_keeps_other_fields(tmp_path):
     assert {key: value for key, value in system_config.items() if key != "rule_proxy_token"} == {
         "server_domain": "http://configflow.test",
         "github_proxy_domain": "",
+        "rule_fetch_proxy": "",
         "config_token": "token",
         "retired_rule_proxy_tokens": [],
     }

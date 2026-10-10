@@ -1,10 +1,19 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.1.0-go"
+LATEST_AGENT_VERSION = "1.2.0-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.2.0-go": {
+        "date": "2026-10-10",
+        "features": [
+            "Mihomo/MosDNS 完整发布包、SHA-256 校验和暂存后激活",
+            "替换前备份、启动健康检查、失败回滚和中断恢复",
+            "支持 Shell 安装的 systemd/OpenRC 和 Docker Supervisor 服务生命周期",
+            "持久化发布进度、幂等请求及旧协议升级提示"
+        ]
+    },
     "1.0.8-go": {
         "date": "2026-02-09",
         "features": [
