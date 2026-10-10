@@ -423,7 +423,7 @@
               v-model="form.proxy_string"
               class="min-h-[220px] bg-background/50 font-mono text-[12px]"
               :rows="12"
-              placeholder="支持 URI、JSON、YAML 等格式"
+              placeholder="支持 URI、JSON、YAML、Surge / Loon 节点行等格式"
             />
           </div>
           <div class="flex items-center gap-2.5">
@@ -457,7 +457,7 @@
               v-model="batchForm.nodes_text"
               class="min-h-[300px] bg-background/50 font-mono text-[12px]"
               :rows="16"
-              placeholder="支持 URI、JSON、YAML 多种格式，自动忽略空行和 // 注释"
+              placeholder="支持 URI、JSON、YAML，以及 Surge / Loon 节点行（如 HK = snell, 1.2.3.4, 443, psk=xxx, version=4），自动忽略空行和 // 注释"
             />
           </div>
           <div class="flex items-center gap-2.5">
@@ -941,8 +941,19 @@ const formatProxyString = (str: string) => {
 
 const saveNode = async () => {
   try {
-    // 在保存前格式化节点字符串
-    if (form.value.proxy_string) {
+    const raw = form.value.proxy_string?.trim() || ''
+    if (raw && !raw.includes('\n') && isClientProxyLine(raw)) {
+      // 单个添加同样支持 Surge / Loon 节点行
+      const response = await nodeApi.parseLines([raw])
+      const proxy = response.data.results[0]?.proxy
+      if (!proxy) {
+        notify.error(response.data.results[0]?.error || '无法识别的节点格式')
+        return
+      }
+      if (!form.value.name) form.value.name = proxy.name
+      form.value.proxy_string = proxyToYaml(proxy)
+    } else if (form.value.proxy_string) {
+      // 在保存前格式化节点字符串
       form.value.proxy_string = formatProxyString(form.value.proxy_string)
     }
 
@@ -959,6 +970,13 @@ const saveNode = async () => {
     notify.error(error?.response?.data?.message || '保存失败')
   }
 }
+
+// Surge / Loon 等客户端配置里的节点行：「名称 = 类型, 服务器, 端口, ...」。snell 没有通用 URI，只有这种写法
+const CLIENT_PROXY_LINE = /^[^=]+?=\s*[A-Za-z][\w-]*\s*,/
+const isClientProxyLine = (line: string) =>
+  CLIENT_PROXY_LINE.test(line) && !line.slice(0, line.indexOf('=')).includes('://')
+
+const proxyToYaml = (proxy: Record<string, any>) => yaml.dump(proxy, { indent: 2, lineWidth: -1 }).trim()
 
 // 从节点链接中提取名称（通常在#后面）
 const extractNodeName = (proxyString: string): string | undefined => {
@@ -1084,10 +1102,35 @@ const saveBatchNodes = async () => {
         return
       }
 
+      // 客户端节点行一次性交给后端解析，转成结构化 YAML 保存（保留名称和协议）
+      const clientLines = lines.filter(isClientProxyLine)
+      const parsedClientLines = new Map<string, { proxy?: Record<string, any>; error?: string }>()
+      if (clientLines.length) {
+        try {
+          const response = await nodeApi.parseLines(clientLines)
+          clientLines.forEach((line, index) => parsedClientLines.set(line, response.data.results[index] || {}))
+        } catch (error: any) {
+          const message = error?.response?.data?.message || '解析节点行失败'
+          clientLines.forEach(line => parsedClientLines.set(line, { error: message }))
+        }
+      }
+
       // 批量处理每一行
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i]
         try {
+          const parsed = parsedClientLines.get(line)
+          if (parsed) {
+            if (!parsed.proxy) throw new Error(parsed.error || '无法识别的节点格式')
+            await nodeApi.create({
+              name: parsed.proxy.name || `节点_${autoNameCounter++}`,
+              proxy_string: proxyToYaml(parsed.proxy),
+              enabled: batchForm.value.enabled
+            })
+            successCount++
+            continue
+          }
+
           // 格式化节点字符串
           const formattedProxyString = formatProxyString(line)
 

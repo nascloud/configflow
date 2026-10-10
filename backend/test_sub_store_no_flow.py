@@ -50,3 +50,30 @@ def test_url_with_existing_fragment_is_left_unchanged(created_urls):
     sub_store_client.get_subscription_proxies_yaml('sub_1', 'http://airport.test/sub#{"insecure":true}')
 
     assert created_urls == ['http://airport.test/sub#{"insecure":true}']
+
+
+def test_parse_lines_route_converts_each_line(monkeypatch):
+    from flask import Flask
+    from backend.routes import nodes_bp
+    import backend.routes.nodes  # noqa: F401  注册路由
+    from backend.common import auth
+
+    snell = {'name': 'HK', 'type': 'snell', 'server': '1.2.3.4', 'port': 443, 'psk': 'abcd', 'version': 4}
+    seen = []
+
+    def fake_convert(line):
+        seen.append(line)
+        return dict(snell) if 'snell' in line else None
+
+    monkeypatch.setattr(sub_store_client, 'convert_proxy_string', fake_convert)
+    monkeypatch.setattr(auth, 'is_auth_enabled', lambda: False, raising=False)
+    app = Flask(__name__)
+    app.register_blueprint(nodes_bp)
+    client = app.test_client()
+
+    resp = client.post('/api/nodes/parse-lines', json={'lines': ['HK = snell, 1.2.3.4, 443, psk=abcd', 'bad = foo, x']})
+    assert resp.status_code == 200
+    assert resp.get_json()['results'] == [{'proxy': snell}, {'error': '无法识别的节点格式'}]
+    assert seen == ['HK = snell, 1.2.3.4, 443, psk=abcd', 'bad = foo, x']
+
+    assert client.post('/api/nodes/parse-lines', json={'lines': 'x'}).status_code == 400

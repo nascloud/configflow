@@ -98,7 +98,12 @@ export const nodeApi = {
   /** 最近一次 TCP 延迟结果（按节点名） */
   latency: () => api.get('/nodes/latency'),
   /** 发起 TCP 延迟测试；names 为空测全部候选节点 */
-  testLatency: (names?: string[]) => api.post('/nodes/latency', names ? { names } : {}, { timeout: 120000 })
+  testLatency: (names?: string[]) => api.post('/nodes/latency', names ? { names } : {}, { timeout: 120000 }),
+  /** 用内置 Sub-Store 把 Surge / Loon 节点行（如 snell）转成结构化节点，按行返回 */
+  parseLines: (lines: string[]) =>
+    api.post<{ success: boolean; results: Array<{ proxy?: Record<string, any>; error?: string }> }>(
+      '/nodes/parse-lines', { lines }, { timeout: 120000 }
+    )
 }
 
 // 规则相关
