@@ -24,28 +24,18 @@ services:
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=admin123
       - JWT_SECRET_KEY=your-secret-key-please-change-in-production
-      - SUB_STORE_URL=http://sub-store:3001
-    depends_on:
-      - sub-store
     restart: unless-stopped
-
-  sub-store:
-    image: xream/sub-store:latest
-    restart: unless-stopped
-    volumes:
-      - ./sub-store-data:/root/sub-store-data
-    environment:
-      - SUB_STORE_BACKEND_API_PORT=3001
 ```
 
 执行 `docker-compose up -d` 启动服务。
 
 启动完成后：
 - 访问 `http://localhost`，出现登录页说明部署成功。
-- `./data` 保存 ConfigFlow 数据，`./sub-store-data` 保存 Sub-Store 数据，方便以后迁移或备份。
+- `./data` 保存 ConfigFlow 数据（含内置 Sub-Store 数据 `./data/sub-store`），方便以后迁移或备份。
 
 > 认证是可选的：不设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 即无需登录直接使用；设置后才开启登录，此时请把 `ADMIN_PASSWORD` 和 `JWT_SECRET_KEY` 替换为更安全的值。
-> Sub-Store 用于订阅解析和节点格式转换。如果已有 Sub-Store 服务，可移除 `sub-store` 部分，在「系统设置」页面配置已有的 Sub-Store URL。
+> 镜像已内置 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 后端，无需另外部署；可在「系统设置 → 第三方依赖」检测并在线更新。如需改用自己的 Sub-Store，在「系统设置」填写其 API 地址即可。
+> 从旧版升级：可删除 compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量，改用内置 Sub-Store（保留 `SUB_STORE_URL` 则继续使用外部 Sub-Store）。
 
 ---
 

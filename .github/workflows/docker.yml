@@ -12,6 +12,7 @@ on:
       - 'docker/Dockerfile'
       - 'docker/nginx.conf'
       - 'docker/supervisord.conf'
+      - 'docker/sub-store-start.sh'
       - '.github/workflows/docker.yml'
   workflow_dispatch:
 

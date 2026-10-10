@@ -29,7 +29,7 @@
 
 ### 📦 订阅管理
 - 多订阅源支持（Mihomo/Surge/通用格式）
-- 通过 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 解析订阅和转换节点格式
+- 内置 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 解析订阅和转换节点格式，支持在线检测与更新
 - 支持 Base64、YAML、URI 多种格式
 
 ### 🌐 节点管理
@@ -100,23 +100,14 @@ services:
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=your_password
       - JWT_SECRET_KEY=your-secret-key
-      - SUB_STORE_URL=http://sub-store:3001
-    depends_on:
-      - sub-store
     restart: unless-stopped
-
-  sub-store:
-    image: xream/sub-store:latest
-    restart: unless-stopped
-    volumes:
-      - ./sub-store-data:/root/sub-store-data
-    environment:
-      - SUB_STORE_BACKEND_API_PORT=3001
 ```
 
 访问 `http://localhost` 即可使用
 
-> 💡 **提示**：生产环境请务必修改默认密码和 JWT 密钥；Sub-Store 用于订阅解析和节点格式转换
+> 💡 **提示**：生产环境请务必修改默认密码和 JWT 密钥；镜像已内置 Sub-Store（订阅解析和节点格式转换），无需另外部署，可在「系统设置 → 第三方依赖」检测并在线更新
+>
+> 从旧版升级：可删除 compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量，改用内置 Sub-Store（保留 `SUB_STORE_URL` 则继续使用外部 Sub-Store）。
 
 ## 升级与数据安全
 

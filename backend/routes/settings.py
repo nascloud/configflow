@@ -393,3 +393,21 @@ def handle_subscription_aggregation():
         except Exception as e:
             current_app.logger.error(f"Failed to update subscription aggregation: {e}")
             return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@settings_bp.route('/settings/dependencies', methods=['GET'])
+@require_auth
+def list_third_party_dependencies():
+    """第三方依赖状态：当前版本、最新版本、是否可在线更新"""
+    from backend.utils.dependencies import list_dependencies
+    force = request.args.get('refresh') in ('1', 'true')
+    return jsonify({'dependencies': list_dependencies(force_check=force)})
+
+
+@settings_bp.route('/settings/dependencies/sub-store/update', methods=['POST'])
+@require_auth
+def update_sub_store_dependency():
+    """在线更新内置 Sub-Store（后台执行，进度通过依赖列表接口轮询）"""
+    from backend.utils.dependencies import start_sub_store_update
+    ok, message = start_sub_store_update()
+    return jsonify({'success': ok, 'message': message}), (202 if ok else 409)
