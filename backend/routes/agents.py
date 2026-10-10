@@ -22,7 +22,7 @@ from backend.converters.mosdns import generate_mosdns_config, get_mosdns_ruleset
 from backend.converters.surge import generate_surge_config
 from backend.routes import agents_bp as bp
 from backend.common.auth import is_token_within_length, parse_bearer_token, require_auth
-from backend.common.config import get_config
+from backend.common.config import get_config, get_repository
 from backend.common.config_repository import ProfileRepositoryError
 from backend.common.agent_manager import get_agent_manager
 from backend.common.utils import str_to_bool
@@ -767,6 +767,14 @@ def _prefetch_download_contents(downloads, base_url, *, validation_urls=(), conf
             future.result()  # 触发异常日志（已在 fetch_one 内处理）
 
 
+def _profile_revision(profile_id):
+    """推送时配置空间的修订号，界面据此标记 Agent「待更新」。"""
+    try:
+        return get_repository().config_revision(profile_id)
+    except ProfileRepositoryError:
+        return None
+
+
 @bp.route('/<agent_id>/push-config', methods=['POST'])
 @require_auth
 def push_config_to_agent(agent_id):
@@ -803,7 +811,8 @@ def push_config_to_agent(agent_id):
             restart = data.get('restart', True)
             self_restart = _supports_self_restart(agent.get('version') or '')
             extra = {'restart_after_update': True} if restart and self_restart else None
-            result = agent_manager.push_config_to_agent(agent_id, content, extra_data=extra)
+            result = agent_manager.push_config_to_agent(agent_id, content, extra_data=extra,
+                                                        config_revision=_profile_revision(profile_id))
             if result.get('success'):
                 result['profile_id'] = profile_id
                 if restart:
@@ -850,7 +859,8 @@ def push_config_to_agent(agent_id):
         extra_data = {'deployment_bundle': bundle, 'activate': activate,
                       'provider_downloads': provider_downloads, 'ruleset_downloads': ruleset_downloads,
                       'custom_files': custom_files}
-        result = agent_manager.push_config_to_agent(agent_id, config_content, extra_data=extra_data)
+        result = agent_manager.push_config_to_agent(agent_id, config_content, extra_data=extra_data,
+                                                    config_revision=_profile_revision(profile_id))
         result['profile_id'] = profile_id
         result['file_count'] = len(bundle.manifest['files'])
         result['provider_count'] = len(provider_downloads)
@@ -932,6 +942,7 @@ def get_agent_metrics(agent_id):
 
 
 @bp.route('/<agent_id>/metrics/history', methods=['GET'])
+@require_auth
 def get_agent_metrics_history(agent_id):
     """获取 Agent 监控历史数据"""
     try:

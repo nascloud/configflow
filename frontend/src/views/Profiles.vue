@@ -1,9 +1,6 @@
 <template>
   <div>
-    <PageHeader
-      title="配置空间"
-      description="为家庭、办公等场景分别设置策略和规则，再生成配置。资源由所有配置空间共用，修改资源会影响使用它的所有配置。此处导入导出单个配置的设置和资源选择；备份全部数据请前往系统设置。"
-    >
+    <PageHeader title="配置空间">
       <template #actions>
         <Button variant="outline" class="border-border/60 bg-background/40" @click="pickImportFile">
           <Upload class="size-4" />
@@ -42,7 +39,7 @@
         :key="profile.id"
         v-bind="listItem(index)"
         :class="[
-          'group relative flex flex-col gap-4 overflow-hidden rounded-xl border bg-card p-5 transition-colors duration-200',
+          'group relative flex flex-col gap-4 overflow-hidden rounded-[18px] border bg-card/90 p-5 shadow-surface transition-colors duration-200 hover:border-border-strong',
           profile.id === activeProfileId
             ? 'border-primary-accent'
             : 'border-border'

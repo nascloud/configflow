@@ -492,6 +492,8 @@ def match_test_rule():
                         'policy': policy,
                         'source': '直接配置的规则',
                         'priority': index,
+                        'rule_id': rule_item.get('id'),
+                        'item_type': 'rule',
                         'behavior': 'classical',
                         'elapsed_time': round(elapsed_time * 1000, 2)  # 转换为毫秒，保留2位小数
                     })
@@ -536,6 +538,8 @@ def match_test_rule():
                                     'policy': policy,
                                     'source': f'规则集: {rule_set_name}',
                                     'priority': index,
+                                    'rule_id': rule_item.get('id'),
+                                    'item_type': 'ruleset',
                                     'behavior': behavior,
                                     'elapsed_time': round(elapsed_time * 1000, 2)  # 转换为毫秒，保留2位小数
                                 })

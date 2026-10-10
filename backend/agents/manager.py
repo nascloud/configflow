@@ -7,7 +7,7 @@ import os
 import fcntl
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 import requests
 from .metrics_history import MetricsHistory
@@ -371,12 +371,17 @@ class AgentManager:
                     state.pop('message', None)
             # Never let an upstream response replace task ownership or identity.
             for key in ('status', 'message', 'error', 'failed_stage', 'rollback_error', 'config_version',
-                        'success', 'sha256', 'submitted', 'previous_running', 'health', 'http_status'):
+                        'config_revision', 'success', 'sha256', 'submitted', 'previous_running', 'health',
+                        'http_status'):
                 if key in updates:
                     state[key] = updates[key]
             state['updated_at'] = datetime.now().isoformat()
             if state.get('status') == 'succeeded':
                 agent['config_version'] = state.get('config_version', agent.get('config_version', '0'))
+                # 配置空间修订号：界面据此判断 Agent 上的配置是否落后于当前配置
+                agent['pushed_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+                if state.get('config_revision') is not None:
+                    agent['config_revision'] = state['config_revision']
             if (agent.get('latest_deployment') or {}).get('deployment_id') == deployment_id:
                 agent['latest_deployment'] = state.copy()
             return state.copy()
@@ -451,7 +456,7 @@ class AgentManager:
             return self.record_deployment(agent_id, deployment_id, {
                 'success': True, 'status': 'unknown', 'message': 'Activation sent; awaiting Agent status'})
 
-    def publish_deployment(self, agent_id, bundle, *, activate=True):
+    def publish_deployment(self, agent_id, bundle, *, activate=True, config_revision=None):
         agent = self.get_agent_by_id(agent_id)
         if not agent:
             return {'success': False, 'message': 'Agent not found', 'http_status': 404}
@@ -481,7 +486,8 @@ class AgentManager:
             # Persist before the request: a lost response can still be reconciled.
             self.record_deployment(agent_id, deployment_id, {
                 'success': True, 'status': 'uploading', 'submitted': True,
-                'sha256': bundle.sha256, 'config_version': bundle.config_version})
+                'sha256': bundle.sha256, 'config_version': bundle.config_version,
+                'config_revision': config_revision})
             result = self._deployment_request(agent, 'post', 'deployments', data=bundle.archive, timeout=(10, 120), headers={
                 'Content-Type': 'application/gzip', 'X-Deployment-ID': deployment_id,
                 'X-Content-SHA256': bundle.sha256, 'X-Activate': 'true' if activate else 'false'})
@@ -502,7 +508,13 @@ class AgentManager:
         finally:
             self.finish_deployment_preparation(agent_id, deployment_id)
 
-    def push_config_to_agent(self, agent_id: str, config_content: str, extra_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def push_config_to_agent(
+        self,
+        agent_id: str,
+        config_content: str,
+        extra_data: Optional[Dict[str, Any]] = None,
+        config_revision: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
         主动推送配置到 Agent
 
@@ -510,6 +522,7 @@ class AgentManager:
             agent_id: Agent ID
             config_content: 配置文件内容
             extra_data: 额外数据（如 directories, ruleset_downloads）
+            config_revision: 推送时配置空间的修订号，记录后用于判断 Agent 是否待更新
 
         Returns:
             Dict: 推送结果
@@ -524,7 +537,8 @@ class AgentManager:
             bundle = (extra_data or {}).get('deployment_bundle')
             if bundle is None:
                 return {'success': False, 'message': 'A complete deployment bundle is required', 'http_status': 409}
-            return self.publish_deployment(agent_id, bundle, activate=(extra_data or {}).get('activate', True))
+            return self.publish_deployment(agent_id, bundle, activate=(extra_data or {}).get('activate', True),
+                                           config_revision=config_revision)
 
         # 构建 Agent 的 URL
         agent_url = f"http://{agent['host']}:{agent['port']}/api/config/update"
@@ -565,6 +579,9 @@ class AgentManager:
                         for item in agents:
                             if item['id'] == agent_id:
                                 item['config_version'] = config_md5[:8]
+                                item['pushed_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+                                if config_revision is not None:
+                                    item['config_revision'] = config_revision
                                 return True
                         return False
 

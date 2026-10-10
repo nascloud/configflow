@@ -1,10 +1,6 @@
 <template>
   <div class="min-w-0 [overflow-wrap:anywhere]">
-    <ScopeBanner scope="system" />
-    <PageHeader
-      title="系统设置"
-      description="设置服务地址和访问令牌，备份或恢复全部数据。这里的修改会影响所有配置空间。"
-    />
+    <PageHeader title="系统设置" />
     <!-- ===== 服务配置 / 配置管理 ===== -->
     <div class="grid grid-cols-2 gap-3 max-[1100px]:grid-cols-1">
       <SectionCard title="服务配置" :icon="Settings" class="min-w-0">
@@ -297,7 +293,6 @@ import { computed, onMounted, ref } from 'vue'
 import { isAxiosError } from 'axios'
 import { Archive, CloudUpload, Copy, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, Settings, ShieldCheck, Trash2, Upload } from '@lucide/vue'
 import PageHeader from '@/components/common/PageHeader.vue'
-import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
 import FormField from '@/components/common/FormField.vue'
 import { Button } from '@/components/ui/button'

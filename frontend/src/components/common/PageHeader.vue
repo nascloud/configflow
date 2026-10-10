@@ -1,15 +1,10 @@
 <template>
-  <header class="mb-6 flex flex-wrap items-end gap-x-6 gap-y-4">
-    <div class="min-w-0 flex-[1_1_280px]">
-      <h1
-        class="m-0 text-[28px] leading-tight font-semibold tracking-[-0.025em] text-foreground max-md:text-[24px]"
-      >
-        {{ title }}
-      </h1>
-      <p v-if="description" class="mt-2 mb-0 max-w-[65ch] break-words text-sm leading-relaxed text-muted-foreground">
-        {{ description }}
-      </p>
-    </div>
+  <header class="relative mb-6 flex flex-wrap items-end gap-4 max-md:mb-4">
+    <h1
+      class="font-display m-0 min-w-0 flex-[1_1_240px] text-[34px] leading-[1.12] text-foreground max-md:text-[26px]"
+    >
+      {{ title }}
+    </h1>
 
     <div v-if="$slots.actions" class="flex min-w-0 max-w-full flex-wrap items-center gap-2 max-md:w-full">
       <slot name="actions" />
@@ -18,5 +13,5 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{ title: string; description?: string }>()
+defineProps<{ title: string }>()
 </script>

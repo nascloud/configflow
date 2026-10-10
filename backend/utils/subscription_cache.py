@@ -1,7 +1,7 @@
 """订阅节点缓存工具"""
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from backend.common.config import get_repository
@@ -35,7 +35,7 @@ def save_subscription_nodes(
     cache_path = _get_cache_path(sub_id)
     payload: Dict[str, Any] = {
         'subscription_id': sub_id,
-        'updated_at': datetime.now().isoformat() + 'Z',
+        'updated_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
         'count': len(nodes) if isinstance(nodes, list) else 0,
         'nodes': nodes
     }

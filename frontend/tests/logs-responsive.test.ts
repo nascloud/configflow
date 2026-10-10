@@ -120,15 +120,17 @@ describe('responsive logs with synthetic API data', () => {
     expect(wrapper.findAll('.log-row')).toHaveLength(syntheticLogs.length)
     expect(wrapper.get('.logs-list').element.textContent).toContain(longUrl)
     expect(wrapper.get('.logs-list').element.textContent).toContain(rawTrace)
-    expect(wrapper.findAll('.log-logger').map(logger => logger.text())).toContain(longLogger)
-    expect(wrapper.findAll('.log-time').map(time => time.text())).toContain('2026-10-09 12:00:00,123')
-    expect(wrapper.get('[aria-label="搜索日志关键词"]').exists()).toBe(true)
-    expect(wrapper.get('[aria-label="自动刷新"]').exists()).toBe(true)
+    // 来源去掉 backend. 前缀后完整保留
+    expect(wrapper.findAll('.log-logger').map(logger => logger.text())).toContain(`[${longLogger.replace(/^backend\./, '')}]`)
+    expect(wrapper.findAll('.log-time').map(time => time.text())).toContain('12:00:00.123')
+    expect(wrapper.get('.log-time').attributes('title')).toBe('2026-10-09 12:00:00,123')
+    expect(wrapper.get('[aria-label="搜索关键词…"]').exists()).toBe(true)
+    expect(wrapper.findAll('button').some(button => button.text().trim() === '暂停')).toBe(true)
   })
 
   it.each(['visible', 'auto'] as const)('preserves the initial scroll behavior and does not jump on manual refresh (%s)', async mode => {
     const { wrapper, container } = await render(mode)
-    expect(api.get).toHaveBeenCalledWith('/logs/tail', { params: { lines: 100 } })
+    expect(api.get).toHaveBeenCalledWith('/logs/tail', { params: { lines: 200 } })
     expect(api.get).toHaveBeenCalledWith('/logs/info')
     expect(container.scrollTop).toBe(mode === 'auto' ? 1400 : 23)
     expect(scrollIntoView).not.toHaveBeenCalled()
@@ -158,41 +160,49 @@ describe('responsive logs with synthetic API data', () => {
     expect(scrollIntoView).not.toHaveBeenCalled()
   })
 
-  it('keeps the debounced search, level and line-count request parameters', async () => {
+  it('keeps the debounced search and line-count request parameters; level chips filter locally', async () => {
     const { wrapper } = await render()
-    await wrapper.get('[aria-label="搜索日志关键词"]').setValue('synthetic failure')
+    await wrapper.get('[aria-label="搜索关键词…"]').setValue('synthetic failure')
     await vi.advanceTimersByTimeAsync(299)
     expect(tailCalls()).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(1)
     await flushPromises()
-    expect(api.get).toHaveBeenLastCalledWith('/logs/tail', { params: { lines: 100, search: 'synthetic failure' } })
+    expect(api.get).toHaveBeenLastCalledWith('/logs/tail', { params: { lines: 200, search: 'synthetic failure' } })
 
-    await choose(wrapper, '日志级别', 'ERROR')
-    expect(api.get).toHaveBeenLastCalledWith('/logs/tail', { params: { lines: 100, search: 'synthetic failure', level: 'ERROR' } })
     await choose(wrapper, '显示行数', '1000')
-    expect(api.get).toHaveBeenLastCalledWith('/logs/tail', { params: { lines: 1000, search: 'synthetic failure', level: 'ERROR' } })
-    await choose(wrapper, '日志级别', 'all')
     expect(api.get).toHaveBeenLastCalledWith('/logs/tail', { params: { lines: 1000, search: 'synthetic failure' } })
+
+    // 级别芯片只在本地筛选：关掉 INFO 后 INFO 行消失，ERROR 行及其后的原始堆栈保留，不再请求
+    const before = tailCalls().length
+    await clickButton(wrapper, 'INFO')
+    expect(tailCalls()).toHaveLength(before)
+    expect(wrapper.get('.logs-list').element.textContent).not.toContain(longUrl)
+    expect(wrapper.get('.logs-list').element.textContent).toContain('Synthetic failure message')
+    expect(wrapper.get('.logs-list').element.textContent).toContain(rawTrace)
   })
 
-  it('refreshes every five seconds, follows the mobile bottom, and clears timers on unmount', async () => {
+  it('tails every three seconds, follows the mobile bottom, pauses, and clears timers on unmount', async () => {
     const { wrapper } = await render('visible')
-    const intervalSpy = vi.spyOn(window, 'setInterval')
-    await wrapper.get('[role="switch"][aria-label="自动刷新"]').trigger('click')
-    expect(intervalSpy).toHaveBeenCalledWith(expect.any(Function), 5000)
-    await vi.advanceTimersByTimeAsync(4999)
+    await vi.advanceTimersByTimeAsync(2999)
     expect(tailCalls()).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(1)
     await flushPromises()
     expect(tailCalls()).toHaveLength(2)
     expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'end' }))
 
-    // Both the refresh interval and an outstanding search debounce must stop.
-    await wrapper.get('[aria-label="搜索日志关键词"]').setValue('pending search')
+    // 暂停后不再尾随；继续时立即补拉一次
+    await clickButton(wrapper, '暂停')
+    await vi.advanceTimersByTimeAsync(9000)
+    expect(tailCalls()).toHaveLength(2)
+    await clickButton(wrapper, '继续')
+    expect(tailCalls()).toHaveLength(3)
+
+    // Both the tail interval and an outstanding search debounce must stop.
+    await wrapper.get('[aria-label="搜索关键词…"]').setValue('pending search')
     wrapper.unmount()
     wrappers.splice(wrappers.indexOf(wrapper), 1)
     await vi.advanceTimersByTimeAsync(10000)
     await flushPromises()
-    expect(tailCalls()).toHaveLength(2)
+    expect(tailCalls()).toHaveLength(3)
   })
 })

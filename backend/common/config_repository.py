@@ -597,7 +597,10 @@ class ProfileRepository:
 
     def list_profiles(self):
         with self._document() as document:
-            return [self._metadata(profile) for profile in document['profiles'].values()]
+            shared_revision = int(document['shared'].get('_revision', 0))
+            # revision 即生成配置的版本号（见 config_revision），界面据此判断 Agent 是否待更新
+            return [dict(self._metadata(profile), revision=int(profile.get('_revision', 0)) + shared_revision)
+                    for profile in document['profiles'].values()]
 
     def _profile_metadata(self, profile_id):
         return self._metadata(self.get_profile(profile_id))
@@ -605,6 +608,12 @@ class ProfileRepository:
     def get_profile(self, profile_id):
         with self._document() as document:
             return copy.deepcopy(self._profile(document, profile_id))
+
+    def config_revision(self, profile_id):
+        """生成配置的版本号：配置空间或共享资源任一变化都会让它增大，用于判断 Agent 是否待更新。"""
+        with self._document() as document:
+            profile = self._profile(document, profile_id)
+            return int(profile.get('_revision', 0)) + int(document['shared'].get('_revision', 0))
 
     def create_profile(self, metadata, clone_from=None):
         if not isinstance(metadata, dict):

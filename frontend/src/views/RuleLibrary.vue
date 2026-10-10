@@ -1,15 +1,6 @@
 <template>
   <div :class="reorder.active.value && 'cf-reordering'">
-    <ScopeBanner
-      scope="resource"
-      :profile-name="cfProfileName"
-      description="修改规则集来源或内容会影响使用它的所有配置；各配置的策略、顺序和启用状态保持不变。"
-    />
-
-    <PageHeader
-      title="规则库"
-      description="添加规则集链接或粘贴规则内容，再加入配置并选择处理流量的策略。"
-    >
+    <PageHeader title="规则库">
       <template #actions>
         <Button @click="showAddDialog">
           <Plus class="size-4" />
@@ -279,7 +270,7 @@
           :data-id="rule.id"
           data-reorder-item
           :class="[
-            'relative flex flex-col gap-3 overflow-hidden rounded-xl border bg-card p-4 transition-colors duration-200',
+            'relative flex flex-col gap-3 overflow-hidden rounded-[18px] border bg-card/90 p-4 shadow-surface transition-colors duration-200 hover:border-border-strong',
             selectedRules.includes(rule.id) ? 'border-primary-accent' : 'border-border',
             !rule.enabled && 'dark:opacity-60'
           ]"
@@ -661,7 +652,6 @@ import Toolbar from '@/components/common/Toolbar.vue'
 import ViewToggle from '@/components/common/ViewToggle.vue'
 import ReorderBar from '@/components/shell/ReorderBar.vue'
 import DragHandle from '@/components/shell/DragHandle.vue'
-import ScopeBanner from '@/components/shell/ScopeBanner.vue'
 import { useReorder } from '@/composables/useReorder'
 import { confirm, confirmDanger, notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'

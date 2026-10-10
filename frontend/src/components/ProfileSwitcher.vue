@@ -1,20 +1,42 @@
 <template>
-  <div class="flex min-w-0 items-center gap-1">
-    <span class="shrink-0 text-xs text-muted-foreground max-[1100px]:hidden">当前配置</span>
+  <div :class="cn('flex min-w-0 items-center gap-1', rail && 'w-full gap-1.5')">
     <Select v-model="selectedProfileId" :disabled="loading || scopedRequests > 0" @update:model-value="handleChange">
       <SelectTrigger
-        size="sm"
-        class="w-[144px] min-w-0 gap-1.5 border-border/80 bg-background px-2.5 text-[13px] font-medium shadow-none transition-colors hover:border-border-strong hover:text-foreground max-[1100px]:w-[132px] max-[700px]:data-[size=sm]:h-11 max-[700px]:flex-1 max-[700px]:px-3"
+        :class="cn(
+          'gap-2 border-border/60 bg-background/40 text-[13px] font-medium transition-colors hover:border-border-strong',
+          rail
+            ? 'h-auto! min-w-0 flex-1 rounded-xl bg-card/70 px-2.5 py-2'
+            : 'h-8 w-[190px] max-md:w-[132px]'
+        )"
         aria-label="当前配置空间"
       >
-        <Boxes class="size-4 shrink-0 text-primary-accent" />
-        <SelectValue :title="currentLabel" :class="cn('min-w-0 flex-1 truncate text-left', !currentLabel && 'text-muted-foreground')">
+        <span
+          v-if="rail"
+          class="font-display grid size-7 shrink-0 place-items-center rounded-lg bg-primary-soft text-[14px] text-primary-accent"
+          aria-hidden="true"
+        >
+          {{ initial }}
+        </span>
+        <Boxes v-else class="size-4 shrink-0 text-primary-accent" />
+        <span v-if="rail" class="flex min-w-0 flex-1 flex-col text-left leading-tight">
+          <SelectValue :class="cn('truncate text-[13px] font-semibold', !currentLabel && 'text-muted-foreground')">
+            {{ currentLabel || '选择配置空间' }}
+          </SelectValue>
+          <span class="text-[11px] font-normal text-muted-foreground">配置空间</span>
+        </span>
+        <SelectValue v-else :class="cn('truncate', !currentLabel && 'text-muted-foreground')">
           {{ currentLabel || '选择配置空间' }}
         </SelectValue>
       </SelectTrigger>
-      <SelectContent align="end" class="min-w-[220px] max-w-[calc(100vw-24px)]">
+      <SelectContent :align="rail ? 'start' : 'end'" class="glass-strong min-w-[220px]">
         <SelectItem v-for="profile in profiles" :key="profile.id" :value="profile.id">
-          <span class="flex min-w-0 flex-col whitespace-normal break-all leading-snug">
+          <span
+            class="font-display grid size-6 shrink-0 place-items-center rounded-md bg-primary-soft text-[12px] text-primary-accent"
+            aria-hidden="true"
+          >
+            {{ initialOf(profile.name || profile.id) }}
+          </span>
+          <span class="flex flex-col leading-snug">
             <span class="text-[13px] font-medium">{{ profile.name }}</span>
             <span class="font-mono text-[11px] text-muted-foreground">{{ profile.id }}</span>
           </span>
@@ -25,7 +47,7 @@
     <Button
       variant="ghost"
       size="icon-sm"
-      class="size-8 shrink-0 text-muted-foreground max-[700px]:size-11"
+      class="shrink-0 text-primary-accent"
       title="管理配置空间"
       aria-label="管理配置空间"
       @click="router.push('/profiles')"
@@ -50,6 +72,9 @@ import {
 } from '@/components/ui/select'
 import { useProfileStore } from '@/stores/profile'
 
+const props = defineProps<{ variant?: 'bar' | 'rail' }>()
+const rail = computed(() => props.variant === 'rail')
+
 const router = useRouter()
 const profileStore = useProfileStore()
 const { profiles, loading, scopedRequests, activeProfileId, switchProfile } = profileStore
@@ -65,6 +90,10 @@ const currentLabel = computed(
     ''
 )
 
+/** 配置空间名首字，作为头像 */
+const initialOf = (name: string) => Array.from(String(name || '').trim())[0]?.toUpperCase() || '·'
+const initial = computed(() => initialOf(currentLabel.value))
+
 watch(activeProfileId, value => {
   selectedProfileId.value = value
 })
@@ -73,6 +102,7 @@ const handleChange = async (profileId: unknown) => {
   const id = String(profileId)
   if (!id || id === activeProfileId.value) return
   await switchProfile(id)
+  // 切换被拒（例如仍有进行中的请求）时回到当前生效的配置空间
   selectedProfileId.value = activeProfileId.value
 }
 </script>

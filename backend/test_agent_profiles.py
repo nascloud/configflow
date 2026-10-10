@@ -79,7 +79,7 @@ def test_push_config_uses_bound_profile_even_with_other_request_context(tmp_path
     monkeypatch.setattr(
         manager,
         "push_config_to_agent",
-        lambda agent_id, content, extra_data=None: {"success": True},
+        lambda agent_id, content, extra_data=None, config_revision=None: {"success": True},
     )
 
     response = app.test_client().post(

@@ -45,10 +45,10 @@
 
 :root {
   /* 应用布局 */
-  --cf-topbar-h: 56px;
-  --cf-rail-w: 224px;
+  --cf-topbar-h: 60px;
+  --cf-rail-w: 236px;
   --cf-tabbar-h: 56px;
-  --cf-content-max: 1280px;
+  --cf-content-max: 1360px;
 
   /* 圆角单一来源：theme.css 的 --radius 体系 */
   --cf-r-sm: var(--radius-sm);
