@@ -177,18 +177,7 @@ services:
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=admin123
       - JWT_SECRET_KEY=your-secret-key-please-change-in-production
-      - SUB_STORE_URL=http://sub-store:3001
-    depends_on:
-      - sub-store
     restart: unless-stopped
-
-  sub-store:
-    image: xream/sub-store:latest
-    restart: unless-stopped
-    volumes:
-      - ./sub-store-data:/root/sub-store-data
-    environment:
-      - SUB_STORE_BACKEND_API_PORT=3001
 ```
 
 启动：`docker-compose up -d`，访问 `http://localhost` 即可使用。

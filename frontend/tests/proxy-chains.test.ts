@@ -8,7 +8,7 @@ import ProxyGroups from '@/views/ProxyGroups.vue'
 import Rules from '@/views/Rules.vue'
 import Nodes from '@/views/Nodes.vue'
 import ConfirmHost from '@/components/feedback/ConfirmHost.vue'
-import api, { nodeApi, proxyGroupApi, ruleApi, subStoreUrlApi } from '@/api'
+import api, { nodeApi, proxyGroupApi, ruleApi } from '@/api'
 import { notify, settleConfirm } from '@/lib/feedback'
 import { setActiveProfileId } from '@/profileContext'
 
@@ -19,7 +19,6 @@ vi.mock('@/api', () => ({
   proxyGroupApi: { getAll: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
   ruleApi: { getAll: vi.fn(), create: vi.fn(), update: vi.fn() },
   ruleSetApi: { getAll: vi.fn() },
-  subStoreUrlApi: { get: vi.fn() },
   profileApi: { list: vi.fn() }
 }))
 let rows: ProxyNode[], groups: ProxyGroup[]
@@ -57,7 +56,6 @@ beforeEach(() => {
   vi.mocked(proxyGroupApi.delete).mockImplementation(async id => { groups = groups.filter(group => group.id !== id); return response({}) })
   vi.mocked(ruleApi.getAll).mockResolvedValue(response([]))
   vi.mocked(ruleApi.create).mockResolvedValue(response({}))
-  vi.mocked(subStoreUrlApi.get).mockResolvedValue(response({ sub_store_url: 'https://synthetic.test' }))
   vi.mocked(nodeApi.update).mockResolvedValue(response({}))
   vi.spyOn(notify, 'error').mockImplementation(() => 0)
   vi.spyOn(notify, 'warning').mockImplementation(() => 0)

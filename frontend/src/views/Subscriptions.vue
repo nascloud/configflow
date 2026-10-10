@@ -505,7 +505,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import { subscriptionApi, subStoreUrlApi } from '@/api'
+import { subscriptionApi } from '@/api'
 import type { Subscription } from '@/types'
 import api from '@/api'
 import yaml from 'js-yaml'
@@ -531,7 +531,7 @@ import Toolbar from '@/components/common/Toolbar.vue'
 import ViewToggle from '@/components/common/ViewToggle.vue'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Motion } from 'motion-v'
-import { confirm, confirmDanger, notify } from '@/lib/feedback'
+import { confirmDanger, notify } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
 
 
@@ -744,26 +744,7 @@ const pullOne = async (sub: Subscription) => {
   await loadSubscriptions(true)
 }
 
-const checkSubStoreUrl = async (): Promise<boolean> => {
-  try {
-    const response = await subStoreUrlApi.get()
-    const url = response.data?.sub_store_url || ''
-    if (!url) {
-      return await confirm(
-        '尚未配置 Sub-Store URL，订阅解析和节点格式转换功能将不可用。请前往「系统设置」页面配置 Sub-Store 地址。',
-        { title: '未配置 Sub-Store', confirmText: '继续添加' }
-      )
-    }
-    return true
-  } catch (error) {
-    // 读取设置失败不应阻断添加流程
-    console.error('Failed to check Sub-Store URL:', error)
-    return true
-  }
-}
-
-const showAddDialog = async () => {
-  if (!await checkSubStoreUrl()) return
+const showAddDialog = () => {
   isEdit.value = false
   form.value = {
     id: `sub_${Date.now()}`,

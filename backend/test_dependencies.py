@@ -50,24 +50,27 @@ def test_image_upgrade_overrides_older_online_update(dirs):
     assert deps.active_bundle() == (str(builtin), '2.40.0')
 
 
-def test_mode_builtin_by_default(dirs):
-    assert deps.sub_store_mode() == ('builtin', 'builtin')
-
-
-def test_mode_external_via_env_or_settings(dirs, monkeypatch):
-    monkeypatch.setenv('SUB_STORE_URL', 'http://127.0.0.1:3001')
-    assert deps.sub_store_mode() == ('builtin', 'builtin')
+def test_base_url_always_builtin_when_bundled(dirs, monkeypatch):
+    from backend.utils import sub_store_client
     monkeypatch.setenv('SUB_STORE_URL', 'http://sub-store:3001')
-    assert deps.sub_store_mode() == ('external', 'env')
     monkeypatch.setattr('backend.common.config.get_system_config',
                         lambda: {'system_config': {'sub_store_url': 'http://10.0.0.2:3001'}})
-    assert deps.sub_store_mode() == ('external', 'settings')
+    assert sub_store_client._get_base_url() == deps.SUB_STORE_BUILTIN_URL
 
 
-def test_update_refused_for_external(dirs, monkeypatch):
-    monkeypatch.setenv('SUB_STORE_URL', 'http://sub-store:3001')
+def test_base_url_falls_back_to_env_without_bundle(dirs, monkeypatch):
+    from backend.utils import sub_store_client
+    builtin, _runtime = dirs
+    (builtin / deps.SUB_STORE_ASSET).unlink()
+    monkeypatch.setenv('SUB_STORE_URL', 'http://dev-sub-store:3001/')
+    assert sub_store_client._get_base_url() == 'http://dev-sub-store:3001'
+
+
+def test_update_refused_without_bundle(dirs):
+    builtin, _runtime = dirs
+    (builtin / deps.SUB_STORE_ASSET).unlink()
     ok, message = deps.start_sub_store_update()
-    assert not ok and '外部' in message
+    assert not ok and '内置' in message
 
 
 def _release(content, version='2.41.0'):

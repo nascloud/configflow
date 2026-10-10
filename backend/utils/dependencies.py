@@ -89,27 +89,6 @@ def active_bundle():
     return SUB_STORE_BUILTIN_DIR, builtin_version
 
 
-def sub_store_mode():
-    """返回 (mode, source)
-
-    mode: builtin / external
-    source: settings（系统设置中填写）/ env（环境变量 SUB_STORE_URL）/ builtin
-    """
-    try:
-        from backend.common.config import get_system_config
-        configured = get_system_config().get('system_config', {}).get('sub_store_url', '')
-    except Exception:
-        configured = ''
-    if isinstance(configured, str) and configured.strip():
-        return 'external', 'settings'
-    env_url = os.environ.get('SUB_STORE_URL', '').strip().rstrip('/')
-    if env_url and env_url not in (SUB_STORE_BUILTIN_URL, 'http://localhost:3001'):
-        return 'external', 'env'
-    if is_builtin_available():
-        return 'builtin', 'builtin'
-    return 'external', 'env' if env_url else 'builtin'
-
-
 def fetch_running_version(base_url, timeout=5):
     """通过 Sub-Store 的 /api/utils/env 获取正在运行的后端版本，失败返回空串"""
     try:
@@ -195,10 +174,9 @@ def get_update_state():
 def get_sub_store_status(force_check=False):
     from backend.utils.sub_store_client import _get_base_url
 
-    mode, source = sub_store_mode()
-    base_url = _get_base_url()
-    running_version = fetch_running_version(base_url)
-    bundle_dir, bundle_version = active_bundle() if is_builtin_available() else ('', '')
+    builtin = is_builtin_available()
+    running_version = fetch_running_version(_get_base_url())
+    bundle_dir, bundle_version = active_bundle() if builtin else ('', '')
     current = running_version or bundle_version
     latest, latest_error = fetch_latest_release(force=force_check)
     latest_version = latest['version'] if latest else ''
@@ -208,21 +186,19 @@ def get_sub_store_status(force_check=False):
         'name': 'Sub-Store',
         'description': '订阅解析与节点格式转换',
         'homepage': f'https://github.com/{SUB_STORE_REPO}',
-        'mode': mode,
-        'source': source,
         'running': bool(running_version),
         'current_version': current,
-        'builtin_version': _read_version_file(SUB_STORE_BUILTIN_DIR) if is_builtin_available() else '',
+        'builtin_version': _read_version_file(SUB_STORE_BUILTIN_DIR) if builtin else '',
         'online_updated': bool(bundle_dir) and bundle_dir != SUB_STORE_BUILTIN_DIR,
-        'runtime': _node_version() if mode == 'builtin' else '',
+        'runtime': _node_version() if builtin else '',
         'latest_version': latest_version,
         'latest_published_at': latest['published_at'] if latest else '',
         'release_url': latest['release_url'] if latest else '',
         'release_notes': latest['notes'] if latest else '',
         'check_error': latest_error,
         'has_update': bool(current) and is_newer(latest_version, current),
-        # 外部 Sub-Store 由用户自行维护，这里只做检测
-        'updatable': mode == 'builtin',
+        # 本地开发环境没有内置 bundle，只做检测
+        'updatable': builtin,
         'update': get_update_state(),
     }
 
@@ -327,9 +303,8 @@ def _run_update(release):
 
 def start_sub_store_update():
     """启动后台更新任务。返回 (ok, message)"""
-    mode, _source = sub_store_mode()
-    if mode != 'builtin':
-        return False, '当前使用外部 Sub-Store，请在其部署处自行更新'
+    if not is_builtin_available():
+        return False, '当前环境没有内置 Sub-Store，无法在线更新'
     if not _update_lock.acquire(blocking=False):
         return False, '已有更新任务在进行中'
     try:

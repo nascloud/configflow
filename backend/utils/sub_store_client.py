@@ -33,21 +33,15 @@ class SubscriptionFetchError(Exception):
 
 
 def _get_base_url():
-    """获取 sub-store API 基础 URL（含 backend path 前缀）
+    """获取 sub-store API 基础 URL
 
-    优先级：配置文件 > 环境变量 > 默认值
-    例如 http://sub-store:3001 或 http://10.0.0.2:6031/index
+    官方镜像固定使用内置 Sub-Store；仅本地开发（无内置 bundle）时
+    才读取环境变量 SUB_STORE_URL 指向自己启动的 Sub-Store。
     """
-    # 优先从配置文件读取（用户在 UI 中设置的值）
-    try:
-        from backend.common.config import get_system_config
-        config_url = get_system_config().get('system_config', {}).get('sub_store_url', '')
-        if config_url and config_url.strip():
-            return config_url.strip().rstrip('/')
-    except Exception:
-        pass
-
-    return os.environ.get('SUB_STORE_URL', 'http://127.0.0.1:3001').rstrip('/')
+    from backend.utils.dependencies import SUB_STORE_BUILTIN_URL, is_builtin_available
+    if is_builtin_available():
+        return SUB_STORE_BUILTIN_URL
+    return os.environ.get('SUB_STORE_URL', SUB_STORE_BUILTIN_URL).rstrip('/')
 
 
 def _is_yaml_response(text):

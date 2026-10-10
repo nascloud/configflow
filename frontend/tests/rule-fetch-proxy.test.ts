@@ -9,8 +9,8 @@ vi.mock('@/api', () => ({
   configApi: {},
   configTokenApi: { get: vi.fn(async () => ({ data: { config_token: '' } })) },
   serverDomainApi: { get: vi.fn(async () => ({ data: { server_domain: 'http://configflow.test' } })) },
-  subStoreUrlApi: { get: vi.fn(async () => ({ data: { sub_store_url: '' } })) },
-  ruleFetchProxyApi: { get: vi.fn(), update: vi.fn() }
+  ruleFetchProxyApi: { get: vi.fn(), update: vi.fn() },
+  dependenciesApi: { list: vi.fn(async () => ({ data: { dependencies: [] } })), update: vi.fn() }
 }))
 
 const proxy = 'http://proxy-user:proxy-secret@192.168.0.3:7890'
