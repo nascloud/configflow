@@ -13,7 +13,7 @@
     <button
       v-for="option in options"
       :key="option.value"
-      ref="buttons"
+      data-segment
       type="button"
       role="radio"
       :aria-checked="option.value === modelValue"
@@ -46,12 +46,12 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'update:modelValue', value: T): void }>()
 
 const root = ref<HTMLElement | null>(null)
-const buttons = ref<HTMLButtonElement[]>([])
 const thumb = ref<Record<string, string>>({ left: '3px', width: '0px' })
 
 const place = () => {
   const index = props.options.findIndex(o => o.value === props.modelValue)
-  const el = buttons.value[index]
+  // v-for 收集的模板 ref 数组不保证与选项同序，按 DOM 顺序取对应按钮
+  const el = root.value?.querySelectorAll<HTMLButtonElement>('[data-segment]')[index]
   if (!el) return
   thumb.value = { left: `${el.offsetLeft}px`, width: `${el.offsetWidth}px` }
 }
