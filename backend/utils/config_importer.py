@@ -455,7 +455,16 @@ def _parse_surge_proxy(name: str, value: str, sections, plan: Dict[str, Any]) ->
             _apply_common_tls(proxy, options)
     elif proxy_type == 'snell':
         proxy.update(type='snell', psk=options.get('psk', ''), version=_int(options.get('version'), 4))
-        if options.get('obfs'):
+        if _truthy(options.get('reuse', 'false')):
+            proxy['reuse'] = True
+        # Mihomo 的 Snell 把 obfs 和 ShadowTLS 都放在 obfs-opts 里，ShadowTLS 优先
+        if options.get('shadow-tls-password'):
+            obfs_opts = {'mode': 'shadow-tls', 'host': options.get('shadow-tls-sni', ''),
+                         'password': options['shadow-tls-password']}
+            if options.get('shadow-tls-version'):
+                obfs_opts['version'] = _int(options['shadow-tls-version'], 3)
+            proxy['obfs-opts'] = obfs_opts
+        elif options.get('obfs'):
             proxy['obfs-opts'] = {'mode': options['obfs'], 'host': options.get('obfs-host', '')}
     elif proxy_type in ('hysteria2', 'hy2'):
         proxy.update(type='hysteria2', password=options.get('password', extra[0] if extra else ''))
