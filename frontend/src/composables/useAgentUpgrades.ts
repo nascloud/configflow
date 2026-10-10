@@ -24,12 +24,15 @@ export function useAgentUpgrades(onSuccess: () => void) {
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const inflight = new Set<string>()
   const submitting = reactive(new Set<string>())
+  const querying = reactive(new Set<string>())
   let disposed = false
   const busy = (id: string) => submitting.has(id) || !!upgrades[id] && (!terminal.has(upgrades[id].status) || upgrades[id].status === 'rollback_failed')
 
   function schedule(id: string) {
     if (disposed || timers.has(id) || !busy(id) || upgrades[id].status === 'rollback_failed') return
-    timers.set(id, setTimeout(() => { timers.delete(id); void refresh(id) }, 1500))
+    // 结果待确认时 Agent 多半已失联，放慢轮询，避免每 1.5 秒向它发两次请求
+    const delay = upgrades[id].status === 'unknown' ? 15000 : 1500
+    timers.set(id, setTimeout(() => { timers.delete(id); void refresh(id) }, delay))
   }
   function track(id: string, state: AgentUpgrade) {
     const previous = upgrades[id]
@@ -52,6 +55,21 @@ export function useAgentUpgrades(onSuccess: () => void) {
       schedule(id)
     }
   }
+  /** 手动查询：不受后台轮询的 inflight 去重影响，返回最新状态，失败时抛出 */
+  async function query(id: string): Promise<AgentUpgrade | undefined> {
+    if (querying.has(id)) return upgrades[id]
+    querying.add(id)
+    const timer = timers.get(id)
+    if (timer) { clearTimeout(timer); timers.delete(id) }
+    try {
+      const { data } = await agentApi.getUpgrade(id)
+      if (!disposed) track(id, data)
+      return upgrades[id]
+    } finally {
+      querying.delete(id)
+      schedule(id)
+    }
+  }
   async function start(id: string) {
     if (busy(id)) return
     submitting.add(id)
@@ -61,5 +79,5 @@ export function useAgentUpgrades(onSuccess: () => void) {
     } finally { submitting.delete(id) }
   }
   onUnmounted(() => { disposed = true; timers.forEach(clearTimeout); timers.clear() })
-  return { upgrades, busy, track, refresh, start }
+  return { upgrades, busy, querying, track, refresh, query, start }
 }

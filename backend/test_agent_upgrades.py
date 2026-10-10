@@ -78,11 +78,26 @@ def test_unknown_timeout_blocks_retry_and_does_not_claim_rollback(env, monkeypat
     _, manager, ident = env
     state = {'update_id': 'job', 'target_version': upgrades.get_latest_version(), 'previous_version': '1.1.0-go',
              'status': 'checking', 'protocol': 2, 'started_at': time.time() - 601}
-    manager._update_agents(lambda agents: agents[0].update(latest_upgrade=state))
+    stale = datetime.fromtimestamp(state['started_at']).isoformat()
+    manager._update_agents(lambda agents: agents[0].update(latest_upgrade=state, last_heartbeat=stale))
     monkeypatch.setattr(upgrades, '_request', lambda *a, **kw: response({}, 404))
     assert upgrades.poll(manager, ident)['status'] == 'unknown'
     with pytest.raises(ValueError, match='已有更新'):
         upgrades.start(manager, ident)
+
+
+def test_old_version_heartbeat_after_timeout_fails_and_allows_retry(env, monkeypatch):
+    _, manager, ident = env
+    state = {'update_id': 'job', 'target_version': upgrades.get_latest_version(), 'previous_version': '1.1.0-go',
+             'status': 'unknown', 'protocol': 2, 'started_at': time.time() - 601}
+    manager._update_agents(lambda agents: agents[0].update(latest_upgrade=state))
+    manager.update_heartbeat(ident, {'version': '1.1.0-go'})
+    info = {'agent_id': ident, 'deployment_method': 'shell', 'architecture': 'linux-amd64', 'version': '1.1.0-go'}
+    monkeypatch.setattr(upgrades, '_request', lambda a, m, p, **kw: response(info if p.endswith('info') else {}, 404 if m == 'GET' and p == '/api/update' else 200))
+    result = upgrades.poll(manager, ident)
+    assert result['status'] == 'failed'
+    assert '1.1.0-go' in result['error']
+    assert upgrades.start(manager, ident)['status'] == 'downloading'
 
 
 def test_docker_is_not_sent_binary_update(env, monkeypatch):

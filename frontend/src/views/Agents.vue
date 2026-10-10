@@ -155,7 +155,17 @@
           >
             <p class="m-0 font-medium">{{ upgradeLabels[upgrades[agent.id].status] || upgrades[agent.id].status }} · {{ upgrades[agent.id].target_version }}</p>
             <p v-if="upgrades[agent.id].error" class="mt-1 mb-0 break-words text-destructive-accent">{{ upgrades[agent.id].error }}</p>
-            <Button variant="outline" size="sm" class="mt-2" @click="refreshUpgrade(agent.id)">查询更新结果</Button>
+            <Button
+              v-if="upgradeBusy(agent.id)"
+              variant="outline"
+              size="sm"
+              class="mt-2"
+              :disabled="upgradeQuerying.has(agent.id)"
+              @click="queryUpgrade(agent.id)"
+            >
+              <Loader2 v-if="upgradeQuerying.has(agent.id)" class="size-3.5 animate-spin" />
+              {{ upgradeQuerying.has(agent.id) ? '正在查询…' : '查询更新结果' }}
+            </Button>
           </section>
 
           <div v-if="agent.has_update" class="mb-3 flex items-center gap-2 rounded-xl border border-primary-accent/30 bg-primary-soft/40 px-3 py-2 text-[12px]">
@@ -717,7 +727,22 @@ use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent
 
 const agents = ref<Agent[]>([])
 const { deployments, busy: deploymentBusy, track: trackDeployment, refresh: refreshDeployment, activate: activateDeployment, retryPublish: retryDeployment } = useAgentDeployments(() => { void loadAgents() })
-const { upgrades, busy: upgradeBusy, track: trackUpgrade, refresh: refreshUpgrade, start: startUpgrade } = useAgentUpgrades(() => { void loadAgents() })
+const {
+  upgrades, busy: upgradeBusy, querying: upgradeQuerying, track: trackUpgrade, query: queryAgentUpgrade, start: startUpgrade
+} = useAgentUpgrades(() => { void loadAgents() })
+
+const queryUpgrade = async (agentId: string) => {
+  try {
+    const state = await queryAgentUpgrade(agentId)
+    if (!state) return
+    const label = upgradeLabels[state.status] || state.status
+    if (state.status === 'succeeded') notify.success(label)
+    else if (['failed', 'rolled_back', 'rollback_failed'].includes(state.status)) notify.error(state.error || label)
+    else notify.info(`当前状态：${label}`)
+  } catch (error: any) {
+    notify.error(error.response?.data?.message || '查询更新结果失败，请稍后重试')
+  }
+}
 const { profiles, refreshProfiles } = useProfileStore()
 const bindingAgentId = ref<string | null>(null)
 const scriptDialogVisible = ref(false)
