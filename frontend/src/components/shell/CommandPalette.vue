@@ -30,6 +30,10 @@
           <SunMoon class="size-4 text-muted-foreground" aria-hidden="true" />
           <span>切换深浅主题</span>
         </CommandItem>
+        <CommandItem v-if="preference !== 'system'" value="主题跟随系统 theme system auto" @select="onFollowSystem">
+          <Monitor class="size-4 text-muted-foreground" aria-hidden="true" />
+          <span>主题跟随系统</span>
+        </CommandItem>
       </CommandGroup>
     </CommandList>
   </CommandDialog>
@@ -38,7 +42,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Download, RefreshCw, Send, SunMoon, Zap } from '@lucide/vue'
+import { Download, Monitor, RefreshCw, Send, SunMoon, Zap } from '@lucide/vue'
 import {
   CommandDialog,
   CommandEmpty,
@@ -57,7 +61,7 @@ import { ACTION_LABEL, runAction, type AppAction } from '@/lib/actions'
 const props = defineProps<{ subscriptionAggregationEnabled: boolean }>()
 
 const router = useRouter()
-const { toggleTheme } = useThemeStore()
+const { preference, setTheme, toggleTheme } = useThemeStore()
 const open = ref(false)
 const groups = NAV_GROUPS
 
@@ -86,6 +90,11 @@ const onAction = (id: AppAction): void => {
 const onToggleTheme = (): void => {
   open.value = false
   toggleTheme()
+}
+
+const onFollowSystem = (): void => {
+  open.value = false
+  setTheme('system')
 }
 
 const onKeydown = (event: KeyboardEvent): void => {
