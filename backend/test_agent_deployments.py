@@ -116,11 +116,118 @@ def test_mosdns_conversion_and_snapshot_callback(env, monkeypatch):
     monkeypatch.setattr('backend.agents.deployment_bundle.request_rule', lambda *_a, **_k: pytest.fail('self HTTP'))
     bundle = build_deployment_bundle(agent, config, 'plugins: [{type: domain_set, args: {files: [./rules/r.txt]}}]',
                                      ruleset_downloads=[{'name': 'r', 'url': url, 'local_path': './rules/r.txt'}])
-    assert contents(bundle)['files/rules/r.txt'] == b'domain:example.test\n10.0.0.0/8'
+    assert contents(bundle)['files/rules/r.txt'] == b'domain:example.test'
     assert convert_mosdns_rules(b'') == b''
     with pytest.raises(DeploymentPreparationError):
         convert_mosdns_rules(b'\xffMRS')
 
+
+@pytest.mark.parametrize('yaml_payload', [False, True])
+def test_mosdns_apple_clash_rules_omit_ip_and_process_entries(yaml_payload):
+    # Real Apple.list entries: the IPv6 network made the production MosDNS
+    # domain_set fail with "unsupported match type [2403]" after replacement.
+    lines = [
+        'DOMAIN,apple-events.akamaized.net',
+        'DOMAIN-SUFFIX,apple.com',
+        'DOMAIN-KEYWORD,apple',
+        'IP-CIDR,139.178.128.0/18,no-resolve',
+        'IP-CIDR6,2403:300::/32,no-resolve',
+        'PROCESS-NAME,CoreLocationAgent',
+    ]
+    source = yaml.safe_dump({'payload': lines}) if yaml_payload else '\n'.join(lines)
+    assert convert_mosdns_rules(source.encode()) == (
+        b'full:apple-events.akamaized.net\ndomain:apple.com\nkeyword:apple')
+
+
+def test_mosdns_domain_matching_semantics_agree_with_rule_proxy(monkeypatch):
+    from flask import Flask
+    from backend.routes import mosdns
+
+    source = '\n'.join([
+        'DOMAIN,exact.example.test',
+        'DOMAIN-SUFFIX,suffix.example.test',
+        'DOMAIN-KEYWORD,keyword',
+        r'DOMAIN-REGEX,^node[0-9]{1,3}\.example\.test$',
+        '+.all.example.test',
+        '.children.example.test',
+        '*.direct-child.example.test',
+        'plain.example.test',
+        'IP-CIDR,192.0.2.0/24,no-resolve',
+        'IP-CIDR6,2001:db8::/32,no-resolve',
+        'GEOIP,CN',
+        'PROCESS-NAME,example',
+    ])
+    monkeypatch.setattr(mosdns, 'get_config', lambda: {})
+    monkeypatch.setattr(mosdns, '_require_rule_proxy_auth', lambda: True)
+    monkeypatch.setattr(mosdns, '_local_content_rule', lambda *_: None)
+    monkeypatch.setattr(mosdns, '_fetch_remote_content', lambda _: source)
+    app = Flask(__name__)
+    with app.test_request_context('/api/mosdns/rule-proxy?url=https://rules.test/mixed.list'):
+        legacy, status, _headers = mosdns.mosdns_rule_proxy()
+    assert status == 200
+    assert convert_mosdns_rules(source.encode()) == legacy.encode()
+    assert legacy.splitlines() == [
+        'full:exact.example.test',
+        'domain:suffix.example.test',
+        'keyword:keyword',
+        r'regexp:^node[0-9]{1,3}\.example\.test$',
+        'domain:all.example.test',
+        r'regexp:.+\.children\.example\.test$',
+        r'regexp:^[^.]+\.direct\-child\.example\.test$',
+        'full:plain.example.test',
+    ]
+
+
+
+@pytest.mark.parametrize('plugin_type,expected', [
+    ('domain_set', b'full:exact.example.test\ndomain:suffix.example.test\nkeyword:keyword\nregexp:^node[0-9]{1,3}\\.example\\.test$'),
+    ('ip_set', b'192.0.2.0/24\n2001:db8::/32\n198.51.100.7\n2001:db8:1::1\n203.0.113.0/24'),
+])
+@pytest.mark.parametrize('yaml_payload', [False, True])
+@pytest.mark.parametrize('callback', [False, True])
+def test_mosdns_bundle_converts_for_final_plugin_type(env, monkeypatch, plugin_type, expected, yaml_payload, callback):
+    _, _, agent, config = env
+    agent['service_type'] = 'mosdns'
+    lines = [
+        'DOMAIN,exact.example.test', 'DOMAIN-SUFFIX,suffix.example.test',
+        'DOMAIN-KEYWORD,keyword', r'DOMAIN-REGEX,^node[0-9]{1,3}\.example\.test$',
+        'IP-CIDR,192.0.2.0/24,no-resolve', 'IP-CIDR6,2001:db8::/32,no-resolve',
+        '198.51.100.7', '2001:db8:1::1', 'ip:203.0.113.0/24',
+        'PROCESS-NAME,example',
+    ]
+    source = yaml.safe_dump({'payload': lines}) if yaml_payload else '\n'.join(lines)
+    config['rule_library'] = [{'id': 'mixed', 'name': 'mixed', 'source_type': 'content', 'content': source}]
+    url = 'https://config.test/api/profiles/default/rule-library/content/mixed'
+    if callback:
+        from urllib.parse import urlencode
+        url = 'https://config.test/api/profiles/default/mosdns/rule-proxy?' + urlencode({'url': url})
+    monkeypatch.setattr('backend.agents.deployment_bundle.request_rule', lambda *_a, **_k: pytest.fail('self HTTP'))
+    main = {'plugins': [{'type': plugin_type, 'args': {'files': ['./rules/mixed.txt']}}]}
+    archive = build_deployment_bundle(agent, config, yaml.safe_dump(main),
+        ruleset_downloads=[{'name': 'mixed', 'url': url, 'local_path': 'rules/mixed.txt'}])
+    assert contents(archive)['files/rules/mixed.txt'] == expected
+    rule = next(item for item in archive.manifest['files'] if item['path'] == 'rules/mixed.txt')
+    assert rule['sha256'] == hashlib.sha256(expected).hexdigest()
+
+
+def test_mosdns_bundle_rejects_shared_domain_and_ip_file_before_download(env, monkeypatch):
+    _, _, agent, config = env
+    agent['service_type'] = 'mosdns'
+    main = {'plugins': [{'type': kind, 'args': {'files': [path]}} for kind, path in
+                        [('domain_set', './rules/mixed.txt'), ('ip_set', 'rules/mixed.txt')]]}
+    monkeypatch.setattr('backend.agents.deployment_bundle.request_rule', lambda *_a, **_k: pytest.fail('download before conflict check'))
+    with pytest.raises(DeploymentPreparationError, match='both domain_set and ip_set'):
+        build_deployment_bundle(agent, config, yaml.safe_dump(main), ruleset_downloads=[
+            {'name': 'mixed', 'url': 'https://rules.test/mixed', 'local_path': './rules/mixed.txt'}])
+
+
+@pytest.mark.parametrize('network', ['not-an-address', '2001:db8::/129', '192.0.2.0/99'])
+def test_mosdns_ip_set_rejects_invalid_network_instead_of_empty_file(env, network):
+    _, _, agent, config = env
+    agent['service_type'] = 'mosdns'
+    with pytest.raises(DeploymentPreparationError, match='Invalid IP network'):
+        build_deployment_bundle(agent, config, 'plugins: [{type: ip_set, args: {files: [./rules/ip.txt]}}]',
+            custom_files=[{'path': 'rules/ip.txt', 'content': 'IP-CIDR,' + network + ',no-resolve'}])
 
 def test_upload_ready_does_not_mark_version_and_status_survives_restart(env, monkeypatch):
     repository, manager, agent, config = env

@@ -40,7 +40,16 @@ def setup_before_request(app):
             '/api/agents/docker-mosdns-run', '/api/version', '/', '/mcp',
         }
         public_prefixes = ('/api/rule-library/content/', '/api/rules/local/', '/mcp/', '/api/static/agents/', '/assets/', '/static/')
-        if request.endpoint in {'agents.agent_heartbeat', 'agents.get_agent_config'}:
+        # Installers and both Agent update protocols fetch these public binaries
+        # without an admin JWT; the route enforces its exact filename allowlist.
+        if request.endpoint == 'agents.download_agent_binary':
+            return None
+        # These routes validate their own Agent credentials (or, for upgrade
+        # status, an admin JWT). Do not require a JWT before their checks run.
+        if request.endpoint in {
+            'agents.agent_heartbeat', 'agents.get_agent_config',
+            'agents.get_agent_upgrade', 'agents.report_agent_upgrade',
+        }:
             return None
         profile_public_patterns = (
             r'^/api/config/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/(?:mihomo|surge|loon|mosdns)$',

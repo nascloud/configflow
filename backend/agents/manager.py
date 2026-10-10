@@ -116,6 +116,7 @@ class AgentManager:
                     'updated_at': datetime.now().isoformat(),
                     'deployments': existing_agent.get('deployments', {}),
                     'latest_deployment': existing_agent.get('latest_deployment'),
+                    'latest_upgrade': existing_agent.get('latest_upgrade'),
                 }
                 agents[agents.index(existing_agent)] = updated_agent
                 return {'id': agent_id, 'status': 'online', 'is_new': False}
