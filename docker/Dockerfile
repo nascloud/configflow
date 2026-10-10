@@ -41,18 +41,25 @@ COPY frontend/ ./
 RUN npm run build
 
 # ==============================================================================
-# Stage 3: 最终镜像（源码部署）
+# Stage 3: 内置 Sub-Store 运行时（Node.js 二进制，Sub-Store 要求 node >= 22.5 的 sqlite 内建模块）
+# ==============================================================================
+FROM node:24-bookworm-slim AS node-runtime
+
+# ==============================================================================
+# Stage 4: 最终镜像（源码部署）
 # ==============================================================================
 FROM python:3.11-slim
 
 # 版本号参数，从 GitHub Actions 传入
 ARG VERSION=dev
+# 内置 Sub-Store 后端版本（https://github.com/sub-store-org/Sub-Store/releases），可在线更新
+ARG SUB_STORE_VERSION=2.42.3
 
 WORKDIR /app
 
 # 安装系统依赖、配置权限
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends nginx supervisor ca-certificates && \
+    apt-get install -y --no-install-recommends nginx supervisor ca-certificates libstdc++6 && \
     rm -rf /var/lib/apt/lists/* && \
     (groupadd -r nginx || true) && (useradd -r -g nginx -s /sbin/nologin -d /nonexistent nginx || true) && \
     mkdir -p /data /var/log/supervisor /var/cache/nginx /var/log/nginx /etc/supervisor/conf.d && \
@@ -75,11 +82,20 @@ COPY --from=go-builder /dist/ /opt/configflow/static/agents/
 # 复制前端构建产物（在 nginx 安装后，覆盖默认页面）
 COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 
+# 内置 Sub-Store：Node.js 运行时 + 后端 bundle
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+ADD --chmod=644 https://github.com/sub-store-org/Sub-Store/releases/download/${SUB_STORE_VERSION}/sub-store.bundle.js /opt/sub-store/sub-store.bundle.js
+RUN echo "${SUB_STORE_VERSION}" > /opt/sub-store/VERSION && node --version
+
 # 复制配置文件（在安装软件包之后）
 COPY docker/nginx.conf /etc/nginx/nginx.conf
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY --chmod=755 docker/sub-store-start.sh /usr/local/bin/sub-store-start.sh
 
-ENV DATA_DIR=/data TZ=Asia/Shanghai
+ENV DATA_DIR=/data TZ=Asia/Shanghai \
+    SUB_STORE_BACKEND_API_HOST=127.0.0.1 \
+    SUB_STORE_BACKEND_API_PORT=3001 \
+    SUB_STORE_DATA_BASE_PATH=/data/sub-store
 
 EXPOSE 80
 

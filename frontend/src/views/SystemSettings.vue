@@ -64,13 +64,13 @@
           <FormField
             label="Sub-Store"
             html-for="sub-store-url"
-            hint="填写 Sub-Store 的 API 地址，用于读取订阅和转换节点格式。Docker 部署默认 http://sub-store:3001，留空使用环境变量或默认值。"
+            hint="留空使用镜像内置的 Sub-Store，用于读取订阅和转换节点格式。如需改用自己部署的 Sub-Store，填写其 API 地址（外部 Sub-Store 不支持在线更新）。"
           >
             <Input
               id="sub-store-url"
               v-model="subStoreUrl"
               class="bg-background/50 font-mono"
-              placeholder="http://127.0.0.1:3001"
+              placeholder="留空使用内置 Sub-Store"
               @blur="onSubStoreUrlBlur"
             />
           </FormField>
@@ -197,6 +197,108 @@
       </SectionCard>
     </div>
 
+    <!-- ===== 第三方依赖 ===== -->
+    <SectionCard
+      title="第三方依赖"
+      :icon="Package"
+      description="检测内置组件的版本，有新版本时可在线更新。访问 GitHub 时使用上方的规则下载代理和 GitHub 代理域名设置。"
+      class="mt-3 min-w-0"
+    >
+      <template #actions>
+        <Button
+          variant="outline"
+          size="sm"
+          class="border-border/60 bg-background/40"
+          :disabled="checkingDependencies"
+          @click="loadDependencies(true)"
+        >
+          <Loader2 v-if="checkingDependencies" class="size-3.5 animate-spin" />
+          <RefreshCw v-else class="size-3.5" />
+          检查更新
+        </Button>
+      </template>
+
+      <div v-if="!dependencies.length" class="text-[13px] text-muted-foreground">
+        {{ checkingDependencies ? '正在检测…' : '暂无依赖信息' }}
+      </div>
+
+      <div class="flex flex-col gap-3">
+        <div
+          v-for="dep in dependencies"
+          :key="dep.key"
+          class="flex flex-wrap items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 bg-background/40 p-3"
+        >
+          <div class="min-w-0 flex-[1_1_14rem]">
+            <div class="flex flex-wrap items-center gap-2">
+              <a
+                :href="dep.homepage"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-[13px] font-semibold text-foreground hover:underline"
+              >{{ dep.name }}</a>
+              <Badge :variant="dep.mode === 'builtin' ? 'brand' : 'outline'">
+                {{ dep.mode === 'builtin' ? '内置' : '外部' }}
+              </Badge>
+              <StatusDot :tone="dep.running ? 'success' : 'danger'" :label="dep.running ? '运行中' : '无法连接'" />
+            </div>
+            <p class="mt-1 mb-0 text-[12px] text-muted-foreground">
+              {{ dep.description }}<template v-if="dep.runtime"> · Node.js {{ dep.runtime }}</template>
+            </p>
+            <p v-if="dep.mode === 'external'" class="mt-1 mb-0 text-[12px] text-muted-foreground">
+              {{ dep.source === 'env'
+                ? '正在使用环境变量 SUB_STORE_URL 指定的外部 Sub-Store，移除该变量即可切换到内置版本。'
+                : '正在使用系统设置中填写的外部 Sub-Store，清空地址即可切换到内置版本。' }}
+            </p>
+          </div>
+
+          <dl class="m-0 grid grid-cols-[auto_auto] gap-x-3 gap-y-1 text-[12px]">
+            <dt class="text-muted-foreground">当前版本</dt>
+            <dd class="m-0 font-mono">{{ dep.current_version || '未知' }}</dd>
+            <dt class="text-muted-foreground">最新版本</dt>
+            <dd class="m-0 font-mono">
+              <a
+                v-if="dep.latest_version && dep.release_url"
+                :href="dep.release_url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="hover:underline"
+                :title="dep.latest_published_at ? `发布于 ${formatDate(dep.latest_published_at)}` : undefined"
+              >{{ dep.latest_version }}</a>
+              <span v-else>{{ dep.check_error ? '检查失败' : '—' }}</span>
+            </dd>
+          </dl>
+
+          <div class="flex min-w-0 flex-[0_1_auto] flex-col items-end gap-1 max-[640px]:items-start">
+            <template v-if="dep.update.state === 'running'">
+              <span class="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                <Loader2 class="size-3.5 animate-spin" />
+                {{ dep.update.message }}
+              </span>
+            </template>
+            <template v-else>
+              <Button
+                v-if="dep.has_update && dep.updatable"
+                size="sm"
+                :disabled="updatingKey === dep.key"
+                @click="updateDependency(dep)"
+              >
+                <Loader2 v-if="updatingKey === dep.key" class="size-3.5 animate-spin" />
+                <CircleArrowUp v-else class="size-3.5" />
+                更新到 {{ dep.latest_version }}
+              </Button>
+              <Badge v-else-if="dep.has_update" variant="warning">有新版本，请在外部部署处更新</Badge>
+              <Badge v-else-if="dep.current_version && dep.latest_version" variant="success">已是最新</Badge>
+              <span v-if="dep.check_error" class="max-w-[22rem] text-[12px] text-destructive-accent">{{ dep.check_error }}</span>
+              <span
+                v-else-if="dep.update.state === 'failed'"
+                class="max-w-[22rem] text-[12px] text-destructive-accent"
+              >{{ dep.update.message }}</span>
+            </template>
+          </div>
+        </div>
+      </div>
+    </SectionCard>
+
     <!-- ===== 配置备份 ===== -->
     <Dialog v-model:open="backupDialogVisible">
       <DialogContent class="max-w-[620px] [overflow-wrap:anywhere]">
@@ -289,19 +391,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { isAxiosError } from 'axios'
-import { Archive, CloudUpload, Copy, Download, Eye, EyeOff, Loader2, RefreshCw, RotateCcw, Settings, ShieldCheck, Trash2, Upload } from '@lucide/vue'
+import { Archive, CircleArrowUp, CloudUpload, Copy, Download, Eye, EyeOff, Loader2, Package, RefreshCw, RotateCcw, Settings, ShieldCheck, Trash2, Upload } from '@lucide/vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
 import FormField from '@/components/common/FormField.vue'
+import StatusDot from '@/components/common/StatusDot.vue'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { confirm, confirmDanger, notify } from '@/lib/feedback'
-import api, { configApi, serverDomainApi, configTokenApi, subStoreUrlApi, ruleFetchProxyApi } from '@/api'
+import api, { configApi, serverDomainApi, configTokenApi, subStoreUrlApi, ruleFetchProxyApi, dependenciesApi } from '@/api'
+import type { DependencyStatus } from '@/api'
 
 // 备份配置
 const backupDialogVisible = ref(false)
@@ -324,6 +429,77 @@ const showRuleFetchProxy = ref(false)
 
 // 订阅聚合开关
 const subscriptionAggregationEnabled = ref(false)
+
+// 第三方依赖
+const dependencies = ref<DependencyStatus[]>([])
+const checkingDependencies = ref(false)
+const updatingKey = ref('')
+let dependencyPollTimer: ReturnType<typeof setTimeout> | undefined
+
+const formatDate = (value: string) => {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+const loadDependencies = async (refresh = false) => {
+  checkingDependencies.value = true
+  try {
+    const response = await dependenciesApi.list(refresh)
+    dependencies.value = response.data.dependencies || []
+    if (refresh) {
+      const failed = dependencies.value.find(dep => dep.check_error)
+      if (failed) notify.error(failed.check_error)
+      else notify.success(dependencies.value.some(dep => dep.has_update) ? '发现新版本' : '所有依赖均为最新版本')
+    }
+    if (dependencies.value.some(dep => dep.update.state === 'running')) scheduleDependencyPoll()
+  } catch {
+    notify.error('加载第三方依赖失败')
+  } finally {
+    checkingDependencies.value = false
+  }
+}
+
+// 更新在后台执行，轮询直到不再是 running，再提示结果
+const scheduleDependencyPoll = () => {
+  clearTimeout(dependencyPollTimer)
+  dependencyPollTimer = setTimeout(async () => {
+    try {
+      const response = await dependenciesApi.list()
+      dependencies.value = response.data.dependencies || []
+    } catch {
+      // 更新期间 Sub-Store 重启，后端偶发失败时继续轮询
+    }
+    const target = dependencies.value.find(dep => dep.key === updatingKey.value)
+    if (dependencies.value.some(dep => dep.update.state === 'running')) {
+      scheduleDependencyPoll()
+      return
+    }
+    if (target) {
+      if (target.update.state === 'success') notify.success(target.update.message)
+      else if (target.update.state === 'failed') notify.error(target.update.message)
+    }
+    updatingKey.value = ''
+  }, 2000)
+}
+
+const updateDependency = async (dep: DependencyStatus) => {
+  const ok = await confirm(
+    `将 ${dep.name} 从 ${dep.current_version || '当前版本'} 更新到 ${dep.latest_version}。更新期间约十几秒内订阅解析和节点转换不可用，失败会自动回滚。`,
+    { title: `更新 ${dep.name}`, confirmText: '更新' }
+  )
+  if (!ok) return
+  updatingKey.value = dep.key
+  try {
+    await dependenciesApi.update(dep.key)
+    dep.update = { ...dep.update, state: 'running', message: `准备更新到 ${dep.latest_version}…` }
+    scheduleDependencyPoll()
+  } catch (error) {
+    updatingKey.value = ''
+    notify.error(isAxiosError(error) ? error.response?.data?.message || '启动更新失败' : '启动更新失败')
+  }
+}
+
+onBeforeUnmount(() => clearTimeout(dependencyPollTimer))
 
 const serverDomain = ref(window.location.origin)
 const configToken = ref('')
@@ -701,6 +877,7 @@ onMounted(async () => {
     loadConfigToken(),
     loadSubStoreUrl(),
     loadRuleFetchProxy(),
+    loadDependencies(),
     (async () => {
       try {
         const response = await serverDomainApi.get()

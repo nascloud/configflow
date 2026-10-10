@@ -4,11 +4,9 @@
 
 ## 前提条件
 
-ConfigFlow 依赖 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 进行订阅解析和节点格式转换。推荐使用 Docker Compose 一并部署，也可在「系统设置」页面配置已有的 Sub-Store 地址。
+ConfigFlow 依赖 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 进行订阅解析和节点格式转换。镜像已内置 Sub-Store 后端（仅监听容器内 `127.0.0.1:3001`，数据保存在 `/data/sub-store`），无需另外部署；可在「系统设置 → 第三方依赖」检测并在线更新。也可在「系统设置」填写已有的外部 Sub-Store 地址。
 
 ## Docker 单独部署
-
-> 注意：单独部署 ConfigFlow 时，需要另外运行 Sub-Store 服务，并在「系统设置」页面配置 Sub-Store URL。
 
 ### 快速开始
 
@@ -85,7 +83,7 @@ docker run -d --name config-flow -p 3000:80 -v $(pwd)/data:/data \
 
 ## Docker Compose 部署（推荐）
 
-Docker Compose 适合长期维护和管理，可一并部署 Sub-Store 服务。
+Docker Compose 适合长期维护和管理。
 
 ### 快速开始
 
@@ -106,19 +104,7 @@ services:
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=admin123
       - JWT_SECRET_KEY=your-secret-key-please-change-in-production
-      - SUB_STORE_URL=http://sub-store:3001
-    depends_on:
-      - sub-store
     restart: unless-stopped
-
-  sub-store:
-    image: xream/sub-store:latest
-    container_name: config-flow-sub-store
-    restart: unless-stopped
-    volumes:
-      - ./sub-store-data:/root/sub-store-data
-    environment:
-      - SUB_STORE_BACKEND_API_PORT=3001
 ```
 
 **2. 启动服务**
@@ -130,7 +116,8 @@ docker-compose up -d
 访问 `http://localhost` 即可使用。
 
 > 认证是可选的：不设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 即无需登录直接使用；设置后才开启登录，此时请把 `ADMIN_PASSWORD` 和 `JWT_SECRET_KEY` 替换为更安全的值。
-> 如果已有 Sub-Store 服务，可移除 `sub-store` 部分，在「系统设置」页面配置已有的 Sub-Store URL。
+> 镜像已内置 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 后端，无需另外部署；可在「系统设置 → 第三方依赖」检测并在线更新。如需改用自己的 Sub-Store，在「系统设置」填写其 API 地址即可。
+> 从旧版升级：可删除 compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量，改用内置 Sub-Store（保留 `SUB_STORE_URL` 则继续使用外部 Sub-Store）。
 
 ### 配置说明
 
@@ -138,8 +125,7 @@ docker-compose up -d
 - **image**: Docker 镜像，`latest` 为最新版本
 - **ports**: 端口映射，格式为 `宿主机:容器`
 - **volumes**: 数据目录挂载，支持相对路径或绝对路径
-- **SUB_STORE_URL**: Sub-Store API 地址，Docker Compose 部署时默认为 `http://sub-store:3001`
-- **depends_on**: 确保 Sub-Store 先于 ConfigFlow 启动
+- **SUB_STORE_URL**（可选）: 外部 Sub-Store API 地址；不设置则使用镜像内置的 Sub-Store
 - **restart**: 重启策略
   - `unless-stopped`: 除非手动停止，否则自动重启
   - `always`: 始终重启
@@ -190,18 +176,7 @@ services:
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=admin123
       - JWT_SECRET_KEY=your-secret-key-please-change-in-production
-      - SUB_STORE_URL=http://sub-store:3001
-    depends_on:
-      - sub-store
     restart: unless-stopped
-
-  sub-store:
-    image: xream/sub-store:latest
-    restart: unless-stopped
-    volumes:
-      - ./sub-store-data:/root/sub-store-data
-    environment:
-      - SUB_STORE_BACKEND_API_PORT=3001
 ```
 
 **指定版本：**
@@ -220,18 +195,7 @@ services:
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=admin123
       - JWT_SECRET_KEY=your-secret-key-please-change-in-production
-      - SUB_STORE_URL=http://sub-store:3001
-    depends_on:
-      - sub-store
     restart: unless-stopped
-
-  sub-store:
-    image: xream/sub-store:latest
-    restart: unless-stopped
-    volumes:
-      - ./sub-store-data:/root/sub-store-data
-    environment:
-      - SUB_STORE_BACKEND_API_PORT=3001
 ```
 
 **绝对路径挂载：**
@@ -250,18 +214,7 @@ services:
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=admin123
       - JWT_SECRET_KEY=your-secret-key-please-change-in-production
-      - SUB_STORE_URL=http://sub-store:3001
-    depends_on:
-      - sub-store
     restart: unless-stopped
-
-  sub-store:
-    image: xream/sub-store:latest
-    restart: unless-stopped
-    volumes:
-      - /opt/config-flow/sub-store-data:/root/sub-store-data
-    environment:
-      - SUB_STORE_BACKEND_API_PORT=3001
 ```
 
 ## 部署验证
