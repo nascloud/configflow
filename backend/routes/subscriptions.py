@@ -418,9 +418,10 @@ def get_subscription_proxies(sub_id):
             import json
             bundle = prepare_provider_bundle(config_data, json.loads(snapshot.main_json), requested=('subscription', sub))
             rendered = next(item for item in bundle if item['name'] == sub['name'])
-            if request.args.get('format') == 'surge':
+            if request.args.get('format') in ('surge', 'loon'):
                 from backend.utils.dialer_references import DialerReferenceError
-                raise DialerReferenceError('Surge 暂不支持代理链，请使用 Mihomo')
+                client = 'Loon' if request.args.get('format') == 'loon' else 'Surge'
+                raise DialerReferenceError(f'{client} 暂不支持代理链，请使用 Mihomo')
             commit_provider_bundle(snapshot.profile_id, bundle)
             return Response(rendered['content'], mimetype='text/yaml; charset=utf-8')
         sub_name = sub.get('name', 'Unknown')
@@ -449,6 +450,9 @@ def get_subscription_proxies(sub_id):
                 if request.args.get('format') == 'surge':
                     from backend.converters.surge import convert_proxies_to_surge_text
                     convert_proxies_to_surge_text(proxies)
+                elif request.args.get('format') == 'loon':
+                    from backend.converters.loon import convert_proxies_to_loon_text
+                    convert_proxies_to_loon_text(proxies)
                 validate_subscription_delivery(proxies)
 
                 if proxies:
@@ -518,6 +522,12 @@ def get_subscription_proxies(sub_id):
             if not cache_updated:
                 validate_subscription_delivery(proxies)
             return Response(surge_text, mimetype='text/plain')
+        if request.args.get('format') == 'loon':
+            from backend.converters.loon import convert_proxies_to_loon_text
+            loon_text = convert_proxies_to_loon_text(proxies)
+            if not cache_updated:
+                validate_subscription_delivery(proxies)
+            return Response(loon_text, mimetype='text/plain')
         if not cache_updated:
             validate_subscription_delivery(proxies)
 

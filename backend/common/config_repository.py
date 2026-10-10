@@ -153,12 +153,13 @@ def _default_profile_config() -> Dict[str, Any]:
             "cache_dump_interval": 300,
         },
         "surge": {"custom_config": "", "smart_groups": []},
+        "loon": {"custom_config": ""},
     }
 
 
 SHARED_FIELDS = ('subscriptions', 'nodes', 'subscription_aggregations', 'rule_library')
 RESOURCE_FIELDS = SHARED_FIELDS[:3]
-PROFILE_FIELDS = ('proxy_groups', 'rule_configs', 'mihomo', 'surge', 'mosdns')
+PROFILE_FIELDS = ('proxy_groups', 'rule_configs', 'mihomo', 'surge', 'mosdns', 'loon')
 BUILTIN_POLICIES = {'DIRECT', 'REJECT'}
 RULE_SOURCE_FIELDS = ('name', 'url', 'behavior', 'content', 'source_type', 'format')
 
@@ -312,7 +313,7 @@ class ProfileRepository:
 
     def _empty_profile(self, profile_id, name, description=''):
         defaults = self._legacy_defaults()
-        result = {key: copy.deepcopy(defaults.get(key, {} if key in ('mihomo', 'surge', 'mosdns') else []))
+        result = {key: copy.deepcopy(defaults.get(key, {} if key in ('mihomo', 'surge', 'mosdns', 'loon') else []))
                   for key in PROFILE_FIELDS}
         result.update(id=profile_id, name=name, description=description, _revision=0,
                       created_at=_now(), updated_at=_now())
@@ -621,6 +622,37 @@ class ProfileRepository:
             document['profiles'][profile_id] = profile
         return self._metadata(profile)
 
+    def import_client_profile(self, metadata, build):
+        """新建配置空间并追加共享资源，二者在同一事务中校验和写入。
+
+        build(shared_snapshot) 返回 {'shared': {字段: [新增资源]}, 'profile': {配置字段}, ...}，
+        校验失败时不写入任何内容。
+        """
+        if not isinstance(metadata, dict):
+            raise ProfileValidationError('Profile metadata must be an object')
+        profile_id = self.validate_profile_id(metadata.get('id') or f'profile_{uuid.uuid4().hex[:12]}')
+        name = metadata.get('name')
+        if not isinstance(name, str) or not name.strip():
+            raise ProfileValidationError('配置名称不能为空')
+        with self._document(write=True) as document:
+            if profile_id in document['profiles']:
+                raise ProfileExists(profile_id)
+            result = build(copy.deepcopy(document['shared']))
+            shared = document['shared']
+            additions = result.get('shared', {})
+            if any(additions.get(field) for field in SHARED_FIELDS):
+                for field in SHARED_FIELDS:
+                    shared[field].extend(copy.deepcopy(additions.get(field, [])))
+                shared['_revision'] += 1
+            profile = self._empty_profile(profile_id, name.strip())
+            for key, value in result.get('profile', {}).items():
+                if key not in PROFILE_FIELDS:
+                    raise ProfileValidationError(f'导入结果包含未知字段：{key}')
+                profile[key] = _deep_merge(profile[key], value) if isinstance(profile[key], dict) else copy.deepcopy(value)
+            profile['description'] = str(metadata.get('description') or '')
+            document['profiles'][profile_id] = profile
+        return {**result, 'profile': self._metadata(profile)}
+
     def clone_profile(self, source_id, metadata):
         return self.create_profile(metadata, clone_from=source_id)
 
@@ -841,6 +873,8 @@ class ProfileRepository:
             for profile in result['profiles'].values():
                 for engine in ('mihomo', 'surge', 'mosdns'):
                     profile[engine]['custom_config'] = ''
+                if isinstance(profile.get('loon'), dict):
+                    profile['loon']['custom_config'] = ''
             result = sanitize_external_payload(result, system_config)
         return result
 
@@ -1151,7 +1185,7 @@ class ProfileRepository:
         self._write_atomic(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
     def write_generated(self, profile_id: str, filename: str, content: str) -> Path:
-        if Path(filename).name != filename or filename not in {"config.yaml", "config.conf"}:
+        if Path(filename).name != filename or filename not in {"config.yaml", "config.conf", "loon.lcf"}:
             raise ProfileValidationError("Invalid generated filename")
         path = self.generated_dir(profile_id) / filename
         with self._lock(self._profile_operation_lock_path(profile_id)):
@@ -1624,6 +1658,9 @@ class ProfileRepository:
         for engine in ('mihomo', 'surge', 'mosdns'):
             if not isinstance(profile.get(engine), dict):
                 raise ProfileValidationError(f'{engine} 参数必须是对象')
+        # 旧版本保存的配置没有 loon 字段，缺省视为空对象
+        if not isinstance(profile.get('loon', {}), dict):
+            raise ProfileValidationError('loon 参数必须是对象')
         mosdns = profile['mosdns']
         for key in ('direct_rulesets', 'proxy_rulesets', 'direct_rules', 'proxy_rules'):
             expected = 'ruleset' if key.endswith('rulesets') else 'rule'

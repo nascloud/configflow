@@ -260,8 +260,9 @@ def generate_aggregation_provider(aggregation: Dict[str, Any], *, config=None,
     if snapshot.has_chains or any(p.get('dialer-proxy') is not None for p in proxies):
         from backend.utils.dialer_references import DialerReferenceError
         from flask import has_request_context
-        if has_request_context() and request.args.get('format') == 'surge':
-            raise DialerReferenceError('Surge 暂不支持 dialer-proxy，请使用 Mihomo')
+        if has_request_context() and request.args.get('format') in ('surge', 'loon'):
+            client = 'Loon' if request.args.get('format') == 'loon' else 'Surge'
+            raise DialerReferenceError(f'{client} 暂不支持 dialer-proxy，请使用 Mihomo')
     # 5. 生成 YAML 内容（使用 IndentDumper 确保正确的缩进）
     from backend.converters.mihomo import IndentDumper
     provider_data = {'proxies': proxies}
@@ -512,6 +513,12 @@ def get_aggregation_provider(agg_id):
             from backend.converters.surge import convert_proxies_to_surge_text
             surge_text = convert_proxies_to_surge_text(proxies)
             return Response(surge_text, mimetype='text/plain')
+
+        if request.args.get('format') == 'loon':
+            provider_data = yaml.safe_load(result['content'])
+            from backend.converters.loon import convert_proxies_to_loon_text
+            loon_text = convert_proxies_to_loon_text(provider_data.get('proxies', []))
+            return Response(loon_text, mimetype='text/plain')
 
         # Serve the exact validated snapshot, not a concurrently replaced artifact.
         return Response(result['content'], mimetype='text/yaml')

@@ -1,6 +1,8 @@
 """配置管理路由"""
 import json
 import io
+import re
+from urllib.parse import quote
 from flask import request, jsonify, send_file
 
 from backend.routes import config_bp
@@ -14,6 +16,7 @@ from backend.utils.strategy_references import StrategyReferenceError
 logger = get_logger(__name__)
 from backend.converters.mihomo import generate_mihomo_config
 from backend.converters.surge import generate_surge_config
+from backend.converters.loon import generate_loon_config
 from backend.converters.mosdns import generate_mosdns_config
 
 
@@ -97,6 +100,44 @@ def get_surge_config():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+def loon_config_name(name, fallback=None):
+    """配置空间名称去掉文件名非法字符后作为 Loon 配置名"""
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', ' ', str(name or '')).strip().strip('.')
+    return cleaned or fallback or 'loon'
+
+
+@config_bp.route('/loon', methods=['GET'])
+def get_loon_config():
+    """获取 Loon 配置内容（通过 URL 访问，可用于 loon://import?sub= 导入）
+
+    支持两种授权方式：
+    1. 前端请求：使用 Authorization header (Bearer token)
+    2. 外部请求：使用 URL 参数 ?token=xxx
+    """
+    try:
+        config_data = get_config(resolve_profile_id(fallback='default'))
+
+        auth_error = _reject_invalid_config_auth(config_data)
+        if auth_error:
+            return auth_error
+
+        scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
+        host = request.headers.get('X-Forwarded-Host', request.host)
+        base_url = f"{scheme}://{host}"
+
+        config_content = generate_loon_config(config_data, base_url=base_url)
+
+        # Loon 以文件名作为导入后的配置名称，使用配置空间名称
+        filename = quote(f"{loon_config_name(config_data.get('name'), config_data.get('profile_id'))}.lcf")
+        return config_content, 200, {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Content-Disposition': f"inline; filename*=UTF-8''{filename}"
+        }
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 @config_bp.route('/mosdns', methods=['GET'])
 def get_mosdns_config():
     """获取 MosDNS 配置内容（通过 URL 访问）
@@ -140,6 +181,12 @@ def get_profile_mihomo_config(profile_id):
 def get_profile_surge_config(profile_id):
     return get_surge_config()
 
+
+@config_bp.route('/<profile_id>/loon', methods=['GET'])
+@config_bp.route('/<profile_id>/loon/<filename>', methods=['GET'])
+def get_profile_loon_config(profile_id, filename=None):
+    # filename 仅用于让 Loon 按链接末段命名配置，内容只由 profile_id 决定
+    return get_loon_config()
 
 @config_bp.route('/<profile_id>/mosdns', methods=['GET'])
 def get_profile_mosdns_config(profile_id):
@@ -262,6 +309,25 @@ def handle_custom_surge_config():
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
 
+
+@custom_config_bp.route('/loon', methods=['GET', 'POST'])
+@require_auth
+def handle_custom_loon_config():
+    """获取或保存 Loon 自定义配置"""
+    config_data = get_config()
+    config_data.setdefault('loon', {'custom_config': ''})
+
+    if request.method == 'GET':
+        return jsonify({'config': config_data['loon'].get('custom_config', '')})
+
+    try:
+        data = request.json or {}
+        if 'config' in data:
+            config_data['loon']['custom_config'] = data['config']
+        save_config(config_data)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @custom_config_bp.route('/mosdns', methods=['GET', 'POST'])
 @require_auth

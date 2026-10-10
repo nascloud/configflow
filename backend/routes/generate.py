@@ -11,6 +11,7 @@ from backend.common.config import get_config, get_repository
 from backend.utils.strategy_references import StrategyReferenceError
 from backend.converters.mihomo import generate_mihomo_config
 from backend.converters.surge import generate_surge_config
+from backend.converters.loon import generate_loon_config
 from backend.converters.mosdns import (
     generate_mosdns_config,
     get_mosdns_ruleset_downloads,
@@ -62,6 +63,28 @@ def generate_surge():
         )
 
         return send_file(output_file, as_attachment=True, download_name='surge.conf')
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@generate_bp.route('/loon', methods=['POST'])
+@require_auth
+def generate_loon():
+    """生成 Loon 配置"""
+    try:
+        config_data = get_config()
+        data = request.get_json() or {}
+        base_url = data.get('base_url', '')
+
+        config_content = generate_loon_config(config_data, base_url=base_url)
+
+        output_file = get_repository().write_generated(
+            config_data['profile_id'], 'loon.lcf', config_content
+        )
+
+        return send_file(output_file, as_attachment=True, download_name='loon.lcf')
     except StrategyReferenceError as e:
         return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
@@ -171,6 +194,23 @@ def preview_surge():
 
         # 传递 base_url 给生成器
         config_content = generate_surge_config(config_data, base_url=base_url)
+        return jsonify({'content': config_content})
+    except StrategyReferenceError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@generate_bp.route('/loon/preview', methods=['POST'])
+@require_auth
+def preview_loon():
+    """预览 Loon 配置"""
+    try:
+        config_data = get_config()
+        data = request.get_json() or {}
+        base_url = data.get('base_url', '')
+
+        config_content = generate_loon_config(config_data, base_url=base_url)
         return jsonify({'content': config_content})
     except StrategyReferenceError as e:
         return jsonify({'success': False, 'message': str(e)}), 400
