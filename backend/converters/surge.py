@@ -618,11 +618,18 @@ def convert_node_to_surge(node: Dict[str, Any]) -> tuple:
         if params.get('udp-relay') or params.get('udp'):
             parts.append("udp-relay=true")
 
-        # obfs参数
-        obfs = params.get('obfs', '')
-        if obfs:
+        # Mihomo 格式把 obfs / ShadowTLS 放在 obfs-opts 中，旧数据可能是平铺的 obfs / obfs-host
+        obfs_opts = params.get('obfs-opts') if isinstance(params.get('obfs-opts'), dict) else {}
+        obfs = obfs_opts.get('mode') or params.get('obfs', '')
+        obfs_host = obfs_opts.get('host') or params.get('obfs-host', '')
+        if obfs == 'shadow-tls':
+            parts.append(f"shadow-tls-password={obfs_opts.get('password', '')}")
+            if obfs_host:
+                parts.append(f"shadow-tls-sni={obfs_host}")
+            if obfs_opts.get('version'):
+                parts.append(f"shadow-tls-version={obfs_opts['version']}")
+        elif obfs in ('http', 'tls'):
             parts.append(f"obfs={obfs}")
-            obfs_host = params.get('obfs-host', '')
             if obfs_host:
                 parts.append(f"obfs-host={obfs_host}")
 
