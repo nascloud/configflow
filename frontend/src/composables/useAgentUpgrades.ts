@@ -28,10 +28,11 @@ export function useAgentUpgrades(onSuccess: () => void) {
   let disposed = false
   const busy = (id: string) => submitting.has(id) || !!upgrades[id] && (!terminal.has(upgrades[id].status) || upgrades[id].status === 'rollback_failed')
 
-  function schedule(id: string) {
+  function schedule(id: string, immediate = false) {
     if (disposed || timers.has(id) || !busy(id) || upgrades[id].status === 'rollback_failed') return
-    // 结果待确认时 Agent 多半已失联，放慢轮询，避免每 1.5 秒向它发两次请求
-    const delay = upgrades[id].status === 'unknown' ? 15000 : 1500
+    // 结果待确认时 Agent 多半已失联，放慢轮询，避免每 1.5 秒向它发两次请求；
+    // 首次载入的任务立即查一次，否则按钮要白白锁住一个轮询周期
+    const delay = immediate ? 0 : upgrades[id].status === 'unknown' ? 15000 : 1500
     timers.set(id, setTimeout(() => { timers.delete(id); void refresh(id) }, delay))
   }
   function track(id: string, state: AgentUpgrade) {
@@ -40,7 +41,7 @@ export function useAgentUpgrades(onSuccess: () => void) {
     if (previous?.update_id !== state.update_id && previous?.updated_at && state.updated_at && state.updated_at < previous.updated_at) return
     upgrades[id] = state
     if (state.status === 'succeeded' && previous?.status !== 'succeeded') onSuccess()
-    schedule(id)
+    schedule(id, !previous)
   }
   async function refresh(id: string) {
     if (disposed || inflight.has(id)) return
