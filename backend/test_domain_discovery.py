@@ -7,10 +7,12 @@ from flask import Flask
 
 from backend.agents import traffic_store
 from backend.agents.traffic_store import TrafficStore, clean_report, route_key
+from backend.common import auth as auth_module
 from backend.common import config as config_module
 from backend.common.agent_manager import init_agent_manager
 from backend.common.config_repository import ProfileRepository
 from backend.routes import register_blueprints
+from backend.routes.auth import setup_before_request
 from backend.utils.domain_discovery import format_ruleset_line, registrable_domain, summarize
 
 
@@ -341,3 +343,99 @@ def test_match_test_priority_counts_disabled_rules(env):
     ]})
     body = client.post("/api/rules/match-test", json={"query": "a.pending.io"}).get_json()
     assert body["rule_id"] == "hit" and body["priority"] == 2
+
+
+# Exercise the production login gate as well as each route's Agent authentication.
+@pytest.fixture
+def secured_env(env, monkeypatch):
+    client, _, manager, agent = env
+    monkeypatch.setattr(auth_module, "ADMIN_USERNAME", "admin")
+    monkeypatch.setattr(auth_module, "ADMIN_PASSWORD", "test-password")
+    setup_before_request(client.application)
+    manager.set_domain_discovery(agent["id"], True)
+    return env
+
+
+def test_report_with_login_enabled_updates_first_report_and_domains(secured_env):
+    client, _, _, agent = secured_env
+    admin = {"Authorization": f"Bearer {auth_module.generate_token('admin')}"}
+    before = client.get("/api/domain-discovery/domains", headers=admin).get_json()
+    assert before["agents"][0]["last_report"] is None
+
+    heartbeat = client.post(f"/api/agents/{agent['id']}/heartbeat", json={}, headers=_auth(agent))
+    assert heartbeat.status_code == 200
+    assert heartbeat.get_json()["domain_discovery_enabled"] is True
+    response = client.post(
+        f"/api/agents/{agent['id']}/traffic-report", headers=_auth(agent),
+        json=_report(_item("www.blocked.com")),
+    )
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+
+    response = client.get("/api/domain-discovery/domains", headers=admin)
+    assert response.status_code == 200
+    listing = response.get_json()
+    assert listing["agents"][0]["last_report"]
+    assert listing["agents"][0]["status"] == "running"
+    assert [item["domain"] for item in listing["items"]] == ["blocked.com"]
+
+
+@pytest.mark.parametrize("credential", [
+    "missing", "wrong-scheme", "wrong-token", "malformed", "non-ascii", "other-agent", "admin-jwt",
+])
+def test_report_with_login_enabled_rejects_invalid_agent_credentials(secured_env, credential):
+    client, repository, manager, agent = secured_env
+    other = manager.register_agent({"name": "other", "host": "127.0.0.2", "service_type": "mihomo"})
+    authorizations = {
+        "missing": None,
+        "wrong-scheme": f"Basic {agent['token']}",
+        "wrong-token": "Bearer wrong-token",
+        "malformed": f"Bearer  {agent['token']}",
+        "non-ascii": "Bearer caf\u00e9",
+        "other-agent": f"Bearer {other['token']}",
+        "admin-jwt": f"Bearer {auth_module.generate_token('admin')}",
+    }
+    authorization = authorizations[credential]
+    headers = {"Authorization": authorization} if authorization else {}
+    before_system = repository.get_system()
+    before_traffic = traffic_store.get_traffic_store().load(agent["id"])
+    response = client.post(
+        f"/api/agents/{agent['id']}/traffic-report", headers=headers,
+        json=_report(_item("www.blocked.com")),
+    )
+    assert response.status_code == 401
+    assert repository.get_system() == before_system
+    assert traffic_store.get_traffic_store().load(agent["id"]) == before_traffic
+
+
+@pytest.mark.parametrize("enabled,payload,status", [
+    (False, _report(), 409),
+    (True, {**_report(), "schema": 9}, 400),
+])
+def test_report_with_login_enabled_retains_switch_and_payload_checks(secured_env, enabled, payload, status):
+    client, _, manager, agent = secured_env
+    manager.set_domain_discovery(agent["id"], enabled)
+    before = traffic_store.get_traffic_store().load(agent["id"])
+    response = client.post(f"/api/agents/{agent['id']}/traffic-report", headers=_auth(agent), json=payload)
+    assert response.status_code == status
+    assert traffic_store.get_traffic_store().load(agent["id"]) == before
+
+
+def test_agent_report_exception_does_not_expose_management_routes(secured_env):
+    client, repository, _, agent = secured_env
+    before = repository.get_system()
+    assert client.get("/api/domain-discovery/domains", headers=_auth(agent)).status_code == 401
+    assert client.put("/api/domain-discovery/settings", headers=_auth(agent), json={"auto_probe": True}).status_code == 401
+    assert client.put(
+        f"/api/agents/{agent['id']}/domain-discovery", headers=_auth(agent), json={"enabled": False},
+    ).status_code == 401
+    assert client.post(
+        f"/api/agents/{agent['id']}/traffic-report-extra", headers=_auth(agent), json=_report(),
+    ).status_code == 401
+    assert repository.get_system() == before
+
+
+def test_report_with_login_enabled_rejects_unknown_agent(secured_env):
+    client, _, _, agent = secured_env
+    response = client.post("/api/agents/unknown/traffic-report", headers=_auth(agent), json=_report())
+    assert response.status_code == 401

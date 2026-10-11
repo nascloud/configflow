@@ -47,7 +47,7 @@ def setup_before_request(app):
         # These routes validate their own Agent credentials (or, for upgrade
         # status, an admin JWT). Do not require a JWT before their checks run.
         if request.endpoint in {
-            'agents.agent_heartbeat', 'agents.get_agent_config',
+            'agents.agent_heartbeat', 'agents.agent_traffic_report', 'agents.get_agent_config',
             'agents.get_agent_upgrade', 'agents.report_agent_upgrade',
         }:
             return None
