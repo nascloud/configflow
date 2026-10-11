@@ -44,6 +44,13 @@ AGGREGATION_PROVIDERS_DIR = os.path.join(DATA_DIR, 'providers')
 
 
 
+@bp.route('/<resource_id>/health-impact', methods=['GET'])
+@require_auth
+def health_impact(resource_id):
+    from backend.common.config import get_repository
+    return jsonify(get_repository().get_resource_usage('subscription_aggregations', resource_id))
+
+
 # ============================================================================
 # 业务逻辑函数
 # ============================================================================
@@ -308,6 +315,10 @@ def handle_subscription_aggregations():
     elif request.method == 'POST':
         # 创建新聚合
         aggregation = request.json
+        if not isinstance(aggregation, dict):
+            return jsonify({'success': False, 'message': '聚合必须是对象'}), 400
+        from backend.utils.health_check import initialize_provider_health
+        initialize_provider_health(aggregation)
         aggregation['id'] = f"agg_{uuid.uuid4().hex[:8]}"
         aggregation['created_at'] = datetime.now().isoformat()
         aggregation['updated_at'] = datetime.now().isoformat()
@@ -351,6 +362,8 @@ def handle_subscription_aggregation_item(agg_id):
             for i, a in enumerate(aggregations):
                 if a['id'] == agg_id:
                     updated_aggregation = request.json
+                    if not isinstance(updated_aggregation, dict):
+                        return jsonify({'success': False, 'message': '聚合必须是对象'}), 400
                     updated_aggregation['id'] = agg_id  # 确保ID不变
 
                     # 更新修改时间

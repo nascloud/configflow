@@ -43,8 +43,12 @@ def test_group_exit_has_independent_strategy_and_live_provider_membership(kind, 
     assert independent['use'] != original['use'] == ['Feed']
     assert original['filter'] == '^US-'
     assert 'filter' not in independent
-    for field in ('url', 'interval', 'tolerance', 'lazy'):
+    for field in ('url', 'interval', 'lazy'):
         assert independent[field] == original[field]
+    if kind == 'url-test':
+        assert independent['tolerance'] == original['tolerance'] == 23
+    else:
+        assert 'tolerance' not in original and 'tolerance' not in independent
     if kind == 'load-balance':
         assert independent['strategy'] == 'round-robin'
     private_name = independent['use'][0]

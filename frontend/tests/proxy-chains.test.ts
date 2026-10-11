@@ -112,6 +112,19 @@ async function selectOption(option: Element | undefined) {
 async function select(selector: string, label: string) {
   await selectOption((await options(selector)).find(option => option.textContent?.trim() === label))
 }
+it('group health clearing sends explicit delete_fields, not type-as-replacement', async () => {
+  groups = [{id:'health',name:'Health',type:'url-test',manual_nodes:['DIRECT'],timeout:8250,lazy:false,interval:77}]
+  await render()
+  await edit('Health')
+  await fill('[data-health="timeout"]','')
+  const lazy=document.querySelector('[data-health="lazy"]') as HTMLSelectElement
+  lazy.value='unset';lazy.dispatchEvent(new Event('change',{bubbles:true}));await flushPromises()
+  await button('保存')
+  const payload=vi.mocked(proxyGroupApi.update).mock.calls[0]?.[1] as any
+  expect(payload.delete_fields).toEqual(expect.arrayContaining(['timeout','lazy']))
+  expect(payload.interval).toBe(77)
+})
+
 async function closeOptions() {
   const option = document.querySelector('[role="option"]')
   option?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
@@ -132,6 +145,16 @@ async function source(label: string) {
   await flushPromises()
 }
 
+it('reopens automatic group health fields without losing false or milliseconds', async () => {
+  groups = [{ id: 'auto', name: 'Auto', type: 'url-test', enabled: true, manual_nodes: ['DIRECT'], url: 'https://example.test/204', interval: 61, lazy: false, timeout: 7250, 'expected-status': '204', tolerance: 51 } as ProxyGroup]
+  await render()
+  await edit('Auto')
+  expect(document.querySelector('[data-health-advanced]')).toBeTruthy()
+  expect((document.querySelector('[data-health="timeout"]') as HTMLInputElement).value).toBe('7.25')
+  await button('保存')
+  expect(proxyGroupApi.update).toHaveBeenCalledWith('auto', expect.objectContaining({ lazy: false, timeout: 7250, tolerance: 51 }), 'default')
+})
+
 it('creates an independent named exit from the shared catalog without writing the original node', async () => {
   const original = clone(rows)
   await render()
@@ -148,7 +171,7 @@ it('creates an independent named exit from the shared catalog without writing th
   expect(document.querySelector('[data-name="New chain"]')).not.toBeNull()
   expect(nodeApi.update).not.toHaveBeenCalled()
   expect(rows).toEqual(original)
-  expect(vi.mocked(api.get).mock.calls.map(call => call[0])).toEqual(['/subscriptions', '/aggregations'])
+  expect(vi.mocked(api.get).mock.calls.map(call => call[0])).toEqual(['/subscriptions', '/aggregations', '/proxy-groups/health-defaults'])
 })
 
 it.each<['node' | 'group', string]>([['node', 'relay'], ['group', 'static']])('hydrates %s references by ID, isolates canceled edits, and saves to the mounted profile', async (type, id) => {
