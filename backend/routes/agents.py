@@ -134,8 +134,37 @@ def _supports_self_restart(agent_version: str) -> bool:
 
 
 def _public_agent(agent):
-    """Return an API-safe copy of an Agent without its capability token."""
-    return {key: value for key, value in agent.items() if key != 'token'}
+    """Hide credentials and private deployment comparison metadata."""
+    public = {key: value for key, value in agent.items() if key not in ('token', 'applied_content')}
+    if 'deployments' in public:
+        public['deployments'] = {key: _public_deployment(value)
+                                 for key, value in public['deployments'].items()}
+    if isinstance(public.get('latest_deployment'), dict):
+        public['latest_deployment'] = _public_deployment(public['latest_deployment'])
+    return public
+
+
+def _public_deployment(record):
+    return {key: value for key, value in record.items() if key != 'prepared_content'}
+
+
+def _agent_with_content_sync(agent, snapshots):
+    from backend.agents.content_sync import get_content_sync
+    public = _public_agent(agent)
+    repository = get_repository()
+    profile_id = agent.get('profile_id', 'default')
+    try:
+        if profile_id not in snapshots:
+            snapshots[profile_id] = repository.get_compat_config(profile_id)
+        # Preserve the origin used by the last push when server_domain is unset.
+        # Opening this UI through a different host must not change generated URLs.
+        base_url = (agent.get('applied_content') or {}).get('base_url', '')
+        public['content_sync'] = get_content_sync(
+            agent, snapshots[profile_id], base_url, _prepare_content_bundle,
+            scope=str(repository.data_dir), repository=repository)
+    except ProfileRepositoryError:
+        public['content_sync'] = {'status': 'unknown', 'reason': 'profile_unavailable'}
+    return public
 
 
 @bp.route('/install-script', methods=['GET'])
@@ -502,7 +531,8 @@ def handle_agents():
     agent_manager = get_agent_manager()
 
     if request.method == 'GET':
-        agents = [_public_agent(agent) for agent in agent_manager.get_all_agents()]
+        snapshots = {}
+        agents = [_agent_with_content_sync(agent, snapshots) for agent in agent_manager.get_all_agents()]
         from backend.agents.upgrades import artifacts
         upgrade_files_ready = bool(artifacts())
         # 为每个 agent 添加 has_update 字段
@@ -531,7 +561,7 @@ def handle_agent_item(agent_id):
     if request.method == 'GET':
         agent = agent_manager.get_agent_by_id(agent_id)
         if agent:
-            return jsonify(_public_agent(agent)), 200
+            return jsonify(_agent_with_content_sync(agent, {})), 200
         else:
             return jsonify({'success': False, 'message': 'Agent not found'}), 404
 
@@ -846,11 +876,52 @@ def _prefetch_download_contents(downloads, base_url, *, validation_urls=(), conf
 
 
 def _profile_revision(profile_id):
-    """推送时配置空间的修订号，界面据此标记 Agent「待更新」。"""
+    """推送时配置空间的修订号，仅供诊断。"""
     try:
         return get_repository().config_revision(profile_id)
     except ProfileRepositoryError:
         return None
+
+
+def _prepare_transactional_content(agent, config_data, *, base_url='', deployment_id=None):
+    """Materialize exactly the files used by a push, without publishing or saving caches."""
+    import yaml
+    from backend.agents.deployment_bundle import build_deployment_bundle
+    from backend.utils.provider_delivery import prepare_provider_bundle
+
+    service_type = agent.get('service_type', 'mihomo')
+    provider_downloads, custom_files, prepared_providers = [], [], []
+    if service_type == 'mihomo':
+        config_content = generate_mihomo_config(config_data, base_url=base_url,
+                                                sync_lan_hosts=True, preflight_providers=False,
+                                                region_probe=True)
+        main = yaml.safe_load(config_content)
+        provider_downloads = get_mihomo_provider_downloads(config_data, base_url=base_url, main_config=main)
+        ruleset_downloads = get_mihomo_ruleset_downloads(config_data, base_url=base_url)
+        if provider_downloads:
+            prepared_providers = prepare_provider_bundle(config_data, main, render_all=True,
+                                                         allow_transport_fallback=False)
+            provider_downloads = [{key: item[key] for key in ('name', 'url', 'local_path', 'content')}
+                                  for item in prepared_providers]
+    elif service_type == 'mosdns':
+        config_content = generate_mosdns_config(config_data, base_url=base_url)
+        ruleset_downloads = get_mosdns_ruleset_downloads(config_data, base_url=base_url)
+        custom_files = get_mosdns_custom_files(config_data)
+    else:
+        raise ValueError('Unsupported service type')
+    bundle = build_deployment_bundle(agent, config_data, config_content,
+                                     provider_downloads=provider_downloads,
+                                     ruleset_downloads=ruleset_downloads,
+                                     custom_files=custom_files, base_url=base_url,
+                                     deployment_id=deployment_id)
+    return {'bundle': bundle, 'config_content': config_content, 'prepared_providers': prepared_providers,
+            'provider_downloads': provider_downloads, 'ruleset_downloads': ruleset_downloads,
+            'custom_files': custom_files}
+
+
+def _prepare_content_bundle(agent, config_data, *, base_url='', deployment_id=None):
+    return _prepare_transactional_content(agent, config_data, base_url=base_url,
+                                          deployment_id=deployment_id)['bundle']
 
 
 @bp.route('/<agent_id>/push-config', methods=['POST'])
@@ -859,9 +930,8 @@ def push_config_to_agent(agent_id):
     """Prepare one profile snapshot and publish a complete transactional archive."""
     from copy import deepcopy
     import uuid
-    import yaml
-    from backend.agents.deployment_bundle import build_deployment_bundle, DeploymentPreparationError
-    from backend.utils.provider_delivery import prepare_provider_bundle, commit_provider_bundle
+    from backend.agents.deployment_bundle import DeploymentPreparationError
+    from backend.utils.provider_delivery import commit_provider_bundle
 
     agent_manager = get_agent_manager()
     deployment_id = None
@@ -883,6 +953,7 @@ def push_config_to_agent(agent_id):
             config_data = deepcopy(get_config(profile_id))
         except ProfileRepositoryError as exc:
             return jsonify({'success': False, 'message': f'Agent profile unavailable: {exc}'}), 409
+        config_revision = _profile_revision(profile_id)
         service_type = agent.get('service_type', 'mihomo')
         if service_type == 'surge':
             content = generate_surge_config(config_data, base_url=base_url)
@@ -890,7 +961,7 @@ def push_config_to_agent(agent_id):
             self_restart = _supports_self_restart(agent.get('version') or '')
             extra = {'restart_after_update': True} if restart and self_restart else None
             result = agent_manager.push_config_to_agent(agent_id, content, extra_data=extra,
-                                                        config_revision=_profile_revision(profile_id))
+                                                        config_revision=config_revision)
             if result.get('success'):
                 result['profile_id'] = profile_id
                 if restart:
@@ -910,40 +981,22 @@ def push_config_to_agent(agent_id):
             if reservation.get('existing'):
                 return _deployment_response(agent_manager.get_deployment(agent_id, deployment_id))
         owns_preparation = True
-        provider_downloads, custom_files, prepared_providers = [], [], []
-        if service_type == 'mihomo':
-            config_content = generate_mihomo_config(config_data, base_url=base_url,
-                                                    sync_lan_hosts=True, preflight_providers=False,
-                                                    region_probe=True)
-            main = yaml.safe_load(config_content)
-            provider_downloads = get_mihomo_provider_downloads(config_data, base_url=base_url, main_config=main)
-            ruleset_downloads = get_mihomo_ruleset_downloads(config_data, base_url=base_url)
-            if provider_downloads:
-                prepared_providers = prepare_provider_bundle(config_data, main, render_all=True,
-                                                               allow_transport_fallback=False)
-                provider_downloads = [{key: item[key] for key in ('name', 'url', 'local_path', 'content')}
-                                      for item in prepared_providers]
-        else:
-            config_content = generate_mosdns_config(config_data, base_url=base_url)
-            ruleset_downloads = get_mosdns_ruleset_downloads(config_data, base_url=base_url)
-            custom_files = get_mosdns_custom_files(config_data)
-        bundle = build_deployment_bundle(agent, config_data, config_content,
-                                         provider_downloads=provider_downloads,
-                                         ruleset_downloads=ruleset_downloads,
-                                         custom_files=custom_files, base_url=base_url,
-                                         deployment_id=deployment_id)
+        prepared = _prepare_transactional_content(agent, config_data, base_url=base_url,
+                                                   deployment_id=deployment_id)
+        bundle = prepared['bundle']
+        prepared_providers = prepared['prepared_providers']
         # Publish caches only after all files and the exact graph are ready.
         if prepared_providers:
             commit_provider_bundle(profile_id, prepared_providers)
         extra_data = {'deployment_bundle': bundle, 'activate': activate,
-                      'provider_downloads': provider_downloads, 'ruleset_downloads': ruleset_downloads,
-                      'custom_files': custom_files}
-        result = agent_manager.push_config_to_agent(agent_id, config_content, extra_data=extra_data,
-                                                    config_revision=_profile_revision(profile_id))
+                      'base_url': base_url, **{key: prepared[key] for key in
+                      ('provider_downloads', 'ruleset_downloads', 'custom_files')}}
+        result = agent_manager.push_config_to_agent(agent_id, prepared['config_content'], extra_data=extra_data,
+                                                    config_revision=config_revision)
         result['profile_id'] = profile_id
         result['file_count'] = len(bundle.manifest['files'])
-        result['provider_count'] = len(provider_downloads)
-        result['rule_count'] = len(ruleset_downloads)
+        result['provider_count'] = len(prepared['provider_downloads'])
+        result['rule_count'] = len(prepared['ruleset_downloads'])
         return _deployment_response(result)
     except (StrategyReferenceError, DeploymentPreparationError, ValueError) as exc:
         result = {'success': False, 'status': 'failed', 'message': str(exc)}
@@ -974,7 +1027,7 @@ def _deployment_response(result):
             code = 202
         else:
             code = 200
-    return jsonify(result), code
+    return jsonify(_public_deployment(result)), code
 
 
 @bp.route('/<agent_id>/deployments/<deployment_id>', methods=['GET'])
@@ -983,7 +1036,7 @@ def get_agent_deployment(agent_id, deployment_id):
     result = get_agent_manager().get_deployment(agent_id, deployment_id)
     # A terminal failure is still a successfully retrieved task, not a failed poll.
     code = 200 if result.get('status') in ('succeeded', 'failed', 'rolled_back', 'rollback_failed') else result.get('http_status', 200)
-    return jsonify(result), code
+    return jsonify(_public_deployment(result)), code
 
 
 @bp.route('/<agent_id>/deployments/<deployment_id>/activate', methods=['POST'])

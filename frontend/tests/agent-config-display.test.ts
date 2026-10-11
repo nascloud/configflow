@@ -4,11 +4,13 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import Agents from '@/views/Agents.vue'
 import { agentApi, profileApi } from '@/api'
 import { setActiveProfileId } from '@/profileContext'
+import { getAgentConfigSync } from '@/lib/agentConfigSync'
+import { Select } from '@/components/ui/select'
 
 // Keep the actual Agent cards, stores and deployment state; replace only HTTP.
 vi.mock('@/api', () => ({
   default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
-  agentApi: { getAll: vi.fn(), getDeployment: vi.fn(), getUpgrade: vi.fn() },
+  agentApi: { getAll: vi.fn(), getDeployment: vi.fn(), getUpgrade: vi.fn(), bindProfile: vi.fn() },
   profileApi: { list: vi.fn() }
 }))
 
@@ -60,12 +62,13 @@ function agent(overrides: Record<string, unknown> = {}) {
     id: 'config-display-agent', name: 'Config display test', host: '192.0.2.20', port: 8080,
     profile_id: 'default', status: 'online', service_type: 'mosdns', deployment_method: 'shell',
     version: '1.3.0-go', last_heartbeat: '', config_version: 'hash-current', config_revision: 43,
+    content_sync: { status: 'synced', checked_at: '2026-10-11T12:00:00Z' },
     enabled: true, latest_deployment: deployment(), ...overrides
   }
 }
 
 async function render(item = agent(), profiles: Record<string, unknown>[] = [{ id: 'default', name: 'Default', revision: 43 }]) {
-  vi.mocked(agentApi.getAll).mockResolvedValue({ data: [item] } as any)
+  vi.mocked(agentApi.getAll).mockResolvedValue({ data: Array.isArray(item) ? item : [item] } as any)
   vi.mocked(profileApi.list).mockResolvedValue({ data: profiles } as any)
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/agents', component: { render: () => null } }] })
   await router.push('/agents')
@@ -78,82 +81,134 @@ async function render(item = agent(), profiles: Record<string, unknown>[] = [{ i
 }
 
 describe('Agent configuration status wording', () => {
-  it('shows a readable synchronized label and last-push result, with long revisions only in the tooltip', async () => {
+  it('trusts matching complete contents even when revisions differ, keeping revisions only in the tooltip', async () => {
     const revision = 1234567890123
     const { wrapper, footer, title } = await render(agent({
       config_revision: revision, latest_deployment: deployment({ config_revision: revision })
-    }), [{ id: 'default', name: 'Default', revision }])
+    }), [{ id: 'default', name: 'Default', revision: revision + 1 }])
     expect(footer.text()).toContain('已同步')
     expect(footer.text()).not.toContain(String(revision))
     expect(wrapper.text()).not.toContain(String(revision))
     expect(title()).toContain(`已推送修订号：v${revision}`)
-    expect(title()).toContain(`当前配置修订号：v${revision}`)
+    expect(title()).toContain(`当前配置修订号：v${revision + 1}`)
     expect(title()).toContain('hash-current')
+    expect(title()).toContain('完整文件')
     expect(wrapper.text()).toContain('上次配置推送：成功')
     expect(wrapper.text()).not.toContain('发布成功')
   })
 
-  it('shows pending changes while retaining successful historical push wording', async () => {
-    const { wrapper, footer, title } = await render(agent(), [{ id: 'default', name: 'Default', revision: 50 }])
+  it('shows changed complete contents even with the same revision and main-config hash', async () => {
+    const { wrapper, footer, title } = await render(agent({ content_sync: { status: 'changed' } }))
     expect(footer.text()).toContain('有变更，待推送')
     expect(footer.text()).not.toContain('已同步')
     expect(title()).toContain('已推送修订号：v43')
-    expect(title()).toContain('当前配置修订号：v50')
+    expect(title()).toContain('当前配置修订号：v43')
     expect(wrapper.text()).toContain('上次配置推送：成功')
   })
 
-  it('treats a confirmed revision zero as a valid synchronized revision', async () => {
-    const { footer } = await render(agent({ config_revision: 0, latest_deployment: deployment({ config_revision: 0 }) }), [
-      { id: 'default', name: 'Default', revision: 0 }
-    ])
-    expect(footer.text()).toContain('已同步')
-    expect(footer.text()).not.toContain('尚未推送')
-  })
-
-  it('does not equate the same revision number across two bound profiles', async () => {
-    const { footer } = await render(agent({ profile_id: 'second' }), [
+  it('uses the content comparison after a rebind instead of inferring from profile identity', async () => {
+    const { footer } = await render(agent({ profile_id: 'second', content_sync: { status: 'changed' } }), [
       { id: 'default', name: 'Default', revision: 43 }, { id: 'second', name: 'Second', revision: 43 }
     ])
-    expect(footer.text()).toContain('绑定已变更，待推送')
+    expect(footer.text()).toContain('有变更，待推送')
     expect(footer.text()).not.toContain('已同步')
   })
 
-  it('keeps the previous successful profile after a failed push to the new binding', async () => {
+  it.each(['failed', 'rolled_back'])('keeps a confirmed successful content baseline after a %s push', async status => {
     const success = deployment()
-    const failed = deployment({ deployment_id: 'deployment-failed', status: 'failed', profile_id: 'second', updated_at: '2026-10-10T13:00:00Z' })
+    const failed = deployment({ deployment_id: 'deployment-failed', status, config_version: 'failed-hash', updated_at: '2026-10-10T13:00:00Z' })
     const { footer } = await render(agent({
-      profile_id: 'second', latest_deployment: failed,
+      latest_deployment: failed,
       deployments: { [success.deployment_id]: success, [failed.deployment_id]: failed }
-    }), [
-      { id: 'default', name: 'Default', revision: 43 }, { id: 'second', name: 'Second', revision: 43 }
-    ])
-    expect(footer.text()).toContain('绑定已变更，待推送')
-    expect(footer.text()).not.toContain('已同步')
+    }), [{ id: 'default', name: 'Default', revision: 50 }])
+    expect(footer.text()).toContain('已同步')
+    expect(footer.text()).not.toContain('有变更，待推送')
   })
 
   it.each([
-    ['missing profile metadata', { profile_id: 'missing' }, [{ id: 'default', name: 'Default', revision: 43 }]],
-    ['legacy hash without revision', { config_revision: undefined, latest_deployment: undefined }, [{ id: 'default', name: 'Default', revision: 43 }]],
-    ['missing current revision', {}, [{ id: 'default', name: 'Default' }]]
-  ])('keeps synchronization unconfirmed for %s', async (_name, overrides, profiles) => {
-    const { footer } = await render(agent(overrides as Record<string, unknown>), profiles as Record<string, unknown>[])
+    ['matching revisions', {}],
+    ['a later current revision', { config_revision: 20 }],
+    ['revision zero', { config_revision: 0 }],
+    ['legacy hash without revision', { config_revision: undefined, latest_deployment: undefined }],
+    ['successful history without a hash or revision', { config_version: '0', config_revision: undefined }],
+  ])('does not infer synchronization on an old server with %s', async (_name, overrides) => {
+    const { footer } = await render(agent({ ...overrides, content_sync: undefined }))
     expect(footer.text()).toContain('同步状态待确认')
     expect(footer.text()).not.toContain('已同步')
   })
 
-  it('shows never pushed when there is no hash, revision or successful deployment', async () => {
-    const { footer } = await render(agent({ config_version: '0', config_revision: undefined, latest_deployment: undefined }))
+  it('shows never pushed on an old server only when there is no success evidence', async () => {
+    const { footer } = await render(agent({ content_sync: undefined, config_version: '0', config_revision: undefined, latest_deployment: undefined }))
     expect(footer.text()).toContain('尚未推送')
     expect(footer.text()).not.toContain('已同步')
   })
 
-  it('does not use an older matching success when the latest success conflicts with the Agent hash', async () => {
-    const older = deployment({ updated_at: '2026-10-10T11:00:00Z' })
-    const newer = deployment({ deployment_id: 'new-success', config_version: 'different-hash', updated_at: '2026-10-10T13:00:00Z' })
-    const { footer } = await render(agent({
-      latest_deployment: newer, deployments: { newer, older }
-    }))
+  it.each([
+    ['checking', '正在核对配置'],
+    ['unknown', '同步状态待确认'],
+    ['never-pushed', '尚未推送'],
+  ])('renders the server %s state', async (status, label) => {
+    const { footer } = await render(agent({ content_sync: { status } }))
+    expect(footer.text()).toContain(label)
+  })
+
+  it('explains a missing baseline without asserting equality from old revisions or hashes', async () => {
+    const { footer, title } = await render(agent({ content_sync: { status: 'unknown', reason: 'baseline_missing' } }))
     expect(footer.text()).toContain('同步状态待确认')
-    expect(footer.text()).not.toContain('已同步')
+    expect(title()).toContain('尚无完整下发内容记录，成功推送一次后可准确比较')
+  })
+
+  it('uses a generic explanation for comparison failures without displaying raw errors', async () => {
+    const reason = 'synthetic-private-error-detail'
+    const { wrapper, footer, title } = await render(agent({ content_sync: { status: 'unknown', reason } }))
+    expect(footer.text()).toContain('同步状态待确认')
+    expect(title()).toContain('暂时无法确认完整下发内容是否一致')
+    expect(wrapper.html()).not.toContain(reason)
+  })
+
+  it('keeps Mihomo and MosDNS content comparisons independent within the same profile', async () => {
+    const rows = [
+      agent({ id: 'mihomo-test', service_type: 'mihomo', content_sync: { status: 'changed' } }),
+      agent({ id: 'mosdns-test', service_type: 'mosdns', content_sync: { status: 'synced' } }),
+    ]
+    const { wrapper } = await render(rows as any, [{ id: 'default', name: 'Default', revision: 50 }])
+    const footers = wrapper.findAll('footer')
+    expect(footers[0]!.text()).toContain('有变更，待推送')
+    expect(footers[1]!.text()).toContain('已同步')
+  })
+
+  it('invalidates a previous content comparison immediately after binding another profile', async () => {
+    const { wrapper, footer } = await render(agent(), [
+      { id: 'default', name: 'Default', revision: 43 }, { id: 'second', name: 'Second', revision: 43 },
+    ])
+    let finishRefresh!: (value: unknown) => void
+    vi.mocked(agentApi.getAll).mockImplementationOnce(() => new Promise(resolve => { finishRefresh = resolve }) as any)
+    vi.mocked(agentApi.bindProfile).mockResolvedValueOnce({ data: { success: true } } as any)
+    wrapper.findComponent(Select).vm.$emit('update:modelValue', 'second')
+    await flushPromises()
+    expect(agentApi.bindProfile).toHaveBeenCalledWith('config-display-agent', 'second')
+    expect(footer.text()).toContain('正在核对配置')
+    finishRefresh({ data: [agent({ profile_id: 'second', content_sync: { status: 'changed' } })] })
+    await flushPromises()
+    expect(footer.text()).toContain('有变更，待推送')
+  })
+})
+
+describe('deployment progress precedes the content comparison', () => {
+  it.each([
+    [{ status: 'preparing' }, '正在推送'],
+    [{ status: 'ready' }, '已校验，待应用'],
+    [{ status: 'checking' }, '正在推送'],
+    [{ status: 'unknown' }, '同步状态待确认'],
+    [{ status: 'rollback_failed' }, '同步状态待确认'],
+    [{ status: 'succeeded', pending: true }, '同步状态待确认'],
+    [{ status: 'succeeded', query_error: true }, '同步状态待确认'],
+  ])('keeps %j visible over an earlier synchronized snapshot', (progress, label) => {
+    expect(getAgentConfigSync(agent() as any, 43, progress).label).toBe(label)
+  })
+
+  it('also respects progress supplied by the Agent list', () => {
+    expect(getAgentConfigSync(agent({ latest_deployment: deployment({ status: 'rollback_failed' }) }) as any, 43).label)
+      .toBe('同步状态待确认')
   })
 })

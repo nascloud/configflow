@@ -52,6 +52,70 @@ def relative_path(value):
     return path.as_posix()
 
 
+def deployment_content_fingerprint(manifest):
+    """Identify all materialized delivery bytes, independently of a transaction.
+
+    The manifest must describe a complete validated bundle. This function does
+    not fetch resources or inspect their contents: its digests come from the
+    materialization step. An Agent's installed main filename is presentation
+    metadata; every other managed file path remains part of the identity.
+    """
+    if (not isinstance(manifest, dict)
+            or type(manifest.get('protocol_version')) is not int
+            or manifest['protocol_version'] != 1
+            or manifest.get('service_type') not in ('mihomo', 'mosdns')):
+        raise DeploymentPreparationError('Invalid deployment content manifest')
+
+    def manifest_path(value):
+        path = relative_path(value)
+        if path != value or '\x7f' in path:
+            raise DeploymentPreparationError('Manifest paths must be canonical relative paths')
+        return path
+
+    config_path = manifest_path(manifest.get('config_path'))
+    if '/' in config_path:
+        raise DeploymentPreparationError('Agent configuration filename must be a basename')
+    entries = manifest.get('files')
+    if not isinstance(entries, list) or not entries or len(entries) > MAX_FILES:
+        raise DeploymentPreparationError('Manifest must contain a complete deployment file list')
+
+    files, paths, canonical_paths = [], set(), set()
+    config_count, total_size = 0, 0
+    for item in entries:
+        if not isinstance(item, dict):
+            raise DeploymentPreparationError('Invalid deployment manifest file')
+        path = manifest_path(item.get('path'))
+        role, size, digest = item.get('role'), item.get('size'), item.get('sha256')
+        if (not isinstance(role, str) or role not in ('config', 'provider', 'rule', 'custom')
+                or type(size) is not int or not 0 <= size <= MAX_FILE_BYTES
+                or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-fA-F]{64}', digest)):
+            raise DeploymentPreparationError('Invalid deployment manifest file metadata')
+        if path in paths:
+            raise DeploymentPreparationError('Duplicate deployment manifest path')
+        paths.add(path)
+        if role == 'config':
+            config_count += 1
+            if path != config_path or size == 0:
+                raise DeploymentPreparationError('Invalid main configuration manifest entry')
+            path = 'config.yaml'
+        elif path == config_path:
+            raise DeploymentPreparationError('Main configuration entry must have config role')
+        if path in canonical_paths:
+            raise DeploymentPreparationError('Conflicting canonical deployment paths')
+        canonical_paths.add(path)
+        total_size += size
+        if total_size > MAX_TOTAL_BYTES:
+            raise DeploymentPreparationError('Deployment exceeds size limit')
+        files.append({'path': path, 'size': size, 'sha256': digest.lower(), 'role': role})
+    if config_count != 1:
+        raise DeploymentPreparationError('Manifest must contain exactly one main configuration')
+
+    content = {'version': 1, 'service_type': manifest['service_type'],
+               'files': sorted(files, key=lambda item: item['path'])}
+    encoded = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return 'v1:' + hashlib.sha256(encoded).hexdigest()
+
+
 def _local_rule(url, config, base_url):
     """Return the snapshot's library entry only for a recognized local URL."""
     from backend.common.profile_context import profile_api_path

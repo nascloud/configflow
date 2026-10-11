@@ -1221,6 +1221,9 @@ const bindAgentProfile = async (agent: Agent, profileId: string): Promise<boolea
   try {
     await agentApi.bindProfile(agent.id, profileId)
     agent.profile_id = profileId
+    // The previous comparison belongs to the previous binding.
+    agent.content_sync = { status: 'checking' }
+    void loadAgents()
     notify.success('Agent 绑定的配置空间已更新')
     return true
   } catch (error: any) {
