@@ -76,12 +76,21 @@
                 @update:model-value="value => saveRuleset(target, String(value))"
               >
                 <SelectTrigger :id="`ruleset-${target}`" class="h-9 min-w-0 flex-[1_1_200px] bg-background/50 text-[13px]">
-                  <SelectValue placeholder="未设置" />
+                  <SelectValue placeholder="未设置" class="min-w-0">
+                    <span v-if="settings[target]" class="truncate" :title="settings[target]?.name || settings[target]?.id">
+                      {{ settings[target]?.name || settings[target]?.id }}
+                    </span>
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem v-for="item in settings.candidates" :key="item.id" :value="item.id">
-                    {{ item.name }}<span class="ml-1.5 font-mono text-[11px] text-muted-foreground">{{ item.behavior }}</span>
-                  </SelectItem>
+                  <SelectGroup>
+                    <SelectItem v-for="item in settings.candidates" :key="item.id" :value="item.id" :text-value="item.name">
+                      <span class="flex min-w-0 items-center gap-2">
+                        <span class="truncate" :title="item.name">{{ item.name }}</span>
+                        <span class="shrink-0 font-mono text-[11px] text-muted-foreground">{{ item.behavior }}</span>
+                      </span>
+                    </SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
               <span v-if="settings[target] && settings[target]?.problem" class="chip chip-bad">规则集不可写入</span>
@@ -404,7 +413,7 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import DataTableShell from '@/components/common/DataTableShell.vue'
