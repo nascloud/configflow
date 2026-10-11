@@ -397,18 +397,9 @@
             </div>
           </div>
 
-          <div class="grid gap-2">
-            <Label for="sub-health">健康检查</Label>
-            <Input
-              id="sub-health"
-              v-model="form.health_check_url"
-              class="bg-background/50 font-mono"
-              placeholder="留空使用默认（http://www.gstatic.com/generate_204）"
-            />
-            <p class="m-0 text-xs text-muted-foreground">
-              回家或内网节点若无法访问境外测试地址，可能被误判为不可用；建议填 http://www.baidu.com。
-            </p>
-          </div>
+          <HealthCheckFields v-model="providerHealth" provider />
+          <p class="text-sm text-muted-foreground">引用配置：{{ impactProfiles || '暂无引用' }}</p>
+          <p v-if="healthError" role="alert" class="text-sm text-destructive-accent">{{ healthError }}</p>
 
           <div class="flex items-center gap-2.5">
             <Switch id="sub-enabled" v-model="form.enabled" />
@@ -467,6 +458,7 @@
 </template>
 
 <script setup lang="ts">
+import HealthCheckFields from '@/components/HealthCheckFields.vue'
 import { computed, ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import {
   ArrowUpDown,
@@ -744,7 +736,18 @@ const pullOne = async (sub: Subscription) => {
   await loadSubscriptions(true)
 }
 
-const showAddDialog = () => {
+const providerDefaults = ref<Record<string, any>>({})
+const impactProfiles = ref('')
+const healthError = ref('')
+const providerHealth = computed({
+  get: () => form.value.health_check ? { ...form.value.health_check } : { enable: true, url: form.value.health_check_url || 'http://www.gstatic.com/generate_204', interval: 300, lazy: true },
+  set: (value: Record<string, any>) => { form.value.health_check = value }
+})
+const showAddDialog = async () => {
+  healthError.value = ''
+  impactProfiles.value = ''
+  try { providerDefaults.value = (await api.get('/proxy-groups/health-defaults')).data.provider } catch { healthError.value = '无法读取健康检查默认值，请重试'; notify.error(healthError.value); return }
+
   isEdit.value = false
   form.value = {
     id: `sub_${Date.now()}`,
@@ -754,12 +757,16 @@ const showAddDialog = () => {
     enabled: true,
     interval: 86400
   }
+  form.value.health_check = { ...providerDefaults.value }
   dialogVisible.value = true
 }
 
 const editSubscription = (row: Subscription) => {
   isEdit.value = true
   form.value = { ...row }
+  healthError.value = ''
+  impactProfiles.value = ''
+  api.get(`/subscriptions/${row.id}/health-impact`).then(({ data }) => { impactProfiles.value = [...new Set(data.map((item: any) => item.profile_name))].join('、') }).catch(() => { impactProfiles.value = '引用信息读取失败；可能影响多个配置' })
   dialogVisible.value = true
 }
 
@@ -790,8 +797,9 @@ const saveSubscription = async () => {
     }
     dialogVisible.value = false
     loadSubscriptions()
-  } catch (error) {
-    notify.error('保存失败')
+  } catch (error: any) {
+    healthError.value = error?.response?.data?.message || '保存失败'
+    notify.error(healthError.value)
   }
 }
 

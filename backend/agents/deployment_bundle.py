@@ -20,6 +20,7 @@ import uuid
 
 import yaml
 
+from backend.converters.mosdns import parse_clash_rule_value
 from backend.utils.rule_fetch import is_internal_rule_url, request_rule
 
 MAX_FILE_BYTES = 64 * 1024 * 1024
@@ -214,7 +215,7 @@ def convert_mosdns_rules(content, rule_type='domain_set'):
                 continue
             value = line[3:].strip() if line.startswith('ip:') else line
             if ',' in line:
-                kind, value, *_ = [part.strip() for part in line.split(',')]
+                kind, value = parse_clash_rule_value(line)
                 if kind not in ('IP-CIDR', 'IP-CIDR6'):
                     continue
             try:
@@ -228,9 +229,9 @@ def convert_mosdns_rules(content, rule_type='domain_set'):
         if re.match(r'^(domain|full|keyword|regexp):', line):
             converted.append(line)
         elif ',' in line:
-            # Match the existing rule-proxy conversion, including commas inside
-            # DOMAIN-REGEX expressions such as repetition bounds {1,3}.
-            kind, value = [part.strip() for part in line.split(',', 1)]
+            # Classical provider regex commas are payload; ordinary rules
+            # take only their first value field, ignoring subsequent params.
+            kind, value = parse_clash_rule_value(line)
             if kind in mapping:
                 converted.append(f'{mapping[kind]}:{value}')
             # Domain consumers omit IP/process rules, as rule-proxy did for

@@ -1567,6 +1567,14 @@ class ProfileRepository:
         _items_by_id(system.get('agents'), 'Agent')
         shared = document['shared']
         catalogs = {key: _items_by_id(shared.get(key), key) for key in SHARED_FIELDS}
+        from backend.utils.health_check import validate_health
+        try:
+            for kind in ('subscriptions', 'subscription_aggregations'):
+                for source in catalogs[kind].values():
+                    if 'health_check' in source:
+                        validate_health(source['health_check'], provider=True)
+        except ValueError as error:
+            raise ProfileValidationError(str(error)) from error
         from backend.utils.dialer_references import validate_shapes, DialerReferenceError
         try:
             validate_shapes({'nodes': shared['nodes']})
@@ -1633,6 +1641,11 @@ class ProfileRepository:
         if len(group_names) != len(groups) or group_names & BUILTIN_POLICIES:
             raise ProfileValidationError('策略组名称必须唯一，且不能使用 DIRECT 或 REJECT')
         for group in groups.values():
+            from backend.utils.health_check import validate_health
+            try:
+                validate_health(group)
+            except ValueError as error:
+                raise ProfileValidationError(str(error)) from error
             label = f'策略组“{group.get("name")}”'
             for field, kind in (('subscriptions', 'subscriptions'), ('manual_nodes', 'nodes'), ('aggregations', 'subscription_aggregations')):
                 for value in _id_list(group.get(field, []), label + field):

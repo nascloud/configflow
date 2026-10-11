@@ -6,6 +6,7 @@ export interface Subscription {
   enabled: boolean
   interval?: number
   /** 健康检查地址，留空用默认（境外）；回家/内网订阅建议填国内地址 */
+  health_check?: Record<string, any>
   health_check_url?: string
   cached_node_count?: number | null
   cached_updated_at?: string | null
@@ -69,6 +70,9 @@ export interface ProxyGroup {
   manual_nodes?: string[]     // 手动选择的节点
   include_groups?: string[]   // 引用的策略组
   strategy?: 'round-robin' | 'consistent-hashing' | 'sticky-sessions'  // 负载均衡策略
+  timeout?: number
+  tolerance?: number
+  'expected-status'?: string
   lazy?: boolean              // 懒加载
   // 以下为兼容旧数据
   proxies?: string[]          // 已废弃，兼容旧数据

@@ -207,7 +207,7 @@ def test_rename_cannot_change_stable_group_id_or_collide_with_existing_name(tmp_
     app, repo = make_app(tmp_path)
     client = app.test_client()
     group = seed_strategy(client)
-    client.post('/api/proxy-groups', json={'id': 'g2', 'name': 'Taken', 'enabled': True})
+    client.post('/api/proxy-groups', json={'id': 'g2', 'name': 'Taken', 'enabled': True, 'type': 'select', 'manual_nodes': ['DIRECT']})
     before = repo.get_profile('default')
     for data in [{**group, 'id': 'new-id', 'name': 'New'}, {**group, 'name': 'Taken'}]:
         response = client.put('/api/proxy-groups/g1', json=data)

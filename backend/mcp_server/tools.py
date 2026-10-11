@@ -102,6 +102,37 @@ def array(desc: str, item_type: str = 'string') -> Dict[str, Any]:
     return {'type': 'array', 'description': desc, 'items': {'type': item_type}}
 
 
+def health_fields(desc: str, *, provider=False):
+    from backend.utils.health_check import GROUP_DEFAULTS, PROVIDER_DEFAULTS
+    defaults = PROVIDER_DEFAULTS if provider else {**GROUP_DEFAULTS, 'tolerance': 50}
+    properties = {}
+    for key, value in defaults.items():
+        properties[key] = {'type': 'boolean' if type(value) is bool else 'integer' if type(value) is int else 'string', 'description': key + ('（毫秒）' if key in ('timeout', 'tolerance') else '（秒）' if key == 'interval' else ''), 'default': value}
+        if type(value) is int:
+            properties[key].update(minimum=0 if key == 'tolerance' else 1, maximum=86400 if key == 'interval' else 600000)
+    if provider:
+        return {'type': 'object', 'description': desc, 'additionalProperties': True, 'properties': {'health_check': {'type':'object', 'properties':properties, 'additionalProperties':False}}}
+    properties['delete_fields'] = {'type': 'array', 'description': '策略组 PUT/MCP 部分更新显式删除健康字段；不能同时赋值', 'uniqueItems': True, 'items': {'type': 'string', 'enum': list(defaults)}}
+    return {'type': 'object', 'description': desc, 'additionalProperties':True, 'properties':properties}
+
+
+def provider_fields(desc):
+    return health_fields(desc, provider=True)
+
+
+def merge_resource_data(current, data, item_id):
+    """MCP partial edits preserve sibling health settings, including false."""
+    merged = {**current, **data, 'id': item_id}
+    if isinstance(data.get('health_check'), dict):
+        previous = current.get('health_check')
+        if not isinstance(previous, dict):
+            previous = {}
+            if current.get('health_check_url'):
+                previous['url'] = current['health_check_url']
+        merged['health_check'] = {**previous, **data['health_check']}
+    return merged
+
+
 def free_object(desc: str) -> Dict[str, Any]:
     return {'type': 'object', 'description': desc, 'additionalProperties': True}
 
@@ -171,10 +202,14 @@ def _crud(
     if action == 'update':
         if not data:
             raise ApiError(400, f"更新{label}需要提供 data")
-        # REST 层的 PUT 是整体替换，先读回当前值再合并，避免丢字段
+        # Groups have a transactional partial-merge contract; do not turn MCP
+        # partial edits into stale full-object replacements.
+        if collection_path == '/api/proxy-groups':
+            result = call_api('PUT', f"{collection_path}/{item_id}", body=data)
+            return {'action': 'update', 'item': _unwrap(result, data)}
         existing = call_api('GET', collection_path) or []
         current = _find(existing if isinstance(existing, list) else [], item_id)
-        merged = {**current, **data, 'id': item_id}
+        merged = merge_resource_data(current, data, item_id)
         result = call_api('PUT', f"{collection_path}/{item_id}", body=merged)
         return {'action': 'update', 'item': _unwrap(result, merged)}
 
@@ -364,7 +399,7 @@ def _list_subscriptions(args):
         {
             'action': ACTION,
             'id': string('订阅 id，update / delete 时必填'),
-            'data': free_object(
+            'data': provider_fields(
                 '订阅字段：name（名称）、url（订阅链接）、type（mihomo / surge / general）、'
                 'enabled（是否启用）、interval（更新间隔秒）、'
                 'health_check_url（健康检查地址，留空用默认）'
@@ -429,7 +464,7 @@ def _list_aggregations(args):
         {
             'action': ACTION,
             'id': string('聚合 id，update / delete 时必填'),
-            'data': free_object(
+            'data': provider_fields(
                 '聚合字段：name、subscriptions（订阅 id 数组）、nodes（手动节点 id 数组）、'
                 'regex_filter（节点名筛选正则）、description、enabled、health_check_url'
             ),
@@ -456,7 +491,7 @@ def _manage_aggregation(args):
         if not data:
             raise ApiError(400, '更新聚合需要提供 data')
         current = call_api('GET', f"/api/aggregations/{agg_id}") or {}
-        merged = {**current, **data, 'id': agg_id}
+        merged = merge_resource_data(current, data, agg_id)
         return {'action': 'update', 'item': _unwrap(call_api('PUT', f"/api/aggregations/{agg_id}", body=merged), merged)}
 
     raise ApiError(400, f"不支持的 action: {action}")
@@ -696,12 +731,13 @@ def _list_proxy_groups(args):
     'chain 类型使用 chain={entry:{type:"node"|"group",id:稳定ID},exit:{type:"node"|"group",id:稳定ID}}。'
     '节点引用仅支持手动节点；订阅和聚合通过策略组使用。前置直接引用原组，落地生成独立的链内节点/组，'
     '保留来源、筛选、测速和选路参数，不改变原资源；Provider 刷新可更新候选。Surge 拒绝启用链。'
-    '引用类字段填的都是 id，不是名称。',
+    '引用类字段填的都是 id，不是名称。update 为事务内 partial merge，type 不代表替换；'
+    'delete_fields 显式删除健康字段（仅 update，不能同时赋值）。精确排序项须与已选来源一致。',
     obj(
         {
             'action': ACTION,
             'id': string('策略组 id，update / delete 时必填'),
-            'data': free_object(
+            'data': health_fields(
                 '策略组字段：name、type、enabled、'
                 'subscriptions（订阅 id 数组）、regex（订阅节点名筛选正则）、'
                 'aggregations（聚合 id 数组）、aggregation_regex（聚合节点名筛选正则）、'

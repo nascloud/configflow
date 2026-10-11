@@ -545,27 +545,7 @@
             </CollapsibleContent>
           </Collapsible>
 
-          <div v-if="needsUrl && !enabledSources.includes('follow')" class="flex flex-col gap-1.5">
-            <Label for="group-url">测试 URL</Label>
-            <Input
-              id="group-url"
-              v-model="form.url"
-              class="bg-background/50 font-mono"
-              placeholder="http://www.gstatic.com/generate_204"
-            />
-          </div>
-
-          <div v-if="needsUrl && !enabledSources.includes('follow')" class="flex flex-col gap-1.5">
-            <Label for="group-interval">测试间隔（秒）</Label>
-            <Input
-              id="group-interval"
-              v-model.number="form.interval"
-              type="number"
-              :min="60"
-              :max="3600"
-              class="w-44 bg-background/50"
-            />
-          </div>
+          <HealthCheckFields v-if="needsUrl && !enabledSources.includes('follow')" v-model="form" :group-type="form.type" />
 
           <div
             v-if="form.type === 'load-balance' && !enabledSources.includes('follow')"
@@ -584,23 +564,6 @@
             </Select>
           </div>
 
-          <div
-            v-if="form.type === 'load-balance' && !enabledSources.includes('follow')"
-            class="flex flex-col gap-1.5"
-          >
-            <Label>懒加载</Label>
-            <!-- 保持三态：未设置时不写入该字段，与旧行为一致 -->
-            <Select v-model="lazyChoice">
-              <SelectTrigger class="w-full bg-background/50">
-                <SelectValue placeholder="请选择是否启用懒加载（可选）" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="unset">未设置</SelectItem>
-                <SelectItem value="true">是</SelectItem>
-                <SelectItem value="false">否</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
           </template>
 
           <p v-if="formError" role="alert" class="break-all text-sm text-destructive-accent">{{ formError }}</p>
@@ -662,6 +625,7 @@
 </template>
 
 <script setup lang="ts">
+import HealthCheckFields from '@/components/HealthCheckFields.vue'
 import ReorderBar from '@/components/shell/ReorderBar.vue'
 import DragHandle from '@/components/shell/DragHandle.vue'
 import { useReorder } from '@/composables/useReorder'
@@ -775,14 +739,6 @@ const toggleSource = (value: string): void => {
 const subscriptionOptions = computed(() =>
   subscriptions.value.map(sub => ({ value: sub.id, label: sub.name }))
 )
-
-/* 懒加载保持三态：'unset' 表示不写入该字段 */
-const lazyChoice = computed<string>({
-  get: () => (form.value.lazy === undefined ? 'unset' : String(form.value.lazy)),
-  set: value => {
-    form.value.lazy = value === 'unset' ? undefined : value === 'true'
-  }
-})
 
 const orderPanelOpen = ref(false)
 
@@ -991,61 +947,16 @@ const orderedProxiesList = computed(() => {
   return result
 })
 
-// 查找上一个同类型策略组的配置
-const findPreviousSameTypeConfig = (type: string) => {
-  // 在现有策略组中查找最后一个同类型的策略组
-  const sameTypeGroups = proxyGroups.value.filter(g => g.type === type)
-  if (sameTypeGroups.length > 0) {
-    // 返回最后一个同类型策略组的配置
-    const lastGroup = sameTypeGroups[sameTypeGroups.length - 1]
-    return {
-      url: lastGroup.url || 'http://www.gstatic.com/generate_204',
-      interval: lastGroup.interval || 300
-    }
-  }
-  // 如果没有找到，返回默认值
-  return {
-    url: 'http://www.gstatic.com/generate_204',
-    interval: 300
-  }
-}
-
-// 仅用户切换类型时调整默认参数，编辑回填不改写已保存值。
+// Creation defaults come from the backend; never migrate legacy edit records.
+const healthDefaults = ref<Record<string, any>>({})
+const healthKeys = ['url', 'interval', 'timeout', 'lazy', 'expected-status', 'tolerance'] as const
 const updateTypeDefaults = (newType: string, oldType?: string) => {
-  if (!oldType) return
-  if (newType === 'chain') return
-  if (oldType === 'chain') {
-    if (newType && ['url-test', 'fallback', 'load-balance'].includes(newType)) Object.assign(form.value, findPreviousSameTypeConfig(newType))
-    return
-  }
-
-  const needsUrlTypes = ['url-test', 'fallback', 'load-balance']
-  const oldNeedsUrl = needsUrlTypes.includes(oldType)
-  const newNeedsUrl = needsUrlTypes.includes(newType || '')
-
-  // 从需要测速的类型切换到 select，删除测速参数
-  if (oldNeedsUrl && newType === 'select') {
-    delete form.value.url
-    delete form.value.interval
-  }
-  // 从 select 切换到需要测速的类型，自动获取上一个同类型的配置
-  else if (oldType === 'select' && newNeedsUrl && newType) {
-    const config = findPreviousSameTypeConfig(newType)
-    form.value.url = config.url
-    form.value.interval = config.interval
-  }
-  // 从一个需要测速的类型切换到另一个需要测速的类型
-  else if (oldNeedsUrl && newNeedsUrl && newType && oldType !== newType) {
-    const config = findPreviousSameTypeConfig(newType)
-    form.value.url = config.url
-    form.value.interval = config.interval
-  }
-
-  // 从负载均衡切换到其他类型，删除负载均衡特有字段
-  if (oldType === 'load-balance' && newType !== 'load-balance') {
-    delete form.value.strategy
-    delete form.value.lazy
-  }
+  if (!oldType || newType === oldType) return
+  const active = ['url-test', 'fallback', 'load-balance'].includes(newType)
+  if (!active) for (const key of healthKeys) delete (form.value as any)[key]
+  else if (!['url-test', 'fallback', 'load-balance'].includes(oldType)) Object.assign(form.value, healthDefaults.value)
+  if (newType !== 'url-test') delete form.value.tolerance
+  if (newType !== 'load-balance') delete form.value.strategy
 }
 
 // 处理跟随模式切换
@@ -1562,7 +1473,8 @@ const loadResources = async () => {
   }
 }
 
-const showAddDialog = () => {
+const showAddDialog = async () => {
+  try { healthDefaults.value = (await api.get('/proxy-groups/health-defaults')).data.group ?? {} } catch { notify.error('无法读取健康检查默认值，请重试'); return }
   formError.value = ''
   chainSearch.value = ''
   isEdit.value = false
@@ -1605,7 +1517,8 @@ const toggleGroupEnabled = async (group: ProxyGroup) => {
   }
 }
 
-const editGroup = (row: ProxyGroup) => {
+const editGroup = async (row: ProxyGroup) => {
+  try { healthDefaults.value = (await api.get('/proxy-groups/health-defaults')).data.group ?? {} } catch { notify.error('无法读取健康检查默认值，请重试'); return }
   formError.value = ''
   chainSearch.value = ''
   if (row.type === 'chain') {
@@ -1741,6 +1654,9 @@ const editGroup = (row: ProxyGroup) => {
   if (row.type !== 'select') {
     formData.url = row.url
     formData.interval = row.interval
+    for (const key of ['timeout', 'lazy', 'expected-status', 'tolerance'] as const) {
+      if (row[key] !== undefined) formData[key] = row[key]
+    }
   }
 
   // 负载均衡类型特有字段
@@ -1751,8 +1667,8 @@ const editGroup = (row: ProxyGroup) => {
     if (row.lazy !== undefined && row.lazy !== null) {
       formData.lazy = row.lazy
     } else {
-      // 默认值为 true
-      formData.lazy = true
+      // Keep unset distinct from explicit false.
+      delete formData.lazy
     }
   }
 
@@ -1822,6 +1738,7 @@ const saveGroup = async () => {
     if (saveData.type === 'select') {
       delete saveData.url
       delete saveData.interval
+      for (const key of ['timeout', 'lazy', 'expected-status', 'tolerance'] as const) delete saveData[key]
     }
 
     // 如果负载策略和懒加载未选择，删除这些字段
@@ -1838,7 +1755,10 @@ const saveGroup = async () => {
     if (isEdit.value) {
       // Server atomically updates the group and all policy references.
       // 使用 id 进行API调用
-      await proxyGroupApi.update(saveData.id!, saveData, profileId)
+      const original = proxyGroups.value.find(group => group.id === saveData.id)
+      const delete_fields = ['url-test', 'fallback', 'load-balance'].includes(saveData.type)
+        ? healthKeys.filter(key => original?.[key] !== undefined && saveData[key] === undefined) : []
+      await proxyGroupApi.update(saveData.id!, { ...saveData, ...(delete_fields.length ? { delete_fields } : {}) }, profileId)
       notify.success('更新成功')
     } else {
       await proxyGroupApi.create(saveData, profileId)

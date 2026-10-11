@@ -474,6 +474,11 @@ def mosdns_rule_proxy():
        - DOMAIN,example.com → full:example.com
        - DOMAIN-KEYWORD,example → keyword:example
        - DOMAIN-REGEX,^.*example.*$ → regexp:^.*example.*$
+       - Clash 文本与 YAML payload 是 classical provider 内容，不是带 target 的完整规则。
+         按 Mihomo ParseRulePayload(needTarget=false)，DOMAIN-REGEX 保留类型后全部
+         逗号字段（包括裸逗号、DIRECT、no-resolve），不推测策略或解析正则参数；
+         普通 DOMAIN/IP-CIDR 只取第一个值字段，忽略后续参数。
+         rule-proxy、转换器与 Agent bundle 使用相同语义。
 
     2. List 格式:
        - +.example.com → domain:example.com (匹配域名及所有子域名)

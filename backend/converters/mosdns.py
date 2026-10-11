@@ -200,6 +200,17 @@ _CLASH_DOMAIN_PREFIXES = {
 _CLASH_IP_TYPES = ('IP-CIDR', 'IP-CIDR6')
 
 
+def parse_clash_rule_value(line: str):
+    """Read classical provider payloads (Mihomo needTarget=false), not full rules."""
+    kind, _, value = line.partition(',')
+    kind, value = kind.strip().upper(), value.strip()
+    # DOMAIN-REGEX has neither target nor params in classical providers.
+    # Every remaining comma belongs to its payload, regardless of regex syntax.
+    if kind != 'DOMAIN-REGEX':
+        value = value.split(',', 1)[0].strip()
+    return kind, value
+
+
 def _is_ip_or_cidr(value: str) -> bool:
     import ipaddress
     try:
@@ -332,13 +343,8 @@ def convert_rule_content_for_mosdns(content: str, part: str = None) -> str:
             continue
 
         if ',' in line:
-            # 规则集的 DOMAIN-REGEX 按「类型,完整表达式」解析，与 Agent 打包一致。
-            rule_type, value = [field.strip() for field in line.split(',', 1)]
-            rule_type = rule_type.upper()
-            # 正则中的逗号也是表达式的一部分（如 {1,3}、[a,b]），须完整保留。
-            # 其他规则仍去掉策略 / no-resolve 等尾部字段。
-            if rule_type != 'DOMAIN-REGEX':
-                value = value.split(',', 1)[0].strip()
+            # Clash 字段规则与 Agent bundle 共用，保留正则内部逗号。
+            rule_type, value = parse_clash_rule_value(line)
             if not value:
                 continue
             if rule_type in _CLASH_DOMAIN_PREFIXES:

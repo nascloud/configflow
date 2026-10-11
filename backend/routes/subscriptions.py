@@ -25,8 +25,18 @@ from backend.utils import subscription_health
 DERIVED_FIELDS = ('cached_node_count', 'cached_updated_at', 'traffic', 'traffic_at', 'last_fetch')
 
 
+@subscriptions_bp.route('/<resource_id>/health-impact', methods=['GET'])
+@require_auth
+def health_impact(resource_id):
+    from backend.common.config import get_repository
+    return jsonify(get_repository().get_resource_usage('subscriptions', resource_id))
+
+
 def _strip_derived(sub):
-    return {k: v for k, v in (sub or {}).items() if k not in DERIVED_FIELDS}
+    if not isinstance(sub, dict):
+        from backend.common.config_repository import ProfileValidationError
+        raise ProfileValidationError('订阅请求必须是对象')
+    return {k: v for k, v in sub.items() if k not in DERIVED_FIELDS}
 
 
 def validate_subscription_fields(data):
@@ -68,6 +78,8 @@ def handle_subscriptions():
 
     elif request.method == 'POST':
         sub = _strip_derived(request.json)
+        from backend.utils.health_check import initialize_provider_health
+        initialize_provider_health(sub)
         error = validate_subscription_fields(sub)
         if error:
             return error

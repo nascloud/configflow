@@ -147,6 +147,9 @@ def build_provider_health_check(source: Dict[str, Any]) -> Dict[str, Any]:
     检查必然超时而被误判为失活，客户端因此不会选用这些节点，故允许每个
     订阅/聚合单独指定检查地址（如 http://www.baidu.com）。
     """
+    if 'health_check' in source:
+        from backend.utils.health_check import provider_health_check
+        return provider_health_check(source)
     url = str(source.get('health_check_url') or '').strip() or DEFAULT_HEALTH_CHECK_URL
     return {
         'enable': True,
@@ -618,120 +621,8 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
                 # 跟随模式：复制被跟随策略组的所有配置，只保留自己的名称
                 proxy_group['type'] = followed_group['type']  # 类型也跟随
 
-                # 复制被跟随策略组的节点来源设置
-                manual_nodes = followed_group.get('manual_nodes', [])
-                include_groups = followed_group.get('include_groups', [])
-                subscriptions = followed_group.get('subscriptions', [])
-
-                # 处理订阅来源
-                if subscriptions:
-                    use_list = []
-                    for sub_id in subscriptions:
-                        sub = next((s for s in config_data.get('subscriptions', []) if s['id'] == sub_id), None)
-                        if sub:
-                            use_list.append(sub['name'])
-                    if use_list:
-                        proxy_group['use'] = use_list
-
-                    # 复制正则过滤：订阅的regex + 聚合的aggregation_regex
-                    all_regex_filters = []
-
-                    # 添加订阅的正则过滤
-                    regex = followed_group.get('regex', '')
-                    if regex and regex.strip():
-                        all_regex_filters.append(regex.strip())
-
-                    # 添加聚合的正则过滤
-                    agg_regex = followed_group.get('aggregation_regex', '')
-                    if agg_regex and agg_regex.strip():
-                        all_regex_filters.append(agg_regex.strip())
-
-                    # 如果有多个过滤器，用 | (或) 连接；如果只有一个，直接使用
-                    if all_regex_filters:
-                        if len(all_regex_filters) == 1:
-                            proxy_group['filter'] = all_regex_filters[0]
-                        else:
-                            # 多个过滤器用括号包裹后用 | 连接
-                            combined_filter = '|'.join(f'({f})' for f in all_regex_filters)
-                            proxy_group['filter'] = combined_filter
-
-                # 处理手动节点和引用策略
-                combined_proxies = []
-                proxies_order = followed_group.get('proxies_order', [])
-
-                if proxies_order:
-                    # 收集聚合 providers（用于 use 字段）
-                    aggregation_subscriptions_from_follow = []
-
-                    for item in proxies_order:
-                        if item.get('type') == 'node':
-                            node_id = item.get('id')
-                            if node_id in ['DIRECT', 'REJECT']:
-                                combined_proxies.append(node_id)
-                            else:
-                                node = next((n for n in config_data.get('nodes', []) if n.get('id') == node_id), None)
-                                if node:
-                                    combined_proxies.append(node['name'])
-                        elif item.get('type') == 'strategy':
-                            group_id = item.get('id')
-                            ref_group = next(
-                                (g for g in config_data.get('proxy_groups', []) if g.get('id') == group_id), None)
-                            if ref_group:
-                                combined_proxies.append(ref_group['name'])
-                        elif item.get('type') == 'aggregation':
-                            # 处理订阅聚合 - 聚合直接作为 provider
-                            agg_id = item.get('id')
-                            aggregations = config_data.get('subscription_aggregations', [])
-                            agg = next((a for a in aggregations if a['id'] == agg_id and a.get('enabled', True)), None)
-                            if agg:
-                                # 将聚合添加到 use 字段（聚合作为 provider）
-                                if agg['name'] not in aggregation_subscriptions_from_follow:
-                                    aggregation_subscriptions_from_follow.append(agg['name'])
-
-                    # 同时也要处理 aggregation_ids 中的聚合（可能不在 proxies_order 中）
-                    if aggregation_ids:
-                        aggregations = config_data.get('subscription_aggregations', [])
-                        for agg_id in aggregation_ids:
-                            agg = next((a for a in aggregations if a['id'] == agg_id and a.get('enabled', True)), None)
-                            if agg and agg['name'] not in aggregation_subscriptions_from_follow:
-                                aggregation_subscriptions_from_follow.append(agg['name'])
-
-                    # 如果有聚合，添加到 use 字段
-                    if aggregation_subscriptions_from_follow:
-                        use_list = proxy_group.get('use', [])
-                        for provider_name in aggregation_subscriptions_from_follow:
-                            if provider_name not in use_list:
-                                use_list.append(provider_name)
-                        if use_list:
-                            proxy_group['use'] = use_list
-                else:
-                    nodes_list = []
-                    strategies_list = []
-
-                    if manual_nodes:
-                        for node_id in manual_nodes:
-                            if node_id in ['DIRECT', 'REJECT']:
-                                nodes_list.append(node_id)
-                            else:
-                                node = next((n for n in config_data.get('nodes', []) if n.get('id') == node_id), None)
-                                if node:
-                                    nodes_list.append(node['name'])
-
-                    if include_groups:
-                        for group_id in include_groups:
-                            ref_group = next(
-                                (g for g in config_data.get('proxy_groups', []) if g.get('id') == group_id), None)
-                            if ref_group:
-                                strategies_list.append(ref_group['name'])
-
-                    proxy_order = followed_group.get('proxy_order', 'nodes_first')
-                    if proxy_order == 'strategies_first':
-                        combined_proxies = strategies_list + nodes_list
-                    else:
-                        combined_proxies = nodes_list + strategies_list
-
-                if combined_proxies:
-                    proxy_group['proxies'] = combined_proxies
+                from backend.utils.group_candidates import render_members
+                proxy_group.update(render_members(followed_group, config_data))
 
                 # 复制测试URL和间隔
                 if followed_group.get('url'):
@@ -746,7 +637,6 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
 
                 # 复制负载均衡特有字段
                 if followed_group['type'] == 'load-balance':
-                    proxy_group['tolerance'] = 100
                     if followed_group.get('strategy'):
                         proxy_group['strategy'] = followed_group['strategy']
                     if followed_group.get('lazy') is not None:
@@ -755,189 +645,8 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
                 # 如果找不到被跟随的策略组，跳过此策略组
                 continue
         else:
-            # 原有的非跟随模式逻辑
-            # 处理多种来源（新格式）
-            manual_nodes = group.get('manual_nodes', [])
-            aggregation_ids = group.get('aggregations', [])
-            include_groups = group.get('include_groups', [])
-            subscriptions = group.get('subscriptions', [])
-
-            # 调试日志
-            logger.debug(
-                f"策略组 {group.get('name')} - aggregations: {aggregation_ids}, manual_nodes: {manual_nodes}, subscriptions: {subscriptions}")
-
-            # 兼容旧格式数据
-            if not manual_nodes and not aggregation_ids and not include_groups and not subscriptions:
-                source = group.get('source', 'subscription')
-                proxies = group.get('proxies', [])
-
-                if source == 'subscription':
-                    subscriptions = group.get('subscriptions', [])
-                elif source == 'node':
-                    manual_nodes = proxies
-                elif source == 'strategy':
-                    include_groups = proxies
-
-            # 处理聚合来源 - 聚合作为独立的 provider，添加到 use 字段
-            aggregation_providers = []
-            # 收集所有聚合中包含的订阅ID（用于去重）
-            subscriptions_in_current_aggregations = set()
-
-            if aggregation_ids:
-                aggregations = config_data.get('subscription_aggregations', [])
-                for agg_id in aggregation_ids:
-                    agg = next((a for a in aggregations if a['id'] == agg_id and a.get('enabled', True)), None)
-                    if agg:
-                        aggregation_providers.append(agg['name'])
-                        # 收集该聚合包含的订阅ID
-                        agg_subs = agg.get('subscriptions', [])
-                        subscriptions_in_current_aggregations.update(agg_subs)
-
-            # 处理订阅和聚合来源 - 添加到 use 字段
-            use_list = []
-
-            # 添加订阅（跳过已在聚合中的订阅，避免重复）
-            if subscriptions:
-                for sub_id in subscriptions:
-                    # 如果该订阅已经在某个聚合中，跳过
-                    if sub_id in subscriptions_in_current_aggregations:
-                        sub = next((s for s in config_data.get('subscriptions', []) if s['id'] == sub_id), None)
-                        if sub:
-                            logger.debug(f"策略组 {group.get('name')} 跳过订阅 '{sub['name']}'，因为它已包含在聚合中")
-                        continue
-
-                    sub = next((s for s in config_data.get('subscriptions', []) if s['id'] == sub_id), None)
-                    if sub:
-                        use_list.append(sub['name'])
-
-            # 添加聚合 providers
-            if aggregation_providers:
-                use_list.extend(aggregation_providers)
-
-            if use_list:
-                proxy_group['use'] = use_list
-
-                # 合并正则过滤：订阅的 regex + 聚合的 aggregation_regex
-                all_regex_filters = []
-
-                # 添加订阅的正则过滤
-                group_regex = group.get('regex', '')
-                if group_regex and group_regex.strip():
-                    all_regex_filters.append(group_regex.strip())
-
-                # 添加聚合的正则过滤（来自策略组设置的aggregation_regex，不是聚合定义的regex_filter）
-                agg_regex = group.get('aggregation_regex', '')
-                if agg_regex and agg_regex.strip():
-                    all_regex_filters.append(agg_regex.strip())
-
-                # 如果有多个过滤器，用 | (或) 连接；如果只有一个，直接使用
-                if all_regex_filters:
-                    if len(all_regex_filters) == 1:
-                        proxy_group['filter'] = all_regex_filters[0]
-                    else:
-                        # 多个过滤器用括号包裹后用 | 连接
-                        combined_filter = '|'.join(f'({f})' for f in all_regex_filters)
-                        proxy_group['filter'] = combined_filter
-
-            # 处理手动节点和引用策略
-            combined_proxies = []
-
-            # 检查是否有 proxies_order（精确排序）
-            proxies_order = group.get('proxies_order', [])
-
-            # 调试日志
-            logger.debug(f"策略组 {group.get('name')} - proxies_order: {proxies_order}")
-
-            if proxies_order:
-                # 使用精确排序
-                # 收集聚合 providers（用于 use 字段）
-                aggregation_subscriptions_from_order = []
-
-                for item in proxies_order:
-                    if item.get('type') == 'node':
-                        node_id = item.get('id')
-                        # 特殊值（DIRECT, REJECT）直接添加
-                        if node_id in ['DIRECT', 'REJECT']:
-                            combined_proxies.append(node_id)
-                        else:
-                            # 根据 ID 查找节点名称
-                            node = next((n for n in config_data.get('nodes', []) if n.get('id') == node_id), None)
-                            if node:
-                                combined_proxies.append(node['name'])
-                    elif item.get('type') == 'strategy':
-                        group_id = item.get('id')
-                        # 根据 ID 查找策略组名称
-                        ref_group = next((g for g in config_data.get('proxy_groups', []) if g.get('id') == group_id),
-                                         None)
-                        if ref_group:
-                            combined_proxies.append(ref_group['name'])
-                    elif item.get('type') == 'aggregation':
-                        # 处理订阅聚合 - 聚合直接作为 provider
-                        agg_id = item.get('id')
-                        aggregations = config_data.get('subscription_aggregations', [])
-                        agg = next((a for a in aggregations if a['id'] == agg_id and a.get('enabled', True)), None)
-                        if agg:
-                            # 将聚合添加到 use 字段（聚合作为 provider）
-                            if agg['name'] not in aggregation_subscriptions_from_order:
-                                aggregation_subscriptions_from_order.append(agg['name'])
-                        else:
-                            logger.debug(f"未找到聚合 ID: {agg_id}")
-
-                # 同时也要处理 aggregation_ids 中的聚合（可能不在 proxies_order 中）
-                # 这样可以确保所有配置的聚合都会被添加到 use 字段
-                if aggregation_ids:
-                    aggregations = config_data.get('subscription_aggregations', [])
-                    for agg_id in aggregation_ids:
-                        agg = next((a for a in aggregations if a['id'] == agg_id and a.get('enabled', True)), None)
-                        if agg and agg['name'] not in aggregation_subscriptions_from_order:
-                            aggregation_subscriptions_from_order.append(agg['name'])
-
-                # 如果有聚合，添加到 use 字段
-                if aggregation_subscriptions_from_order:
-                    use_list = proxy_group.get('use', [])
-                    for provider_name in aggregation_subscriptions_from_order:
-                        if provider_name not in use_list:
-                            use_list.append(provider_name)
-                    if use_list:
-                        proxy_group['use'] = use_list
-            else:
-                # 没有精确排序时，使用旧逻辑
-                nodes_list = []
-                strategies_list = []
-
-                # 将节点 ID 转换为节点名称
-                if manual_nodes:
-                    for node_id in manual_nodes:
-                        # 特殊值（DIRECT, REJECT）直接添加
-                        if node_id in ['DIRECT', 'REJECT']:
-                            nodes_list.append(node_id)
-                        else:
-                            # 根据 ID 查找节点名称
-                            node = next((n for n in config_data.get('nodes', []) if n.get('id') == node_id), None)
-                            if node:
-                                nodes_list.append(node['name'])
-
-                # 将策略组 ID 转换为策略组名称
-                if include_groups:
-                    for group_id in include_groups:
-                        # 根据 ID 查找策略组名称
-                        ref_group = next((g for g in config_data.get('proxy_groups', []) if g.get('id') == group_id),
-                                         None)
-                        if ref_group:
-                            strategies_list.append(ref_group['name'])
-
-                # 根据 proxy_order 设置决定顺序，默认节点优先
-                proxy_order = group.get('proxy_order', 'nodes_first')
-                if proxy_order == 'strategies_first':
-                    # 策略优先：先添加策略组，再添加节点
-                    combined_proxies = strategies_list + nodes_list
-                else:
-                    # 节点优先（默认）：先添加节点，再添加策略组
-                    combined_proxies = nodes_list + strategies_list
-
-            if combined_proxies:
-                proxy_group['proxies'] = combined_proxies
-                logger.debug(f"策略组 {group.get('name')} 最终 proxies 列表: {combined_proxies}")
+            from backend.utils.group_candidates import render_members
+            proxy_group.update(render_members(group, config_data))
 
         if group.get('url'):
             proxy_group['url'] = group['url']
@@ -951,7 +660,6 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
 
         # 负载均衡特有字段
         if group['type'] == 'load-balance':
-            proxy_group['tolerance'] = 100
             if group.get('strategy'):
                 proxy_group['strategy'] = group['strategy']
             if group.get('lazy') is not None:
@@ -962,6 +670,10 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
             if key in settings:
                 proxy_group[key] = settings[key]
 
+        # Follow mode can change the effective type; only url-test supports
+        # tolerance, including values copied from legacy persisted settings.
+        if proxy_group['type'] != 'url-test':
+            proxy_group.pop('tolerance', None)
         proxy_groups.append(proxy_group)
 
     # 添加默认策略组

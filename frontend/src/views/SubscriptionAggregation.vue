@@ -223,18 +223,9 @@
             />
           </div>
 
-          <div class="flex flex-col gap-1.5">
-            <Label for="agg-health">健康检查</Label>
-            <Input
-              id="agg-health"
-              v-model="form.health_check_url"
-              class="bg-background/50 font-mono"
-              placeholder="留空使用默认（http://www.gstatic.com/generate_204）"
-            />
-            <p class="m-0 text-[12px] text-muted-foreground">
-              回家或内网节点若无法访问境外测试地址，可能被误判为不可用；建议填 http://www.baidu.com。
-            </p>
-          </div>
+          <HealthCheckFields v-model="providerHealth" provider />
+          <p class="text-sm text-muted-foreground">引用配置：{{ impactProfiles || '暂无引用' }}</p>
+          <p v-if="healthError" role="alert" class="text-sm text-destructive-accent">{{ healthError }}</p>
 
           <div class="flex flex-col gap-1.5">
             <Label for="agg-desc">描述</Label>
@@ -376,6 +367,7 @@
 </template>
 
 <script setup lang="ts">
+import HealthCheckFields from '@/components/HealthCheckFields.vue'
 import { computed, ref, onMounted, nextTick } from 'vue'
 import { Motion } from 'motion-v'
 import {
@@ -439,6 +431,7 @@ interface Aggregation {
   enabled?: boolean
   regex_filter?: string
   /** 健康检查地址，留空用默认（境外）；回家/内网聚合建议填国内地址 */
+  health_check?: Record<string, any>
   health_check_url?: string
   created_at?: string
   updated_at?: string
@@ -552,7 +545,18 @@ const formatDate = (dateString: string) => {
   return date.toLocaleString('zh-CN')
 }
 
-const showAddDialog = () => {
+const providerDefaults = ref<Record<string, any>>({})
+const impactProfiles = ref('')
+const healthError = ref('')
+const providerHealth = computed({
+  get: () => form.value.health_check ? { ...form.value.health_check } : { enable: true, url: form.value.health_check_url || 'http://www.gstatic.com/generate_204', interval: 300, lazy: true },
+  set: (value: Record<string, any>) => { form.value.health_check = value }
+})
+const showAddDialog = async () => {
+  healthError.value = ''
+  impactProfiles.value = ''
+  try { providerDefaults.value = (await api.get('/proxy-groups/health-defaults')).data.provider } catch { healthError.value = '无法读取健康检查默认值，请重试'; notify.error(healthError.value); return }
+
   isEdit.value = false
   form.value = {
     name: '',
@@ -562,6 +566,7 @@ const showAddDialog = () => {
     enabled: true,
     regex_filter: ''
   }
+  form.value.health_check = { ...providerDefaults.value }
   dialogVisible.value = true
 }
 
@@ -589,6 +594,9 @@ const toggleAggregationEnabled = async (aggregation: Aggregation) => {
 const editAggregation = (aggregation: Aggregation) => {
   isEdit.value = true
   form.value = { ...aggregation }
+  healthError.value = ''
+  impactProfiles.value = ''
+  api.get(`/aggregations/${aggregation.id}/health-impact`).then(({ data }) => { impactProfiles.value = [...new Set(data.map((item: any) => item.profile_name))].join('、') }).catch(() => { impactProfiles.value = '引用信息读取失败；可能影响多个配置' })
   dialogVisible.value = true
 }
 
@@ -616,9 +624,9 @@ const saveAggregation = async () => {
 
     dialogVisible.value = false
     await loadAggregations()
-  } catch (error) {
-    console.error('Failed to save aggregation:', error)
-    notify.error('保存失败')
+  } catch (error: any) {
+    healthError.value = error?.response?.data?.message || '保存失败'
+    notify.error(healthError.value)
   } finally {
     saving.value = false
   }

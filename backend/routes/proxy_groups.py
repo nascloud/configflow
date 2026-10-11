@@ -9,6 +9,14 @@ from backend.common.config import get_config, get_shared_config, update_config_t
 from backend.common.config_repository import ProfileRepositoryError
 from backend.utils.reorder import resolve_new_order
 from backend.utils.subscription_cache import load_subscription_cache
+from backend.utils.group_candidates import CandidateValidationError
+
+
+@proxy_groups_bp.route('/health-defaults', methods=['GET'])
+@require_auth
+def health_defaults():
+    from backend.utils.health_check import GROUP_DEFAULTS, PROVIDER_DEFAULTS
+    return jsonify({'group': {**GROUP_DEFAULTS, 'tolerance': 50}, 'provider': PROVIDER_DEFAULTS})
 
 
 def _get_subscription_nodes(config_data, sub_id):
@@ -64,6 +72,14 @@ def _add_source_meta(nodes, source_type, source_id, source_name):
 
 
 def _clean_group_fields(group):
+    from backend.utils.health_check import GROUP_HEALTH_TYPES
+    if group.get('type') not in GROUP_HEALTH_TYPES:
+        for key in ('url', 'interval', 'timeout', 'lazy', 'expected-status', 'tolerance'):
+            group.pop(key, None)
+    if group.get('type') != 'url-test':
+        group.pop('tolerance', None)
+    if group.get('type') != 'load-balance':
+        group.pop('strategy', None)
     if group.get('type') == 'chain':
         for field in ('subscriptions', 'regex', 'manual_nodes', 'aggregations', 'aggregation_regex',
                       'include_groups', 'follow_group', 'proxies', 'source', 'source_type',
@@ -87,8 +103,19 @@ def handle_proxy_groups():
         group = request.json
         if not isinstance(group, dict):
             return jsonify({'success': False, 'message': '策略组请求必须是 JSON 对象'}), 400
+        if 'delete_fields' in group:
+            return jsonify({'success': False, 'message': 'delete_fields 仅适用于更新'}), 400
         _clean_group_fields(group)
-        update_config_transaction(lambda profile: profile.setdefault('proxy_groups', []).append(group))
+        from backend.utils.health_check import initialize_group_health
+        from backend.utils.group_candidates import validate_candidates
+        initialize_group_health(group)
+        def create(profile):
+            validate_candidates(group, profile, get_shared_config())
+            profile.setdefault('proxy_groups', []).append(group)
+        try:
+            update_config_transaction(create)
+        except CandidateValidationError as exc:
+            return jsonify({'success': False, 'message': str(exc)}), 400
         return jsonify({'success': True, 'data': group})
 
 
@@ -111,11 +138,23 @@ def handle_proxy_group(group_id):
         if group_data is not None:
             if group_data.get('id', group_id) != group_id:
                 raise Conflict('策略组 ID 不可修改，请保留原 ID')
-            merged = {**original, **group_data}
+            from backend.utils.group_candidates import merge_group_update
+            from backend.utils.health_check import GROUP_HEALTH_TYPES, initialize_group_health
+            base = dict(original)
+            new_type = group_data.get('type', original.get('type'))
+            if original.get('type') not in GROUP_HEALTH_TYPES and new_type in GROUP_HEALTH_TYPES:
+                base['type'] = new_type
+                initialize_group_health(base)
+            merged = merge_group_update(base, group_data)
             group_data.clear()
             group_data.update(merged)
             group_data['id'] = group_id
             _clean_group_fields(group_data)
+            from backend.utils.group_candidates import validate_candidates
+            shared = get_shared_config()
+            final_profile = {**profile, 'proxy_groups': [
+                group_data if g is original else g for g in groups]}
+            validate_candidates(group_data, final_profile, shared, original=original)
             if any(g.get('id') != group_id and g.get('name') == group_data.get('name') for g in groups):
                 raise Conflict('策略组名称已存在，请使用其他名称')
         removing = request.method == 'DELETE' or not group_data.get('enabled', True)
@@ -129,6 +168,9 @@ def handle_proxy_group(group_id):
         if request.method == 'DELETE':
             groups.remove(original)
         else:
+            for follower in groups:
+                if follower.get('follow_group') == group_id:
+                    validate_candidates(follower, final_profile, shared, original=follower)
             # Names are rule-policy keys; group-to-group references use stable IDs.
             old_name = original.get('name')
             new_name = group_data.get('name')
@@ -140,7 +182,7 @@ def handle_proxy_group(group_id):
 
     try:
         update_config_transaction(mutate)
-    except DialerReferenceError as exc:
+    except (DialerReferenceError, CandidateValidationError) as exc:
         return jsonify({'success': False, 'message': str(exc)}), 400
     except (Conflict, NotFound) as exc:
         return jsonify({'success': False, 'message': exc.description}), exc.code
@@ -254,7 +296,7 @@ def reorder_proxy_groups():
     try:
         update_config_transaction(mutate)
         return jsonify({'success': True, 'order': order})
-    except DialerReferenceError as exc:
+    except (DialerReferenceError, CandidateValidationError) as exc:
         return jsonify({'success': False, 'message': str(exc)}), 400
     except NotFound as exc:
         return jsonify({'success': False, 'message': exc.description}), 404
