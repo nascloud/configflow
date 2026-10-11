@@ -15,11 +15,12 @@ from backend.common.agent_manager import get_agent_manager
 from backend.common.config import get_config, update_config_transaction, update_shared_config_transaction
 from backend.common.config_repository import ProfileValidationError
 from backend.utils.domain_discovery import TARGETS, format_ruleset_line, summarize
+from backend.utils.domain_matcher_cache import local_matcher
 from backend.utils.domain_probe import (
     CONTROL_TARGETS, get_probe_store, judge, latest_probes, path_healthy, probe_url,
 )
 from backend.utils.logger import get_logger
-from backend.utils.rule_matcher import RuleConfigMatcher, is_valid_domain, is_valid_ip, match_domain, parse_rule_line
+from backend.utils.rule_matcher import is_valid_domain, is_valid_ip, match_domain, parse_rule_line
 from backend.utils.rule_utils import save_rule_to_local
 from backend.utils.url_utils import safe_exception_details
 
@@ -360,13 +361,27 @@ def _probe_view(entry):
         'direct', 'proxy', 'proxy_path')}
 
 
-def _local_matcher(config):
-    """按当前规则顺序匹配；规则集只读本地缓存，不发网络请求。"""
-    from backend.routes.rules import get_ruleset_content
-    return RuleConfigMatcher(
-        config.get('rule_configs', []), config.get('rule_library', []),
-        lambda item, library_rule: get_ruleset_content(item, library_rule, allow_network=False),
-    )
+def _agent_status(agent, report):
+    status = report.get('status') or {}
+    return {
+        'id': agent['id'], 'name': agent.get('name', ''),
+        'status': status.get('value') or 'no_data',
+        'last_report': status.get('at'), 'mihomo_version': status.get('mihomo_version', ''),
+        'enabled': bool(agent.get('domain_discovery_enabled')),
+        'version': agent.get('version', ''),
+        'supported': agent_supported(agent.get('version')),
+        'probe_supported': agent_supported(agent.get('version'), MIN_PROBE_AGENT_VERSION),
+    }
+
+
+def agents_payload(profile_id):
+    """Read collection status independently of rule matching."""
+    store = get_traffic_store()
+    return {
+        'agents': [_agent_status(agent, store.load(agent['id'])) for agent in profile_agents(profile_id)],
+        'min_agent_version': MIN_AGENT_VERSION,
+        'min_probe_agent_version': MIN_PROBE_AGENT_VERSION,
+    }
 
 
 def load_domains(profile_id, *, days=7, view='uncovered', agent_id=None):
@@ -377,7 +392,7 @@ def load_domains(profile_id, *, days=7, view='uncovered', agent_id=None):
     agents = profile_agents(profile_id)
     store = get_traffic_store()
     reports = [(agent, store.load(agent['id'])) for agent in agents]
-    matcher = _local_matcher(config)
+    matcher = local_matcher(config, profile_id)
     result = summarize(reports, days=days, ignored=settings['ignored'],
                        match_rule=matcher.match, view=view, agent_id=agent_id)
     probes = latest_probes([agent['id'] for agent in agents])
@@ -385,13 +400,7 @@ def load_domains(profile_id, *, days=7, view='uncovered', agent_id=None):
         for host in item['hosts']:
             host['probe'] = _probe_view(probes.get(host['host']))
         item['suggestion'] = domain_suggestion(item['hosts'])
-    by_id = {agent['id']: agent for agent in agents}
-    for agent in result['agents']:
-        source = by_id[agent['id']]
-        agent['enabled'] = bool(source.get('domain_discovery_enabled'))
-        agent['version'] = source.get('version', '')
-        agent['supported'] = agent_supported(agent['version'])
-        agent['probe_supported'] = agent_supported(agent['version'], MIN_PROBE_AGENT_VERSION)
+    result['agents'] = [_agent_status(agent, report) for agent, report in reports]
     result['min_agent_version'] = MIN_AGENT_VERSION
     result['min_probe_agent_version'] = MIN_PROBE_AGENT_VERSION
     result['probe_job'] = public_job(running_job(profile_id))
@@ -520,7 +529,7 @@ def _shadowed_entries(profile_id, added, ruleset_by_target):
     for item in config.get('rule_configs', []):
         if item.get('itemType') == 'ruleset':
             references.setdefault(item.get('library_rule_id'), set()).add(item.get('id'))
-    matcher = _local_matcher(config)
+    matcher = local_matcher(config, profile_id)
     shadowed = []
     for entry in added:
         own = references.get(ruleset_by_target.get(entry['target']), set())
@@ -1069,7 +1078,7 @@ def ensure_policy_ruleset(profile_id, policy, values=()):
     if info and not info['problem'] and info['active']:
         return info['id']
 
-    matcher = _local_matcher(config)
+    matcher = local_matcher(config, profile_id)
     competing = {match['rule_id'] for match in (matcher.match(value) for value in values) if match}
     library_id = info['id'] if info and not info['problem'] else None
     if library_id is None:

@@ -3,8 +3,8 @@
     <PageHeader title="域名发现">
       <template #actions>
         <Segmented v-model="days" :options="DAY_OPTIONS" label="时间范围" @update:model-value="loadDomains" />
-        <Button variant="outline" class="border-border/60 bg-background/40" :disabled="loading" @click="reload">
-          <RefreshCw class="size-4" :class="loading && 'animate-spin'" />
+        <Button variant="outline" class="border-border/60 bg-background/40" :disabled="refreshing || loading" @click="reload">
+          <RefreshCw class="size-4" :class="(refreshing || loading) && 'animate-spin'" />
           刷新
         </Button>
       </template>
@@ -13,15 +13,19 @@
     <div class="mb-4 grid gap-4 lg:grid-cols-2">
       <!-- 采集设备 -->
       <SectionCard title="采集设备" description="开启后，Agent 会把本机 Mihomo 访问过的域名、命中规则和直连失败汇总上报（只含域名，不含网址路径和设备 IP，保留 7 天）。" :icon="Radar">
-        <LoadingRows v-if="loading && !loaded" :rows="2" />
+        <p v-if="agentsError && agentsLoaded" role="alert" class="mb-3 text-[12.5px] text-warning-accent">{{ agentsError }}，保留上次采集设备状态。</p>
+        <LoadingRows v-if="agentsLoading && !agentsLoaded" :rows="2" />
+        <EmptyState v-else-if="agentsError && !agentsLoaded" title="采集设备读取失败" :description="agentsError" :icon="TriangleAlert">
+          <Button variant="outline" size="sm" :disabled="agentsLoading" @click="loadAgents">重试</Button>
+        </EmptyState>
         <EmptyState
-          v-else-if="!agents.length"
+          v-else-if="agentsLoaded && !agents.length"
           title="当前配置没有 Mihomo Agent"
           description="在 Agent 页面部署一个 Mihomo Agent，并把它关联到当前配置。"
         >
           <Button variant="outline" size="sm" @click="router.push('/agents')">前往 Agent</Button>
         </EmptyState>
-        <ul v-else class="m-0 flex list-none flex-col gap-2 p-0">
+        <ul v-else-if="agents.length" class="m-0 flex list-none flex-col gap-2 p-0">
           <li
             v-for="agent in agents"
             :key="agent.id"
@@ -65,7 +69,10 @@
 
       <!-- 默认规则集 -->
       <SectionCard title="默认规则集" description="「加入直连 / 加入代理」会把域名追加到这两个规则集。规则集需要在策略规则里启用，并位于兜底规则之前。" :icon="ListPlus">
-        <LoadingRows v-if="!settings" :rows="2" />
+        <EmptyState v-if="settingsError && !settings" title="默认规则集读取失败" :description="settingsError" :icon="TriangleAlert">
+          <Button variant="outline" size="sm" @click="loadSettings">重试</Button>
+        </EmptyState>
+        <LoadingRows v-else-if="!settings" :rows="2" />
         <div v-else class="flex flex-col gap-3">
           <div v-for="target in TARGETS" :key="target" class="flex flex-col gap-1.5">
             <Label :for="`ruleset-${target}`" class="text-[12.5px]">{{ TARGET_LABELS[target] }}</Label>
@@ -191,8 +198,19 @@
       </template>
     </Toolbar>
 
+    <div v-if="loadError && hasCurrentData" role="alert" class="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-warning/30 bg-warning-soft px-4 py-3 text-[13px] text-warning-accent">
+      <TriangleAlert class="size-4 shrink-0" aria-hidden="true" />
+      <span>{{ loadError }}，下方保留上次成功读取的结果。</span>
+      <Button variant="outline" size="sm" :disabled="loading" @click="loadDomains">重试</Button>
+    </div>
+    <SectionCard v-if="loading && !hasCurrentData" :padded="false"><LoadingRows /></SectionCard>
+    <SectionCard v-else-if="loadError && !hasCurrentData" :padded="false">
+      <EmptyState title="读取失败" :description="loadError" :icon="TriangleAlert">
+        <Button variant="outline" size="sm" :disabled="loading" @click="loadDomains">重试</Button>
+      </EmptyState>
+    </SectionCard>
     <RegionPanel
-      v-if="view === 'region'"
+      v-else-if="view === 'region'"
       :region="region"
       :busy="probing"
       @check="startRegionCheck"
@@ -200,8 +218,7 @@
     />
 
     <template v-else-if="view === 'history'">
-      <SectionCard v-if="historyLoading && !history.length" :padded="false"><LoadingRows /></SectionCard>
-      <SectionCard v-else-if="!visibleHistory.length" :padded="false">
+      <SectionCard v-if="!visibleHistory.length" :padded="false">
         <EmptyState title="还没有加入过域名" description="在列表里加入直连或代理后，会记录在这里，可以随时撤销。" :icon="ListPlus" />
       </SectionCard>
       <DataTableShell v-else :footer="`共 ${visibleHistory.length} 条`">
@@ -249,12 +266,6 @@
       </DataTableShell>
     </template>
 
-    <SectionCard v-else-if="loading && !loaded" :padded="false"><LoadingRows /></SectionCard>
-    <SectionCard v-else-if="loadError" :padded="false">
-      <EmptyState title="读取失败" :description="loadError" :icon="TriangleAlert">
-        <Button variant="outline" size="sm" @click="loadDomains">重试</Button>
-      </EmptyState>
-    </SectionCard>
     <SectionCard v-else-if="!visibleItems.length" :padded="false">
       <EmptyState :title="emptyTitle" :description="emptyDescription" :icon="Radar" />
     </SectionCard>
@@ -407,7 +418,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { isAxiosError } from 'axios'
+import { isAxiosError, isCancel, type AxiosResponse } from 'axios'
 import { ChevronRight, Eraser, EyeOff, Globe, ListPlus, Loader2, Plus, Radar, RefreshCw, ScanSearch, Sparkles, TriangleAlert, Undo2 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -598,8 +609,15 @@ const days = ref('7')
 const view = ref<View>('uncovered')
 const search = ref('')
 const loading = ref(false)
-const loaded = ref(false)
+const loadedKey = ref('')
+const queryKey = computed(() => `${view.value}:${days.value}`)
+const hasCurrentData = computed(() => loadedKey.value === queryKey.value)
 const loadError = ref('')
+const refreshing = ref(false)
+const agentsLoading = ref(false)
+const agentsLoaded = ref(false)
+const agentsError = ref('')
+const settingsError = ref('')
 const agents = ref<AgentInfo[]>([])
 const items = ref<DomainItem[]>([])
 const sniffCoverage = ref<number | null>(null)
@@ -617,13 +635,35 @@ const initializing = ref(false)
 const probeJob = ref<ProbeJob | null>(null)
 const history = ref<HistoryEntry[]>([])
 const region = ref<RegionPayload | null>(null)
-const historyLoading = ref(false)
 let probeTimer: ReturnType<typeof setTimeout> | null = null
+let probeCompletionPending = false
+let agentTimer: ReturnType<typeof setTimeout> | null = null
+let disposed = false
+const lifetime = new AbortController()
+const reads = new Map<string, Promise<AxiosResponse>>()
+let domainRequest: { key: string; controller: AbortController; promise: Promise<void> } | null = null
+let reloadRequest: Promise<void> | null = null
+let reportRefreshPending = false
+const FIRST_REPORT_POLL_MS = 15000
+
+// Coalesce lightweight reads as refreshes and status polling can overlap.
+const read = (url: string): Promise<AxiosResponse> => {
+  const pending = reads.get(url)
+  if (pending) return pending
+  const request = api.get(url, { signal: lifetime.signal }).finally(() => reads.delete(url))
+  reads.set(url, request)
+  return request
+}
 
 const probing = computed(() => probeJob.value?.status === 'running')
 
-const errorMessage = (error: unknown, fallback: string) =>
-  isAxiosError<{ message?: string }>(error) ? error.response?.data?.message || fallback : fallback
+const errorMessage = (error: unknown, fallback: string) => {
+  if (isAxiosError<{ message?: string }>(error)) {
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') return `${fallback}：请求超时，请稍后重试`
+    return error.response?.data?.message || fallback
+  }
+  return fallback
+}
 
 const visibleItems = computed(() => {
   const keyword = search.value.trim().toLowerCase()
@@ -651,6 +691,7 @@ const missingTargets = computed<Target[]>(() =>
 const enabledAgents = computed(() => agents.value.filter(agent => agent.enabled))
 
 const emptyTitle = computed(() => {
+  if (!agentsLoaded.value) return '等待采集设备状态'
   if (!enabledAgents.value.length) return '还没有开启域名发现'
   if (search.value.trim()) return '没有匹配的域名'
   return {
@@ -664,6 +705,7 @@ const emptyTitle = computed(() => {
 })
 
 const emptyDescription = computed(() => {
+  if (!agentsLoaded.value) return '采集设备状态尚未读取成功，请重试上方的设备状态。'
   if (!enabledAgents.value.length) return '在上方「采集设备」里打开 Agent 的开关，几分钟后这里会出现访问过的域名。'
   if (view.value === 'uncovered') return '访问过的域名都已被规则覆盖。'
   return ''
@@ -722,86 +764,168 @@ const toggleExpanded = (domain: string) => {
   expanded.value = next
 }
 
-const loadHistory = async () => {
-  historyLoading.value = true
-  try {
-    const { data } = await api.get('/domain-discovery/history')
-    history.value = data.items
-  } catch (error) {
-    notify.error(errorMessage(error, '无法读取已加入的记录'))
-  } finally {
-    historyLoading.value = false
-  }
+const refreshDomainsAfterChange = async () => {
+  if (domainRequest) await domainRequest.promise
+  await loadDomains()
 }
+
+const loadHistory = () => refreshDomainsAfterChange()
 
 const loadRegion = async () => {
   try {
-    const { data } = await api.get('/domain-discovery/region')
-    region.value = data
+    const { data } = await read('/domain-discovery/region')
+    if (!disposed) region.value = data
   } catch (error) {
-    notify.error(errorMessage(error, '无法读取区域检测结果'))
+    if (!disposed && !isCancel(error)) notify.error(errorMessage(error, '无法读取区域检测结果'))
   }
 }
 
 const regionTitle = (entry: DomainRegionEntry) =>
   Object.entries(entry.targets).map(([name, result]) => `${name}：${result.detail}`).join('\n')
 
-const loadDomains = async () => {
-  if (view.value === 'region') {
-    selected.value = new Set()
-    return loadRegion()
-  }
-  if (view.value === 'history') {
-    selected.value = new Set()
-    return loadHistory()
-  }
+const loadDomains = (): Promise<void> => {
+  if (disposed) return Promise.resolve()
+  const key = queryKey.value
+  if (domainRequest?.key === key) return domainRequest.promise
+  domainRequest?.controller.abort()
+  const controller = new AbortController()
+  const requestedView = view.value
+  const requestedDays = days.value
+  const current = () => !disposed && !controller.signal.aborted && queryKey.value === key
   loading.value = true
   loadError.value = ''
+  if (!hasCurrentData.value) selected.value = new Set()
+  const request = (async () => {
+    try {
+      const url = requestedView === 'history' || requestedView === 'region'
+        ? `/domain-discovery/${requestedView}` : '/domain-discovery/domains'
+      const { data } = await api.get(url, {
+        signal: controller.signal,
+        params: { days: requestedDays, view: requestedView }
+      })
+      if (!current()) return
+      if (requestedView === 'history') history.value = data.items
+      else if (requestedView === 'region') region.value = data
+      else {
+        // Device status is loaded independently, so expensive matching cannot
+        // hide existing Agents or replace newer lightweight status responses.
+        items.value = data.items
+        sniffCoverage.value = data.sniff_coverage
+        if (data.probe_job && !probeJob.value) {
+          probeJob.value = data.probe_job
+          scheduleProbePoll()
+        }
+        const present = new Set(data.items.map((item: DomainItem) => item.domain))
+        selected.value = new Set([...selected.value].filter(domain => present.has(domain)))
+      }
+      loadedKey.value = key
+    } catch (error) {
+      if (current() && !isCancel(error)) loadError.value = errorMessage(error, '无法读取域名发现数据')
+    } finally {
+      if (domainRequest?.controller === controller) {
+        domainRequest = null
+        loading.value = false
+      }
+    }
+  })()
+  domainRequest = { key, controller, promise: request }
+  return request
+}
+
+const waitingForReport = () => agents.value.some(agent => agent.enabled && agent.supported && !agent.last_report)
+
+const scheduleAgentPoll = () => {
+  if (agentTimer) clearTimeout(agentTimer)
+  agentTimer = null
+  if (disposed || document.hidden || agentsError.value || !waitingForReport()) return
+  agentTimer = setTimeout(async () => {
+    agentTimer = null
+    const waiting = new Set(agents.value.filter(agent => agent.enabled && !agent.last_report).map(agent => agent.id))
+    await loadAgents()
+    if (agents.value.some(agent => waiting.has(agent.id) && agent.last_report)) {
+      reportRefreshPending = true
+      await refreshReportedDomains()
+    }
+  }, FIRST_REPORT_POLL_MS)
+}
+
+const refreshReportedDomains = async () => {
+  if (disposed || document.hidden || !reportRefreshPending) return
+  // An earlier scan may have read its snapshot before the first report arrived.
+  // Let it finish, then fetch the new snapshot once instead of adding a scan.
+  if (domainRequest) await domainRequest.promise
+  if (disposed || document.hidden || !reportRefreshPending) return
+  reportRefreshPending = false
+  await loadDomains()
+}
+
+const loadAgents = async () => {
+  if (disposed) return
+  agentsLoading.value = true
   try {
-    const { data } = await api.get('/domain-discovery/domains', { params: { days: days.value, view: view.value } })
+    const { data } = await read('/domain-discovery/agents')
+    if (disposed) return
     agents.value = data.agents
-    items.value = data.items
-    sniffCoverage.value = data.sniff_coverage
     minAgentVersion.value = data.min_agent_version
     probeAgentVersion.value = data.min_probe_agent_version
-    if (data.probe_job && !probeJob.value) {
-      probeJob.value = data.probe_job
-      scheduleProbePoll()
-    }
-    const present = new Set(data.items.map((item: DomainItem) => item.domain))
-    selected.value = new Set([...selected.value].filter(domain => present.has(domain)))
+    agentsLoaded.value = true
+    agentsError.value = ''
   } catch (error) {
-    loadError.value = errorMessage(error, '无法读取域名发现数据')
+    if (!disposed && !isCancel(error)) agentsError.value = errorMessage(error, '无法读取采集设备状态')
   } finally {
-    loading.value = false
-    loaded.value = true
+    agentsLoading.value = false
+    scheduleAgentPoll()
   }
 }
 
 const loadSettings = async () => {
   try {
-    const { data } = await api.get('/domain-discovery/settings')
+    const { data } = await read('/domain-discovery/settings')
+    if (disposed) return
     settings.value = data
+    settingsError.value = ''
   } catch (error) {
-    notify.error(errorMessage(error, '无法读取默认规则集设置'))
+    if (!disposed && !isCancel(error)) {
+      settingsError.value = errorMessage(error, '无法读取默认规则集设置')
+      if (settings.value) notify.error(settingsError.value)
+    }
   }
 }
 
-const reload = () => Promise.all([loadDomains(), loadSettings(), view.value === 'region' ? null : loadRegion()])
+const reload = (): Promise<void> => {
+  if (reloadRequest) return reloadRequest
+  refreshing.value = true
+  reloadRequest = Promise.all([loadDomains(), loadAgents(), loadSettings(), view.value === 'region' ? null : loadRegion()])
+    .then(() => undefined)
+    .finally(() => {
+      refreshing.value = false
+      reloadRequest = null
+    })
+  return reloadRequest
+}
 
 const scheduleProbePoll = () => {
   if (probeTimer) clearTimeout(probeTimer)
-  probeTimer = setTimeout(pollProbe, PROBE_POLL_MS)
+  probeTimer = null
+  if (!disposed && !document.hidden && (probeJob.value?.status === 'running' || probeCompletionPending)) {
+    probeTimer = setTimeout(pollProbe, PROBE_POLL_MS)
+  }
 }
 
 const pollProbe = async () => {
   probeTimer = null
   const job = probeJob.value
-  if (!job) return
+  if (!job || disposed || document.hidden) return
   try {
-    const { data } = await api.get(`/domain-discovery/probe/${job.id}`)
-    probeJob.value = data.job
+    if (!probeCompletionPending) {
+      const { data } = await read(`/domain-discovery/probe/${job.id}`)
+      if (disposed) return
+      probeJob.value = data.job
+    }
+    probeCompletionPending = probeJob.value?.status !== 'running'
+    if (document.hidden) return
   } catch (error) {
+    if (disposed || isCancel(error)) return
     notify.error(errorMessage(error, '无法读取探测进度'))
     probeJob.value = null
     return
@@ -810,6 +934,7 @@ const pollProbe = async () => {
     scheduleProbePoll()
     return
   }
+  probeCompletionPending = false
   const finished = probeJob.value
   const label = finished?.kind === 'region' ? '区域检测' : '探测'
   if (finished?.status === 'failed') {
@@ -821,7 +946,7 @@ const pollProbe = async () => {
   } else {
     notify.success(`已探测 ${finished?.total ?? 0} 个子域`)
   }
-  await Promise.all([loadDomains(), finished?.kind === 'region' && view.value !== 'region' ? loadRegion() : null])
+  await Promise.all([refreshDomainsAfterChange(), finished?.kind === 'region' && view.value !== 'region' ? loadRegion() : null])
 }
 
 const startProbe = async (domains: string[]) => {
@@ -902,7 +1027,9 @@ const toggleAgent = async (agent: AgentInfo, enabled: boolean) => {
   togglingAgent.value = agent.id
   try {
     await api.put(`/agents/${agent.id}/domain-discovery`, { enabled })
-    agent.enabled = enabled
+    const current = agents.value.find(item => item.id === agent.id)
+    if (current) current.enabled = enabled
+    scheduleAgentPoll()
     notify.success(enabled ? `已开启 ${agent.name} 的域名发现` : `已关闭 ${agent.name} 的域名发现`,
       enabled ? 'Agent 会在下次心跳（约 30 秒内）开始采集。' : undefined)
   } catch (error) {
@@ -917,7 +1044,7 @@ const clearAgent = async (agent: AgentInfo) => {
   try {
     await api.post(`/agents/${agent.id}/domain-discovery/clear`)
     notify.success('已清除')
-    await loadDomains()
+    await Promise.all([refreshDomainsAfterChange(), loadAgents()])
   } catch (error) {
     notify.error(errorMessage(error, '清除失败'))
   }
@@ -979,7 +1106,7 @@ const apply = async (entries: ApplyItem[]) => {
     }
     for (const warning of data.warnings) notify.warning(warning)
     selected.value = new Set()
-    await Promise.all([loadDomains(), loadSettings()])
+    await Promise.all([refreshDomainsAfterChange(), loadSettings()])
   } catch (error) {
     notify.error(errorMessage(error, '加入规则集失败'))
   } finally {
@@ -995,7 +1122,7 @@ const updateIgnored = async (values: string[], add: boolean) => {
     await api.request({ url: '/domain-discovery/ignore', method: add ? 'post' : 'delete', data: { values } })
     notify.success(add ? `已忽略 ${values.length} 个域名` : `已取消忽略 ${values.length} 个域名`)
     selected.value = new Set()
-    await loadDomains()
+    await refreshDomainsAfterChange()
   } catch (error) {
     notify.error(errorMessage(error, '操作失败'))
   } finally {
@@ -1008,8 +1135,22 @@ const unignore = (values: string[]) => updateIgnored(values, false)
 const ignoreSelected = () => ignore([...selected.value])
 const unignoreSelected = () => unignore([...selected.value])
 
-onMounted(reload)
+const onVisibilityChange = () => {
+  scheduleAgentPoll()
+  scheduleProbePoll()
+  if (!document.hidden) void refreshReportedDomains()
+}
+
+onMounted(() => {
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  void reload()
+})
 onUnmounted(() => {
+  disposed = true
+  lifetime.abort()
+  domainRequest?.controller.abort()
   if (probeTimer) clearTimeout(probeTimer)
+  if (agentTimer) clearTimeout(agentTimer)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>

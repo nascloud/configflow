@@ -250,6 +250,30 @@ def test_domains_endpoint_lists_uncovered_and_pending(env):
     assert client.get("/api/domain-discovery/domains").get_json()["items"] == []
 
 
+def test_agent_status_endpoint_does_not_run_rule_matching(env, monkeypatch):
+    from backend.utils import domain_discovery_service as service
+
+    client, _, manager, agent = env
+    client.put(f"/api/agents/{agent['id']}/domain-discovery", json={"enabled": True})
+    client.post(f"/api/agents/{agent['id']}/heartbeat", headers=_auth(agent), json={"version": "1.6.0-go"})
+    client.post(f"/api/agents/{agent['id']}/traffic-report", headers=_auth(agent),
+                json=_report(_item('new.example.com')))
+    def fail(*args, **kwargs):
+        raise AssertionError('Agent status must not run rule matching')
+    monkeypatch.setattr(service, 'local_matcher', fail)
+    body = client.get('/api/domain-discovery/agents').get_json()
+    assert body['success'] is True
+    status = body['agents'][0]
+    assert status['id'] == agent['id']
+    assert status['enabled'] and status['supported'] and status['probe_supported']
+    assert status['status'] == 'running' and status['last_report']
+    assert 'token' not in status
+    manager.register_agent({'name': 'dns', 'host': '127.0.0.1', 'service_type': 'mosdns'})
+    assert len(client.get('/api/domain-discovery/agents').get_json()['agents']) == 1
+    client.delete(f"/api/agents/{agent['id']}")
+    assert client.get('/api/domain-discovery/agents').get_json()['agents'] == []
+
+
 def test_init_rulesets_creates_library_and_references_before_match(env):
     client, repository, _, _ = env
     assert client.post("/api/domain-discovery/rulesets/init", json={"proxy_policy": "NOPE"}).status_code == 400
