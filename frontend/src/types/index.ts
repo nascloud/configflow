@@ -79,6 +79,13 @@ export interface ProxyGroup {
   source?: 'subscription' | 'node' | 'strategy'  // 已废弃，兼容旧数据
 }
 
+export interface AgentContentSync {
+  status: 'synced' | 'changed' | 'unknown' | 'never-pushed' | 'checking'
+  /** Stable server reason code; never display raw errors as UI copy. */
+  reason?: string
+  checked_at?: string
+}
+
 export interface Agent {
   id: string
   name: string
@@ -91,6 +98,8 @@ export interface Agent {
   last_heartbeat: string
   version: string
   config_version: string
+  config_revision?: number
+  content_sync?: AgentContentSync
   latest_deployment?: import('@/composables/useAgentDeployments').AgentDeployment
   enabled: boolean
   profile_id?: string
