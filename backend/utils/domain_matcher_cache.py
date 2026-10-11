@@ -66,11 +66,15 @@ def _signature(config, rules_dir):
     return hashlib.sha256(payload).digest()
 
 
-def local_matcher(config, profile_id):
+def local_matcher(config, profile_id, *, rulesets_only=False):
     # Isolate repositories/profiles; configuration and cached-file edits also
     # invalidate negative matches immediately. TTL bounds transient read errors.
+    if rulesets_only:
+        config = {**config, 'rule_configs': [item for item in config.get('rule_configs', [])
+                                          if item.get('itemType') == 'ruleset']}
     rules_dir = os.path.realpath(get_rules_dir())
-    slot = (rules_dir, profile_id)
+    # 服务线索与路由匹配使用不同槽位，避免每次请求互相挤掉索引。
+    slot = (rules_dir, profile_id, rulesets_only)
     signature = _signature(config, rules_dir)
     now = time.monotonic()
     with _LOCK:

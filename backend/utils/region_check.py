@@ -336,6 +336,8 @@ class RegionStore(JsonFileStore):
         data.setdefault('services', None)
         if not isinstance(data.get('domains'), dict):
             data['domains'] = {}
+        if not isinstance(data.get('websites'), dict):
+            data['websites'] = {}
         return data
 
     def update(self, agent_id, mutate: Callable[[Dict[str, Any]], None], now: Optional[datetime] = None):
@@ -346,6 +348,9 @@ class RegionStore(JsonFileStore):
             oldest = (now - timedelta(days=REGION_RETENTION_DAYS)).isoformat(timespec='seconds')
             data['domains'] = {host: entry for host, entry in data['domains'].items()
                                if entry.get('checked_at', '') >= oldest}
+            entries = [(host, entry) for host, entry in data['websites'].items()
+                       if entry.get('checked_at', '') >= oldest]
+            data['websites'] = dict(sorted(entries, key=lambda item: item[1]['checked_at'])[-1000:])
             self._write_json(agent_id, data)
 
     def load(self, agent_id):

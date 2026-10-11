@@ -173,7 +173,7 @@
       <template #actions>
         <span v-if="probeJob?.status === 'running'" class="chip chip-sky font-mono" role="status">
           <Loader2 class="size-3 animate-spin" aria-hidden="true" />
-          {{ probeJob.kind === 'region' ? '区域检测中' : '探测中' }} {{ probeJob.done }}/{{ probeJob.total || '…' }}
+          {{ probeJob.kind === 'website' ? '网站识别中' : probeJob.kind === 'region' ? '区域检测中' : '探测中' }} {{ probeJob.done }}/{{ probeJob.total || '…' }}
         </span>
         <span v-if="sniffCoverage !== null && view !== 'history' && view !== 'region'" class="chip font-mono" title="有域名的连接占全部连接的比例；过低说明嗅探没有开启或没有生效">
           嗅探覆盖 {{ Math.round(sniffCoverage * 100) }}%
@@ -309,6 +309,10 @@
                 <span v-if="item.hosts.length > 1" class="text-[11.5px] text-muted-foreground">{{ item.hosts.length }} 个子域</span>
                 <span v-for="tag in item.tags" :key="tag" :class="['chip', TAG_CLASSES[tag]]" :title="tagTitle(item, tag)">{{ TAG_LABELS[tag] }}</span>
               </div>
+              <button type="button" class="mt-1 block max-w-[300px] truncate rounded-sm text-left text-xs text-muted-foreground hover:text-primary-accent focus-visible:outline-2 focus-visible:outline-ring max-md:min-h-11"
+                :aria-label="`查看 ${item.domain} 的网站信息`" :title="websiteLabel(item)" @click="websiteDomain = item.domain">
+                {{ websiteLabel(item) }}
+              </button>
             </TableCell>
             <TableCell class="num text-right">{{ item.conns }}</TableCell>
             <TableCell>
@@ -412,6 +416,8 @@
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    <WebsiteDialog :domain="websiteDomain" :website="activeWebsite" :busy="probing" @close="websiteDomain = ''"
+      @saved="websiteNoteSaved" @job="websiteJobStarted" />
   </div>
 </template>
 
@@ -436,6 +442,7 @@ import Segmented from '@/components/common/Segmented.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import Toolbar from '@/components/common/Toolbar.vue'
 import RegionPanel, { type DomainRegionEntry, type RegionPayload } from '@/components/domain-discovery/RegionPanel.vue'
+import WebsiteDialog, { type WebsiteInfo } from '@/components/domain-discovery/WebsiteDialog.vue'
 import api from '@/api'
 import { confirmDanger, notify } from '@/lib/feedback'
 import { relativeTime } from '@/lib/format'
@@ -476,7 +483,7 @@ interface Probe {
 
 interface ProbeJob {
   id: string
-  kind: 'probe' | 'region'
+  kind: 'probe' | 'region' | 'website'
   status: 'running' | 'done' | 'failed'
   total: number
   done: number
@@ -522,6 +529,7 @@ interface HostItem {
 }
 
 interface DomainItem {
+  website: WebsiteInfo
   domain: string
   tags: Tag[]
   conns: number
@@ -620,6 +628,24 @@ const agentsError = ref('')
 const settingsError = ref('')
 const agents = ref<AgentInfo[]>([])
 const items = ref<DomainItem[]>([])
+const websiteDomain = ref('')
+const activeWebsite = computed(() => items.value.find(item => item.domain === websiteDomain.value)?.website || null)
+const websiteLabel = (item: DomainItem) => {
+  const website = item.website
+  if (website?.note) return `${website.note} · 备注`
+  if (website?.service) return `${website.service.name} · ${website.service.category}`
+  if (website?.page?.name) return `${website.page.name} · 网页自报`
+  if (website?.rules.length) return `${website.rules[0].name} · 规则线索`
+  return website?.page ? '未识别 · 查看原因' : '网站未知 · 识别 / 备注'
+}
+const websiteNoteSaved = (domain: string, note: string) => {
+  const item = items.value.find(item => item.domain === domain)
+  if (item?.website) item.website.note = note
+}
+const websiteJobStarted = (job: ProbeJob) => {
+  probeJob.value = job
+  scheduleProbePoll()
+}
 const sniffCoverage = ref<number | null>(null)
 const minAgentVersion = ref('')
 const probeAgentVersion = ref('')
@@ -668,7 +694,9 @@ const errorMessage = (error: unknown, fallback: string) => {
 const visibleItems = computed(() => {
   const keyword = search.value.trim().toLowerCase()
   if (!keyword) return items.value
-  return items.value.filter(item => item.domain.includes(keyword) || item.hosts.some(host => host.host.includes(keyword)))
+  return items.value.filter(item => item.domain.includes(keyword) || item.hosts.some(host => host.host.includes(keyword))
+    || [item.website?.note, item.website?.service?.name, item.website?.page?.name, ...(item.website?.rules || []).map(rule => rule.name)]
+      .some(value => value?.toLowerCase().includes(keyword)))
 })
 
 const visibleHistory = computed(() => {
@@ -936,11 +964,13 @@ const pollProbe = async () => {
   }
   probeCompletionPending = false
   const finished = probeJob.value
-  const label = finished?.kind === 'region' ? '区域检测' : '探测'
+  const label = finished?.kind === 'website' ? '网站识别' : finished?.kind === 'region' ? '区域检测' : '探测'
   if (finished?.status === 'failed') {
     notify.error(`${label}失败`, finished.message)
   } else if (finished?.errors.length) {
     notify.warning(`${label}完成，${finished.errors.length} 个目标失败`, finished.errors[0].message)
+  } else if (finished?.kind === 'website') {
+    notify.success(`已识别 ${finished.total} 个网站`)
   } else if (finished?.kind === 'region') {
     notify.success(`区域检测完成（${finished.total} 个目标）`, view.value === 'region' ? undefined : '在「地区限制」里查看结果。')
   } else {

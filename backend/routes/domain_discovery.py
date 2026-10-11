@@ -132,6 +132,26 @@ def region_status():
     return jsonify({'success': True, **service.region_payload(resolve_profile_id())})
 
 
+@domain_discovery_bp.route('/website/identify', methods=['POST'])
+@require_auth
+def identify_website():
+    payload = request.get_json(silent=True)
+    profile_id = resolve_profile_id()
+    try:
+        job = service.start_website_job(profile_id, payload.get('domains') if isinstance(payload, dict) else None)
+    except service.ProbeBusy as busy:
+        return _busy_response(busy, profile_id)
+    except service.ProbeError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
+    return jsonify({'success': True, 'job': service.public_job(job)}), 202
+
+
+@domain_discovery_bp.route('/website/note', methods=['PUT'])
+@require_auth
+def website_note():
+    return jsonify({'success': True, **service.save_website_note(resolve_profile_id(), request.get_json(silent=True))})
+
+
 @domain_discovery_bp.route('/region/check', methods=['POST'])
 @require_auth
 def start_region_check():

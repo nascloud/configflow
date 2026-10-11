@@ -6,6 +6,7 @@
 import hashlib
 import threading
 import uuid
+from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional
 
@@ -61,6 +62,7 @@ _SETTING_DEFAULTS = {
     'region_check_enabled': False,
     'region_probe_port': 17999,
     'regional_rulesets': {},
+    'website_notes': {},
 }
 POLICY_TARGET_PREFIX = 'policy:'
 
@@ -79,7 +81,7 @@ class ProbeBusy(ProbeError):
 
 def read_settings(config) -> Dict[str, Any]:
     raw = config.get('domain_discovery') or {}
-    settings = {key: raw.get(key, default) for key, default in _SETTING_DEFAULTS.items()}
+    settings = {key: raw.get(key, deepcopy(default)) for key, default in _SETTING_DEFAULTS.items()}
     settings['ignored'] = [value for value in settings['ignored'] or [] if isinstance(value, str)]
     settings['history'] = [entry for entry in settings['history'] or [] if isinstance(entry, dict)]
     settings['auto_probe'] = bool(settings['auto_probe'])
@@ -91,6 +93,8 @@ def read_settings(config) -> Dict[str, Any]:
         settings['region_probe_port'] = 17999
     if not isinstance(settings['regional_rulesets'], dict):
         settings['regional_rulesets'] = {}
+    if not isinstance(settings['website_notes'], dict):
+        settings['website_notes'] = {}
     return settings
 
 
@@ -404,7 +408,112 @@ def load_domains(profile_id, *, days=7, view='uncovered', agent_id=None):
     result['min_agent_version'] = MIN_AGENT_VERSION
     result['min_probe_agent_version'] = MIN_PROBE_AGENT_VERSION
     result['probe_job'] = public_job(running_job(profile_id))
+    enrich_websites(result['items'], config, settings,
+                    [agent for agent in agents if not agent_id or agent['id'] == agent_id], profile_id)
     return result
+
+
+def enrich_websites(items, config, settings, agents, profile_id):
+    from backend.utils.region_check import get_region_store
+    from backend.utils.website_identity import known_service
+
+    cache = {}
+    oldest = (datetime.now() - timedelta(days=30)).isoformat(timespec='seconds')
+    for agent in agents:
+        for host, entry in get_region_store().load(agent['id'])['websites'].items():
+            if entry.get('checked_at', '') >= oldest and entry.get('checked_at', '') > cache.get(host, {}).get('checked_at', ''):
+                cache[host] = entry
+    # 仅查规则集，避免单条路由规则遮住服务线索；不联网下载规则。
+    matcher = local_matcher(config, profile_id, rulesets_only=True)
+    library = {item['id']: item for item in config.get('rule_library', []) if item.get('id')}
+    references = {item.get('id'): item for item in config.get('rule_configs', [])}
+    for item in items:
+        clues = []
+        for host in item['hosts']:
+            match = matcher.match(host['host'])
+            if match:
+                ref = references.get(match['rule_id'], {})
+                name = library.get(ref.get('library_rule_id'), {}).get('name') or match['rule_name']
+                clue = {'name': name, 'host': host['host'], 'line': match['matched_line']}
+                if not any(existing['name'] == name for existing in clues):
+                    clues.append(clue)
+        pages = [cache[host['host']] for host in item['hosts'] if host['host'] in cache]
+        page = max(pages, key=lambda entry: entry['checked_at']) if pages else None
+        item['website'] = {'service': known_service(item['domain']), 'page': page,
+                           'rules': clues[:5], 'note': settings['website_notes'].get(item['domain'], '')}
+
+
+def save_website_note(profile_id, payload):
+    if not isinstance(payload, dict):
+        raise ProfileValidationError('请求必须是 JSON 对象')
+    domain = clean_domain(payload.get('domain'))
+    note = payload.get('note')
+    if not domain or not isinstance(note, str) or len(note) > 200:
+        raise ProfileValidationError('需要有效域名，备注最多 200 字')
+
+    def update(settings):
+        notes = settings['website_notes']
+        if note.strip():
+            if domain not in notes and len(notes) >= 2000:
+                raise ProfileValidationError('备注数量已达 2000 条上限')
+            notes[domain] = note.strip()
+        else:
+            notes.pop(domain, None)
+
+    _mutate_settings(profile_id, update)
+    return {'domain': domain, 'note': note.strip()}
+
+
+def start_website_job(profile_id, values, *, wait=False):
+    from backend.utils.region_check import get_region_store
+    from backend.utils.website_identity import PAGE_MARKERS, page_identity
+
+    values = _clean_values(values)
+    if len(values) > 10:
+        raise ProfileValidationError('一次最多识别 10 个域名')
+    config = get_config(profile_id)
+    settings = read_settings(config)
+    if not settings['region_check_enabled']:
+        raise ProbeError('网页识别需要在「地区限制」开启区域检测，并部署一次配置')
+    agents = _region_agents(profile_id)
+    if not agents:
+        raise ProbeError(f'需要开启域名发现且版本不低于 {MIN_REGION_AGENT_VERSION} 的 Agent')
+    # 只允许识别当前配置空间真实采集到的域名，并从实际采集该域名的 Agent 发请求。
+    store = get_traffic_store()
+    plans = []
+    summaries = [(agent, summarize([(agent, store.load(agent['id']))], days=7, view='all', ignored=()))
+                 for agent in agents]
+    for value in values:
+        for agent, summary in summaries:
+            item = next((item for item in summary['items'] if item['domain'] == value), None)
+            if item:
+                host = max(item['hosts'], key=lambda host: host.get('conns', 0))
+                plans.append((agent, host))
+                break
+        else:
+            raise ProfileValidationError(f'{value} 没有可用 Agent 最近采集的记录')
+
+    def run(progress):
+        errors = []
+        progress(0, len(plans))
+        for index, (agent, host) in enumerate(plans):
+            try:
+                response = get_agent_manager().region_check(agent, {
+                    'target': proxy_probe_path(config, settings) or 'DIRECT', 'timeout_ms': 8000,
+                    'requests': [{'id': 'website', 'url': probe_url(host['host'], host.get('port')),
+                                  'markers': PAGE_MARKERS}],
+                })
+                result = next((entry for entry in response.get('results', []) if entry.get('id') == 'website'), None)
+                entry = page_identity(result, host['host'], datetime.now().isoformat(timespec='seconds'))
+                get_region_store().update(agent['id'], lambda data: data['websites'].update({host['host']: entry}))
+                if entry['reason']:
+                    errors.append({'host': host['host'], 'message': entry['reason']})
+            except Exception as error:
+                errors.append({'host': host['host'], 'message': str(error)})
+            progress(index + 1, len(plans))
+        return {'errors': errors}
+
+    return _start_job(profile_id, 'website', run, wait=wait)
 
 
 # ---------- 写入、撤销、忽略 ----------
