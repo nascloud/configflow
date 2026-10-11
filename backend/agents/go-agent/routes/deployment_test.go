@@ -579,7 +579,14 @@ func TestDeploymentCarriesNativeGeoResourceThroughSecondOfflinePublish(t *testin
 	if e != nil || !bytes.Equal(got, want) {
 		t.Fatal("second publish deleted its validated Geo dependency")
 	}
-	if e = loadEffectiveManifest(cfg, second); e != nil {
+	manifestData, e := os.ReadFile(filepath.Join(deploymentPath(cfg, second.DeploymentID), "effective-manifest.json"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = json.Unmarshal(manifestData, &second.Manifest); e != nil {
+		t.Fatal(e)
+	}
+	if e = verifyManifestFiles(root, second.Manifest); e != nil {
 		t.Fatal(e)
 	}
 	found := false
@@ -613,7 +620,14 @@ func TestOlderStagedCandidateCannotDeleteNewerPersistentGeoResource(t *testing.T
 	if e != nil || string(data) != "new-persistent-geo" {
 		t.Fatal("activating older stage deleted newer persistent resource")
 	}
-	if e := loadEffectiveManifest(cfg, staged); e != nil {
+	manifestData, e := os.ReadFile(filepath.Join(deploymentPath(cfg, staged.DeploymentID), "effective-manifest.json"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = json.Unmarshal(manifestData, &staged.Manifest); e != nil {
+		t.Fatal(e)
+	}
+	if e = verifyManifestFiles(root, staged.Manifest); e != nil {
 		t.Fatal(e)
 	}
 	found := false

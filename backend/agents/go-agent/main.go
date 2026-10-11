@@ -15,6 +15,7 @@ func main() {
 	// Go的flag包支持单横线(-)和双横线(--)两种格式的参数
 	configPath := flag.String("config", "", "Path to the configuration file")
 	printVersion := flag.Bool("version", false, "Print Agent version and exit")
+	cleanupOnly := flag.Bool("cleanup", false, "Reclaim completed deployment payloads and oversized Agent logs, then exit")
 	upgradeWorker := flag.String("upgrade-worker", "", "Run a durable Agent update outside the Agent service")
 	recoverOnly := flag.Bool("recover-only", false, "Restore interrupted deployments before managed services start; do not register or listen")
 	recoverAndExit := flag.Bool("recover-and-exit", false, "Recover interrupted deployments with service lifecycle, then exit without registration")
@@ -58,7 +59,7 @@ func main() {
 	}
 
 	log.Printf("Using config file: %s", *configPath)
-	if !*recoverOnly && !*recoverAndExit {
+	if !*recoverOnly && !*recoverAndExit && !*cleanupOnly {
 		binary, err := os.Executable()
 		if err != nil {
 			log.Fatal(err)
@@ -74,6 +75,13 @@ func main() {
 		log.Fatalf("Fatal: Could not load configuration from %s: %v", *configPath, err)
 	}
 	log.Println("Configuration loaded successfully.")
+	if *cleanupOnly {
+		if err := cleanupDisk(cfg); err != nil {
+			log.Fatalf("Disk cleanup: %v", err)
+		}
+		log.Println("Disk cleanup completed.")
+		return
+	}
 
 	// Recovery must precede registration, heartbeat and API traffic. Boot gates call
 	// recover-only before the managed services or container defaults can run.
@@ -101,6 +109,7 @@ func main() {
 	}
 
 	// 3. 在后台启动心跳循环
+	startDiskCleanup(cfg)
 	StartHeartbeatLoop(cfg)
 
 	// 4. 在前台启动 API 服务器 (这是一个阻塞操作)

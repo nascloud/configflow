@@ -148,7 +148,7 @@ func (m *MetricsCollector) CollectSystemMetrics() (*SystemMetrics, error) {
 		return nil, fmt.Errorf("failed to collect any system metrics")
 	}
 
-	log.Printf("Successfully collected %d/4 system metrics", collectedCount)
+	logDebugf("Successfully collected %d/4 system metrics", collectedCount)
 	return metrics, nil
 }
 

@@ -1121,6 +1121,7 @@ func deploymentDiskPreflight(cfg *Config, s *DeploymentState) error {
 // Retain the active/current transactions and two recent completed ones. Ready and unresolved
 // journals are never pruned: they may still be activated or needed for recovery.
 func cleanupDeployments(cfg *Config, current string) {
+	_ = cleanupDeploymentPayloads(cfg) // Caller already holds the service operation lock.
 	var active DeploymentManifest
 	if b, e := os.ReadFile(filepath.Join(deploymentRoot(cfg), "active-manifest.json")); e == nil {
 		if json.Unmarshal(b, &active) != nil {

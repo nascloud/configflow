@@ -21,6 +21,22 @@ Sublink Agent 是一个用于远程管理和控制 Mihomo 和 MosDNS 服务的�
 - **Docker 化部署**：提供完整的 Docker 部署方案
 - **安全认证**：使用 Token 机制保证 API 调用的安全性
 
+## 磁盘自动清理
+
+Agent 启动后及每 10 分钟执行一次清理，部署结束时也会回收暂存文件：
+
+- 仅删除 `succeeded`、`failed`、`rolled_back` 部署的 `stage/` 和 `bundle.tar.gz`。保留状态、清单和回滚备份；未完成、待激活、回滚失败的事务不清理。
+- 清理与部署、重启、升级共用服务操作锁，服务忙时延后处理。
+- `/var/log/configflow-agent.log` 超过 4 MiB 时原地压缩为最新 256 KiB，避免 OpenRC 持有旧日志描述符。与 copytruncate 类似，压缩瞬间的并发日志可能丢失。不存在的日志、容器输出和 systemd journal 不处理。
+- 常规心跳与指标日志默认关闭，可用 `CONFIGFLOW_AGENT_DEBUG=1` 临时启用。
+- 不删除业务配置、GeoIP 数据、内核备份或系统文件。
+
+也可手动运行（不会注册、监听端口或重启代理核心）：
+
+```sh
+configflow-agent -config /opt/configflow-agent/config-mihomo.json -cleanup
+```
+
 ## 项目结构
 
 ```

@@ -155,7 +155,7 @@ func (c *Config) RegisterAgent() error {
 // createHeartbeatRequest 创建心跳请求
 func (c *Config) createHeartbeatRequest() ([]byte, error) {
 	status := c.managedServiceStatus()
-	log.Printf("Service status: %s", status)
+	logDebugf("Service status: %s", status)
 
 	reqBody := HeartbeatRequest{
 		Version:       AgentVersion,
@@ -181,7 +181,7 @@ func (c *Config) createHeartbeatRequest() ([]byte, error) {
 			// 验证监控数据的有效性
 			if metrics != nil {
 				reqBody.SystemMetrics = metrics
-				log.Printf("System metrics collected: CPU %.2f%%, Memory %.2f%%, Disk %.2f%%, Network ↑%d B/s ↓%d B/s",
+				logDebugf("System metrics collected: CPU %.2f%%, Memory %.2f%%, Disk %.2f%%, Network ↑%d B/s ↓%d B/s",
 					metrics.CPU.UsagePercent,
 					metrics.Memory.UsedPercent,
 					metrics.Disk.UsedPercent,
@@ -253,7 +253,7 @@ func (c *Config) sendHeartbeatRequest(jsonData []byte) error {
 
 // SendHeartbeat 发送心跳
 func (c *Config) SendHeartbeat() {
-	log.Printf("Sending heartbeat...")
+	logDebugf("Sending heartbeat...")
 
 	if c.AgentID == "" || c.Token == "" {
 		log.Println("Skipping heartbeat: agent_id or token is empty.")
