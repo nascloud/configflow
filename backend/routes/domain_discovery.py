@@ -60,6 +60,12 @@ def list_domains():
     return jsonify({'success': True, **result})
 
 
+@domain_discovery_bp.route('/agents', methods=['GET'])
+@require_auth
+def list_agents():
+    return jsonify({'success': True, **service.agents_payload(resolve_profile_id())})
+
+
 @domain_discovery_bp.route('/apply', methods=['POST'])
 @require_auth
 def apply_rules():
