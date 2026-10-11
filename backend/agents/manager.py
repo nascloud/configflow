@@ -7,6 +7,7 @@ import os
 import fcntl
 import threading
 import time
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 import requests
@@ -120,6 +121,9 @@ class AgentManager:
                     # 管理端设置的开关，重新注册不能把它清掉
                     'domain_discovery_enabled': existing_agent.get('domain_discovery_enabled', False),
                 }
+                for field in ('config_revision', 'pushed_at', 'applied_content'):
+                    if field in existing_agent:
+                        updated_agent[field] = deepcopy(existing_agent[field])
                 agents[agents.index(existing_agent)] = updated_agent
                 return {'id': agent_id, 'status': 'online', 'is_new': False}
 
@@ -331,7 +335,8 @@ class AgentManager:
                 return {'success': False, 'message': 'Agent already has an unfinished deployment',
                         'deployment_id': active['deployment_id'], 'status': active['status'], 'http_status': 409}
             record = {'success': True, 'deployment_id': deployment_id, 'status': 'preparing',
-                      'profile_id': agent.get('profile_id', 'default'), 'created_at': datetime.now().isoformat()}
+                      'profile_id': agent.get('profile_id', 'default'),
+                      'service_type': agent.get('service_type', 'mihomo'), 'created_at': datetime.now().isoformat()}
             handle = self._preparation_file(agent_id, deployment_id)
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -379,13 +384,23 @@ class AgentManager:
                 if key in updates:
                     state[key] = updates[key]
             state['updated_at'] = datetime.now().isoformat()
-            if state.get('status') == 'succeeded':
+            is_latest = (agent.get('latest_deployment') or {}).get('deployment_id') == deployment_id
+            if (state.get('status') == 'succeeded' and is_latest
+                    and state.get('profile_id') == agent.get('profile_id', 'default')
+                    and state.get('service_type', agent.get('service_type')) == agent.get('service_type')):
                 agent['config_version'] = state.get('config_version', agent.get('config_version', '0'))
-                # 配置空间修订号：界面据此判断 Agent 上的配置是否落后于当前配置
+                # Revisions are diagnostic; only server-prepared complete contents
+                # may establish a baseline after confirmed activation.
                 agent['pushed_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
                 if state.get('config_revision') is not None:
                     agent['config_revision'] = state['config_revision']
-            if (agent.get('latest_deployment') or {}).get('deployment_id') == deployment_id:
+                prepared = state.get('prepared_content')
+                if prepared:
+                    agent['applied_content'] = {**deepcopy(prepared),
+                        'config_version': agent['config_version'], 'deployment_id': deployment_id}
+                else:
+                    agent.pop('applied_content', None)
+            if is_latest:
                 agent['latest_deployment'] = state.copy()
             return state.copy()
         return self._update_agents(record)
@@ -459,7 +474,23 @@ class AgentManager:
             return self.record_deployment(agent_id, deployment_id, {
                 'success': True, 'status': 'unknown', 'message': 'Activation sent; awaiting Agent status'})
 
-    def publish_deployment(self, agent_id, bundle, *, activate=True, config_revision=None):
+    def _remember_deployment_content(self, agent_id, bundle, base_url):
+        """Persist trusted preparation metadata, never fields from an Agent response."""
+        from .deployment_bundle import deployment_content_fingerprint
+        manifest = bundle.manifest
+        prepared = {'fingerprint': deployment_content_fingerprint(manifest),
+                    'profile_id': manifest['profile_id'], 'service_type': manifest['service_type'],
+                    'config_path': manifest['config_path'], 'base_url': base_url}
+        def remember(agents):
+            agent = next(item for item in agents if item['id'] == agent_id)
+            state = agent['deployments'][manifest['deployment_id']]
+            if (state['profile_id'] != prepared['profile_id']
+                    or agent.get('service_type') != prepared['service_type']):
+                raise ValueError('Deployment ownership changed during preparation')
+            state['prepared_content'] = prepared
+        self._update_agents(remember)
+
+    def publish_deployment(self, agent_id, bundle, *, activate=True, config_revision=None, base_url=''):
         agent = self.get_agent_by_id(agent_id)
         if not agent:
             return {'success': False, 'message': 'Agent not found', 'http_status': 404}
@@ -486,6 +517,7 @@ class AgentManager:
                     return {'success': False, 'deployment_id': deployment_id, 'http_status': 409,
                             'message': 'Deployment ID already belongs to different content'}
                 return self.get_deployment(agent_id, deployment_id)
+            self._remember_deployment_content(agent_id, bundle, base_url)
             # Persist before the request: a lost response can still be reconciled.
             self.record_deployment(agent_id, deployment_id, {
                 'success': True, 'status': 'uploading', 'submitted': True,
@@ -541,7 +573,7 @@ class AgentManager:
             if bundle is None:
                 return {'success': False, 'message': 'A complete deployment bundle is required', 'http_status': 409}
             return self.publish_deployment(agent_id, bundle, activate=(extra_data or {}).get('activate', True),
-                                           config_revision=config_revision)
+                                           config_revision=config_revision, base_url=(extra_data or {}).get('base_url', ''))
 
         # 构建 Agent 的 URL
         agent_url = f"http://{agent['host']}:{agent['port']}/api/config/update"

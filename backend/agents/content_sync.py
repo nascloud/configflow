@@ -1,0 +1,192 @@
+"""Bounded, process-local comparison of desired and successfully deployed files.
+
+List requests only inspect snapshots/cache and schedule work. Downloads and bundle
+generation run in at most two workers; a missing baseline never implies a match.
+Remote changes are discovered when the five-minute successful-result cache expires.
+"""
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+import re
+import threading
+import time
+import uuid
+
+
+_FINGERPRINT = re.compile(r'v1:[0-9a-f]{64}\Z')
+_TERMINAL = frozenset({'succeeded', 'failed', 'rolled_back'})
+_PROFILE_METADATA = frozenset({'agents', 'backup', '_revision', 'updated_at', 'created_at', 'name', 'description'})
+_UNBOUND_REPOSITORY = object()
+
+
+def _current_repository():
+    # Observe identity without initializing a repository for standalone callers.
+    from backend.common import config as config_module
+    return config_module._repository
+
+
+@dataclass
+class _Entry:
+    key: str
+    repository: object = None
+    result: dict | None = None
+    expires: float = 0
+
+
+def _unknown(reason):
+    return {'status': 'unknown', 'reason': reason}
+
+
+def _precondition(agent, config):
+    tasks = list((agent.get('deployments') or {}).values())
+    latest = agent.get('latest_deployment')
+    if isinstance(latest, dict):
+        tasks.append(latest)
+    if any(isinstance(task, dict) and task.get('status') not in _TERMINAL for task in tasks):
+        return _unknown('deployment_pending')
+    baseline = agent.get('applied_content')
+    if not baseline:
+        successful = any(isinstance(task, dict) and task.get('status') == 'succeeded' for task in tasks)
+        if successful or agent.get('config_version') not in (None, '', '0') or agent.get('config_revision') is not None:
+            return _unknown('baseline_missing')
+        return {'status': 'never-pushed'}
+    if not isinstance(baseline, dict) or not isinstance(baseline.get('fingerprint'), str) or not _FINGERPRINT.fullmatch(baseline['fingerprint']):
+        return _unknown('baseline_invalid')
+    profile_id = agent.get('profile_id') or 'default'
+    if baseline.get('profile_id') != profile_id or config.get('profile_id', profile_id) != profile_id:
+        return _unknown('profile_mismatch')
+    if baseline.get('service_type') != agent.get('service_type', 'mihomo'):
+        return _unknown('service_mismatch')
+    if not baseline.get('config_version') or baseline['config_version'] != agent.get('config_version'):
+        return _unknown('version_mismatch')
+    if not baseline.get('deployment_id') or not isinstance(baseline.get('config_path'), str) or not baseline['config_path']:
+        return _unknown('baseline_invalid')
+    return None
+
+
+def _input_key(agent, config, base_url):
+    # Only remove known top-level metadata. Arbitrary nested node/plugin fields
+    # (even fields named created_at) may affect a generated configuration.
+    inputs = {key: value for key, value in config.items() if key not in _PROFILE_METADATA}
+    identity = {key: agent.get(key) for key in ('id', 'profile_id', 'service_type', 'config_version', 'applied_content')}
+    encoded = json.dumps({'agent': identity, 'config': inputs, 'base_url': base_url},
+                         sort_keys=True, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+    return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+
+
+class ContentSyncChecker:
+    def __init__(self, *, executor=None, clock=time.monotonic, max_workers=2,
+                 success_ttl=300, error_ttl=30, max_entries=512):
+        self._executor = executor or ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='agent-content-sync')
+        self._clock = clock
+        self._success_ttl = success_ttl
+        self._error_ttl = error_ttl
+        self._max_entries = max(max_entries, max_workers)
+        self._slots = threading.BoundedSemaphore(max_workers)
+        self._lock = threading.RLock()
+        self._entries = OrderedDict()
+        self._running = {}
+
+    def _trim(self):
+        for identity in list(self._entries):
+            if len(self._entries) <= self._max_entries:
+                break
+            if identity not in self._running:
+                del self._entries[identity]
+
+    def get_content_sync(self, agent, config, base_url, prepare, *, scope='', repository=_UNBOUND_REPOSITORY):
+        if not isinstance(agent, dict) or not isinstance(config, dict) or not isinstance(agent.get('id'), str):
+            return _unknown('invalid_inputs')
+        identity = (scope, agent['id'])
+        if repository is _UNBOUND_REPOSITORY:
+            repository = _current_repository()
+        try:
+            agent_snapshot, config_snapshot = deepcopy(agent), deepcopy(config)
+            unavailable = _precondition(agent_snapshot, config_snapshot)
+            key = None if unavailable else _input_key(agent_snapshot, config_snapshot, base_url)
+        except Exception:
+            unavailable, key = _unknown('invalid_inputs'), None
+        with self._lock:
+            if _current_repository() is not repository:
+                self._entries.pop(identity, None)
+                return _unknown('check_failed')
+            if unavailable:
+                # Also invalidate an earlier worker, which may still be running.
+                self._entries.pop(identity, None)
+                return unavailable
+            entry = self._entries.get(identity)
+            if entry is None or entry.key != key or entry.repository is not repository:
+                entry = _Entry(key, repository)
+                self._entries[identity] = entry
+            self._entries.move_to_end(identity)
+            self._trim()
+            if entry.result is not None and self._clock() < entry.expires:
+                return dict(entry.result)
+            if identity in self._running:
+                return {'status': 'checking'}
+            # ThreadPoolExecutor's own queue is unbounded. Reserve a worker slot
+            # before submit so repeated polling cannot create an unbounded queue.
+            if not self._slots.acquire(blocking=False):
+                return {'status': 'checking'}
+            token = object()
+            self._running[identity] = token
+            try:
+                self._executor.submit(self._check, identity, entry, token, agent_snapshot,
+                                      config_snapshot, base_url, prepare)
+            except Exception:
+                self._running.pop(identity, None)
+                self._slots.release()
+                entry.result = _unknown('check_failed')
+                entry.expires = self._clock() + self._error_ttl
+                return dict(entry.result)
+            return {'status': 'checking'}
+
+    @staticmethod
+    def _prepare_fingerprint(agent, config, base_url, prepare):
+        from backend.common.config import reset_config_context
+        from backend.agents.deployment_bundle import deployment_content_fingerprint, retarget_config_path
+        reset_config_context()
+        try:
+            bundle = prepare(agent, config, base_url=base_url, deployment_id='check-' + uuid.uuid4().hex)
+            bundle = retarget_config_path(bundle, agent['applied_content']['config_path'])
+            return deployment_content_fingerprint(bundle.manifest)
+        finally:
+            reset_config_context()
+
+    def _check(self, identity, entry, token, agent, config, base_url, prepare):
+        result = None
+        ttl = self._error_ttl
+        try:
+            if _current_repository() is not entry.repository:
+                result = _unknown('check_failed')
+            else:
+                fingerprint = self._prepare_fingerprint(agent, config, base_url, prepare)
+                result = {'status': 'synced' if fingerprint == agent['applied_content']['fingerprint'] else 'changed',
+                          'checked_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}
+                ttl = self._success_ttl
+        except Exception:
+            # Preparation exceptions can contain tokens, URLs or YAML excerpts.
+            result = _unknown('check_failed')
+        finally:
+            with self._lock:
+                # Cache loaders below preparation use the process-global repository.
+                # A repository switch invalidates even an otherwise matching result.
+                if _current_repository() is not entry.repository:
+                    result, ttl = _unknown('check_failed'), self._error_ttl
+                if self._entries.get(identity) is entry and result is not None:
+                    entry.result = result
+                    entry.expires = self._clock() + ttl
+                if self._running.get(identity) is token:
+                    del self._running[identity]
+                self._slots.release()
+
+
+_checker = ContentSyncChecker()
+
+
+def get_content_sync(agent, config, base_url, prepare, *, scope='', repository=_UNBOUND_REPOSITORY):
+    return _checker.get_content_sync(agent, config, base_url, prepare, scope=scope, repository=repository)
