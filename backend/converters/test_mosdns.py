@@ -1,3 +1,4 @@
+import re
 import unittest
 
 import yaml
@@ -52,6 +53,42 @@ MIXED_CLASH = """payload:
 
 
 class MosdnsRuleConversionTest(unittest.TestCase):
+    def test_regex_commas_survive_text_and_yaml_conversion(self):
+        expression = r'^node[0-9]{1,3}\.example\.test$'
+        rule = 'DOMAIN-REGEX,' + expression
+        for content in (rule, yaml.safe_dump({'payload': [rule]})):
+            for part in (None, 'domain'):
+                with self.subTest(content=content, part=part):
+                    result = convert_rule_content_for_mosdns(content, part)
+                    self.assertEqual(result, 'regexp:' + expression)
+                    pattern = re.compile(result.removeprefix('regexp:'))
+                    for name in ('node1.example.test', 'node123.example.test'):
+                        self.assertIsNotNone(pattern.fullmatch(name))
+                    for name in ('node.example.test', 'node1234.example.test', 'node1.other.test'):
+                        self.assertIsNone(pattern.fullmatch(name))
+            self.assertEqual(convert_rule_content_for_mosdns(content, 'ip'), '# no ip rules')
+
+    def test_regex_payload_preserves_multiple_and_literal_commas(self):
+        for expression in (r'^a{1,3}b{2,}\.test$', r'^[a,b]+\.test$', r'^a\,b\.test$'):
+            with self.subTest(expression=expression):
+                self.assertEqual(
+                    convert_rule_content_for_mosdns(' domain-regex, ' + expression + ' ', 'domain'),
+                    'regexp:' + expression,
+                )
+
+    def test_non_regex_rules_still_strip_policy_and_no_resolve_fields(self):
+        content = '\n'.join([
+            'DOMAIN,exact.test,DIRECT', 'DOMAIN-SUFFIX,suffix.test,Proxy',
+            'DOMAIN-KEYWORD,keyword,Proxy', 'IP-CIDR,192.0.2.0/24,no-resolve',
+            'IP-CIDR6,2001:db8::/32,DIRECT,no-resolve',
+        ])
+        for source in (content, yaml.safe_dump({'payload': content.splitlines()})):
+            with self.subTest(source=source):
+                self.assertEqual(convert_rule_content_for_mosdns(source, 'domain'),
+                                 'full:exact.test\ndomain:suffix.test\nkeyword:keyword')
+                self.assertEqual(convert_rule_content_for_mosdns(source, 'ip'),
+                                 '192.0.2.0/24\n2001:db8::/32')
+
     def test_legacy_mode_keeps_previous_output(self):
         self.assertEqual(
             convert_rule_content_for_mosdns(MIXED_CLASH),
