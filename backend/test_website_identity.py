@@ -106,8 +106,8 @@ def test_cached_websites_and_notes_do_not_cross_profiles(env):
     get_region_store().update(agent['id'], lambda data: data['websites'].update({
         'www.example.com': {'checked_at': datetime.now().isoformat(), 'name': 'private'}}))
     items = [{'domain': 'example.com', 'hosts': [{'host': 'www.example.com'}]}]
-    service.enrich_websites(items, {}, service.read_settings({}), [], 'isolated')
-    assert items[0]['website'] == {'service': None, 'page': None, 'rules': [], 'note': ''}
+    service.enrich_websites(items, service.read_settings({}), [])
+    assert items[0]['website'] == {'service': None, 'page': None, 'note': ''}
 
 
 def test_cache_expiry_and_bound(tmp_path):
@@ -122,7 +122,7 @@ def test_cache_expiry_and_bound(tmp_path):
     assert 'old.test' not in store.load('a')['websites']
 
 
-def test_rules_are_clues_not_service_identity(env):
+def test_website_identity_does_not_include_rules(env):
     client, repository, agent, auth, _ = env
     _report(client, agent, auth)
     repository.save_shared({'rule_library': [
@@ -131,16 +131,4 @@ def test_rules_are_clues_not_service_identity(env):
         {'id': 'rule', 'itemType': 'ruleset', 'library_rule_id': 'lib', 'policy': 'DIRECT', 'enabled': True}]})
     website = client.get('/api/domain-discovery/domains?view=all').get_json()['items'][0]['website']
     assert website['service'] is None and website['page'] is None
-    assert website['rules'][0]['name'] == '国外网站'
-
-
-def test_identity_lookup_does_not_invalidate_routing_index():
-    from backend.utils.domain_matcher_cache import local_matcher
-    config = {'rule_configs': [{'id': 'direct', 'itemType': 'rule', 'rule_type': 'DOMAIN',
-                                'value': 'example.com', 'policy': 'DIRECT'}]}
-    routing = local_matcher(config, 'identity-cache-test')
-    identity = local_matcher(config, 'identity-cache-test', rulesets_only=True)
-    assert routing.match('example.com') is not None
-    assert identity.match('example.com') is None
-    assert local_matcher(config, 'identity-cache-test') is routing
-    assert local_matcher(config, 'identity-cache-test', rulesets_only=True) is identity
+    assert 'rules' not in website

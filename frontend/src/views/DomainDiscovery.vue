@@ -635,7 +635,6 @@ const websiteLabel = (item: DomainItem) => {
   if (website?.note) return `${website.note} · 备注`
   if (website?.service) return `${website.service.name} · ${website.service.category}`
   if (website?.page?.name) return `${website.page.name} · 网页自报`
-  if (website?.rules.length) return `${website.rules[0].name} · 规则线索`
   return website?.page ? '未识别 · 查看原因' : '网站未知 · 识别 / 备注'
 }
 const websiteNoteSaved = (domain: string, note: string) => {
@@ -695,7 +694,7 @@ const visibleItems = computed(() => {
   const keyword = search.value.trim().toLowerCase()
   if (!keyword) return items.value
   return items.value.filter(item => item.domain.includes(keyword) || item.hosts.some(host => host.host.includes(keyword))
-    || [item.website?.note, item.website?.service?.name, item.website?.page?.name, ...(item.website?.rules || []).map(rule => rule.name)]
+    || [item.website?.note, item.website?.service?.name, item.website?.page?.name]
       .some(value => value?.toLowerCase().includes(keyword)))
 })
 

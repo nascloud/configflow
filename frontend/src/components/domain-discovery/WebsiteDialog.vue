@@ -10,13 +10,6 @@
           <p class="font-medium">{{ website.service.name }} · {{ website.service.category }}</p>
           <p class="mt-1 text-xs text-muted-foreground">{{ website.service.evidence }}</p>
         </div>
-        <div v-if="website?.rules.length">
-          <p class="mb-1 font-medium">规则集线索</p>
-          <p class="mb-2 text-xs text-muted-foreground">命中规则仅供参考，不作为网站归属结论。</p>
-          <div v-for="rule in website.rules" :key="rule.name" class="mb-1 break-all text-muted-foreground">
-            {{ rule.name }} · <span class="font-mono text-xs">{{ rule.host }} / {{ rule.line }}</span>
-          </div>
-        </div>
         <div class="flex flex-col gap-2">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <p class="font-medium">网页自报信息</p>
@@ -67,7 +60,6 @@ import { relativeTime } from '@/lib/format'
 export interface WebsiteInfo {
   service: { name: string; category: string; evidence: string } | null
   page: { name: string; description: string; reason: string; host: string; final_host?: string; checked_at: string } | null
-  rules: Array<{ name: string; host: string; line: string }>
   note: string
 }
 

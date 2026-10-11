@@ -6,7 +6,7 @@ import api from '@/api'
 vi.mock('@/api', () => ({ default: { post: vi.fn(), put: vi.fn() } }))
 vi.mock('@/lib/feedback', () => ({ notify: { success: vi.fn(), error: vi.fn() } }))
 
-const website = { service: null, page: null, rules: [], note: '原备注' }
+const website = { service: null, page: null, note: '原备注' }
 const slot = { template: '<div><slot /></div>' }
 const render = () => mount(WebsiteDialog, {
   props: { domain: 'example.com', website, busy: false },

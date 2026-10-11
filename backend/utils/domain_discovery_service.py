@@ -408,12 +408,12 @@ def load_domains(profile_id, *, days=7, view='uncovered', agent_id=None):
     result['min_agent_version'] = MIN_AGENT_VERSION
     result['min_probe_agent_version'] = MIN_PROBE_AGENT_VERSION
     result['probe_job'] = public_job(running_job(profile_id))
-    enrich_websites(result['items'], config, settings,
-                    [agent for agent in agents if not agent_id or agent['id'] == agent_id], profile_id)
+    enrich_websites(result['items'], settings,
+                    [agent for agent in agents if not agent_id or agent['id'] == agent_id])
     return result
 
 
-def enrich_websites(items, config, settings, agents, profile_id):
+def enrich_websites(items, settings, agents):
     from backend.utils.region_check import get_region_store
     from backend.utils.website_identity import known_service
 
@@ -423,24 +423,11 @@ def enrich_websites(items, config, settings, agents, profile_id):
         for host, entry in get_region_store().load(agent['id'])['websites'].items():
             if entry.get('checked_at', '') >= oldest and entry.get('checked_at', '') > cache.get(host, {}).get('checked_at', ''):
                 cache[host] = entry
-    # 仅查规则集，避免单条路由规则遮住服务线索；不联网下载规则。
-    matcher = local_matcher(config, profile_id, rulesets_only=True)
-    library = {item['id']: item for item in config.get('rule_library', []) if item.get('id')}
-    references = {item.get('id'): item for item in config.get('rule_configs', [])}
     for item in items:
-        clues = []
-        for host in item['hosts']:
-            match = matcher.match(host['host'])
-            if match:
-                ref = references.get(match['rule_id'], {})
-                name = library.get(ref.get('library_rule_id'), {}).get('name') or match['rule_name']
-                clue = {'name': name, 'host': host['host'], 'line': match['matched_line']}
-                if not any(existing['name'] == name for existing in clues):
-                    clues.append(clue)
         pages = [cache[host['host']] for host in item['hosts'] if host['host'] in cache]
         page = max(pages, key=lambda entry: entry['checked_at']) if pages else None
         item['website'] = {'service': known_service(item['domain']), 'page': page,
-                           'rules': clues[:5], 'note': settings['website_notes'].get(item['domain'], '')}
+                           'note': settings['website_notes'].get(item['domain'], '')}
 
 
 def save_website_note(profile_id, payload):
