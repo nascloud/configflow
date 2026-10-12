@@ -460,8 +460,6 @@ def start_website_job(profile_id, values, *, wait=False):
         raise ProfileValidationError('一次最多识别 10 个域名')
     config = get_config(profile_id)
     settings = read_settings(config)
-    if not settings['region_check_enabled']:
-        raise ProbeError('网页识别需要在「地区限制」开启区域检测，并部署一次配置')
     agents = _region_agents(profile_id)
     if not agents:
         raise ProbeError(f'需要开启域名发现且版本不低于 {MIN_REGION_AGENT_VERSION} 的 Agent')
@@ -1046,7 +1044,7 @@ def run_region_check(profile_id, *, services=True, domains=(), progress=None, no
     config = get_config(profile_id)
     settings = read_settings(config)
     if not settings['region_check_enabled']:
-        raise ProbeError('请先开启区域检测并部署一次配置')
+        raise ProbeError('请先开启区域检测')
     agents = _region_agents(profile_id)
     if not agents:
         raise ProbeError(f'没有可用于区域检测的 Agent：需要开启域名发现且 Agent 版本不低于 {MIN_REGION_AGENT_VERSION}')

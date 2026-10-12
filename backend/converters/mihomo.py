@@ -826,9 +826,9 @@ def generate_mihomo_config(config_data: Dict[str, Any], base_url: str = '',
     if preflight_providers:
         from backend.utils.provider_delivery import prepare_provider_bundle
         prepare_provider_bundle(logical_config, mihomo_config)
-    # 区域检测入口只注入推送给 Agent 的配置，且需在域名发现里开启
+    # 检测入口只注入推送给开启了域名发现的 Agent 的配置；区域检测和网站识别共用
     discovery = logical_config.get('domain_discovery') or {}
-    if region_probe and discovery.get('region_check_enabled'):
+    if region_probe:
         inject_region_probe(mihomo_config, int(discovery.get('region_probe_port') or DEFAULT_REGION_PROBE_PORT))
     # 转换为 YAML
     return yaml.dump(

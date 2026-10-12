@@ -1010,7 +1010,7 @@ class AgentManager:
         except ValueError:
             body = {}
         if response.status_code == 409 and path.startswith('/api/region-check'):
-            raise RuntimeError('Agent 上的 Mihomo 还没有区域检测入口，请开启区域检测后部署一次配置')
+            raise RuntimeError('Agent 上的 Mihomo 还没有检测入口，请为该 Agent 开启域名发现后部署一次配置')
         if response.status_code != 200 or not body.get('success'):
             raise RuntimeError(body.get('message') or f'Agent 返回 HTTP {response.status_code}')
         return body

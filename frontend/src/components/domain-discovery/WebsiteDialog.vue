@@ -27,7 +27,7 @@
             </p>
           </template>
           <p v-else class="text-xs text-muted-foreground">尚未读取网页。API、资源域名或验证页可能无法识别。</p>
-          <p class="text-xs text-muted-foreground">由 Agent 读取首页，结果缓存 30 天。需先在「地区限制」开启区域检测并部署配置。</p>
+          <p class="text-xs text-muted-foreground">由 Agent 读取首页，结果缓存 30 天。需要 Agent 开启域名发现并部署过一次配置。</p>
         </div>
         <div class="flex flex-col gap-2">
           <Label for="website-note">手动备注</Label>

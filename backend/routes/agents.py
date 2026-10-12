@@ -894,7 +894,7 @@ def _prepare_transactional_content(agent, config_data, *, base_url='', deploymen
     if service_type == 'mihomo':
         config_content = generate_mihomo_config(config_data, base_url=base_url,
                                                 sync_lan_hosts=True, preflight_providers=False,
-                                                region_probe=True)
+                                                region_probe=bool(agent.get('domain_discovery_enabled')))
         main = yaml.safe_load(config_content)
         provider_downloads = get_mihomo_provider_downloads(config_data, base_url=base_url, main_config=main)
         ruleset_downloads = get_mihomo_ruleset_downloads(config_data, base_url=base_url)

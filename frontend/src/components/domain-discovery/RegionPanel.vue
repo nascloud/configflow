@@ -2,7 +2,7 @@
   <div class="flex flex-col gap-4">
     <SectionCard
       title="区域检测"
-      description="在推送给 Agent 的 Mihomo 配置里加一个只监听本机的检测入口，Agent 经它切换到不同节点访问服务和域名，判断是否受地区限制。不影响真实流量，手机等订阅的配置不变。"
+      description="开启域名发现的 Agent 推送的 Mihomo 配置里会带一个只监听本机的检测入口，Agent 经它切换到不同节点访问服务和域名，判断是否受地区限制。不影响真实流量，手机等订阅的配置不变。"
       :icon="Globe"
     >
       <div v-if="!region" class="py-2"><LoadingRows :rows="2" /></div>
@@ -38,7 +38,7 @@
           </div>
         </div>
         <InfoNote v-if="region.enabled && !region.ready">
-          <p>需要 Agent {{ region.min_agent_version }} 及以上并开启域名发现；开启区域检测后还要<strong class="text-foreground">部署一次配置</strong>，检测入口才会出现在 Agent 上的 Mihomo 里。</p>
+          <p>需要 Agent {{ region.min_agent_version }} 及以上并开启域名发现；开启域名发现后还要<strong class="text-foreground">部署一次配置</strong>，检测入口才会出现在 Agent 上的 Mihomo 里。</p>
         </InfoNote>
         <p v-else-if="region.result" class="m-0 text-[12px] text-muted-foreground">
           最近一次检测：{{ relativeTime(region.result.checked_at) }}<template v-if="region.agent"> · 由 {{ region.agent.name }} 执行</template>
@@ -263,7 +263,7 @@ const saveSettings = async (changes: Record<string, unknown>) => {
   try {
     await api.put('/domain-discovery/settings', changes)
     if ('region_check_enabled' in changes) {
-      notify.success(changes.region_check_enabled ? '已开启区域检测' : '已关闭区域检测', '部署一次配置后在 Agent 上生效。')
+      notify.success(changes.region_check_enabled ? '已开启区域检测' : '已关闭区域检测')
     } else {
       notify.success('已保存', '部署一次配置后在 Agent 上生效。')
     }

@@ -60,7 +60,6 @@ def _report(client, agent, auth):
 def test_identify_cache_note_and_clear(env, monkeypatch):
     client, repository, agent, auth, _ = env
     _report(client, agent, auth)
-    client.put('/api/domain-discovery/settings', json={'region_check_enabled': True})
     calls = []
 
     def fetch(self, selected, payload):
@@ -89,9 +88,6 @@ def test_identify_cache_note_and_clear(env, monkeypatch):
 def test_identify_preconditions_and_invalid_input(env):
     client, _, agent, auth, _ = env
     _report(client, agent, auth)
-    response = client.post('/api/domain-discovery/website/identify', json={'domains': ['example.com']})
-    assert response.status_code == 400 and '开启区域检测' in response.get_json()['message']
-    client.put('/api/domain-discovery/settings', json={'region_check_enabled': True})
     for payload in ([], {'domains': []}, {'domains': ['https://example.com']}, {'domains': ['unobserved.test']}):
         assert client.post('/api/domain-discovery/website/identify', json=payload).status_code == 400
     for payload in ([], {'domain': '../bad', 'note': 'x'}, {'domain': 'example.com', 'note': 12},

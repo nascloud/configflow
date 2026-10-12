@@ -140,17 +140,18 @@ def test_pick_targets():
 
 # ---------- 配置注入 ----------
 
-def _mihomo(discovery, custom=''):
+def _mihomo(discovery, custom='', region_probe=True):
     return yaml.safe_load(generate_mihomo_config({
         'proxy_groups': [{'id': 'g1', 'name': 'PROXY', 'type': 'select', 'proxies': ['DIRECT']}],
         'rule_configs': [{'id': 'm', 'itemType': 'rule', 'rule_type': 'MATCH', 'value': '', 'policy': 'DIRECT'}],
         'mihomo': {'custom_config': custom or 'mixed-port: 7890\nlisteners:\n  - {name: lan, type: socks, port: 7891}\n'},
         'domain_discovery': discovery,
-    }, region_probe=True, preflight_providers=False))
+    }, region_probe=region_probe, preflight_providers=False))
 
 
 def test_probe_entry_injected_only_when_enabled_for_agents():
-    config = _mihomo({'region_check_enabled': True, 'region_probe_port': 18999})
+    # 入口只看 Agent 是否开启域名发现，与区域检测开关无关
+    config = _mihomo({'region_check_enabled': False, 'region_probe_port': 18999})
     group = next(item for item in config['proxy-groups'] if item['name'] == REGION_PROBE_GROUP)
     assert group['type'] == 'select' and group['include-all'] and group['hidden']
     assert group['proxies'] == ['DIRECT', 'PROXY']
@@ -158,7 +159,7 @@ def test_probe_entry_injected_only_when_enabled_for_agents():
     probe = config['listeners'][1]
     assert (probe['listen'], probe['port'], probe['proxy']) == ('127.0.0.1', 18999, REGION_PROBE_GROUP)
 
-    assert 'listeners' not in _mihomo({}, custom='mixed-port: 7890\n')
+    assert 'listeners' not in _mihomo({'region_check_enabled': True}, custom='mixed-port: 7890\n', region_probe=False)
     plain = yaml.safe_load(generate_mihomo_config({
         'proxy_groups': [], 'rule_configs': [], 'mihomo': {'custom_config': 'mixed-port: 7890\n'},
         'domain_discovery': {'region_check_enabled': True}}, preflight_providers=False))
@@ -166,6 +167,21 @@ def test_probe_entry_injected_only_when_enabled_for_agents():
 
     conflict = _mihomo({'region_check_enabled': True, 'region_probe_port': 7891})
     assert REGION_PROBE_LISTENER not in [item['name'] for item in conflict['listeners']]
+
+
+def test_agent_config_injects_probe_only_with_domain_discovery():
+    from backend.agents.config_generator import generate_agent_config
+
+    config = {
+        'proxy_groups': [{'id': 'g1', 'name': 'PROXY', 'type': 'select', 'proxies': ['DIRECT']}],
+        'rule_configs': [{'id': 'm', 'itemType': 'rule', 'rule_type': 'MATCH', 'value': '', 'policy': 'DIRECT'}],
+        'mihomo': {'custom_config': 'mixed-port: 7890\n'},
+        'domain_discovery': {},
+    }
+    listeners = lambda agent: [item['name'] for item in
+                               yaml.safe_load(generate_agent_config(config, agent)['content']).get('listeners') or []]
+    assert listeners({'service_type': 'mihomo', 'domain_discovery_enabled': True}) == [REGION_PROBE_LISTENER]
+    assert listeners({'service_type': 'mihomo'}) == []
 
 
 # ---------- 检测任务与指定走向 ----------
