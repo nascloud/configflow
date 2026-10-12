@@ -86,6 +86,7 @@ def prepare_subscription_provider(sub, config, snapshot, *, fetch=None,
     from backend.utils.strategy_references import StrategyReferenceError
     from backend.utils.dialer_references import validate_shapes
     from backend.converters.mihomo import convert_node_to_mihomo, IndentDumper
+    from backend.utils.subscription_filter import filter_subscription_items
 
     fetch = fetch or get_subscription_proxies_yaml
     update = None
@@ -93,10 +94,11 @@ def prepare_subscription_provider(sub, config, snapshot, *, fetch=None,
     if sub.get('url'):
         try:
             text, _source = fetch(sub['id'], sub['url'])
-            proxies = parse_provider_proxies(text)
+            raw_proxies = parse_provider_proxies(text)
+            proxies = filter_subscription_items(sub, raw_proxies)
             snapshot.validate(proxies, provider_name=sub['name'])
-            if proxies:
-                nodes = proxies_to_nodes(proxies)
+            if raw_proxies:
+                nodes = proxies_to_nodes(raw_proxies)
                 for node in nodes:
                     node['subscription_id'] = sub['id']
                     node['subscription_name'] = sub['name']
@@ -113,7 +115,8 @@ def prepare_subscription_provider(sub, config, snapshot, *, fetch=None,
                 return {'content': '', 'cache_updates': []}
             raise DialerReferenceError('订阅没有可用缓存或远程代理')
         validate_shapes({'nodes': cache['nodes']}, require_ids=False)
-        proxies = [p for n in cache['nodes'] if (p := convert_node_to_mihomo(n))]
+        proxies = [p for n in filter_subscription_items(sub, cache['nodes'])
+                   if (p := convert_node_to_mihomo(n))]
     snapshot.validate(proxies, provider_name=sub['name'])
     content = yaml.dump({'proxies': proxies}, Dumper=IndentDumper, allow_unicode=True,
                         default_flow_style=False, sort_keys=False, indent=2)

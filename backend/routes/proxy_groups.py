@@ -9,6 +9,7 @@ from backend.common.config import get_config, get_shared_config, update_config_t
 from backend.common.config_repository import ProfileRepositoryError
 from backend.utils.reorder import resolve_new_order
 from backend.utils.subscription_cache import load_subscription_cache
+from backend.utils.subscription_filter import filter_subscription_items
 from backend.utils.group_candidates import CandidateValidationError
 
 
@@ -33,7 +34,8 @@ def _get_subscription_nodes(config_data, sub_id):
                 nodes.append(node)
                 existing_names.add(node.get('name'))
 
-    return nodes
+    sub = next((s for s in config_data.get('subscriptions', []) if s.get('id') == sub_id), None)
+    return filter_subscription_items(sub, nodes)
 
 
 def _get_manual_nodes(config_data, node_ids):

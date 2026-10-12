@@ -8,7 +8,12 @@ export interface Subscription {
   /** 健康检查地址，留空用默认（境外）；回家/内网订阅建议填国内地址 */
   health_check?: Record<string, any>
   health_check_url?: string
+  /** 节点名筛选正则，只保留匹配的节点；留空表示不筛选 */
+  regex_filter?: string
+  /** 筛选后的节点数 */
   cached_node_count?: number | null
+  /** 缓存中的原始节点数（筛选前） */
+  cached_total_count?: number | null
   cached_updated_at?: string | null
 }
 

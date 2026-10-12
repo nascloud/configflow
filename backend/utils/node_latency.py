@@ -14,6 +14,7 @@ from backend.common.config import get_repository, get_shared_config
 from backend.common.config_repository import ProfileRepositoryError
 from backend.utils.logger import get_logger
 from backend.utils.subscription_cache import load_subscription_cache
+from backend.utils.subscription_filter import filter_subscription_items
 
 logger = get_logger(__name__)
 
@@ -80,7 +81,7 @@ def collect_candidates() -> Dict[str, Tuple[str, int]]:
         if sub.get('enabled') is False:
             continue
         cache = load_subscription_cache(sub.get('id', '')) or {}
-        for node in cache.get('nodes', []) or []:
+        for node in filter_subscription_items(sub, cache.get('nodes', []) or []):
             if not isinstance(node, dict) or not node.get('name'):
                 continue
             endpoint = _endpoint_of(node)

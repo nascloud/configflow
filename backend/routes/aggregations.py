@@ -27,6 +27,7 @@ from backend.common.auth import validate_token_or_jwt, require_auth
 from backend.routes import subscription_aggregations_bp as bp
 from backend.converters.mihomo import convert_node_to_mihomo
 from backend.utils.subscription_cache import load_subscription_cache
+from backend.utils.subscription_filter import filter_subscription_items
 from backend.utils.sub_store_client import (
     get_subscription_proxies_yaml,
     parse_proxies_from_yaml,
@@ -202,8 +203,10 @@ def generate_aggregation_provider(aggregation: Dict[str, Any], *, config=None,
         for sub_id, _sub in pending:
             proxies, nodes_list = results.get(sub_id, (None, []))
             if proxies is not None:
-                sub_proxies_map[sub_id] = proxies
+                sub_proxies_map[sub_id] = filter_subscription_items(_sub, proxies)
+                # 缓存保留订阅原始节点，订阅级筛选只作用于聚合输出
                 pending_cache_updates.append((sub_id, nodes_list, _sub))
+            nodes_list = filter_subscription_items(_sub, nodes_list)
 
             # Validate cache/remote metadata before hashing names or converting.
             from backend.utils.dialer_references import validate_shapes
@@ -414,10 +417,13 @@ def get_aggregation_node_count(agg_id):
         # 从选择的订阅中统计节点数（仅从缓存读取）
         subscription_ids = aggregation.get('subscriptions', [])
         if subscription_ids:
+            subs_by_id = {s.get('id'): s for s in config_data.get('subscriptions', [])}
             for sub_id in subscription_ids:
                 cache = load_subscription_cache(sub_id)
                 if cache:
-                    node_count = cache.get('count', 0)
+                    cached_nodes = cache.get('nodes')
+                    node_count = (len(filter_subscription_items(subs_by_id.get(sub_id), cached_nodes))
+                                  if isinstance(cached_nodes, list) else cache.get('count', 0))
                     subscription_counts[sub_id] = node_count
                     total_count += node_count
 

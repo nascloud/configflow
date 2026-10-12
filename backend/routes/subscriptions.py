@@ -20,9 +20,10 @@ from backend.utils.sub_store_client import (
 )
 from backend.utils.url_utils import safe_exception_details
 from backend.utils import subscription_health
+from backend.utils.subscription_filter import filter_subscription_items, validate_regex_filter
 
 # 由服务端计算、不属于订阅配置本身的字段；前端整对象回写时要剥掉，避免落进配置文件
-DERIVED_FIELDS = ('cached_node_count', 'cached_updated_at', 'traffic', 'traffic_at', 'last_fetch')
+DERIVED_FIELDS = ('cached_node_count', 'cached_total_count', 'cached_updated_at', 'traffic', 'traffic_at', 'last_fetch')
 
 
 @subscriptions_bp.route('/<resource_id>/health-impact', methods=['GET'])
@@ -45,6 +46,9 @@ def validate_subscription_fields(data):
         value = data.get(field) if isinstance(data, dict) else None
         if not isinstance(value, str) or not value.strip():
             return jsonify({'success': False, 'message': f'订阅 {field} 不能为空'}), 400
+    regex_error = validate_regex_filter(data.get('regex_filter'))
+    if regex_error:
+        return jsonify({'success': False, 'message': regex_error}), 400
     return None
 
 
@@ -68,10 +72,17 @@ def handle_subscriptions():
             sub_copy['last_fetch'] = history[-1] if history else None
             cache = load_subscription_cache(sub.get('id', ''))
             if cache:
-                sub_copy['cached_node_count'] = cache.get('count')
+                cached_nodes = cache.get('nodes')
+                if isinstance(cached_nodes, list):
+                    sub_copy['cached_node_count'] = len(filter_subscription_items(sub, cached_nodes))
+                    sub_copy['cached_total_count'] = len(cached_nodes)
+                else:
+                    sub_copy['cached_node_count'] = cache.get('count')
+                    sub_copy['cached_total_count'] = cache.get('count')
                 sub_copy['cached_updated_at'] = cache.get('updated_at')
             else:
                 sub_copy['cached_node_count'] = None
+                sub_copy['cached_total_count'] = None
                 sub_copy['cached_updated_at'] = None
             subscriptions_with_cache.append(sub_copy)
         return jsonify(subscriptions_with_cache)
@@ -209,7 +220,7 @@ def fetch_subscription(sub_id):
             if 'id' not in node:
                 node['id'] = f"node_{uuid.uuid4().hex[:8]}"
 
-        # 写入缓存
+        # 写入缓存（缓存保留原始节点，筛选只作用于输出）
         cache_payload = save_subscription_nodes(
             sub_id,
             nodes,
@@ -218,6 +229,7 @@ def fetch_subscription(sub_id):
                 'url': sub.get('url')
             }
         )
+        nodes = filter_subscription_items(sub, nodes)
         # 拉取成功后尽力读取流量信息，读不到不影响结果
         subscription_health.record_fetch(
             sub_id,
@@ -241,7 +253,7 @@ def fetch_subscription(sub_id):
         # 从URL获取失败，尝试读取本地缓存
         cache = load_subscription_cache(sub_id)
         if cache:
-            nodes = cache.get('nodes', [])
+            nodes = filter_subscription_items(sub, cache.get('nodes', []))
             cache_payload = cache
             from_cache = True
             subscription_health.record_fetch(sub_id, ok=False, from_cache=True, count=len(nodes))
@@ -263,7 +275,9 @@ def fetch_subscription(sub_id):
             'preview': True,
             'from_cache': from_cache,
             'fetch_error': fetch_error,
-            'cached_count': cache_payload.get('count') if cache_payload else 0,
+            # 节点数按订阅筛选后的结果计，total_count 为缓存中的原始节点数
+            'cached_count': len(nodes),
+            'total_count': cache_payload.get('count') if cache_payload else 0,
             'cached_updated_at': cache_payload.get('updated_at') if cache_payload else None
         })
 
@@ -285,7 +299,9 @@ def fetch_subscription(sub_id):
             'nodes': nodes,
             'from_cache': from_cache,
             'fetch_error': fetch_error,
-            'cached_count': cache_payload.get('count') if cache_payload else 0,
+            # 节点数按订阅筛选后的结果计，total_count 为缓存中的原始节点数
+            'cached_count': len(nodes),
+            'total_count': cache_payload.get('count') if cache_payload else 0,
             'cached_updated_at': cache_payload.get('updated_at') if cache_payload else None
         })
     except ProfileRepositoryError:
@@ -346,7 +362,7 @@ def get_all_subscription_proxies():
             proxies = []
             try:
                 yaml_text, _source = get_subscription_proxies_yaml(sub_id, sub_url)
-                proxies = parse_provider_proxies(yaml_text)
+                proxies = filter_subscription_items(sub, parse_provider_proxies(yaml_text))
             except StrategyReferenceError:
                 # Invalid content is not a transport failure and must not use cache.
                 raise
@@ -358,7 +374,7 @@ def get_all_subscription_proxies():
                     from backend.utils.dialer_references import validate_shapes
                     validate_shapes({'nodes': cache.get('nodes', [])}, require_ids=False)
                     from backend.converters.mihomo import convert_node_to_mihomo
-                    for node in cache.get('nodes', []):
+                    for node in filter_subscription_items(sub, cache.get('nodes', [])):
                         try:
                             proxy = convert_node_to_mihomo(node)
                             if proxy:
@@ -501,7 +517,8 @@ def get_subscription_proxies(sub_id):
                 current_app.logger.info(f"尝试获取最新配置: {sub_name} (id: {sub_id})")
                 yaml_text, source = get_subscription_proxies_yaml(sub_id, sub_url)
                 from backend.utils.provider_delivery import parse_provider_proxies
-                proxies = parse_provider_proxies(yaml_text)
+                raw_proxies = parse_provider_proxies(yaml_text)
+                proxies = filter_subscription_items(sub, raw_proxies)
                 # Reject the actual raw graph before node transforms/cache writes.
                 if request.args.get('format') == 'surge':
                     from backend.converters.surge import convert_proxies_to_surge_text
@@ -511,9 +528,9 @@ def get_subscription_proxies(sub_id):
                     convert_proxies_to_loon_text(proxies)
                 validate_subscription_delivery(proxies)
 
-                if proxies:
-                    # 更新本地缓存（转换为 node 格式存储）
-                    nodes = proxies_to_nodes(proxies)
+                if raw_proxies:
+                    # 更新本地缓存（转换为 node 格式存储，保留筛选前的原始节点）
+                    nodes = proxies_to_nodes(raw_proxies)
                     for node in nodes:
                         node['subscription_id'] = sub_id
                         node['subscription_name'] = sub_name
@@ -524,7 +541,7 @@ def get_subscription_proxies(sub_id):
                         'url': sub_url
                     })
                     cache_updated = True
-                    subscription_health.record_fetch(sub_id, ok=True, count=len(nodes))
+                    subscription_health.record_fetch(sub_id, ok=True, count=len(proxies))
                     if source == 'rendered_yaml':
                         current_app.logger.info(f"成功直接复用订阅 URL 返回的 Sub-Store YAML 并更新缓存: {sub_name}, 节点数: {len(proxies)}")
                     elif source == 'sub_store':
@@ -562,6 +579,7 @@ def get_subscription_proxies(sub_id):
                     'success': False,
                     'message': f"订阅 '{sub_name}' 缓存中没有节点"
                 }), 404
+            nodes = filter_subscription_items(sub, nodes)
 
             current_app.logger.info(f"使用本地缓存数据: {sub_name}, 节点数: {len(nodes)}")
             # 降级：从缓存节点转换为 proxies

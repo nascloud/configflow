@@ -402,6 +402,7 @@ def _list_subscriptions(args):
             'data': provider_fields(
                 '订阅字段：name（名称）、url（订阅链接）、type（mihomo / surge / general）、'
                 'enabled（是否启用）、interval（更新间隔秒）、'
+                'regex_filter（节点名筛选正则，只保留匹配的节点）、'
                 'health_check_url（健康检查地址，留空用默认）'
             ),
         },

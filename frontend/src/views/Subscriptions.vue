@@ -132,7 +132,9 @@
               </Button>
             </div>
           </TableCell>
-          <TableCell class="num text-right">{{ nodeCount(sub) }}</TableCell>
+          <TableCell class="num text-right">
+            {{ nodeCount(sub) }}<span v-if="filteredTotal(sub) !== null" class="text-muted-foreground" :title="`已按正则筛选，原始 ${filteredTotal(sub)} 个节点`"> / {{ filteredTotal(sub) }}</span>
+          </TableCell>
           <TableCell class="whitespace-nowrap text-muted-foreground">{{ lastUpdated(sub) }}</TableCell>
           <TableCell>
             <Badge :variant="statusTone(subscriptionStatus[sub.id])">{{ statusText(sub) }}</Badge>
@@ -277,6 +279,7 @@
               <b class="font-mono text-[15px] font-medium">
                 <AnimatedNumber v-if="nodeCount(sub) !== '—'" :value="Number(nodeCount(sub))" />
                 <template v-else>—</template>
+                <span v-if="filteredTotal(sub) !== null" class="ml-1 text-[11px] font-normal text-muted-foreground" :title="`已按正则筛选，原始 ${filteredTotal(sub)} 个节点`">/ {{ filteredTotal(sub) }}</span>
               </b>
             </div>
             <div>
@@ -379,6 +382,17 @@
           <div class="grid gap-2">
             <Label for="sub-url">订阅链接</Label>
             <Textarea id="sub-url" v-model="form.url" class="bg-background/50 font-mono text-[12px]" :rows="3" placeholder="请输入订阅 URL" />
+          </div>
+
+          <div class="grid gap-2">
+            <Label for="sub-regex">节点筛选</Label>
+            <Input
+              id="sub-regex"
+              v-model="form.regex_filter"
+              class="bg-background/50 font-mono text-[12px]"
+              placeholder="可选：只保留名称匹配的节点，例如 香港|HK|日本"
+            />
+            <p class="m-0 text-xs text-muted-foreground">按节点名称做正则匹配，作用于所有引用此订阅的配置与聚合；排除可写 <code class="font-mono">^(?!.*(到期|剩余)).*$</code>。</p>
           </div>
 
           <div class="grid gap-2">
@@ -690,6 +704,7 @@ const fetchAllSubscriptionsInBackground = async () => {
           const cachedCount = data.cached_count ?? (data.nodes?.length || 0)
           const updatedAt = data.cached_updated_at ?? null
           sub.cached_node_count = cachedCount
+          sub.cached_total_count = data.total_count ?? sub.cached_total_count
           sub.cached_updated_at = updatedAt
           subscriptionStatus.value[sub.id] = {
             status: 'success',
@@ -861,6 +876,7 @@ const fetchSubscription = async (row: Subscription) => {
       const cachedCount = data.cached_count ?? previewNodes.value.length
       const updatedAt = data.cached_updated_at ?? null
       row.cached_node_count = cachedCount
+      row.cached_total_count = data.total_count ?? row.cached_total_count
       row.cached_updated_at = updatedAt
       subscriptionStatus.value[row.id] = {
         status: 'success',
@@ -985,6 +1001,13 @@ const nodeCount = (sub: Subscription): string => {
   if (typeof cached === 'number') return String(cached)
   const stored = (sub as any).cached_node_count
   return typeof stored === 'number' ? String(stored) : '—'
+}
+
+// 配置了筛选正则时返回原始节点总数，用于展示「筛选后 / 原始」
+const filteredTotal = (sub: Subscription): number | null => {
+  if (!sub.regex_filter?.trim()) return null
+  const total = sub.cached_total_count
+  return typeof total === 'number' && String(total) !== nodeCount(sub) ? total : null
 }
 
 const lastUpdated = (sub: Subscription): string => {
