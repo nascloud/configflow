@@ -451,6 +451,15 @@ def save_website_note(profile_id, payload):
     return {'domain': domain, 'note': note.strip()}
 
 
+def website_candidates(domain, host):
+    """先试主域名和 www 首页，最后才用流量最多的子域：后者常是 API / 资源域名，首页没有网站名称。"""
+    candidates = []
+    for name in (domain, f'www.{domain}', host['host']):
+        if all(existing != name for existing, _ in candidates):
+            candidates.append((name, host.get('port') if name == host['host'] else 443))
+    return candidates
+
+
 def start_website_job(profile_id, values, *, wait=False):
     from backend.utils.region_check import get_region_store
     from backend.utils.website_identity import PAGE_MARKERS, page_identity
@@ -473,7 +482,7 @@ def start_website_job(profile_id, values, *, wait=False):
             item = next((item for item in summary['items'] if item['domain'] == value), None)
             if item:
                 host = max(item['hosts'], key=lambda host: host.get('conns', 0))
-                plans.append((agent, host))
+                plans.append((agent, value, host))
                 break
         else:
             raise ProfileValidationError(f'{value} 没有可用 Agent 最近采集的记录')
@@ -481,15 +490,21 @@ def start_website_job(profile_id, values, *, wait=False):
     def run(progress):
         errors = []
         progress(0, len(plans))
-        for index, (agent, host) in enumerate(plans):
+        for index, (agent, value, host) in enumerate(plans):
             try:
+                candidates = website_candidates(value, host)
                 response = get_agent_manager().region_check(agent, {
                     'target': proxy_probe_path(config, settings) or 'DIRECT', 'timeout_ms': 8000,
-                    'requests': [{'id': 'website', 'url': probe_url(host['host'], host.get('port')),
-                                  'markers': PAGE_MARKERS}],
+                    'requests': [{'id': f'website-{order}', 'url': probe_url(name, port), 'markers': PAGE_MARKERS}
+                                 for order, (name, port) in enumerate(candidates)],
                 })
-                result = next((entry for entry in response.get('results', []) if entry.get('id') == 'website'), None)
-                entry = page_identity(result, host['host'], datetime.now().isoformat(timespec='seconds'))
+                results = {entry.get('id'): entry for entry in response.get('results', [])}
+                checked_at = datetime.now().isoformat(timespec='seconds')
+                entries = [page_identity(results.get(f'website-{order}'), name, checked_at)
+                           for order, (name, _) in enumerate(candidates)]
+                # 取第一个拿到网站名称的候选；都没有时展示主域名首页的原因
+                entry = next((item for item in entries if item['name']), entries[0])
+                # 按采集到的子域缓存，列表才能按流量记录找到结果
                 get_region_store().update(agent['id'], lambda data: data['websites'].update({host['host']: entry}))
                 if entry['reason']:
                     errors.append({'host': host['host'], 'message': entry['reason']})

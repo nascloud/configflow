@@ -64,14 +64,17 @@ def test_identify_cache_note_and_clear(env, monkeypatch):
 
     def fetch(self, selected, payload):
         calls.append((selected, payload))
-        return {'results': [{'id': 'website', 'status': 200, 'markers': {'title': 'Example docs'}}]}
+        pages = {'https://example.com/': {}, 'https://www.example.com/': {'title': 'Example docs'}}
+        return {'results': [{'id': item['id'], 'status': 200, 'markers': pages[item['url']]}
+                            for item in payload['requests']]}
 
     monkeypatch.setattr(AgentManager, 'region_check', fetch)
     assert client.put('/api/domain-discovery/website/note', json={'domain': 'example.com', 'note': '我的文档'}).status_code == 200
     job = service.start_website_job('default', ['example.com'], wait=True)
     assert job['kind'] == 'website' and job['status'] == 'done' and not job['errors']
     assert calls[0][0]['id'] == agent['id']
-    assert calls[0][1]['requests'][0]['url'] == 'https://www.example.com/'
+    # 主域名首页优先；流量最多的 www 子域与 www 候选重合，不重复请求
+    assert [item['url'] for item in calls[0][1]['requests']] == ['https://example.com/', 'https://www.example.com/']
     assert calls[0][1]['target'] == 'DIRECT'
     website = client.get('/api/domain-discovery/domains').get_json()['items'][0]['website']
     assert website['page']['name'] == 'Example docs'
@@ -83,6 +86,13 @@ def test_identify_cache_note_and_clear(env, monkeypatch):
     assert repository.get_profile('default')['domain_discovery']['website_notes']['example.com'] == '我的文档'
     assert client.put('/api/domain-discovery/website/note', json={'domain': 'example.com', 'note': ''}).status_code == 200
     assert repository.get_profile('default')['domain_discovery']['website_notes'] == {}
+
+
+def test_candidates_try_homepages_before_busiest_subdomain():
+    assert service.website_candidates('example.com', {'host': 'api.example.com', 'port': 8443}) == [
+        ('example.com', 443), ('www.example.com', 443), ('api.example.com', 8443)]
+    assert service.website_candidates('example.com', {'host': 'example.com', 'port': 80}) == [
+        ('example.com', 80), ('www.example.com', 443)]
 
 
 def test_identify_preconditions_and_invalid_input(env):
