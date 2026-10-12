@@ -41,3 +41,10 @@ const props = defineProps<ToasterProps>()
     </template>
   </Sonner>
 </template>
+
+<style>
+/* 说明文字跟随反色通知的正文色，覆盖 Sonner 默认的固定灰色。 */
+.toaster[data-sonner-toaster] [data-sonner-toast][data-styled='true'] [data-description] {
+  color: inherit;
+}
+</style>
