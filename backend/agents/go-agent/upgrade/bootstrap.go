@@ -21,6 +21,10 @@ type bootstrapJournal struct {
 // EnsureInstalled is the compatibility bridge for an old Agent's binary-only
 // updater. It also upgrades config files made by earlier native installers.
 func EnsureInstalled(configPath, binary string) error {
+	return ensureInstalled(configPath, binary, "/")
+}
+
+func ensureInstalled(configPath, binary, systemRoot string) error {
 	c, err := ReadConfig(configPath)
 	if err != nil {
 		return err
@@ -28,7 +32,7 @@ func EnsureInstalled(configPath, binary string) error {
 	if c.Docker() || Pending(binary) {
 		return nil
 	}
-	if ready, _ := MigrationReady(configPath, binary); ready {
+	if ready, _ := migrationReady(configPath, binary, systemRoot); ready {
 		return nil
 	}
 	journalPath := filepath.Join(filepath.Dir(configPath), ".agent-migration.json")
@@ -49,7 +53,7 @@ func EnsureInstalled(configPath, binary string) error {
 	} else if !os.IsNotExist(readErr) {
 		return readErr
 	}
-	changes, err := MigrationPlan(c, binary, "/")
+	changes, err := MigrationPlan(c, binary, systemRoot)
 	if err != nil {
 		return legacyFailure(c, binary, nil, err)
 	}
@@ -122,6 +126,10 @@ func legacyFailure(c *Config, binary string, snapshots []Snapshot, cause error) 
 }
 
 func MigrationReady(configPath, binary string) (bool, error) {
+	return migrationReady(configPath, binary, "/")
+}
+
+func migrationReady(configPath, binary, systemRoot string) (bool, error) {
 	c, err := ReadConfig(configPath)
 	if err != nil {
 		return false, err
@@ -132,7 +140,7 @@ func MigrationReady(configPath, binary string) (bool, error) {
 	if value, ok := c.Values["upgrade_schema"].(float64); !ok || value != 1 {
 		return false, nil
 	}
-	changes, err := MigrationPlan(c, binary, "/")
+	changes, err := MigrationPlan(c, binary, systemRoot)
 	if err != nil {
 		return false, err
 	}

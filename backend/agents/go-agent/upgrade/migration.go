@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -84,15 +83,11 @@ func (c *Config) InferLifecycle() error {
 		return fmt.Errorf("invalid Agent API port")
 	}
 	c.Values["service_manager"], c.Values["service_unit"] = manager, unit
+	// Agent migration only installs recovery dependencies. The core may be
+	// installed later, and configured command names are resolved through PATH
+	// when deployment invokes the core, not relative to the Agent directory.
 	if c.String("service_binary") == "" {
-		binary, err := exec.LookPath(kind)
-		if err != nil {
-			return fmt.Errorf("cannot locate %s core binary", kind)
-		}
-		c.Values["service_binary"] = binary
-	}
-	if _, err := os.Stat(c.String("service_binary")); err != nil {
-		return fmt.Errorf("core binary does not exist")
+		c.Values["service_binary"] = kind
 	}
 	return nil
 }
