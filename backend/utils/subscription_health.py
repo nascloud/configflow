@@ -2,7 +2,8 @@
 
 - 每次拉取（成功 / 失败 / 回落缓存）记一条，保留最近 HISTORY_SIZE 次，供界面画健康条。
 - 流量信息来自订阅服务商的 `subscription-userinfo` 响应头
-  （upload / download / total / expire），只在拉取成功后尽力读取，读不到不影响拉取结果。
+  （upload / download / total / expire），订阅更新复用正文请求的响应头，
+  读不到时保留已有流量记录，不额外发起请求。
 """
 import re
 from datetime import datetime, timezone

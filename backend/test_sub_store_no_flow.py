@@ -1,7 +1,7 @@
 """Sub-Store 临时订阅必须跳过流量信息拉取。
 
 Sub-Store 下载订阅时默认会额外 HEAD/GET 订阅 URL 获取 subscription-userinfo，
-单次超时 8s；configflow 用不到流量信息，这一步会把聚合 provider 拖到 20s+，
+单次超时 8s；ConfigFlow 复用正文请求的流量头，这一步会把聚合 provider 拖到 20s+，
 导致 Mihomo 拉取 provider 报 context deadline exceeded。
 """
 from types import SimpleNamespace
@@ -23,10 +23,11 @@ def created_urls(monkeypatch):
         return SimpleNamespace(status_code=201)
 
     def fake_get(url, *args, **kwargs):
-        return SimpleNamespace(text=YAML_TEXT, raise_for_status=lambda: None, headers={})
+        text = YAML_TEXT if 'sub-store.test/download/' in url else 'ss://example'
+        return SimpleNamespace(text=text, raise_for_status=lambda: None, headers={})
 
     monkeypatch.setattr(sub_store_client, '_get_base_url', lambda: 'http://sub-store.test')
-    monkeypatch.setattr(sub_store_client, '_looks_like_sub_store_rendered_yaml_response', lambda url: (False, None))
+    monkeypatch.setattr(sub_store_client, '_fetch_results', {})
     monkeypatch.setattr(sub_store_client, '_delete_subscription', lambda base, name: None)
     monkeypatch.setattr(sub_store_client.requests, 'post', fake_post)
     monkeypatch.setattr(sub_store_client.requests, 'get', fake_get)
