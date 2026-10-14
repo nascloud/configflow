@@ -332,15 +332,16 @@ const handleCommand = async (command: string) => {
 }
 
 /* 登录完成进入应用壳时（以及首次打开时）重新读取登录态与配置空间 */
-watch(isLoginPage, login => {
+watch(isLoginPage, (login, _previous, onCleanup) => {
   if (login) return
+  live.start()
+  onCleanup(() => live.stop())
   checkAuthStatus()
   profileStore.refreshProfiles().catch(() => undefined)
   loadSubscriptionAggregationSetting()
 }, { immediate: true })
 
 onMounted(async () => {
-  live.start()
   loadVersion()
   window.addEventListener(
     'subscription-aggregation-changed',
@@ -349,7 +350,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  live.stop()
   window.removeEventListener(
     'subscription-aggregation-changed',
     handleSubscriptionAggregationChange as EventListener
