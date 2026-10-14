@@ -56,9 +56,9 @@
 
     <!-- 地区 / 协议筛选：点一次只看这一类，再点取消 -->
     <div v-if="!reorder.active.value && (nodes.length || subNodes.length)" class="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-      <div v-if="subNodes.length" class="flex flex-wrap gap-1.5" role="group" aria-label="按来源筛选">
+      <div class="flex flex-wrap gap-1.5" role="group" aria-label="按来源筛选">
         <button type="button" class="chip" :aria-pressed="sourceFilter === 'all'" @click="sourceFilter = 'all'">全部来源</button>
-        <button type="button" class="chip" :aria-pressed="sourceFilter === 'library'" @click="sourceFilter = 'library'">节点库</button>
+        <button type="button" class="chip" :aria-pressed="sourceFilter === 'manual'" @click="sourceFilter = 'manual'">手动节点</button>
         <button type="button" class="chip" :aria-pressed="sourceFilter === 'subscription'" @click="sourceFilter = 'subscription'">订阅节点</button>
       </div>
       <div class="flex flex-wrap gap-1.5" role="group" aria-label="按地区筛选">
@@ -108,7 +108,7 @@
     <!-- ===== 表格视图（桌面默认） ===== -->
     <DataTableShell
       v-else-if="effectiveView === 'list'"
-      :footer="`共 ${visibleNodes.length} 个节点`"
+      :footer="`共 ${tileNodes.length} 个节点`"
     >
       <TableHeader>
         <TableRow class="hover:bg-transparent">
@@ -125,10 +125,10 @@
       </TableHeader>
       <TableBody ref="nodesContainer">
         <TableRow
-          v-for="(node, cfIndex) in visibleNodes"
-          :key="node.id || node.name"
+          v-for="(node, cfIndex) in tileNodes"
+          :key="node.readonly ? `sub:${subscriptionNodeKey(node)}` : node.id || node.name"
           :data-name="node.name"
-          data-reorder-item
+          :data-reorder-item="node.readonly ? undefined : ''"
           :class="!node.enabled && 'opacity-55'"
         >
           <TableCell v-if="reorder.active.value">
@@ -145,6 +145,7 @@
           </TableCell>
           <TableCell class="cf-reorder-mute">
             <Checkbox
+              v-if="!node.readonly"
               :model-value="selectedNodeIds.has(node.id)"
               :aria-label="`选择 ${node.name}`"
               @update:model-value="toggleNodeSelection(node.id)"
@@ -190,12 +191,13 @@
                 size="icon-sm"
                 :aria-label="`单独测速 ${node.name}`"
                 title="单独测速"
-                :disabled="testing || !node.enabled"
+                :disabled="testing || node.enabled === false"
                 @click="testOne(node)"
               >
                 <Zap class="size-4" />
               </Button>
               <Button
+                v-if="!node.readonly"
                 variant="ghost"
                 size="icon-sm"
                 :aria-label="node.enabled ? `停用 ${node.name}` : `启用 ${node.name}`"
@@ -206,6 +208,7 @@
                 <component :is="node.enabled ? Eye : EyeOff" class="size-4" />
               </Button>
               <Button
+                v-if="!node.readonly"
                 variant="ghost"
                 size="icon-sm"
                 :aria-label="`编辑 ${node.name}`"
@@ -215,6 +218,7 @@
                 <Pencil class="size-4" />
               </Button>
               <Button
+                v-if="!node.readonly"
                 variant="ghost"
                 size="icon-sm"
                 class="text-destructive-accent hover:bg-destructive-soft"
@@ -238,7 +242,7 @@
     >
       <Motion
         v-for="(node, cfIndex) in tileNodes"
-        :key="node.readonly ? `sub:${node.name}` : node.id || node.name"
+        :key="node.readonly ? `sub:${subscriptionNodeKey(node)}` : node.id || node.name"
         v-bind="listItem(Math.min(cfIndex, 24))"
         :data-name="node.name"
         :data-tile="cfIndex"
@@ -695,6 +699,7 @@ const loadNodes = async () => {
   try {
     const { data } = await nodeApi.getAll()
     nodes.value = data
+    await loadSubscriptionNodes()
   } catch (error) {
     notify.error('加载节点列表失败')
   }
@@ -1248,29 +1253,40 @@ const effectiveView = computed<ViewMode>(() => (isNarrow.value ? 'card' : viewMo
 const keyword = ref('')
 const protocolFilter = ref('all')
 const regionFilter = ref<string | null>(null)
-const sourceFilter = ref<'all' | 'library' | 'subscription'>('all')
+const sourceFilter = ref<'all' | 'manual' | 'subscription'>('all')
 
 /* ---------- 订阅节点：只读，与节点库一起测速与筛选 ---------- */
 const subNodes = ref<any[]>([])
+const eligibleImportedNodeIds = ref<Set<string>>(new Set())
+const subscriptionNodeKey = (node: any): string =>
+  JSON.stringify([node.source_id || node.subscription_id, node.name])
+const extraSubscriptionNodes = computed(() => {
+  const importedKeys = new Set(nodes.value.filter(n => n.subscription_id).map(subscriptionNodeKey))
+  return subNodes.value.filter(n => !importedKeys.has(subscriptionNodeKey(n)))
+})
 const loadSubscriptionNodes = async () => {
   try {
     const { data: subs } = await api.get('/subscriptions')
     const ids = (subs || []).filter((s: any) => s.enabled !== false && s.id).map((s: any) => s.id)
     if (!ids.length) {
       subNodes.value = []
+      eligibleImportedNodeIds.value = new Set()
       return
     }
     const { data } = await api.post('/proxy-groups/preview-regex', {
       source: 'subscription',
       regex: '.*',
-      subscriptions: ids
+      subscriptions: ids,
+      deduplicate_by_source: true
     })
-    const libraryNames = new Set(nodes.value.map(n => n.name))
+    eligibleImportedNodeIds.value = new Set(data.imported_node_ids || [])
     subNodes.value = (data.nodes || [])
-      .filter((n: any) => n.source_type === 'subscription' && !libraryNames.has(n.name))
-      .map((n: any) => ({ ...n, enabled: true, readonly: true }))
+      .filter((n: any) => n.source_type === 'subscription')
+      .map((n: any) => ({ ...n, subscription_name: n.subscription_name || n.source_name, enabled: true, readonly: true }))
   } catch {
     subNodes.value = []
+    eligibleImportedNodeIds.value = new Set()
+    notify.error('加载订阅节点失败')
   }
 }
 
@@ -1285,18 +1301,17 @@ const matchesFilters = (n: any) => {
   return [n.name, n.server, n.remark, n.subscription_name].some(v => String(v || '').toLowerCase().includes(q))
 }
 
-/** 磁贴：节点库在前、订阅节点在后；排序模式只显示可排序的节点库 */
+/** 两种视图共用来源筛选；排序模式只显示可排序的节点库 */
 const tileNodes = computed<any[]>(() => {
   if (reorder.active.value) return visibleNodes.value
-  const library = sourceFilter.value === 'subscription' ? [] : visibleNodes.value
-  const fromSubs = sourceFilter.value === 'library' ? [] : subNodes.value.filter(matchesFilters)
-  return [...library, ...fromSubs]
+  const fromSubs = sourceFilter.value === 'manual' ? [] : extraSubscriptionNodes.value.filter(matchesFilters)
+  return [...visibleNodes.value, ...fromSubs]
 })
 
 /* ---------- 地区 ---------- */
 const regionOptions = computed(() => {
   const counts = new Map<string, { code: string; name: string; count: number }>()
-  ;[...nodes.value, ...subNodes.value].forEach(n => {
+  ;[...nodes.value, ...extraSubscriptionNodes.value].forEach(n => {
     const r = regionOf(n.name)
     const item = counts.get(r.code) || { ...r, count: 0 }
     item.count++
@@ -1366,7 +1381,7 @@ const runLatency = async (targets: any[]) => {
     unresolvedNames.value = unresolved
     const grid = nodesContainer.value
     const cols = Math.max(1, Math.round((grid?.clientWidth || 222) / 222))
-    const order = (effectiveView.value === 'list' ? visibleNodes.value : tileNodes.value).map(n => n.name)
+    const order = tileNodes.value.map(n => n.name)
     await Promise.all(
       names.map(
         name =>
@@ -1411,7 +1426,7 @@ const runLatency = async (targets: any[]) => {
   }
 }
 
-const speedTest = () => runLatency(effectiveView.value === 'list' ? visibleNodes.value : tileNodes.value)
+const speedTest = () => runLatency(tileNodes.value)
 const testOne = (node: any) => runLatency([node])
 
 const nodeProtocol = (node: any): string => {
@@ -1426,7 +1441,7 @@ const nodeAddress = (node: any): string => {
 
 const protocolOptions = computed(() => {
   const set = new Set<string>()
-  ;[...nodes.value, ...subNodes.value].forEach(n => {
+  ;[...nodes.value, ...extraSubscriptionNodes.value].forEach(n => {
     const p = (n.type || getProtocol(n.proxy_string) || '').toString().toLowerCase()
     if (p) set.add(p)
   })
@@ -1436,16 +1451,11 @@ const protocolOptions = computed(() => {
 // 排序模式下必须展示完整列表，否则筛选会让保存的顺序丢条目
 const visibleNodes = computed(() => {
   if (reorder.active.value) return nodes.value
-  const q = keyword.value.trim().toLowerCase()
   return nodes.value.filter(n => {
-    if (protocolFilter.value !== 'all') {
-      const p = (n.type || getProtocol(n.proxy_string) || '').toString().toLowerCase()
-      if (p !== protocolFilter.value) return false
-    }
-    if (regionFilter.value && regionOf(n.name).code !== regionFilter.value) return false
-    if (!q) return true
-    return [n.name, n.server, n.remark, n.subscription_name]
-      .some(v => String(v || '').toLowerCase().includes(q))
+    const fromSubscription = Boolean(n.subscription_id)
+    if (sourceFilter.value === 'manual' && fromSubscription) return false
+    if (sourceFilter.value === 'subscription' && (!fromSubscription || !eligibleImportedNodeIds.value.has(n.id))) return false
+    return matchesFilters(n)
   })
 })
 
@@ -1480,7 +1490,6 @@ onMounted(async () => {
   syncNarrow()
   window.addEventListener('resize', syncNarrow)
   await Promise.all([loadNodes(), loadLatency()])
-  await loadSubscriptionNodes()
   if (consumeAction(router, 'speedtest')) speedTest()
 })
 

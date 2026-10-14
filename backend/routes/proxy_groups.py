@@ -213,6 +213,9 @@ def preview_proxy_group_regex():
             return jsonify({'success': False, 'message': f'正则表达式无效: {exc}'}), 400
 
         candidates = []
+        # 节点库按来源展示时保留不同订阅中的同名节点；策略组预览仍默认按名去重。
+        deduplicate_by_source = payload.get('deduplicate_by_source') is True
+        imported_node_ids = []
 
         if source == 'subscription':
             subscription_ids = payload.get('subscriptions') or []
@@ -223,6 +226,11 @@ def preview_proxy_group_regex():
                     continue
                 nodes = _get_subscription_nodes(config_data, sub_id)
                 candidates.extend(_add_source_meta(nodes, 'subscription', sub_id, sub.get('name', sub_id)))
+                if deduplicate_by_source:
+                    imported = [n for n in config_data.get('nodes', []) if n.get('subscription_id') == sub_id]
+                    imported_node_ids.extend(
+                        n['id'] for n in filter_subscription_items(sub, imported) if n.get('id')
+                    )
 
         if source == 'aggregation':
             aggregation_ids = payload.get('aggregations') or []
@@ -251,9 +259,10 @@ def preview_proxy_group_regex():
             name = node.get('name', '')
             if not name or not regex.search(name):
                 continue
-            if name in seen_names:
+            key = (node.get('source_id'), name) if deduplicate_by_source else name
+            if key in seen_names:
                 continue
-            seen_names.add(name)
+            seen_names.add(key)
             matched.append({
                 'id': node.get('id', name),
                 'name': name,
@@ -265,12 +274,15 @@ def preview_proxy_group_regex():
                 'source_name': node.get('source_name')
             })
 
-        return jsonify({
+        response = {
             'success': True,
             'count': len(matched),
             'total_candidates': len(candidates),
             'nodes': matched
-        })
+        }
+        if deduplicate_by_source and source == 'subscription':
+            response['imported_node_ids'] = imported_node_ids
+        return jsonify(response)
 
     except Exception as exc:
         return jsonify({'success': False, 'message': str(exc)}), 500
