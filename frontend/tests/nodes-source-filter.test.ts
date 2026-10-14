@@ -3,6 +3,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import Nodes from '@/views/Nodes.vue'
 import api, { nodeApi } from '@/api'
+import { notify } from '@/lib/feedback'
 
 vi.mock('@/api', () => ({
   default: { get: vi.fn(), post: vi.fn() },
@@ -16,8 +17,8 @@ const storedNodes = [
   { id: 'imported', name: '香港 订阅导入', enabled: true, proxy_string: 'trojan://password@192.0.2.3:443', subscription_id: 'sub-one', subscription_name: '测试订阅' }
 ]
 const previewNodes = [
-  { name: '香港 订阅导入', type: 'trojan', source_type: 'subscription', subscription_name: '测试订阅' },
-  { name: '日本 订阅预览', type: 'ss', server: '192.0.2.4', port: 443, source_type: 'subscription', subscription_name: '测试订阅' }
+  { name: '香港 订阅导入', type: 'trojan', source_type: 'subscription', source_id: 'sub-one', subscription_name: '测试订阅' },
+  { name: '日本 订阅预览', type: 'ss', server: '192.0.2.4', port: 443, source_type: 'subscription', source_id: 'sub-one', subscription_name: '测试订阅' }
 ]
 const matchMediaDescriptor = Object.getOwnPropertyDescriptor(window, 'matchMedia')
 let wrapper: VueWrapper | undefined
@@ -38,11 +39,12 @@ beforeEach(() => {
   vi.mocked(nodeApi.getAll).mockResolvedValue({ data: storedNodes.map(node => ({ ...node })) } as any)
   vi.mocked(nodeApi.latency).mockResolvedValue({ data: { results: {} } } as any)
   vi.mocked(api.get).mockResolvedValue({ data: [{ id: 'sub-one', enabled: true }] } as any)
-  vi.mocked(api.post).mockResolvedValue({ data: { nodes: previewNodes } } as any)
+  vi.mocked(api.post).mockResolvedValue({ data: { nodes: previewNodes, imported_node_ids: ['imported'] } } as any)
 })
 afterEach(() => {
   wrapper?.unmount()
   wrapper = undefined
+  vi.restoreAllMocks()
   localStorage.clear()
   document.body.innerHTML = ''
 })
@@ -101,12 +103,64 @@ describe.each(['card', 'list'] as const)('%s 来源筛选', view => {
   })
 
   it('没有额外订阅预览时仍能排除库内的订阅导入节点', async () => {
-    vi.mocked(api.post).mockResolvedValue({ data: { nodes: [] } } as any)
+    vi.mocked(api.post).mockResolvedValue({ data: { nodes: [], imported_node_ids: ['imported'] } } as any)
     await render(view)
     await click('手动节点')
     expect(names()).toEqual(['香港 手动', '日本 手动'])
     await click('订阅节点')
     expect(names()).toEqual(['香港 订阅导入'])
+  })
+
+  it('手动节点同名不会遮蔽订阅节点，不同订阅同名也均保留', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: [{ id: 'sub-one' }, { id: 'sub-two' }] } as any)
+    vi.mocked(api.post).mockResolvedValue({ data: {
+      imported_node_ids: ['imported'],
+      nodes: [
+        ...previewNodes,
+        { name: '香港 手动', type: 'trojan', source_type: 'subscription', source_id: 'sub-one', source_name: '测试订阅' },
+        { name: '香港 订阅导入', type: 'trojan', source_type: 'subscription', source_id: 'sub-two', source_name: '另一订阅' }
+      ]
+    } } as any)
+    await render(view)
+    expect(names()).toEqual(['香港 手动', '日本 手动', '香港 订阅导入', '日本 订阅预览', '香港 手动', '香港 订阅导入'])
+    await click('订阅节点')
+    expect(names()).toEqual(['香港 订阅导入', '日本 订阅预览', '香港 手动', '香港 订阅导入'])
+    expect(wrapper!.text()).toContain('另一订阅')
+    await click('手动节点')
+    expect(names()).toEqual(['香港 手动', '日本 手动'])
+    expect(api.post).toHaveBeenCalledWith('/proxy-groups/preview-regex', expect.objectContaining({ deduplicate_by_source: true }))
+  })
+
+  it('订阅筛选排除后端正则未通过的导入节点，全部来源仍可管理它们', async () => {
+    // 后端使用 Python 正则，此处只模拟最终筛选结果，不在浏览器重复解释正则。
+    vi.mocked(api.get).mockResolvedValue({ data: [{ id: 'sub-one', regex_filter: '(?i)日本' }] } as any)
+    vi.mocked(api.post).mockResolvedValue({ data: { imported_node_ids: [], nodes: [previewNodes[1]] } } as any)
+    await render(view)
+    await click('订阅节点')
+    expect(names()).toEqual(['日本 订阅预览'])
+    await click('全部来源')
+    expect(names()).toContain('香港 订阅导入')
+  })
+
+  it('禁用或已删除订阅的导入节点不出现在订阅筛选中', async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: [{ id: 'sub-one', enabled: false }] } as any)
+    await render(view)
+    expect(api.post).not.toHaveBeenCalled()
+    await click('订阅节点')
+    expect(names()).toEqual([])
+    await click('全部来源')
+    expect(names()).toEqual(storedNodes.map(node => node.name))
+  })
+
+  it('订阅加载失败时提示错误，不将未验证的导入节点当作合格结果', async () => {
+    const error = vi.spyOn(notify, 'error').mockImplementation(() => 0)
+    vi.mocked(api.post).mockRejectedValue(new Error('network error'))
+    await render(view)
+    expect(error).toHaveBeenCalledWith('加载订阅节点失败')
+    await click('订阅节点')
+    expect(names()).toEqual([])
+    await click('全部来源')
+    expect(names()).toEqual(storedNodes.map(node => node.name))
   })
 })
 

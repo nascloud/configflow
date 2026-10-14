@@ -126,7 +126,7 @@
       <TableBody ref="nodesContainer">
         <TableRow
           v-for="(node, cfIndex) in tileNodes"
-          :key="node.readonly ? `sub:${node.name}` : node.id || node.name"
+          :key="node.readonly ? `sub:${subscriptionNodeKey(node)}` : node.id || node.name"
           :data-name="node.name"
           :data-reorder-item="node.readonly ? undefined : ''"
           :class="!node.enabled && 'opacity-55'"
@@ -242,7 +242,7 @@
     >
       <Motion
         v-for="(node, cfIndex) in tileNodes"
-        :key="node.readonly ? `sub:${node.name}` : node.id || node.name"
+        :key="node.readonly ? `sub:${subscriptionNodeKey(node)}` : node.id || node.name"
         v-bind="listItem(Math.min(cfIndex, 24))"
         :data-name="node.name"
         :data-tile="cfIndex"
@@ -699,6 +699,7 @@ const loadNodes = async () => {
   try {
     const { data } = await nodeApi.getAll()
     nodes.value = data
+    await loadSubscriptionNodes()
   } catch (error) {
     notify.error('加载节点列表失败')
   }
@@ -1256,25 +1257,36 @@ const sourceFilter = ref<'all' | 'manual' | 'subscription'>('all')
 
 /* ---------- 订阅节点：只读，与节点库一起测速与筛选 ---------- */
 const subNodes = ref<any[]>([])
+const eligibleImportedNodeIds = ref<Set<string>>(new Set())
+const subscriptionNodeKey = (node: any): string =>
+  JSON.stringify([node.source_id || node.subscription_id, node.name])
+const extraSubscriptionNodes = computed(() => {
+  const importedKeys = new Set(nodes.value.filter(n => n.subscription_id).map(subscriptionNodeKey))
+  return subNodes.value.filter(n => !importedKeys.has(subscriptionNodeKey(n)))
+})
 const loadSubscriptionNodes = async () => {
   try {
     const { data: subs } = await api.get('/subscriptions')
     const ids = (subs || []).filter((s: any) => s.enabled !== false && s.id).map((s: any) => s.id)
     if (!ids.length) {
       subNodes.value = []
+      eligibleImportedNodeIds.value = new Set()
       return
     }
     const { data } = await api.post('/proxy-groups/preview-regex', {
       source: 'subscription',
       regex: '.*',
-      subscriptions: ids
+      subscriptions: ids,
+      deduplicate_by_source: true
     })
-    const libraryNames = new Set(nodes.value.map(n => n.name))
+    eligibleImportedNodeIds.value = new Set(data.imported_node_ids || [])
     subNodes.value = (data.nodes || [])
-      .filter((n: any) => n.source_type === 'subscription' && !libraryNames.has(n.name))
-      .map((n: any) => ({ ...n, enabled: true, readonly: true }))
+      .filter((n: any) => n.source_type === 'subscription')
+      .map((n: any) => ({ ...n, subscription_name: n.subscription_name || n.source_name, enabled: true, readonly: true }))
   } catch {
     subNodes.value = []
+    eligibleImportedNodeIds.value = new Set()
+    notify.error('加载订阅节点失败')
   }
 }
 
@@ -1292,14 +1304,14 @@ const matchesFilters = (n: any) => {
 /** 两种视图共用来源筛选；排序模式只显示可排序的节点库 */
 const tileNodes = computed<any[]>(() => {
   if (reorder.active.value) return visibleNodes.value
-  const fromSubs = sourceFilter.value === 'manual' ? [] : subNodes.value.filter(matchesFilters)
+  const fromSubs = sourceFilter.value === 'manual' ? [] : extraSubscriptionNodes.value.filter(matchesFilters)
   return [...visibleNodes.value, ...fromSubs]
 })
 
 /* ---------- 地区 ---------- */
 const regionOptions = computed(() => {
   const counts = new Map<string, { code: string; name: string; count: number }>()
-  ;[...nodes.value, ...subNodes.value].forEach(n => {
+  ;[...nodes.value, ...extraSubscriptionNodes.value].forEach(n => {
     const r = regionOf(n.name)
     const item = counts.get(r.code) || { ...r, count: 0 }
     item.count++
@@ -1429,7 +1441,7 @@ const nodeAddress = (node: any): string => {
 
 const protocolOptions = computed(() => {
   const set = new Set<string>()
-  ;[...nodes.value, ...subNodes.value].forEach(n => {
+  ;[...nodes.value, ...extraSubscriptionNodes.value].forEach(n => {
     const p = (n.type || getProtocol(n.proxy_string) || '').toString().toLowerCase()
     if (p) set.add(p)
   })
@@ -1442,7 +1454,7 @@ const visibleNodes = computed(() => {
   return nodes.value.filter(n => {
     const fromSubscription = Boolean(n.subscription_id)
     if (sourceFilter.value === 'manual' && fromSubscription) return false
-    if (sourceFilter.value === 'subscription' && !fromSubscription) return false
+    if (sourceFilter.value === 'subscription' && (!fromSubscription || !eligibleImportedNodeIds.value.has(n.id))) return false
     return matchesFilters(n)
   })
 })
@@ -1478,7 +1490,6 @@ onMounted(async () => {
   syncNarrow()
   window.addEventListener('resize', syncNarrow)
   await Promise.all([loadNodes(), loadLatency()])
-  await loadSubscriptionNodes()
   if (consumeAction(router, 'speedtest')) speedTest()
 })
 
