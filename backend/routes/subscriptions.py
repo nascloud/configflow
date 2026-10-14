@@ -209,7 +209,8 @@ def fetch_subscription(sub_id):
     # 优先尝试从 Sub-Store 获取
     try:
         current_app.logger.info(f"尝试通过 Sub-Store 获取订阅: {sub['name']} (id: {sub_id})")
-        yaml_text, source = get_subscription_proxies_yaml(sub_id, sub['url'])
+        fetch_result = get_subscription_proxies_yaml(sub_id, sub['url'])
+        yaml_text, source = fetch_result
         proxies = parse_proxies_from_yaml(yaml_text)
         nodes = proxies_to_nodes(proxies)
 
@@ -230,12 +231,12 @@ def fetch_subscription(sub_id):
             }
         )
         nodes = filter_subscription_items(sub, nodes)
-        # 拉取成功后尽力读取流量信息，读不到不影响结果
+        # 复用订阅正文请求的流量头，不为流量信息额外访问机场。
         subscription_health.record_fetch(
             sub_id,
             ok=True,
             count=len(nodes),
-            traffic=subscription_health.fetch_userinfo(sub.get('url')),
+            traffic=getattr(fetch_result, 'traffic', None),
         )
         if source == 'rendered_yaml':
             current_app.logger.info(f"成功直接复用订阅 URL 返回的 Sub-Store YAML 并写入缓存: {sub['name']}, 节点数: {len(nodes)}")

@@ -62,8 +62,8 @@ def test_convert_proxy_string_logs_only_event_type_and_length(monkeypatch, caplo
 def test_sub_store_combined_requests_errors_keep_causes_without_leaking(monkeypatch, caplog):
     first = requests.ConnectionError(f"sub-store request failed for {SECRET_URL}")
     second = requests.Timeout(f"direct request failed for {SECRET_URL}")
-    monkeypatch.setattr(sub_store_client, "_looks_like_sub_store_rendered_yaml_response", lambda url: (False, None))
-    monkeypatch.setattr(sub_store_client, "_create_subscription", lambda *args: True)
+    monkeypatch.setattr(sub_store_client, '_fetch_results', {})
+    monkeypatch.setattr(sub_store_client, "_create_subscription", lambda *args, **kwargs: True)
     monkeypatch.setattr(sub_store_client, "_delete_subscription", lambda *args: None)
 
     errors = iter((first, second))
