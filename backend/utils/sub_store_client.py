@@ -11,6 +11,9 @@ Sub-Store API 参考:
 """
 import os
 import uuid
+from concurrent.futures import Future
+from threading import Lock
+from time import monotonic
 from urllib.parse import quote
 
 import requests
@@ -21,6 +24,23 @@ from backend.utils.proxy_utils import fix_proxy_fields
 from backend.utils.url_utils import safe_exception_details, safe_url_for_log
 
 logger = get_logger(__name__)
+
+# Shared by manual refresh, provider delivery and aggregation within this process.
+# Keep this short: a new refresh after the window must contact the upstream again.
+FETCH_REUSE_SECONDS = 30
+BLOCKED_REUSE_SECONDS = 60
+FETCH_CACHE_LIMIT = 128
+_fetch_lock = Lock()
+_fetch_results = {}
+
+
+class SubscriptionResult(tuple):
+    """Keep the existing two-value API while carrying already-fetched traffic."""
+
+    def __new__(cls, text, source, traffic=None):
+        result = super().__new__(cls, (text, source))
+        result.traffic = traffic
+        return result
 
 
 class SubscriptionFetchError(Exception):
@@ -84,27 +104,7 @@ def _fetch_direct_subscription_yaml(url):
     return text
 
 
-def _looks_like_sub_store_rendered_yaml_response(url):
-    """探测订阅 URL 是否已经是 Sub-Store 导出的最终 YAML。"""
-    headers = {
-        'User-Agent': 'clash.meta'
-    }
-    resp = requests.get(url, headers=headers, timeout=15)
-    resp.raise_for_status()
-
-    powered_by = resp.headers.get('x-powered-by', '')
-    if 'sub-store' not in powered_by.lower():
-        return False, None
-
-    text = resp.text
-    if not _is_yaml_response(text):
-        return False, None
-
-    logger.info("检测到订阅 URL 已是 Sub-Store 导出的 YAML 成品")
-    return True, text
-
-
-def _create_subscription(base, sub_id, url):
+def _create_subscription(base, sub_id, url, *, content=None):
     """在 sub-store 中创建临时订阅。
 
     Returns:
@@ -115,11 +115,15 @@ def _create_subscription(base, sub_id, url):
     # 已带 # 片段的 URL 是 Sub-Store 自有参数，保持原样避免破坏。
     if '#' not in url:
         url = f'{url}#noFlow'
+    payload = {'name': sub_id, 'url': url, 'noFlow': True}
+    if content is not None:
+        # Convert the body we already downloaded, not the upstream URL again.
+        payload.update(source='local', content=content)
     try:
         logger.info(f"Sub-Store 创建临时订阅 '{sub_id}'")
         create_resp = requests.post(
             f'{base}/api/subs',
-            json={'name': sub_id, 'url': url},
+            json=payload,
             timeout=10
         )
         if create_resp.status_code in (200, 201):
@@ -144,6 +148,52 @@ def _delete_subscription(base, sub_id):
 
 
 def get_subscription_proxies_yaml(sub_id, url, target='ClashMeta'):
+    """合并同 URL / 格式的并发请求，成功结果短暂复用 30 秒。
+
+    跨订阅 ID / 配置空间共享原始响应；筛选与图校验仍由调用方独立进行。
+    多进程部署中每个进程各自合并，不是持久化节点缓存。
+    """
+    key = (url, target, _get_base_url())
+    with _fetch_lock:
+        now = monotonic()
+        for old_key, (future, expires) in list(_fetch_results.items()):
+            if future.done() and expires <= now:
+                del _fetch_results[old_key]
+        owner = key not in _fetch_results
+        if owner:
+            # Evict only completed entries; never evict a flight with waiters.
+            completed = [k for k, (f, _) in _fetch_results.items() if f.done()]
+            while len(_fetch_results) >= FETCH_CACHE_LIMIT and completed:
+                del _fetch_results[completed.pop(0)]
+            future = Future()
+            tracked = len(_fetch_results) < FETCH_CACHE_LIMIT
+            if tracked:
+                _fetch_results[key] = (future, float('inf'))
+        else:
+            future, _ = _fetch_results[key]
+    if not owner:
+        logger.info('复用订阅近期结果或等待正在进行的拉取')
+        return future.result()
+    try:
+        result = _get_subscription_proxies_yaml(sub_id, url, target)
+    except BaseException as exc:
+        future.set_exception(exc)
+        with _fetch_lock:
+            if tracked:
+                # Briefly damp failed upstream bursts, but allow retry soon.
+                direct_error = getattr(exc, 'direct_error', None)
+                status = getattr(getattr(direct_error, 'response', None), 'status_code', None)
+                cooldown = BLOCKED_REUSE_SECONDS if status in (403, 429) else 3
+                _fetch_results[key] = (future, monotonic() + cooldown)
+        raise
+    future.set_result(result)
+    with _fetch_lock:
+        if tracked:
+            _fetch_results[key] = (future, monotonic() + FETCH_REUSE_SECONDS)
+    return result
+
+
+def _get_subscription_proxies_yaml(sub_id, url, target='ClashMeta'):
     """获取订阅的 proxies YAML，并返回真实来源。
 
     自动创建 sub-store 中的临时订阅（如果需要）。
@@ -157,18 +207,39 @@ def get_subscription_proxies_yaml(sub_id, url, target='ClashMeta'):
         tuple[str, str]: (目标格式文本, 来源)
             来源可能为:
               - rendered_yaml: 订阅 URL 本身已是 Sub-Store 导出的最终 YAML
+              - direct_yaml: 普通订阅 URL 已返回目标 YAML
               - sub_store: 通过 Sub-Store 下载/转换成功
               - direct_url_fallback: Sub-Store 失败后直接拉取原始订阅 URL 成功
 
     Raises:
         Exception: 获取失败或返回的不是有效 YAML
     """
-    try:
-        is_rendered_yaml, rendered_yaml = _looks_like_sub_store_rendered_yaml_response(url)
-        if is_rendered_yaml and rendered_yaml:
-            return rendered_yaml, 'rendered_yaml'
-    except Exception:
-        logger.warning("探测订阅 URL 是否为 Sub-Store 成品失败，继续走标准流程")
+    from backend.utils.subscription_health import parse_userinfo
+
+    raw_text = None
+    traffic = None
+    direct_error = None
+    # URL fragments may contain Sub-Store UA/proxy/insecure/merge options.
+    # Leave those to Sub-Store instead of silently bypassing their semantics.
+    direct_attempted = '#' not in url and url.lower().startswith(('http://', 'https://'))
+    if direct_attempted:
+        try:
+            logger.info('拉取订阅正文与流量信息（单次请求）')
+            resp = requests.get(url, headers={'User-Agent': 'clash.meta'}, timeout=30)
+            resp.raise_for_status()
+            raw_text = resp.text
+            traffic = parse_userinfo(resp.headers.get('subscription-userinfo', ''))
+            if _is_yaml_response(raw_text) and target == 'ClashMeta':
+                source = 'rendered_yaml' if 'sub-store' in resp.headers.get('x-powered-by', '').lower() else 'direct_yaml'
+                return SubscriptionResult(raw_text, source, traffic)
+        except Exception as exc:
+            direct_error = exc
+            if getattr(getattr(exc, 'response', None), 'status_code', None) in (403, 429):
+                # A blocked/rate-limited upstream must not be retried through
+                # Sub-Store immediately; that would compound the restriction.
+                logger.warning('订阅上游拒绝或限流，暂缓拉取: %s', safe_exception_details(exc))
+                raise SubscriptionFetchError(None, exc) from exc
+            logger.warning('直接拉取订阅失败，尝试 Sub-Store: %s', safe_exception_details(exc))
 
     base = _get_base_url()
     logger.info(f"Sub-Store base URL: {safe_url_for_log(base)}")
@@ -177,7 +248,7 @@ def get_subscription_proxies_yaml(sub_id, url, target='ClashMeta'):
     # 也避免并发请求同一订阅时临时订阅撞名导致 500
     temp_name = f"_cf_tmp_{sub_id}_{uuid.uuid4().hex[:8]}"
     # 创建临时订阅
-    _create_subscription(base, temp_name, url)
+    _create_subscription(base, temp_name, url, content=raw_text)
 
     sub_store_error = None
     try:
@@ -185,7 +256,7 @@ def get_subscription_proxies_yaml(sub_id, url, target='ClashMeta'):
         download_url = f'{base}/download/{quote(temp_name, safe="")}/{target}'
         logger.info(f"Sub-Store 下载: {safe_url_for_log(download_url)}")
 
-        resp = requests.get(download_url, timeout=30)
+        resp = requests.get(download_url, params={'noFlow': 'true'}, timeout=30)
         resp.raise_for_status()
 
         text = resp.text
@@ -198,17 +269,23 @@ def get_subscription_proxies_yaml(sub_id, url, target='ClashMeta'):
                 f"请检查 Sub-Store URL 配置是否正确。响应预览: {preview}"
             )
 
-        return text, 'sub_store'
+        traffic = traffic or parse_userinfo(resp.headers.get('subscription-userinfo', ''))
+        return SubscriptionResult(text, 'sub_store', traffic)
     except Exception as e:
         sub_store_error = e
-        logger.warning("Sub-Store 获取订阅失败，尝试直接拉取原始订阅 URL: %s", safe_exception_details(e))
+        logger.warning("Sub-Store 获取订阅失败: %s", safe_exception_details(e))
     finally:
         # 用完即删，不在 Sub-Store 中残留订阅数据
         _delete_subscription(base, temp_name)
 
+    # Do not re-download a URL already attempted above, even on conversion failure.
+    if direct_attempted:
+        if direct_error is None:
+            direct_error = ValueError('已拉取的订阅正文无法转换为目标 YAML')
+        raise SubscriptionFetchError(sub_store_error, direct_error) from direct_error
     try:
         text = _fetch_direct_subscription_yaml(url)
-        return text, 'direct_url_fallback'
+        return SubscriptionResult(text, 'direct_url_fallback')
     except Exception as direct_error:
         logger.warning("直接拉取订阅失败: %s", safe_exception_details(direct_error))
         raise SubscriptionFetchError(sub_store_error, direct_error) from direct_error
