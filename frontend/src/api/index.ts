@@ -74,10 +74,11 @@ api.interceptors.response.use(
       void recoverFromMissingProfile().catch(() => undefined)
     } else if (
       error.response?.status === 401
+      && error.config?.authSessionToken
       && error.config?.authSessionToken === getAuthToken()
       && error.config?.authSessionGeneration === getAuthSessionGeneration()
     ) {
-      // token 无效或过期
+      // 仅携带当前会话 token 的请求才能判定登录失效。
       // 已退出或重新登录后的旧请求不能清除新会话。
       invalidateAuthSession()
       localStorage.removeItem('token')

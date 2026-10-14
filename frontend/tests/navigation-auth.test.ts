@@ -169,6 +169,42 @@ describe('navigation authentication with the real router and API interceptors', 
     expect(count('/auth/verify')).toBe(2)
   })
 
+  it('does not report an expired login for unauthenticated background requests', async () => {
+    localStorage.removeItem('token')
+    await router.push('/login')
+    api.defaults.adapter = async config => { throw { config, response: { status: 401 } } }
+    const push = vi.spyOn(router, 'push')
+
+    await expect(api.get('/agents')).rejects.toMatchObject({ response: { status: 401 } })
+    await expect(api.get('/agents')).rejects.toMatchObject({ response: { status: 401 } })
+    await flushPromises()
+
+    expect(notify.error).not.toHaveBeenCalled()
+    expect(push).not.toHaveBeenCalled()
+    expect(router.currentRoute.value.path).toBe('/login')
+    expect(localStorage.getItem('username')).toBe('Test')
+  })
+
+  it('does not let a guest request 401 clear a login completed while it was pending', async () => {
+    localStorage.removeItem('token')
+    let rejectGuest!: () => void
+    const goodAdapter = api.defaults.adapter
+    api.defaults.adapter = config => new Promise((_resolve, reject) => {
+      rejectGuest = () => reject({ config, response: { status: 401 } })
+    })
+    const guestRequest = api.get('/agents')
+
+    localStorage.setItem('token', 'replacement-token')
+    api.defaults.adapter = goodAdapter
+    await router.push('/navigation-a')
+    rejectGuest()
+    await expect(guestRequest).rejects.toMatchObject({ response: { status: 401 } })
+
+    expect(localStorage.getItem('token')).toBe('replacement-token')
+    expect(router.currentRoute.value.path).toBe('/navigation-a')
+    expect(notify.error).not.toHaveBeenCalled()
+  })
+
   it('rejects invalid initial tokens without retaining a successful cache', async () => {
     api.defaults.adapter = async config => {
       if (config.url === '/auth/verify') throw { config, response: { status: 401 } }
