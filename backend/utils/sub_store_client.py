@@ -26,12 +26,15 @@ from backend.utils.url_utils import safe_exception_details, safe_url_for_log
 logger = get_logger(__name__)
 
 # Shared by manual refresh, provider delivery and aggregation within this process.
-# Keep this short: a new refresh after the window must contact the upstream again.
-FETCH_REUSE_SECONDS = 30
+# Automatic delivery tolerates five minutes; explicit refresh keeps a short debounce.
+FETCH_REUSE_SECONDS = 300
+MANUAL_REUSE_SECONDS = 30
+BACKGROUND_REUSE_SECONDS = 900
 BLOCKED_REUSE_SECONDS = 60
 FETCH_CACHE_LIMIT = 128
 _fetch_lock = Lock()
 _fetch_results = {}
+_fetch_failures = {}
 
 
 class SubscriptionResult(tuple):
@@ -147,8 +150,8 @@ def _delete_subscription(base, sub_id):
         logger.debug("Sub-Store 删除订阅失败（可忽略）: %s", safe_exception_details(e))
 
 
-def get_subscription_proxies_yaml(sub_id, url, target='ClashMeta'):
-    """合并同 URL / 格式的并发请求，成功结果短暂复用 30 秒。
+def get_subscription_proxies_yaml(sub_id, url, target='ClashMeta', *, refresh=False, prefer_cached=False):
+    """合并同 URL / 格式的并发请求，自动复用 5 分钟，手动刷新复用 30 秒。
 
     跨订阅 ID / 配置空间共享原始响应；筛选与图校验仍由调用方独立进行。
     多进程部署中每个进程各自合并，不是持久化节点缓存。
@@ -156,9 +159,22 @@ def get_subscription_proxies_yaml(sub_id, url, target='ClashMeta'):
     key = (url, target, _get_base_url())
     with _fetch_lock:
         now = monotonic()
+        for old_key, (_, last_failure) in list(_fetch_failures.items()):
+            if now - last_failure >= 3600:
+                del _fetch_failures[old_key]
         for old_key, (future, expires) in list(_fetch_results.items()):
-            if future.done() and expires <= now:
+            retention = (BACKGROUND_REUSE_SECONDS - FETCH_REUSE_SECONDS
+                         if future.done() and future.exception() is None else 0)
+            if future.done() and expires + retention <= now:
                 del _fetch_results[old_key]
+        if key in _fetch_results:
+            future, expires = _fetch_results[key]
+            reuse = (MANUAL_REUSE_SECONDS if refresh else
+                     BACKGROUND_REUSE_SECONDS if prefer_cached else FETCH_REUSE_SECONDS)
+            # Never bypass an in-flight request or a failure's cooldown.
+            if (future.done() and future.exception() is None
+                    and now >= expires - FETCH_REUSE_SECONDS + reuse):
+                del _fetch_results[key]
         owner = key not in _fetch_results
         if owner:
             # Evict only completed entries; never evict a flight with waiters.
@@ -180,14 +196,20 @@ def get_subscription_proxies_yaml(sub_id, url, target='ClashMeta'):
         future.set_exception(exc)
         with _fetch_lock:
             if tracked:
-                # Briefly damp failed upstream bursts, but allow retry soon.
+                failures = min(_fetch_failures.get(key, (0, 0))[0] + 1, 8)
+                if key not in _fetch_failures and len(_fetch_failures) >= FETCH_CACHE_LIMIT:
+                    del _fetch_failures[next(iter(_fetch_failures))]
+                _fetch_failures[key] = (failures, monotonic())
                 direct_error = getattr(exc, 'direct_error', None)
                 status = getattr(getattr(direct_error, 'response', None), 'status_code', None)
-                cooldown = BLOCKED_REUSE_SECONDS if status in (403, 429) else 3
+                cooldown = min(300, 3 * 2 ** (failures - 1))
+                if status in (403, 429):
+                    cooldown = max(BLOCKED_REUSE_SECONDS, cooldown)
                 _fetch_results[key] = (future, monotonic() + cooldown)
         raise
     future.set_result(result)
     with _fetch_lock:
+        _fetch_failures.pop(key, None)
         if tracked:
             _fetch_results[key] = (future, monotonic() + FETCH_REUSE_SECONDS)
     return result

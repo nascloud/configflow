@@ -24,6 +24,7 @@ def response(text=YAML, headers=None):
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
     monkeypatch.setattr(client, '_fetch_results', {})
+    monkeypatch.setattr(client, '_fetch_failures', {})
     monkeypatch.setattr(client, '_get_base_url', lambda: 'http://sub-store.test')
     monkeypatch.setattr(client, '_delete_subscription', lambda *args: None)
 
@@ -119,7 +120,7 @@ def test_concurrent_and_recent_refreshes_across_ids_share_one_get(monkeypatch):
     with ThreadPoolExecutor(max_workers=5) as pool:
         first = pool.submit(client.get_subscription_proxies_yaml, 'manual', URL)
         assert entered.wait(5)
-        others = [pool.submit(client.get_subscription_proxies_yaml, f'agg-{i}', URL) for i in range(4)]
+        others = [pool.submit(client.get_subscription_proxies_yaml, f'agg-{i}', URL, refresh=True) for i in range(4)]
         release.set()
         results = [first.result()] + [f.result() for f in others]
     assert all(r == results[0] for r in results)
@@ -135,12 +136,34 @@ def test_reuse_expires_and_changed_url_fetches_again(monkeypatch):
         return response()
     monkeypatch.setattr(client.requests, 'get', get)
     client.get_subscription_proxies_yaml('s', URL)
-    clock[0] = 29
+    clock[0] = 299
     client.get_subscription_proxies_yaml('s', URL)
     client.get_subscription_proxies_yaml('s', URL + '&changed=1')
-    clock[0] = 31
+    clock[0] = 300
     client.get_subscription_proxies_yaml('s', URL)
     assert seen == [URL, URL + '&changed=1', URL]
+
+
+def test_manual_refresh_debounces_then_renews_shared_automatic_cache(monkeypatch):
+    clock, seen = [0], []
+    monkeypatch.setattr(client, 'monotonic', lambda: clock[0])
+    def get(url, **kwargs):
+        seen.append(url)
+        return response()
+    monkeypatch.setattr(client.requests, 'get', get)
+    client.get_subscription_proxies_yaml('auto', URL)
+    clock[0] = 29
+    client.get_subscription_proxies_yaml('manual', URL, refresh=True)
+    assert seen == [URL]
+    clock[0] = 30
+    client.get_subscription_proxies_yaml('manual', URL, refresh=True)
+    assert seen == [URL, URL]
+    clock[0] = 329
+    client.get_subscription_proxies_yaml('auto', URL)
+    assert seen == [URL, URL]
+    clock[0] = 330
+    client.get_subscription_proxies_yaml('auto', URL)
+    assert seen == [URL, URL, URL]
 
 
 def test_conversion_failure_does_not_redownload_body(monkeypatch):
@@ -161,6 +184,51 @@ def test_completed_cache_entries_are_bounded(monkeypatch):
     for i in range(10):
         client.get_subscription_proxies_yaml('s', URL + f'&i={i}')
     assert len(client._fetch_results) == 2
+
+
+def test_background_reuses_recent_body_but_expires_at_fifteen_minutes(monkeypatch):
+    clock, seen = [0], []
+    monkeypatch.setattr(client, 'monotonic', lambda: clock[0])
+    def get(url, **kwargs):
+        seen.append(url)
+        return response()
+    monkeypatch.setattr(client.requests, 'get', get)
+    client.get_subscription_proxies_yaml('auto', URL)
+    for moment in (300, 899):
+        clock[0] = moment
+        client.get_subscription_proxies_yaml('background', URL, prefer_cached=True)
+    assert seen == [URL]
+    clock[0] = 900
+    client.get_subscription_proxies_yaml('background', URL, prefer_cached=True)
+    assert seen == [URL, URL]
+
+
+def test_failure_backoff_caps_and_success_resets_it(monkeypatch):
+    clock, seen, failing = [0], [], [True]
+    monkeypatch.setattr(client, 'monotonic', lambda: clock[0])
+    def fetch(*args):
+        seen.append(clock[0])
+        if failing[0]:
+            raise client.SubscriptionFetchError(None, requests.Timeout())
+        return client.SubscriptionResult(YAML, 'direct_yaml')
+    monkeypatch.setattr(client, '_get_subscription_proxies_yaml', fetch)
+    for cooldown in (3, 6, 12, 24, 48, 96, 192, 300, 300):
+        with pytest.raises(client.SubscriptionFetchError):
+            client.get_subscription_proxies_yaml('s', URL)
+        count = len(seen)
+        clock[0] += cooldown - 0.1
+        with pytest.raises(client.SubscriptionFetchError):
+            client.get_subscription_proxies_yaml('s', URL, refresh=True)
+        assert len(seen) == count
+        clock[0] += 0.1
+    failing[0] = False
+    client.get_subscription_proxies_yaml('s', URL)
+    assert not client._fetch_failures
+    failing[0] = True
+    clock[0] += 300
+    with pytest.raises(client.SubscriptionFetchError):
+        client.get_subscription_proxies_yaml('s', URL)
+    assert next(iter(client._fetch_results.values()))[1] == clock[0] + 3
 
 
 def test_failed_bursts_share_error_but_retry_after_three_seconds(monkeypatch):
@@ -195,7 +263,7 @@ def test_blocked_upstream_is_not_retried_via_sub_store(monkeypatch, status):
     for moment in (0, 5, 30, 59):
         clock[0] = moment
         with pytest.raises(client.SubscriptionFetchError):
-            client.get_subscription_proxies_yaml('s', URL)
+            client.get_subscription_proxies_yaml('s', URL, refresh=True)
     assert seen == [URL]
     clock[0] = 61
     with pytest.raises(client.SubscriptionFetchError):
@@ -208,7 +276,10 @@ def test_manual_route_reuses_traffic_without_userinfo_get(monkeypatch):
     recorded = []
     monkeypatch.setattr(subscriptions, 'get_shared_config', lambda: {
         'subscriptions': [{'id': 's', 'name': 'S', 'url': URL}], 'nodes': []})
-    monkeypatch.setattr(subscriptions, 'get_subscription_proxies_yaml', lambda *a: result)
+    def fetch(*args, **kwargs):
+        assert kwargs == {'refresh': True}
+        return result
+    monkeypatch.setattr(subscriptions, 'get_subscription_proxies_yaml', fetch)
     monkeypatch.setattr(subscriptions, 'save_subscription_nodes', lambda *a: {'count': 1})
     monkeypatch.setattr(subscriptions.subscription_health, 'record_fetch', lambda *a, **k: recorded.append(k))
     monkeypatch.setattr(subscriptions.subscription_health, 'fetch_userinfo', lambda *a: pytest.fail('extra airport GET'))

@@ -2,7 +2,7 @@
 
 List requests only inspect snapshots/cache and schedule work. Downloads and bundle
 generation run in at most two workers; a missing baseline never implies a match.
-Remote changes are discovered when the five-minute successful-result cache expires.
+Remote changes are checked on a fifteen-minute successful-result cache interval.
 """
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -80,7 +80,7 @@ def _input_key(agent, config, base_url):
 
 class ContentSyncChecker:
     def __init__(self, *, executor=None, clock=time.monotonic, max_workers=2,
-                 success_ttl=300, error_ttl=30, max_entries=512):
+                 success_ttl=900, error_ttl=30, max_entries=512):
         self._executor = executor or ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='agent-content-sync')
         self._clock = clock
         self._success_ttl = success_ttl

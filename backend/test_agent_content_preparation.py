@@ -24,13 +24,14 @@ def content_env(tmp_path, monkeypatch):
     remote = {'provider': 'proxies: [{name: Remote, type: http, server: first.test, port: 8080}]'}
     fetches = []
 
-    def subscription_fetch(sub_id, url):
+    def subscription_fetch(sub_id, url, **kwargs):
         fetches.append((sub_id, url))
         assert sub_id == 'selected-sub'
         return remote['provider'], 'rendered_yaml'
 
     monkeypatch.setattr('backend.routes.subscriptions.get_subscription_proxies_yaml', subscription_fetch)
     monkeypatch.setattr('backend.routes.aggregations.get_subscription_proxies_yaml', subscription_fetch)
+    monkeypatch.setattr('backend.utils.sub_store_client.get_subscription_proxies_yaml', subscription_fetch)
     monkeypatch.setattr('requests.sessions.Session.request',
                         lambda *_args, **_kwargs: pytest.fail('unexpected network request'))
     monkeypatch.setattr('backend.utils.provider_delivery.commit_provider_bundle',
