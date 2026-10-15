@@ -883,7 +883,7 @@ def _profile_revision(profile_id):
         return None
 
 
-def _prepare_transactional_content(agent, config_data, *, base_url='', deployment_id=None):
+def _prepare_transactional_content(agent, config_data, *, base_url='', deployment_id=None, prefer_cached=False):
     """Materialize exactly the files used by a push, without publishing or saving caches."""
     import yaml
     from backend.agents.deployment_bundle import build_deployment_bundle
@@ -899,8 +899,13 @@ def _prepare_transactional_content(agent, config_data, *, base_url='', deploymen
         provider_downloads = get_mihomo_provider_downloads(config_data, base_url=base_url, main_config=main)
         ruleset_downloads = get_mihomo_ruleset_downloads(config_data, base_url=base_url)
         if provider_downloads:
+            from functools import partial
+            from backend.utils.sub_store_client import get_subscription_proxies_yaml
+            subscription_fetch = (partial(get_subscription_proxies_yaml, prefer_cached=True)
+                                  if prefer_cached else None)
             prepared_providers = prepare_provider_bundle(config_data, main, render_all=True,
-                                                         allow_transport_fallback=False)
+                                                         allow_transport_fallback=False,
+                                                         subscription_fetch=subscription_fetch)
             provider_downloads = [{key: item[key] for key in ('name', 'url', 'local_path', 'content')}
                                   for item in prepared_providers]
     elif service_type == 'mosdns':
@@ -921,7 +926,7 @@ def _prepare_transactional_content(agent, config_data, *, base_url='', deploymen
 
 def _prepare_content_bundle(agent, config_data, *, base_url='', deployment_id=None):
     return _prepare_transactional_content(agent, config_data, base_url=base_url,
-                                          deployment_id=deployment_id)['bundle']
+                                          deployment_id=deployment_id, prefer_cached=True)['bundle']
 
 
 @bp.route('/<agent_id>/push-config', methods=['POST'])

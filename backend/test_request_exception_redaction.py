@@ -103,7 +103,7 @@ def test_subscription_request_exception_response_and_log_do_not_leak(monkeypatch
         "subscriptions": [{"id": "sub-1", "name": "Probe", "url": SECRET_URL}],
         "nodes": [],
     })
-    monkeypatch.setattr(subscriptions, "get_subscription_proxies_yaml", lambda *args: (_ for _ in ()).throw(exc))
+    monkeypatch.setattr(subscriptions, "get_subscription_proxies_yaml", lambda *args, **kwargs: (_ for _ in ()).throw(exc))
     monkeypatch.setattr(subscriptions, "load_subscription_cache", lambda *args, **kwargs: None)
     app = Flask(__name__)
 

@@ -114,7 +114,7 @@ def test_remote_changes_are_rechecked_only_after_success_ttl(setup):
     _, executor, now, _, _, _, calls = setup
     query(setup)
     executor.run()
-    now[0] += 299
+    now[0] += 899
     assert query(setup)['status'] == 'synced'
     now[0] += 1
     assert query(setup)['status'] == 'checking'

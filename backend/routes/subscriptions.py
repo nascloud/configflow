@@ -209,7 +209,7 @@ def fetch_subscription(sub_id):
     # 优先尝试从 Sub-Store 获取
     try:
         current_app.logger.info(f"尝试通过 Sub-Store 获取订阅: {sub['name']} (id: {sub_id})")
-        fetch_result = get_subscription_proxies_yaml(sub_id, sub['url'])
+        fetch_result = get_subscription_proxies_yaml(sub_id, sub['url'], refresh=True)
         yaml_text, source = fetch_result
         proxies = parse_proxies_from_yaml(yaml_text)
         nodes = proxies_to_nodes(proxies)
