@@ -27,7 +27,10 @@ export const NAV_GROUPS: NavGroup[] = [
     scope: 'overview',
     tabLabel: '总览',
     tabIcon: 'DataAnalysis',
-    items: [{ path: '/dashboard', label: '数据统计', icon: 'DataAnalysis' }]
+    items: [
+      { path: '/dashboard', label: '数据统计', icon: 'DataAnalysis' },
+      { path: '/oxidns', label: 'OxiDNS 监控', icon: 'Monitor' }
+    ]
   },
   {
     scope: 'resource',
@@ -78,10 +81,15 @@ const PATH_SCOPE = new Map<string, NavScope>(
   NAV_GROUPS.flatMap(group => group.items.map(item => [item.path, group.scope] as const))
 )
 
-export const scopeOfPath = (path: string): NavScope | undefined => PATH_SCOPE.get(path)
+// All OxiDNS monitor pages highlight the dedicated overview entry.
+export const navigationPath = (path: string): string =>
+  /^\/agents\/[^/]+\/oxidns\/?$/.test(path) ? '/oxidns' : path
+
+export const scopeOfPath = (path: string): NavScope | undefined => PATH_SCOPE.get(navigationPath(path))
 
 export const groupOfScope = (scope: NavScope): NavGroup | undefined =>
   NAV_GROUPS.find(group => group.scope === scope)
 
 export const labelOfPath = (path: string): string | undefined =>
-  NAV_GROUPS.flatMap(group => group.items).find(item => item.path === path)?.label
+  navigationPath(path) !== path ? 'OxiDNS 监控' :
+    NAV_GROUPS.flatMap(group => group.items).find(item => item.path === path)?.label

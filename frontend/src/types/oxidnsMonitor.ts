@@ -1,0 +1,99 @@
+export type MonitorNumber = number | null
+
+export interface OxiDNSCache {
+  tag: string
+  lookups: MonitorNumber
+  hits: MonitorNumber
+  fresh_hits: MonitorNumber
+  stale_hits: MonitorNumber
+  misses: MonitorNumber
+  expired: MonitorNumber
+  entries: MonitorNumber
+  hit_rate: MonitorNumber
+}
+
+export interface OxiDNSOverview {
+  success: true
+  agent: { id: string; name: string; host: string; profile_id?: string; version: string; status: string }
+  collected_at: string
+  core: { version: string | null; status: string; uptime_ms: MonitorNumber; instance_id: string | null }
+  recorders: string[]
+  metrics: {
+    requests_total: MonitorNumber
+    failed_total: MonitorNumber
+    avg_latency_ms: MonitorNumber
+    inflight: MonitorNumber
+    cache_hit_rate: MonitorNumber
+  }
+  caches: OxiDNSCache[]
+  servers: Array<{
+    tag: string; protocol: string; requests: MonitorNumber; failed: MonitorNumber
+    avg_latency_ms: MonitorNumber; inflight: MonitorNumber
+  }>
+}
+
+export interface OxiDNSQuestion { name: string; qtype: string | number; qclass: string | number }
+export interface OxiDNSAnswer { name: string; rr_type: string | number; ttl: number; payload_text: string }
+export interface OxiDNSQuery {
+  id: number | string
+  created_at_ms: number
+  elapsed_ms: MonitorNumber
+  client_ip: string
+  questions_json: OxiDNSQuestion[]
+  error: string | null
+  has_response: boolean
+  rcode: string | number | null
+  answer_count: number
+  answers_json: OxiDNSAnswer[]
+  steps?: Array<{ event_index: number; sequence_tag: string; node_index: number; kind: string; tag: string; outcome: string }>
+}
+export interface OxiDNSQueries {
+  success: true
+  recorder: string
+  records: OxiDNSQuery[]
+  next_cursor: string | null
+}
+export interface OxiDNSQueryFilters {
+  qname: string
+  client_ip: string
+  qtype: string
+  rcode: string
+  status: 'all' | 'error' | 'has_response' | 'no_response'
+  range: '1h' | '24h' | 'all'
+  matcher_tag: string
+}
+export const emptyQueryFilters = (): OxiDNSQueryFilters => ({
+  qname: '', client_ip: '', qtype: '', rcode: '', status: 'all', range: '1h', matcher_tag: ''
+})
+export const monitorNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
+export const formatMonitorNumber = (value: unknown, precision = 0) =>
+  monitorNumber(value) ? value.toLocaleString(undefined, { maximumFractionDigits: precision }) : '—'
+const dnsTypes: Record<string, string> = { '1': 'A', '2': 'NS', '5': 'CNAME', '6': 'SOA', '12': 'PTR', '15': 'MX', '16': 'TXT', '28': 'AAAA', '33': 'SRV', '64': 'SVCB', '65': 'HTTPS', '255': 'ANY' }
+const dnsCodes: Record<string, string> = {
+  '0': 'NOERROR', '1': 'FORMERR', '2': 'SERVFAIL', '3': 'NXDOMAIN', '4': 'NOTIMP', '5': 'REFUSED',
+  '6': 'YXDOMAIN', '7': 'YXRRSET', '8': 'NXRRSET', '9': 'NOTAUTH', '10': 'NOTZONE',
+  '16': 'BADVERS', '17': 'BADKEY', '18': 'BADTIME', '19': 'BADMODE', '20': 'BADNAME',
+  '21': 'BADALG', '22': 'BADTRUNC', '23': 'BADCOOKIE'
+}
+// OxiDNS v1.6.1 serializes ResponseCode through its Display implementation.
+const dnsDisplayCodes: Record<string, string> = {
+  'no error': 'NOERROR', 'form error': 'FORMERR', 'server failure': 'SERVFAIL',
+  'non-existent domain': 'NXDOMAIN', 'not implemented': 'NOTIMP', 'query refused': 'REFUSED',
+  'name should not exist': 'YXDOMAIN', 'rr set should not exist': 'YXRRSET',
+  'rr set does not exist': 'NXRRSET', 'not authorized': 'NOTAUTH', 'name not in zone': 'NOTZONE',
+  'bad opt version': 'BADVERS', 'tsig signature failure': 'BADSIG', 'key not recognized': 'BADKEY',
+  'signature out of time window': 'BADTIME', 'bad tkey mode': 'BADMODE', 'duplicate key name': 'BADNAME',
+  'algorithm not supported': 'BADALG', 'bad truncation': 'BADTRUNC', 'bad server cookie': 'BADCOOKIE'
+}
+const dnsCodeLabels = new Map<string, string>([
+  ...Object.entries(dnsCodes), ...Object.entries(dnsDisplayCodes),
+  ...Object.values(dnsDisplayCodes).map(value => [value.toLowerCase(), value] as [string, string])
+])
+export const formatDNSType = (value: string | number) => dnsTypes[String(value)] || String(value)
+export const formatDNSCode = (value: string | number | null) => {
+  if (value === null) return '—'
+  const original = String(value)
+  const normalized = original.trim().toLowerCase()
+  return dnsCodeLabels.get(normalized) || original
+}
+export const formatQueryTime = (value: number) => Number.isFinite(value) ? new Date(value).toLocaleString() : '—'

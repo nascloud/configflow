@@ -1248,3 +1248,37 @@ def get_latest_agent_version():
         }), 200
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+# Read-only DNS monitoring stays separate from deployment and lifecycle actions.
+def _oxidns_monitor_response(operation, agent_id, *args):
+    from backend.agents import oxidns_monitor
+    try:
+        result = getattr(oxidns_monitor, operation)(get_agent_manager(), agent_id, *args)
+        response = jsonify(result)
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except oxidns_monitor.MonitorError as exc:
+        response = jsonify(success=False, code=exc.code, message=exc.message)
+        response.headers['Cache-Control'] = 'no-store'
+        return response, exc.status
+
+
+@bp.route('/<agent_id>/oxidns/overview', methods=['GET'])
+@require_auth
+def get_oxidns_overview(agent_id):
+    if request.args:
+        return jsonify(success=False, code='INVALID_QUERY', message='此接口不接受查询参数。'), 400
+    return _oxidns_monitor_response('overview', agent_id)
+
+
+@bp.route('/<agent_id>/oxidns/queries', methods=['GET'])
+@require_auth
+def get_oxidns_queries(agent_id):
+    return _oxidns_monitor_response('queries', agent_id, request.args)
+
+
+@bp.route('/<agent_id>/oxidns/queries/<record_id>', methods=['GET'])
+@require_auth
+def get_oxidns_query(agent_id, record_id):
+    return _oxidns_monitor_response('query', agent_id, record_id, request.args)

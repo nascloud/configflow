@@ -1,0 +1,174 @@
+import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
+import { oxidnsMonitorApi } from '@/api'
+import { emptyQueryFilters, monitorNumber, type OxiDNSOverview, type OxiDNSQueries, type OxiDNSQueryFilters } from '@/types/oxidnsMonitor'
+
+const messageOf = (error: any) => error?.response?.data?.message || error?.message || '读取失败，请稍后重试。'
+const checked = <T>(data: T): T => {
+  if ((data as any)?.success === false) throw new Error((data as any).message || '读取失败，请稍后重试。')
+  return data
+}
+
+export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
+  const overview = ref<OxiDNSOverview | null>(null)
+  const overviewLoading = ref(false)
+  const overviewError = ref('')
+  const qps = ref<number | null>(null)
+  const queries = ref<OxiDNSQueries | null>(null)
+  const queriesLoading = ref(false)
+  const queriesError = ref('')
+  const recorder = ref('')
+  const filters = ref<OxiDNSQueryFilters>(emptyQueryFilters())
+  const cursors = ref<Array<string | undefined>>([undefined])
+  const autoRefresh = ref(true)
+  const page = computed(() => cursors.value.length)
+  const hasNext = computed(() => Boolean(queries.value?.next_cursor))
+  let overviewController: AbortController | undefined
+  let queryController: AbortController | undefined
+  let epoch = 0
+  let disposed = false
+  let queryEpoch = 0
+  let timer: ReturnType<typeof setInterval> | undefined
+  let rangeSince: number | undefined
+  let rangeUntil: number | undefined
+
+  function resetQueryRange() {
+    const now = Date.now()
+    rangeUntil = now
+    rangeSince = filters.value.range === 'all' ? undefined : now - (filters.value.range === '1h' ? 3600000 : 86400000)
+  }
+  async function loadQueries(force = false) {
+    if (disposed || !recorder.value || !overview.value?.recorders.includes(recorder.value)) return
+    if (queriesLoading.value && !force) return
+    queryController?.abort()
+    const controller = queryController = new AbortController()
+    const requestEpoch = ++queryEpoch
+    const requestAgent = agentId.value
+    queriesLoading.value = true
+    queriesError.value = ''
+    const params = {
+      recorder: recorder.value, limit: 50, cursor: cursors.value[cursors.value.length - 1],
+      qname: filters.value.qname.trim() || undefined,
+      client_ip: filters.value.client_ip.trim() || undefined,
+      qtype: filters.value.qtype.trim() || undefined,
+      rcode: filters.value.rcode.trim() || undefined,
+      matcher_tag: filters.value.matcher_tag.trim() || undefined,
+      status: filters.value.status, since_ms: rangeSince, until_ms: rangeUntil
+    }
+    try {
+      const { data } = await oxidnsMonitorApi.queries(requestAgent, params, { signal: controller.signal })
+      if (controller.signal.aborted || requestEpoch !== queryEpoch || requestAgent !== agentId.value) return
+      queries.value = checked(data) as OxiDNSQueries
+    } catch (error) {
+      if (!controller.signal.aborted && requestEpoch === queryEpoch) queriesError.value = messageOf(error)
+    } finally {
+      if (requestEpoch === queryEpoch) queriesLoading.value = false
+    }
+  }
+  async function loadOverview() {
+    if (disposed || overviewLoading.value) return
+    const controller = overviewController = new AbortController()
+    const requestEpoch = epoch
+    overviewLoading.value = true
+    overviewError.value = ''
+    try {
+      const { data } = await oxidnsMonitorApi.overview(agentId.value, { signal: controller.signal })
+      if (controller.signal.aborted || requestEpoch !== epoch) return
+      const next = checked(data) as OxiDNSOverview
+      const prior = overview.value
+      const seconds = prior ? (Date.parse(next.collected_at) - Date.parse(prior.collected_at)) / 1000 : 0
+      const currentCount = next.metrics.requests_total
+      const priorCount = prior?.metrics.requests_total
+      qps.value = prior && next.core.instance_id && prior.core.instance_id === next.core.instance_id
+        && monitorNumber(currentCount) && monitorNumber(priorCount) && currentCount >= priorCount && seconds > 0
+        ? (currentCount - priorCount) / seconds : null
+      overview.value = next
+      if (!next.recorders.includes(recorder.value)) {
+        recorder.value = next.recorders[0] || ''
+        resetQueries()
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && requestEpoch === epoch) overviewError.value = messageOf(error)
+    } finally {
+      if (requestEpoch === epoch) overviewLoading.value = false
+    }
+  }
+  function resetQueries() {
+    queryController?.abort()
+    queryEpoch++
+    queriesLoading.value = false
+    queries.value = null
+    queriesError.value = ''
+    cursors.value = [undefined]
+    resetQueryRange()
+    if (tab.value === 'queries' && recorder.value) void loadQueries()
+  }
+  function selectRecorder(value: string) {
+    if (value === recorder.value) return
+    recorder.value = value
+    resetQueries()
+  }
+  function applyFilters(value: OxiDNSQueryFilters) {
+    filters.value = { ...value }
+    resetQueries()
+  }
+  function nextPage() {
+    if (queriesLoading.value || !queries.value?.next_cursor) return
+    cursors.value.push(queries.value.next_cursor)
+    queries.value = null
+    void loadQueries()
+  }
+  function previousPage() {
+    if (queriesLoading.value || page.value <= 1) return
+    cursors.value.pop()
+    queries.value = null
+    void loadQueries()
+  }
+  async function refresh(manual = false) {
+    const requestEpoch = epoch
+    await loadOverview()
+    if (disposed || requestEpoch !== epoch) return
+    if (tab.value === 'queries' && recorder.value && (page.value === 1 || manual)) {
+      if (page.value === 1) resetQueryRange()
+      await loadQueries()
+    }
+  }
+  const onVisible = () => { if (!document.hidden && autoRefresh.value) void refresh() }
+  watch(tab, value => {
+    if (value === 'queries' && !queries.value && recorder.value) void loadQueries()
+    if (value !== 'queries') {
+      queryController?.abort()
+      queryEpoch++
+      queriesLoading.value = false
+    }
+  })
+  watch(agentId, () => {
+    epoch++
+    overviewController?.abort()
+    queryController?.abort()
+    queryEpoch++
+    overviewLoading.value = false
+    queriesLoading.value = false
+    overview.value = null
+    overviewError.value = ''
+    qps.value = null
+    recorder.value = ''
+    filters.value = emptyQueryFilters()
+    resetQueries()
+    void loadOverview()
+  }, { immediate: true })
+  onMounted(() => {
+    timer = setInterval(() => { if (autoRefresh.value && !document.hidden) void refresh() }, 10000)
+    document.addEventListener('visibilitychange', onVisible)
+  })
+  onUnmounted(() => {
+    disposed = true
+    epoch++
+    queryEpoch++
+    overviewController?.abort()
+    queryController?.abort()
+    if (timer) clearInterval(timer)
+    document.removeEventListener('visibilitychange', onVisible)
+  })
+  return { overview, overviewLoading, overviewError, qps, queries, queriesLoading, queriesError, recorder,
+    filters, page, hasNext, autoRefresh, refresh, loadQueries, selectRecorder, applyFilters, nextPage, previousPage }
+}

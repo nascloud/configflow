@@ -83,6 +83,16 @@
             · 心跳 {{ formatTime(agent.last_heartbeat) }}
           </p>
 
+          <Button
+            v-if="agent.service_type === 'oxidns'"
+            variant="outline"
+            class="mt-3 min-h-11 self-start"
+            @click="router.push('/agents/' + encodeURIComponent(agent.id) + '/oxidns')"
+          >
+            <ChartLine class="size-4" />
+            DNS 监控
+          </Button>
+
           <!-- 资源占用：CPU / 内存 / 磁盘 -->
           <div class="my-4 grid gap-2.5">
             <div

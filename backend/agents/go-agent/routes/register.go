@@ -6,6 +6,10 @@ import (
 
 // RegisterRoutes 注册所有路由
 func RegisterRoutes(mux *http.ServeMux, cfg *Config) {
+	monitor := oxidnsMonitorAuth(cfg, OxiDNSMonitorHandler(cfg))
+	mux.HandleFunc("/api/oxidns/overview", monitor)
+	mux.HandleFunc("/api/oxidns/queries", monitor)
+	mux.HandleFunc("/api/oxidns/queries/", monitor)
 	mux.HandleFunc("/api/capabilities", AuthMiddleware(cfg, CapabilitiesHandler(cfg)))
 	mux.HandleFunc("/api/deployments", AuthMiddleware(cfg, DeploymentUploadHandler(cfg)))
 	mux.HandleFunc("/api/deployments/", AuthMiddleware(cfg, DeploymentHandler(cfg)))
