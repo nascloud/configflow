@@ -855,10 +855,41 @@ const deleteSubscription = async (row: Subscription) => {
     loadSubscriptions()
   } catch (error: any) {
     if (error !== 'cancel' && error !== 'close') {
-      notify.error('删除失败')
       console.error('删除订阅失败:', error)
+      const usages = error.response?.data?.usages
+      if (error.response?.status === 409 && Array.isArray(usages) && usages.length) {
+        notify.error(`无法删除订阅「${row.name}」`, await describeSubscriptionUsages(row.id, usages))
+      } else {
+        notify.error('删除失败', error.response?.data?.message)
+      }
     }
   }
+}
+
+// 把后端 409 返回的 usages 转成可操作的提示：配置空间里具体是哪些策略组在用
+const describeSubscriptionUsages = async (subId: string, usages: any[]) => {
+  const parts: string[] = []
+  for (const usage of usages.filter(u => u.kind === 'profile')) {
+    let groups: string[] = []
+    try {
+      const { data } = await api.get('/proxy-groups', { headers: { 'X-ConfigFlow-Profile': usage.profile_id || usage.id } })
+      groups = (Array.isArray(data) ? data : [])
+        .filter((g: any) =>
+          g.subscriptions?.includes(subId) ||
+          (g.source === 'subscription' && g.proxies?.includes(subId)) ||
+          g.proxies_order?.some((item: any) => item?.type === 'subscription' && item.id === subId))
+        .map((g: any) => g.name)
+    } catch {
+      // 查不到策略组时只提示配置空间名称
+    }
+    const shown = groups.slice(0, 5).join('、') + (groups.length > 5 ? ` 等 ${groups.length} 个` : '')
+    parts.push(groups.length ? `配置空间「${usage.name}」的策略组：${shown}` : `配置空间「${usage.name}」`)
+  }
+  const aggregations = usages.filter(u => u.kind === 'aggregation').map(u => `「${u.name}」`)
+  if (aggregations.length) parts.push(`订阅聚合 ${aggregations.join('、')}`)
+  const nodes = usages.filter(u => u.kind === 'node').length
+  if (nodes) parts.push(`节点库中 ${nodes} 个从该订阅获取的节点`)
+  return `仍被以下内容使用，请先解除后再删除：${parts.join('；')}。`
 }
 
 const fetchSubscription = async (row: Subscription) => {
