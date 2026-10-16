@@ -88,11 +88,11 @@
             variant="outline"
             size="sm"
             class="h-[30px]"
-            :disabled="!output || running || pushing || !pushTargets.length"
+            :disabled="!output || running || pushing || deploying || !pushTargets.length"
             :title="pushTitle"
             @click="pushToAgents"
           >
-            <Loader2 v-if="pushing" class="size-3.5 animate-spin" />
+            <Loader2 v-if="pushing || deploying" class="size-3.5 animate-spin" />
             <Send v-else class="size-3.5" />
             推送
           </Button>
@@ -137,6 +137,7 @@ import BrandMark from '@/components/common/BrandMark.vue'
 import Segmented from '@/components/common/Segmented.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
 import { agentApi, generateApi, ruleSetApi, statsApi } from '@/api'
+import { createDeploymentId, useAgentDeployments } from '@/composables/useAgentDeployments'
 import { consumeAction } from '@/lib/actions'
 import { notify } from '@/lib/feedback'
 import { cn } from '@/lib/utils'
@@ -323,16 +324,61 @@ const pushTitle = computed(() => {
   return `推送到 ${pushTargets.value.map(a => a.name).join('、')}`
 })
 
+// push-config 只是提交事务发布（202），必须轮询到终态；否则服务端任务停在中间状态，
+// 下一次推送会因「未完成的发布」被 409 拒绝。
+const { deployments, busy: deploymentBusy, track: trackDeployment } = useAgentDeployments(() => live.refresh())
+const deploying = computed(() => pushTargets.value.some(a => deploymentBusy(a.id)))
+// 「已校验，待激活」需要在 Agent 页手动激活，这里没有激活入口，只给出指引。
+watch(() => Object.entries(deployments).filter(([, task]) => task.status === 'ready').map(([id]) => id).join(','), ids => {
+  if (!ids) return
+  notify.info('配置已校验，等待激活', '请到 Agent 页面激活本次发布')
+})
+
+type PushOutcome = 'submitted' | 'done' | 'failed'
+
+const pushOne = async (agent: { id: string; name: string }): Promise<PushOutcome> => {
+  const deploymentId = createDeploymentId()
+  deployments[agent.id] = { deployment_id: deploymentId, status: 'preparing' }
+  try {
+    const { data } = await agentApi.pushConfig(agent.id, deploymentId)
+    if (data.deployment_id) {
+      trackDeployment(agent.id, data)
+      return 'submitted'
+    }
+    delete deployments[agent.id]
+    return 'done'
+  } catch (error: any) {
+    // 409 携带的未完成任务同样跟踪到终态，旧任务收尾后即可再次推送。
+    if (error.response?.data?.deployment_id) {
+      trackDeployment(agent.id, error.response.data)
+      if (error.response.status === 409) notify.warning(`「${agent.name}」上一次发布尚未结束，正在等待其完成后再推送`)
+      return 'submitted'
+    }
+    if (!error.response) {
+      trackDeployment(agent.id, { deployment_id: deploymentId, status: 'unknown' })
+      return 'submitted'
+    }
+    delete deployments[agent.id]
+    notify.error(`「${agent.name}」配置发布失败`, error.response?.data?.message)
+    return 'failed'
+  }
+}
+
 const pushToAgents = async () => {
-  if (!pushTargets.value.length || pushing.value) return
+  const targets = pushTargets.value.filter(a => !deploymentBusy(a.id))
+  if (!targets.length || pushing.value) return
   pushing.value = true
-  const results = await Promise.allSettled(pushTargets.value.map(a => agentApi.pushConfig(a.id)))
-  pushing.value = false
-  const ok = results.filter(r => r.status === 'fulfilled' && (r.value as any).data?.success !== false).length
-  const failed = results.length - ok
-  if (failed) notify.warning(`已推送 ${ok} 台，${failed} 台失败`)
-  else notify.success(`已推送到 ${ok} 台 Agent`)
-  live.refresh()
+  const loadingToast = notify.loading('正在准备并上传发布文件...')
+  try {
+    const outcomes = await Promise.all(targets.map(pushOne))
+    const done = outcomes.filter(o => o === 'done').length
+    if (done) notify.success(`已推送到 ${done} 台 Agent`)
+    // submitted 的结果由 useAgentDeployments 轮询到终态后提示。
+  } finally {
+    notify.dismiss(loadingToast)
+    pushing.value = false
+    live.refresh()
+  }
 }
 
 /* ---------- 快捷键与跨页动作 ---------- */
