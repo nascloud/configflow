@@ -114,13 +114,21 @@ def install_profile_context(app) -> None:
                     if endpoint in ('oxidns.render_oxidns_draft', 'profiles.profile_render_oxidns_draft'):
                         if isinstance(payload.get('config'), str):
                             sanitized['config'] = payload['config']
-                    elif endpoint in ('oxidns.oxidns_settings', 'profiles.profile_oxidns_settings'):
+                    elif endpoint in ('oxidns.oxidns_settings', 'profiles.profile_oxidns_settings',
+                                      'oxidns.prepare_oxidns_editor', 'profiles.profile_prepare_oxidns_editor',
+                                      'oxidns.preview_oxidns_template', 'profiles.profile_preview_oxidns_template',
+                                      'oxidns.apply_oxidns_common_settings', 'profiles.profile_apply_oxidns_common_settings'):
                         original = payload.get('settings') if request.method == 'POST' else payload
                         target = sanitized.get('settings') if request.method == 'POST' else sanitized
                         if isinstance(original, dict) and isinstance(target, dict):
-                            for key in ('native_config', 'additional_files'):
+                            for key in ('native_config', 'additional_files', 'template_settings',
+                                        'template_base_config', 'legacy_native_config', '_common_disabled'):
                                 if key in original:
                                     target[key] = original[key]
+                    if endpoint in ('oxidns.read_oxidns_common_settings', 'profiles.profile_read_oxidns_common_settings',
+                                    'oxidns.apply_oxidns_common_settings', 'profiles.profile_apply_oxidns_common_settings'):
+                        if isinstance(payload.get('values'), dict):
+                            sanitized['values'] = payload['values']
                 # The authenticated settings editor needs its proxy URL for edits.
                 # Keep credentials hidden in other metadata and shared exports.
                 if (

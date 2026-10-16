@@ -187,11 +187,15 @@ export const generateApi = {
   previewMosdns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/mosdns/preview'), { base_url: getBaseUrl() })
 }
 
-// OxiDNS 独立配置
+// OxiDNS 统一配置
 export const oxidnsApi = {
   getSettings: (profileId?: string) => api.get('/oxidns/settings', profileOptions(profileId)),
   saveSettings: (settings: unknown, profileId?: string) => api.post('/oxidns/settings', settings, profileOptions(profileId)),
-  render: (settings: unknown, profileId?: string) => api.post('/oxidns/render', { settings, base_url: getBaseUrl() }, profileOptions(profileId))
+  validateSettings: (settings: unknown, profileId?: string) => api.post('/oxidns/validate', { settings, base_url: getBaseUrl() }, profileOptions(profileId)),
+  render: (settings: unknown, profileId?: string) => api.post('/oxidns/render', { settings, base_url: getBaseUrl() }, profileOptions(profileId)),
+  prepareEditor: (settings: unknown, profileId?: string) => api.post('/oxidns/editor', { settings, base_url: getBaseUrl() }, profileOptions(profileId)),
+  readCommonSettings: (settings: unknown, profileId?: string) => api.post('/oxidns/common-settings', { settings, base_url: getBaseUrl() }, profileOptions(profileId)),
+  applyCommonSettings: (settings: unknown, changes: Record<string, unknown>, profileId?: string) => api.post('/oxidns/common-settings/apply', { settings, changes, base_url: getBaseUrl() }, profileOptions(profileId))
 }
 
 // 配置导入导出

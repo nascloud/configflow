@@ -12,6 +12,7 @@ from backend.agents.deployment_bundle import build_deployment_bundle, Deployment
 from backend.common.config_export import redact_oxidns_settings
 from backend.common.oxidns_native import load_native_yaml, managed_files, native_document
 from backend.common.oxidns_settings import normalize_oxidns_settings, OxidnsSettingsError
+from backend.common.oxidns_validation import format_path
 from backend.converters.oxidns import generate_oxidns_config, get_oxidns_custom_files, get_oxidns_ruleset_downloads
 from backend.utils.oxidns_archive import build_oxidns_zip, OxidnsArchiveError
 
@@ -29,7 +30,8 @@ def test_native_keeps_all_global_plugin_and_unknown_values_ignoring_template_dra
         'api': {'http': {'listen': '127.0.0.1:29999', 'cors': {'allowed_origins': ['https://ui.test']},
                          'auth': {'type': 'basic', 'username': 'native', 'password': 'native-secret'}}},
         'log': {'level': 'warn', 'file': 'logs/native.log', 'rotation': {'type': 'weekly', 'max_files': 3}},
-        'network': {'outbound': {'default': 'direct', 'profiles': {'direct': {'resolver': {'timeout': '3s'}}}}},
+        'network': {'outbound': {'default': 'direct', 'profiles': {'direct': {'resolver': {
+            'nameservers': [{'addr': '1.1.1.1'}], 'timeout': '3s'}}}}},
         'future_option': {'keep': [False, None, 1.25]},
         'plugins': [{'tag': 'cache', 'type': 'cache', 'args': {'size': 77, 'shards': 4, 'future': True}},
                     {'tag': 'main', 'type': 'sequence', 'args': [{'exec': '$cache'}]}],
@@ -40,6 +42,23 @@ def test_native_keeps_all_global_plugin_and_unknown_values_ignoring_template_dra
     assert yaml.safe_load(generate_oxidns_config(value)) == document
     assert get_oxidns_custom_files(value) == []
     assert get_oxidns_ruleset_downloads(value) == []
+    assert value == before
+
+
+def test_core_denied_unknown_field_is_preserved_in_draft_but_blocks_generation():
+    document = {'network': {'outbound': {'profiles': {'direct': {
+        'resolver': 'system', 'future': {'empty': {}, 'values': [False, None, 0]},
+    }}}}, 'plugins': []}
+    value = config(document)
+    before = copy.deepcopy(value)
+    draft = normalize_oxidns_settings(value['oxidns'], validate_native_arguments=False)
+    assert draft['native_config'] == value['oxidns']['native_config']
+    assert load_native_yaml(draft['native_config']) == document
+    with pytest.raises(OxidnsSettingsError) as raised:
+        generate_oxidns_config(value)
+    assert any(issue['path'] == ['network', 'outbound', 'profiles', 'direct', 'future']
+               and issue['code'] == 'unknown-field' and issue['severity'] == 'error'
+               for issue in raised.value.issues)
     assert value == before
 
 
@@ -58,6 +77,74 @@ def test_native_yaml_12_scalars_survive_without_yaml_11_coercion():
 def test_native_rejects_ambiguous_unsafe_or_invalid_document_structure(text):
     with pytest.raises(OxidnsSettingsError):
         normalize_oxidns_settings({'config_mode': 'native', 'native_config': text})
+
+
+@pytest.mark.parametrize('kind,args,path', [
+    ('http_server', {}, 'args.listen'),
+    ('quic_server', {}, 'args.listen'),
+    ('udp_server', {}, 'args.listen'),
+    ('tcp_server', {}, 'args.listen'),
+    ('http_server', None, 'args'),
+    ('quic_server', [], 'args'),
+    ('udp_server', {'listen': ':53'}, 'args.entry'),
+    ('tcp_server', {'listen': ':53', 'entry': '  '}, 'args.entry'),
+    ('http_server', {'listen': ':8053'}, 'args.entries'),
+    ('http_server', {'listen': ':8053', 'entries': None}, 'args.entries'),
+    ('http_server', {'listen': ':8053', 'entries': [{}]}, 'args.entries[0].path'),
+    ('http_server', {'listen': ':8053', 'entries': [{'path': '/dns-query'}]}, 'args.entries[0].exec'),
+    ('http_server', {'listen': ':8053', 'entries': ['main']}, 'args.entries[0]'),
+    ('quic_server', {'listen': ':853', 'entry': 'main'}, 'args.cert'),
+    ('quic_server', {'listen': ':853', 'entry': 'main', 'cert': '/tls/cert.pem'}, 'args.key'),
+    ('tcp_server', {'listen': ':853', 'entry': 'main', 'key': '/tls/key.pem'}, 'args.cert'),
+    ('http_server', {'listen': ':8053', 'entries': [], 'enable_http3': True}, 'args.cert'),
+    ('forward', {}, 'args.upstreams'),
+    ('forward', {'upstreams': []}, 'args.upstreams'),
+    ('forward', {'upstreams': None}, 'args.upstreams'),
+    ('forward', {'upstreams': [{}]}, 'args.upstreams[0].addr'),
+    ('forward', {'upstreams': [{'addr': ''}]}, 'args.upstreams[0].addr'),
+    ('forward', {'upstreams': ['1.1.1.1']}, 'args.upstreams[0]'),
+])
+def test_incomplete_known_plugin_arguments_are_rejected_with_location(kind, args, path):
+    value = config({'plugins': [{'tag': 'needs_configuration', 'type': kind, 'args': args}]})
+    with pytest.raises(OxidnsSettingsError) as raised:
+        generate_oxidns_config(value)
+    assert any(format_path(issue['path']) == f'plugins[0].{path}' and issue['severity'] == 'error'
+               for issue in raised.value.issues)
+    assert 'needs_configuration' not in str(raised.value)
+    assert 'needs_configuration' not in repr(raised.value.issues)
+
+
+def test_known_plugin_validation_keeps_defaults_unknown_values_and_quick_setup():
+    document = {'plugins': [
+        {'tag': 'reverse', 'type': 'reverse_lookup', 'args': {}},
+        {'tag': 'reverse_default', 'type': 'reverse_lookup'},
+        {'tag': 'reverse_options', 'type': 'reverse_lookup', 'args': {'ttl': None, 'handle_ptr': False}},
+        {'tag': 'future', 'type': 'future_plugin', 'args': {'empty': {}, 'values': [False, None, 0]}},
+        {'tag': 'main', 'type': 'sequence', 'args': [{'exec': 'forward 1.1.1.1'}]},
+        {'tag': 'dns', 'type': 'udp_server', 'args': {'listen': '${LISTEN}', 'entry': '${ENTRY}'}},
+        {'tag': 'tcp', 'type': 'tcp_server', 'args': {'listen': ':53', 'entry': 'main', 'cert': None, 'key': None}},
+        {'tag': 'http', 'type': 'http_server', 'args': {'listen': ':8053', 'entries': [], 'enable_http3': False}},
+        {'tag': 'doh', 'type': 'http_server', 'args': {'listen': ':443', 'entries': [{'path': '/dns-query', 'exec': 'main'}],
+                                                  'enable_http3': True, 'cert': '/tls/cert', 'key': '/tls/key'}},
+        {'tag': 'quic', 'type': 'quic_server', 'args': {'listen': ':853', 'entry': 'main', 'cert': '/tls/cert', 'key': '/tls/key'}},
+        {'tag': 'upstream', 'type': 'forward', 'args': {'upstreams': [{'addr': '1.1.1.1', 'timeout': None}], 'concurrent': None}},
+    ]}
+    value = config(document)
+    before = copy.deepcopy(value)
+    assert yaml.safe_load(generate_oxidns_config(value)) == document
+    assert value == before
+
+
+def test_included_incomplete_listener_is_rejected_after_expansion():
+    value = config({'include': ['servers.yaml'], 'plugins': []}, [
+        {'path': 'servers.yaml', 'encoding': 'text',
+         'content': 'plugins: [{tag: included_http, type: http_server, args: {}}]'},
+    ])
+    with pytest.raises(OxidnsSettingsError) as raised:
+        generate_oxidns_config(value)
+    assert any(issue['source'] == 'servers.yaml' and issue['path'] == ['plugins', 0, 'args', 'listen']
+               and issue['severity'] == 'error' for issue in raised.value.issues)
+    assert 'included_http' not in str(raised.value)
 
 
 def test_include_matches_official_nested_order_and_only_imports_plugins():
@@ -128,8 +215,11 @@ def test_complete_native_zip_and_agent_pack_binary_credentials_and_webui_exactly
         'api': {'http': {'listen': '127.0.0.1:9199', 'ssl': {'cert': './tls/server.crt', 'key': './tls/server.key', 'client_ca': './tls/ca.pem'},
                          'webui': {'root': './webui', 'index': 'index.html'}}},
         'plugins': [{'tag': 'geo', 'type': 'geosite', 'args': {'file': 'data/geo.dat', 'selectors': ['cn']}},
-                    {'tag': 'dot', 'type': 'tcp_server', 'args': {'cert': './tls/server.crt', 'key': './tls/server.key'}},
-                    {'tag': 'ros', 'type': 'ros_address_list', 'args': {'tls': {'ca': './tls/ca.pem'}, 'persistent': {'files': ['./rules/keep.txt']}}}],
+                    {'tag': 'dot', 'type': 'tcp_server', 'args': {'listen': ':853', 'entry': 'main', 'cert': './tls/server.crt', 'key': './tls/server.key'}},
+                    {'tag': 'ros', 'type': 'ros_address_list', 'args': {
+                        'address': '192.0.2.1:8729', 'username': 'test-user', 'password': 'test-password', 'address_list4': 'dns4',
+                        'tls': {'ca': './tls/ca.pem'}, 'persistent': {'files': ['./rules/keep.txt']}}},
+                    {'tag': 'main', 'type': 'sequence', 'args': [{'exec': 'accept'}]}],
     }
     contents = {'tls/server.crt': b'CERT', 'tls/server.key': b'PRIVATE KEY', 'tls/ca.pem': b'CA',
                 'webui/index.html': '<html>中文</html>'.encode(), 'rules/keep.txt': b'192.0.2.0/24', 'data/geo.dat': binary}
@@ -164,10 +254,13 @@ def test_native_provider_attachments_keep_semantics_and_bytes_in_zip_and_agent(m
 
 
 @pytest.mark.parametrize('document', [
-    {'api': {'http': {'ssl': {'cert': 'missing.crt'}}}, 'plugins': []},
-    {'api': {'http': {'webui': {'root': 'webui'}}}, 'plugins': []},
-    {'plugins': [{'tag': 'dot', 'type': 'tcp_server', 'args': {'key': './missing.key'}}]},
-    {'plugins': [{'tag': 'ros', 'type': 'ros_route', 'args': {'tls': {'ca': 'missing.pem'}}}]},
+    {'api': {'http': {'listen': '127.0.0.1:9199', 'ssl': {'cert': 'missing.crt', 'key': 'missing.key'}}}, 'plugins': []},
+    {'api': {'http': {'listen': '127.0.0.1:9199', 'webui': {'root': 'webui'}}}, 'plugins': []},
+    {'plugins': [{'tag': 'dot', 'type': 'tcp_server', 'args': {'listen': ':853', 'entry': 'main', 'cert': './missing.crt', 'key': './missing.key'}},
+                 {'tag': 'main', 'type': 'sequence', 'args': [{'exec': 'accept'}]}]},
+    {'plugins': [{'tag': 'ros', 'type': 'ros_route', 'args': {
+        'address': '192.0.2.1:8729', 'username': 'test-user', 'password': 'test-password',
+        'routing_table': 'main', 'gateway4': '192.0.2.254', 'tls': {'ca': 'missing.pem'}}}]},
 ])
 def test_zip_and_agent_both_refuse_missing_relative_native_resources(document):
     value = config(document)

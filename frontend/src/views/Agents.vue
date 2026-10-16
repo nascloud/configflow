@@ -138,6 +138,7 @@
               <Loader2 v-if="deploymentBusy(agent.id)" class="size-3.5 animate-spin text-primary-accent" />
               {{ deploymentStatusLabel(deployments[agent.id]) }}
             </p>
+            <p v-if="agent.service_type === 'oxidns' && !deployments[agent.id].manual_rollback" class="mt-1 mb-0 text-muted-foreground">发布先检查配置规则，再由目标 OxiDNS 核心校验；通过后才会替换配置。</p>
             <p v-if="deployments[agent.id].not_recorded && !deployments[agent.id].manual_rollback" class="mt-1 mb-0 text-muted-foreground">后端暂未记录此发布，正在继续查询。可使用原发布编号重新提交。</p>
             <p v-else-if="deployments[agent.id].query_error" class="mt-1 mb-0 text-muted-foreground">暂时无法确认结果，正在重新查询。</p>
             <p v-if="deployments[agent.id].error || deployments[agent.id].rollback_error || deployments[agent.id].rollback_message" class="mt-1 mb-0 break-words text-destructive-accent">

@@ -120,60 +120,64 @@ def managed_files(value):
     return result
 
 
-def native_document(settings):
+def native_document(settings, *, validate_arguments=True, sources=None):
     """Mirror OxiDNS include semantics: included plugins first, globals ignored."""
     assets = {item['path']: item['content'] for item in managed_files(settings.get('additional_files', []))}
     count = 0
+    origins = []
+    included_globals = []
+
+    def invalid(message, source='config.yaml', path=None):
+        error = OxidnsSettingsError(message)
+        error.issues = [{'path': path or [], 'source': source, 'message': message,
+                         'severity': 'error', 'code': 'structure'}]
+        return error
 
     def expand(document, name='config.yaml', parents=()):
         nonlocal count
         count += 1
         if len(parents) > 8 or count > 512:
-            raise OxidnsSettingsError('OxiDNS include 超过 8 层或文件数量限制')
+            raise invalid('OxiDNS include 超过 8 层或文件数量限制', name, ['include'])
         includes = document.pop('include', [])
         if not isinstance(includes, list) or any(not isinstance(item, str) for item in includes):
-            raise OxidnsSettingsError('OxiDNS include 必须为文件路径数组')
+            raise invalid('OxiDNS include 必须为文件路径数组', name, ['include'])
         plugins = document.get('plugins', [])
         if not isinstance(plugins, list):
-            raise OxidnsSettingsError('OxiDNS plugins 必须为数组')
+            raise invalid('OxiDNS plugins 必须为数组', name, ['plugins'])
         result = []
-        for reference in includes:
+        for include_index, reference in enumerate(includes):
             if (not reference or reference.startswith('/') or '${' in reference
                     or '\\' in reference or any(ord(c) < 32 for c in reference)):
-                raise OxidnsSettingsError('include 必须引用附加文件中的相对路径，不能使用绝对路径或环境变量')
+                raise invalid('include 必须引用附加文件中的相对路径，不能使用绝对路径或环境变量', name, ['include', include_index])
             # OxiDNS resolves each include relative to its declaring document.
             # Parent segments inside the managed root are legitimate.
             path = safe_relative_path(posixpath.normpath(posixpath.join(posixpath.dirname(name), reference)), 'include 路径')
             if path in parents or path == name:
-                raise OxidnsSettingsError('OxiDNS include 存在循环引用')
+                raise invalid('OxiDNS include 存在循环引用', name, ['include', include_index])
             if path not in assets:
-                raise OxidnsSettingsError('OxiDNS include 文件未在附加文件中提供')
+                raise invalid('OxiDNS include 文件未在附加文件中提供', name, ['include', include_index])
             try:
                 included = load_native_yaml(assets[path].decode('utf-8'), 'include 文件')
             except UnicodeDecodeError:
-                raise OxidnsSettingsError('OxiDNS include 文件必须为 UTF-8 YAML') from None
+                raise invalid('OxiDNS include 文件必须为 UTF-8 YAML', path) from None
+            except OxidnsSettingsError as exc:
+                raise invalid(str(exc), path) from None
             result.extend(expand(included, path, (*parents, name))['plugins'])
+        if name != 'config.yaml':
+            included_globals.append((name, {key: value for key, value in document.items() if key != 'plugins'}))
+        origins.extend({'source': name, 'index': index} for index in range(len(plugins)))
         document['plugins'] = result + plugins
         return document
 
     document = expand(load_native_yaml(settings.get('native_config', '')))
-    for key in ('runtime', 'log', 'network'):
-        if key in document and not isinstance(document[key], dict):
-            raise OxidnsSettingsError(f'OxiDNS {key} 必须为对象')
-    if 'api' in document and document['api'] is not None and not isinstance(document['api'], dict):
-        raise OxidnsSettingsError('OxiDNS api 必须为对象')
-    tags = set()
-    for plugin in document['plugins']:
-        if not isinstance(plugin, dict):
-            raise OxidnsSettingsError('OxiDNS 插件必须为对象')
-        tag = plugin.get('tag', '')
-        if not isinstance(tag, str) or not tag or ('${' not in tag and (len(tag) > 64 or not TAG.fullmatch(tag) or tag.startswith(('qs.exec.', 'qs.match.', 'qs.cron.')))):
-            raise OxidnsSettingsError('OxiDNS 插件 tag 必须为有效的 1–64 位 ASCII 标识')
-        if tag in tags:
-            raise OxidnsSettingsError(f'OxiDNS 插件 tag 重复：{tag}')
-        tags.add(tag)
-        if not isinstance(plugin.get('type'), str) or not plugin['type'].strip():
-            raise OxidnsSettingsError('OxiDNS 插件 type 必须为非空文本')
+    metadata = {'plugins': origins, 'includes': included_globals}
+    if sources is not None:
+        sources.update(metadata)
+    if validate_arguments:
+        from backend.common.oxidns_validation import validate_expanded_document, OxidnsValidationError
+        issues = validate_expanded_document(document, metadata)
+        if any(item['severity'] == 'error' for item in issues):
+            raise OxidnsValidationError(issues)
     return document
 
 

@@ -483,9 +483,35 @@ class AgentManager:
 
     def activate_deployment(self, agent_id, deployment_id):
         state = self.get_deployment(agent_id, deployment_id)
+        agent = self.get_agent_by_id(agent_id)
+        if agent and agent.get('service_type') == 'oxidns':
+            if state.get('status') == 'succeeded' and not state.get('http_status'):
+                return state
+            if state.get('status') == 'ready' and not state.get('http_status'):
+                if state.get('pending'):
+                    return {**state, 'success': False, 'http_status': 409,
+                            'message': '尚未确认 Agent 候选状态，请稍后重试激活'}
+                from .oxidns_validation_receipt import receipt_matches
+                if not receipt_matches(agent, state):
+                    # Leave the running service and remote candidate untouched.
+                    # End this server task so a new checked push is possible.
+                    def reject_unchecked(agents):
+                        current = next(item for item in agents if item['id'] == agent_id)
+                        task = current['deployments'][deployment_id]
+                        # A simultaneous status poll may have observed progress.
+                        # Never turn a transaction already applying into failure.
+                        if task.get('status') != 'ready' or task.get('sha256') != state.get('sha256'):
+                            return {**task, 'success': False, 'http_status': 409,
+                                    'message': '候选状态已变化，请刷新后重试'}
+                        task.update(success=False, status='failed', failed_stage='verifying', http_status=409,
+                                    message='候选配置缺少当前规则的校验证明，已停止激活。请重新推送配置并完成校验。',
+                                    updated_at=datetime.now().isoformat())
+                        if (current.get('latest_deployment') or {}).get('deployment_id') == deployment_id:
+                            current['latest_deployment'] = task.copy()
+                        return task.copy()
+                    return self._update_agents(reject_unchecked)
         if state.get('http_status') or state.get('status') != 'ready':
             return {**state, 'success': False, 'message': 'Deployment must be ready before activation', 'http_status': 409}
-        agent = self.get_agent_by_id(agent_id)
         try:
             result = self._deployment_request(agent, 'post', f'deployments/{deployment_id}/activate')
             if result.get('http_status'):
@@ -556,7 +582,7 @@ class AgentManager:
             return task.copy()
         return self._update_agents(cancel)
 
-    def _remember_deployment_content(self, agent_id, bundle, base_url):
+    def _remember_deployment_content(self, agent_id, bundle, base_url, validation_receipt=None):
         """Persist trusted preparation metadata, never fields from an Agent response."""
         from .deployment_bundle import deployment_content_fingerprint
         manifest = bundle.manifest
@@ -570,6 +596,8 @@ class AgentManager:
                     or agent.get('service_type') != prepared['service_type']):
                 raise ValueError('Deployment ownership changed during preparation')
             state['prepared_content'] = prepared
+            if validation_receipt is not None:
+                state['oxidns_validation_receipt'] = deepcopy(validation_receipt)
         self._update_agents(remember)
 
     def publish_deployment(self, agent_id, bundle, *, activate=True, config_revision=None, base_url=''):
@@ -599,7 +627,11 @@ class AgentManager:
                     return {'success': False, 'deployment_id': deployment_id, 'http_status': 409,
                             'message': 'Deployment ID already belongs to different content'}
                 return self.get_deployment(agent_id, deployment_id)
-            self._remember_deployment_content(agent_id, bundle, base_url)
+            validation_receipt = None
+            if agent.get('service_type') == 'oxidns':
+                from .oxidns_validation_receipt import validate_bundle
+                validation_receipt = validate_bundle(agent_id, bundle)
+            self._remember_deployment_content(agent_id, bundle, base_url, validation_receipt)
             # Persist before the request: a lost response can still be reconciled.
             self.record_deployment(agent_id, deployment_id, {
                 'success': True, 'status': 'uploading', 'submitted': True,

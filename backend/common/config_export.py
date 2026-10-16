@@ -20,7 +20,7 @@ def redact_oxidns_settings(settings: Any) -> Any:
     Full administrator backups remain restorable. Upstream/native YAML strings
     can contain embedded credentials, so omit those opaque fields completely.
     """
-    opaque_fields = {'custom_config', 'native_config', 'local_dns', 'remote_dns', 'fallback_dns'}
+    opaque_fields = {'custom_config', 'native_config', 'template_base_config', 'legacy_native_config', 'local_dns', 'remote_dns', 'fallback_dns'}
     credential_fields = {'password', 'username', 'token', 'secret', 'authorization',
                          'private_key', 'private-key', 'key', 'socks5', 'proxy',
                          'url', 'urls', 'headers', 'bootstrap_rules'}

@@ -401,7 +401,7 @@ def handle_custom_oxidns_config():
         def update(config):
             settings = dict(config.get('oxidns', {}))
             settings['custom_config'] = data['config']
-            config['oxidns'] = normalize_oxidns_settings(settings)
+            config['oxidns'] = normalize_oxidns_settings(settings, validate_native_arguments=False)
         update_config_transaction(update)
     except ValueError as error:
         return jsonify({'success': False, 'message': str(error)}), 400

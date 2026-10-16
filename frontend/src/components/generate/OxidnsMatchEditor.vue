@@ -3,7 +3,7 @@
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex w-full items-center gap-1 sm:w-auto">
         <span class="text-sm font-medium">自定义匹配</span>
-        <FieldHelp label="自定义匹配" text="按条目顺序执行；同一条目的多个条件需要同时满足。暂停的条目不参与生成。扩展字段可在 YAML 中编辑，切换模式保留其值；无效 YAML 会保留为草稿，修正后才能保存。" />
+        <FieldHelp label="自定义匹配" :text="allowDisable ? '按条目顺序执行；同一条目的多个条件需要同时满足。暂停的条目不参与生成。扩展字段可在 YAML 中编辑，切换模式保留其值；无效 YAML 会保留为草稿，修正后才能保存。' : '按条目顺序执行；同一条目的多个条件需要同时满足。这里编辑实际执行的匹配项，不包含暂停状态；删除条目可移除规则。扩展字段可在 YAML 中编辑，无效输入会保留为草稿，修正后才能保存。'" />
       </div>
       <div class="flex items-center gap-2">
         <OxidnsEditorModeToggle :model-value="mode" :options="[{ value: 'entries', label: '条目' }, { value: 'yaml', label: 'YAML' }]" label="自定义匹配编辑模式" :disabled="disabled" @update:model-value="changeMode" />
@@ -18,7 +18,7 @@
       <section v-for="(item, index) in items" :key="item.key" class="flex min-w-0 flex-col gap-3 rounded-lg border border-border bg-background/40 p-3" :aria-label="`匹配项 ${index + 1}`" data-testid="match-entry">
         <div class="flex flex-wrap items-center gap-2">
           <span class="text-sm font-medium">匹配项 {{ index + 1 }}</span>
-          <label class="flex min-h-11 items-center gap-2 text-xs text-muted-foreground">
+          <label v-if="allowDisable" class="flex min-h-11 items-center gap-2 text-xs text-muted-foreground">
             <Switch :model-value="item.data.enabled !== false" :disabled="disabled" :aria-label="`启用匹配项 ${index + 1}`" @update:model-value="setEnabled(item, $event)" />
             {{ item.data.enabled === false ? '已暂停' : '启用' }}
           </label>
@@ -55,7 +55,7 @@
       </section>
     </template>
 
-    <FormField v-else label="自定义匹配 YAML" html-for="oxi-custom-matches" help="使用 YAML 列表。每项的 matches 可为字符串或字符串列表，exec 为执行动作，enabled: false 表示暂停。清空所有匹配项可填写 []。">
+    <FormField v-else label="自定义匹配 YAML" html-for="oxi-custom-matches" :help="allowDisable ? '使用 YAML 列表。每项的 matches 可为字符串或字符串列表，exec 为执行动作，enabled: false 表示暂停。清空所有匹配项可填写 []。' : '使用实际执行的 YAML 列表。每项的 matches 可为字符串或字符串列表，exec 为执行动作，不支持 enabled 暂停字段。清空所有匹配项可填写 []。'">
       <Textarea id="oxi-custom-matches" :model-value="yamlDraft" :rows="12" class="min-w-0 font-mono text-xs" :disabled="disabled" :aria-invalid="Boolean(error)" :aria-describedby="error ? 'oxi-match-error' : undefined" spellcheck="false" placeholder="- matches: qname full:example.com&#10;  exec: goto china_dns" @update:model-value="updateYaml(String($event))" />
     </FormField>
     <p v-if="error" id="oxi-match-error" role="alert" class="m-0 whitespace-pre-wrap break-words rounded-lg bg-destructive-soft p-3 text-xs text-destructive-accent">{{ error }}</p>
@@ -77,7 +77,7 @@ import { Textarea } from '@/components/ui/textarea'
 
 type Match = Record<string, any>
 type Item = { key: string; data: Match; customAction: boolean }
-const props = withDefaults(defineProps<{ modelValue: Match[]; disabled?: boolean }>(), { disabled: false })
+const props = withDefaults(defineProps<{ modelValue: Match[]; disabled?: boolean; allowDisable?: boolean }>(), { disabled: false, allowDisable: true })
 const emit = defineEmits<{
   (event: 'update:modelValue', value: Match[]): void
   (event: 'validity', valid: boolean): void
@@ -126,6 +126,7 @@ function validate(value: unknown): asserts value is Match[] {
   value.forEach((entry, index) => {
     const title = `匹配项 ${index + 1}`
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`${title} 必须是对象。`)
+    if (!props.allowDisable && 'enabled' in entry) throw new Error(`${title} 是实际执行规则，不支持 enabled 暂停字段；请删除该字段，或删除整条规则。`)
     if ('enabled' in entry && typeof entry.enabled !== 'boolean') throw new Error(`${title} 的 enabled 必须为布尔值。`)
     if ('matches' in entry && typeof entry.matches !== 'string' && !(Array.isArray(entry.matches) && entry.matches.every((condition: unknown) => typeof condition === 'string'))) throw new Error(`${title} 的 matches 必须为字符串或字符串列表。`)
     if ('exec' in entry && typeof entry.exec !== 'string') throw new Error(`${title} 的 exec 必须为字符串。`)
@@ -185,7 +186,7 @@ function changeMode(next: 'entries' | 'yaml') {
   mode.value = next
 }
 function addItem() {
-  items.value.push(...makeItems([{ enabled: true, matches: [''], exec: 'goto china_dns' }]))
+  items.value.push(...makeItems([{ ...(props.allowDisable ? { enabled: true } : {}), matches: [''], exec: 'goto china_dns' }]))
   publishItems()
 }
 function removeItem(index: number) {

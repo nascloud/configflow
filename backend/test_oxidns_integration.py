@@ -120,6 +120,59 @@ def test_native_settings_files_clone_and_download_roundtrip(oxidns_app):
     assert repository.get_profile('native-copy')['oxidns'] == repository.get_profile('office')['oxidns']
 
 
+@pytest.mark.parametrize('kind', ['http_server', 'quic_server', 'udp_server', 'tcp_server', 'forward'])
+def test_incomplete_native_plugin_can_be_saved_as_draft_but_not_rendered(oxidns_app, kind):
+    app, repository = oxidns_app
+    client = app.test_client()
+    before = repository.get_profile('office')
+    settings = {'config_mode': 'native', 'native_config': yaml.safe_dump({
+        'plugins': [{'tag': 'unfinished', 'type': kind, 'args': {}}],
+    })}
+    saved = client.post('/api/profiles/office/oxidns/settings', json=settings)
+    assert saved.status_code == 200, saved.get_json()
+    assert saved.get_json()['draft'] is True
+    assert repository.get_profile('office')['oxidns']['native_config'] == settings['native_config']
+    assert repository.get_profile('office')['mosdns'] == before['mosdns']
+    persisted = copy.deepcopy(repository.get_profile('office'))
+    response = client.post('/api/profiles/office/oxidns/render', json={'settings': settings})
+    assert response.status_code == 400, response.get_json()
+    assert 'plugins[0].args.' in response.get_json()['message']
+    assert 'unfinished' not in response.get_json()['message']
+    assert repository.get_profile('office') == persisted
+
+
+def test_previously_saved_incomplete_plugin_remains_readable_and_can_be_repaired(oxidns_app):
+    app, repository = oxidns_app
+    client = app.test_client()
+    legacy = {'config_mode': 'native', 'native_config': yaml.safe_dump({
+        'plugins': [{'tag': 'unfinished', 'type': 'http_server', 'args': {}},
+                    {'tag': 'reverse', 'type': 'reverse_lookup', 'args': {}}],
+    })}
+    repository.save_profile('office', {'oxidns': legacy})
+    response = client.get('/api/profiles/office/oxidns/settings')
+    assert response.status_code == 200, response.get_json()
+    settings = response.get_json()
+    assert settings['native_config'] == legacy['native_config']
+    for suffix in ('', '/preview'):
+        blocked = client.post(f'/api/profiles/office/generate/oxidns{suffix}', json={})
+        assert blocked.status_code == 400, blocked.get_json()
+        assert 'plugins[0].args.listen' in blocked.get_json()['message']
+        assert 'unfinished' not in blocked.get_json()['message']
+    blocked = client.get('/api/config/office/oxidns?token=admin-token')
+    assert blocked.status_code == 400, blocked.get_json()
+    assert 'plugins[0].args.listen' in blocked.get_json()['message']
+    assert 'unfinished' not in blocked.get_json()['message']
+    document = yaml.safe_load(settings['native_config'])
+    document['plugins'][0]['args'] = {'listen': ':8053', 'entries': []}
+    settings['native_config'] = yaml.safe_dump(document)
+    response = client.post('/api/profiles/office/oxidns/settings', json=settings)
+    assert response.status_code == 200, response.get_json()
+    assert yaml.safe_load(repository.get_profile('office')['oxidns']['native_config']) == document
+    repaired = client.post('/api/profiles/office/generate/oxidns/preview', json={})
+    assert repaired.status_code == 200, repaired.get_json()
+    assert yaml.safe_load(repaired.get_json()['content']) == document
+
+
 def test_preview_subscription_and_complete_zip_match_selected_profile(oxidns_app):
     app, repository = oxidns_app
     client = app.test_client()

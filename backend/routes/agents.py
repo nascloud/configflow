@@ -145,7 +145,8 @@ def _public_agent(agent):
 
 
 def _public_deployment(record):
-    return {key: value for key, value in record.items() if key != 'prepared_content'}
+    return {key: value for key, value in record.items()
+            if key not in ('prepared_content', 'oxidns_validation_receipt')}
 
 
 def _agent_with_content_sync(agent, snapshots):
@@ -918,7 +919,11 @@ def _prepare_transactional_content(agent, config_data, *, base_url='', deploymen
         custom_files = get_mosdns_custom_files(config_data)
     elif service_type == 'oxidns':
         from backend.converters.oxidns import generate_oxidns_config, get_oxidns_ruleset_downloads, get_oxidns_custom_files
+        from backend.common.oxidns_validation import require_valid_document
         config_content = generate_oxidns_config(config_data, base_url=base_url)
+        # This covers both legacy template output and native drafts, before
+        # downloading or uploading any candidate deployment resources.
+        require_valid_document(yaml.safe_load(config_content))
         ruleset_downloads = get_oxidns_ruleset_downloads(config_data, base_url=base_url)
         custom_files = get_oxidns_custom_files(config_data)
     else:
@@ -991,7 +996,7 @@ def push_config_to_agent(agent_id):
         reservation = agent_manager.begin_deployment(agent_id, deployment_id)
         if isinstance(reservation, dict):
             if not reservation.get('success'):
-                return jsonify(reservation), reservation.get('http_status', 409)
+                return jsonify(_public_deployment(reservation)), reservation.get('http_status', 409)
             if reservation.get('existing'):
                 return _deployment_response(agent_manager.get_deployment(agent_id, deployment_id))
         owns_preparation = True
@@ -1014,6 +1019,8 @@ def push_config_to_agent(agent_id):
         return _deployment_response(result)
     except (StrategyReferenceError, DeploymentPreparationError, ValueError) as exc:
         result = {'success': False, 'status': 'failed', 'message': str(exc)}
+        if hasattr(exc, 'issues'):
+            result['issues'] = exc.issues
         if deployment_id:
             agent_manager.record_deployment(agent_id, deployment_id, result)
             result['deployment_id'] = deployment_id

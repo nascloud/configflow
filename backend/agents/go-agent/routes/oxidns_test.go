@@ -218,9 +218,11 @@ func TestOxiDNSAbsoluteAndEnvironmentStateAreCheckedInIsolation(t *testing.T) {
 	if err := os.WriteFile(live, []byte("live state untouched"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// The native checker must only see the shadow runtime path, and the original
-	// document must be the one that is eventually committed to the service.
-	script := "#!/bin/sh\n[ \"$1\" = check ] || exit 91\ngrep -q '.configflow-check-state/' \"$3\" || exit 92\nif grep -q 'EXTERNAL_DB' \"$3\"; then exit 93; fi\n"
+	// Runtime paths are isolated, but their original expressions remain in inert
+	// metadata for the official core's environment expansion. Only the original
+	// document is eventually committed to the service.
+	t.Setenv("EXTERNAL_DB", filepath.Join(t.TempDir(), "records.sqlite"))
+	script := "#!/bin/sh\n[ \"$1\" = check ] || exit 91\ngrep -q '.configflow-check-state/' \"$3\" || exit 92\ngrep -Fq '${EXTERNAL_DB}' \"$3\" || exit 93\ngrep -q '^__configflow_check_runtime_expressions:' \"$3\" || exit 94\n"
 	if err := os.WriteFile(cfg.ServiceBinary, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
