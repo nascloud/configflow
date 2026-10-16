@@ -25,9 +25,9 @@
             <FormField v-for="key in ['bootstrap', 'dial_addr']" :key="key" :label="key === 'bootstrap' ? 'Bootstrap DNS' : '连接地址（dial_addr）'">
               <Input :model-value="upstreamField(row.value, key)" :aria-label="`${label}第 ${index + 1} 项 ${key}`" class="min-h-11 min-w-0 font-mono text-xs" @update:model-value="editUpstream(index, key, String($event))" />
             </FormField>
-            <FormField label="连接流水线">
+            <FormField label="连接流水线（enable_pipeline）">
               <Select :model-value="pipeline(row.value)" @update:model-value="editUpstream(index, 'enable_pipeline', $event === 'default' ? undefined : $event === 'true')">
-                <SelectTrigger class="min-h-11" :aria-label="`${label}第 ${index + 1} 项连接流水线`"><SelectValue /></SelectTrigger>
+                <SelectTrigger class="min-h-11" :aria-label="`${label}第 ${index + 1} 项连接流水线（enable_pipeline）`"><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="default">核心默认</SelectItem><SelectItem value="true">启用</SelectItem><SelectItem value="false">关闭</SelectItem></SelectContent>
               </Select>
             </FormField>
