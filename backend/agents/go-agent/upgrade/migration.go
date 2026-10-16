@@ -10,7 +10,7 @@ import (
 	"syscall"
 )
 
-const Version = "1.6.0-go"
+const Version = "1.6.1-go"
 
 type Config struct {
 	Path   string
@@ -83,7 +83,7 @@ func (c *Config) InferLifecycle() error {
 		return fmt.Errorf("invalid Agent API port")
 	}
 	c.Values["service_manager"], c.Values["service_unit"] = manager, unit
-	// Agent migration only installs recovery dependencies. The core may be
+	// Agent migration only updates lifecycle metadata. The core may be
 	// installed later, and configured command names are resolved through PATH
 	// when deployment invokes the core, not relative to the Agent directory.
 	if c.String("service_binary") == "" {
@@ -93,20 +93,31 @@ func (c *Config) InferLifecycle() error {
 }
 
 type FileChange struct {
-	Path string      `json:"path"`
-	Data []byte      `json:"data"`
-	Mode os.FileMode `json:"mode"`
+	Path         string      `json:"path"`
+	Data         []byte      `json:"data"`
+	Mode         os.FileMode `json:"mode"`
+	Delete       bool        `json:"delete,omitempty"`
+	AllowSymlink bool        `json:"allow_symlink,omitempty"`
 }
 type Snapshot struct {
-	Path    string      `json:"path"`
-	Existed bool        `json:"existed"`
-	Data    []byte      `json:"data,omitempty"`
-	Mode    os.FileMode `json:"mode"`
-	UID     int         `json:"uid"`
-	GID     int         `json:"gid"`
+	Path       string      `json:"path"`
+	Existed    bool        `json:"existed"`
+	Data       []byte      `json:"data,omitempty"`
+	Mode       os.FileMode `json:"mode"`
+	UID        int         `json:"uid"`
+	GID        int         `json:"gid"`
+	LinkTarget string      `json:"link_target,omitempty"`
 }
 
 func Capture(path string) (Snapshot, error) {
+	return capture(path, false)
+}
+
+func captureChange(change FileChange) (Snapshot, error) {
+	return capture(change.Path, change.Delete && change.AllowSymlink)
+}
+
+func capture(path string, allowSymlink bool) (Snapshot, error) {
 	s := Snapshot{Path: path}
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
@@ -115,12 +126,16 @@ func Capture(path string) (Snapshot, error) {
 	if err != nil {
 		return s, err
 	}
-	if !info.Mode().IsRegular() {
+	if !info.Mode().IsRegular() && !(allowSymlink && info.Mode()&os.ModeSymlink != 0) {
 		return s, fmt.Errorf("refusing nonregular upgrade target: %s", path)
 	}
 	s.Existed, s.Mode = true, info.Mode().Perm()
 	if st, ok := info.Sys().(*syscall.Stat_t); ok {
 		s.UID, s.GID = int(st.Uid), int(st.Gid)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		s.LinkTarget, err = os.Readlink(path)
+		return s, err
 	}
 	s.Data, err = os.ReadFile(path)
 	return s, err
@@ -168,6 +183,12 @@ func Restore(snapshots []Snapshot) error {
 			}
 			continue
 		}
+		if s.LinkTarget != "" {
+			if err := restoreSymlink(s); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := AtomicWrite(s.Path, s.Data, s.Mode); err != nil {
 			return err
 		}
@@ -185,8 +206,8 @@ func systemdQuote(value string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%").Replace(value) + `"`
 }
 
-// MigrationPlan only changes Agent settings and ConfigFlow-owned startup files.
-// Core configuration and user unit contents are never rewritten.
+// MigrationPlan removes ConfigFlow's old mandatory recovery gates. Core
+// configuration and unrelated settings in service definitions are preserved.
 func MigrationPlan(c *Config, binary, systemRoot string) ([]FileChange, error) {
 	if err := c.InferLifecycle(); err != nil {
 		return nil, err
@@ -194,55 +215,30 @@ func MigrationPlan(c *Config, binary, systemRoot string) ([]FileChange, error) {
 	if !filepath.IsAbs(binary) || strings.ContainsAny(binary, "\r\n\x00") {
 		return nil, fmt.Errorf("invalid binary path")
 	}
-	gate := "configflow-recover-" + c.String("service_type")
-	unit := c.String("service_unit")
-	var changes []FileChange
-	if c.String("service_manager") == "systemd" {
-		data := "[Unit]\nDescription=ConfigFlow interrupted deployment recovery\nAfter=local-fs.target\nBefore=" + unit + ".service\n\n[Service]\nType=oneshot\nExecStart=" + systemdQuote(binary) + " -config " + systemdQuote(c.Path) + " -recover-only\nRemainAfterExit=yes\n"
-		changes = append(changes, FileChange{filepath.Join(systemRoot, "etc/systemd/system", gate+".service"), []byte(data), 0644})
-		data = "[Unit]\nRequires=" + gate + ".service\nAfter=" + gate + ".service\n"
-		changes = append(changes, FileChange{filepath.Join(systemRoot, "etc/systemd/system", unit+".service.d/configflow-recovery.conf"), []byte(data), 0644})
-	} else {
-		data := "#!/sbin/openrc-run\nname=\"ConfigFlow deployment recovery\"\ndepend() {\n need localmount\n before " + unit + "\n}\nstart() {\n " + shellQuote(binary) + " -config " + shellQuote(c.Path) + " -recover-only\n}\n"
-		changes = append(changes, FileChange{filepath.Join(systemRoot, "etc/init.d", gate), []byte(data), 0755})
-		path := filepath.Join(systemRoot, "etc/conf.d", unit)
-		original, err := os.ReadFile(path)
-		if err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
-		begin, end := "# BEGIN CONFIGFLOW RECOVERY "+c.String("service_type"), "# END CONFIGFLOW RECOVERY "+c.String("service_type")
-		text := string(original)
-		if start := strings.Index(text, begin); start >= 0 {
-			finish := strings.Index(text[start:], end)
-			if finish < 0 {
-				return nil, fmt.Errorf("malformed OpenRC recovery section")
-			}
-			text = text[:start] + strings.TrimPrefix(text[start+finish+len(end):], "\n")
-		}
-		if text != "" && !strings.HasSuffix(text, "\n") {
-			text += "\n"
-		}
-		text += begin + "\nrc_need=\"${rc_need:-} " + gate + "\"\n" + end + "\n"
-		mode := os.FileMode(0644)
-		if stat, err := os.Stat(path); err == nil {
-			mode = stat.Mode().Perm()
-		}
-		changes = append(changes, FileChange{path, []byte(text), mode})
+	changes, err := recoveryCleanupPlan(c, systemRoot)
+	if err != nil {
+		return nil, err
 	}
-	c.Values["upgrade_schema"] = 1
+	c.Values["upgrade_schema"] = migrationSchema
 	b, err := json.MarshalIndent(c.Values, "", "  ")
 	if err != nil {
 		return nil, err
 	}
-	changes = append(changes, FileChange{c.Path, b, 0600})
+	changes = append(changes, FileChange{Path: c.Path, Data: b, Mode: 0600})
 	return changes, nil
 }
 
 func ApplyChanges(changes []FileChange) error {
 	for _, change := range changes {
-		before, err := Capture(change.Path)
+		before, err := captureChange(change)
 		if err != nil {
 			return err
+		}
+		if change.Delete {
+			if err := removeFile(change.Path); err != nil {
+				return err
+			}
+			continue
 		}
 		if err = AtomicWrite(change.Path, change.Data, change.Mode); err != nil {
 			return err

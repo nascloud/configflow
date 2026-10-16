@@ -1048,8 +1048,9 @@ func rollbackDeployment(cfg *Config, s *DeploymentState, start bool) {
 	}
 }
 
-// RecoverDeployments restores unfinished transactions. Bootstraps call with
-// startService=false BEFORE service autostart; the normal Agent uses true.
+// RecoverDeployments explicitly restores unfinished transactions. Normal Agent
+// startup uses CheckDeployments instead. startService=false is only safe while
+// the core is stopped; interactive recovery uses true to manage its lifecycle.
 func RecoverDeployments(cfg *Config, startService bool) error {
 	release, e := AcquireServiceOperation(cfg)
 	if e != nil {

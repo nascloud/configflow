@@ -1,10 +1,17 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.6.0-go"
+LATEST_AGENT_VERSION = "1.6.1-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.6.1-go": {
+        "date": "2026-10-16",
+        "features": [
+            "Mihomo、MosDNS、OxiDNS 独立启动，升级自动清理旧恢复服务依赖",
+            "Agent 启动仅检查并提示未完成发布，保留推送备份、健康检查和失败回滚"
+        ]
+    },
     "1.6.0-go": {
         "date": "2026-10-10",
         "features": ["区域检测：经 Mihomo 本机检测入口切换节点访问服务与域名，用于判断解锁情况与地区限制"]

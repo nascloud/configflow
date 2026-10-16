@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from acceptance import Target, dns_answer
+from acceptance import Target, bundle, dns_answer, service_request
 
 
 def run(*args, check=True):
@@ -55,6 +55,18 @@ def wait_http(url):
     raise AssertionError('not ready: ' + url)
 
 
+def start_direct_deployment(target):
+    """OxiDNS uses the actual Agent API; the old backend profile fixture is dual-core."""
+    target.agent_id = 'upgrade-test-' + target.kind
+    ident, archive = bundle(target, target.files('new'))
+    headers = {'Authorization': 'Bearer upgrade-acceptance-token',
+               'Content-Type': 'application/gzip', 'X-Deployment-ID': ident,
+               'X-Content-SHA256': hashlib.sha256(archive).hexdigest(), 'X-Activate': 'true'}
+    code, result = service_request('http://127.0.0.1:23680/api/deployments', 'POST', archive, headers)
+    assert code == 202, (code, result)
+    return ident
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path, required=True)
@@ -63,6 +75,8 @@ def main():
     parser.add_argument('--legacy-binary', default='legacy-agent')
     parser.add_argument('--legacy-version', default='1.1.0-go')
     parser.add_argument('--legacy-revision', default='98e5550')
+    parser.add_argument('--kinds', nargs='+', choices=['mihomo', 'mosdns', 'oxidns'],
+                        default=['mihomo', 'mosdns', 'oxidns'])
     args = parser.parse_args()
     root = args.root.resolve()
     binary = Path('/usr/local/bin/configflow-agent')
@@ -70,14 +84,16 @@ def main():
     updates = Path('/usr/local/bin/.configflow-updates')
     agent_unit = Path('/run/systemd/system/configflow-agent.service')
     owned = [binary, identity, updates, agent_unit]
-    for kind in ('mihomo', 'mosdns'):
+    for kind in args.kinds:
         owned += [Path('/etc/systemd/system/configflow-recover-' + kind + '.service'),
                   Path('/etc/systemd/system/configflow-upgrade-test-' + kind + '.service.d'),
                   Path('/run/systemd/system/configflow-upgrade-test-' + kind + '.service')]
     assert 'LoadState=not-found' in run('systemctl', 'show', 'configflow-agent', '-p', 'LoadState')
     assert not [str(path) for path in owned if path.exists()], 'refusing to touch an existing native Agent installation'
     name = 'configflow-online-upgrade-' + uuid.uuid4().hex[:8]
-    report = {'success': False, 'cases': [], 'legacy_revision': args.legacy_revision, 'legacy_version': args.legacy_version, 'target_version': '1.6.0-go'}
+    target_version = run(root / 'new-agent', '-version').strip()
+    assert target_version, 'New Agent did not report a version'
+    report = {'success': False, 'cases': [], 'legacy_revision': args.legacy_revision, 'legacy_version': args.legacy_version, 'target_version': target_version}
     report['new_agent_sha256'] = hashlib.sha256((root / 'new-agent').read_bytes()).hexdigest()
     report['legacy_agent_sha256'] = hashlib.sha256((root / args.legacy_binary).read_bytes()).hexdigest()
     jobs, units = [], []
@@ -88,7 +104,7 @@ def main():
             '-e', 'PYTHONPATH=/src', '--entrypoint', 'python3', 'thsrite/config-flow:latest',
             '/src/backend/agents/go-agent/integration/upgrade_backend.py', '--root', '/acceptance')
         wait_http(base + '/test/ready')
-        for kind in ('mihomo', 'mosdns'):
+        for kind in args.kinds:
             target = Target(root, args.docker, 'native', kind, name)
             target.base = 23600
             target.core_port = 23690 if kind == 'mihomo' else 23653
@@ -96,7 +112,7 @@ def main():
             core_unit = 'configflow-upgrade-test-' + kind + '.service'
             core_binary = args.core_root / 'bin' / kind
             command = str(core_binary) + ' -d ' + str(target.live)
-            if kind == 'mosdns':
+            if kind != 'mihomo':
                 command = str(core_binary) + ' start -c ' + str(target.live / 'config.yaml') + ' -d ' + str(target.live)
             Path('/run/systemd/system', core_unit).write_text('[Service]\nType=simple\nExecStart=' + command + '\n')
             units.append(core_unit)
@@ -177,18 +193,43 @@ def main():
             reset_old()
             update('legacy_one_click_success', 'succeeded')
             info = wait_http('http://127.0.0.1:23680/api/upgrade-info')
-            assert info['version'] == '1.6.0-go' and info['migration_ready']
-            assert 'configflow-recover-' + kind in run('systemctl', 'show', core_unit, '-p', 'Requires')
+            assert info['version'] == target_version and info['migration_ready']
+            gate = 'configflow-recover-' + kind
+            gate_path = Path('/etc/systemd/system', gate + '.service')
+            dropin_dir = Path('/etc/systemd/system', core_unit + '.d')
+            recovery_dropin = dropin_dir / 'configflow-recovery.conf'
+            assert gate not in run('systemctl', 'show', core_unit, '-p', 'Requires', '-p', 'After')
+            assert not gate_path.exists() and not recovery_dropin.exists()
+            # Recreate the previous release's dependency to verify upgrade cleanup.
+            # Its failing command must never become a prerequisite for the core.
+            gate_path.write_text('[Unit]\nDescription=ConfigFlow interrupted deployment recovery\n'
+                                 '[Service]\nType=oneshot\nExecStart=/bin/false\nRemainAfterExit=yes\n')
+            dropin_dir.mkdir(exist_ok=True)
+            recovery_dropin.write_text('[Unit]\nRequires=' + gate + '.service\nAfter=' + gate + '.service\n')
+            custom_dropin = dropin_dir / 'acceptance-custom.conf'
+            custom_dropin.write_text('[Service]\nEnvironment=ACCEPTANCE_KEEP=1\n')
+            run('systemctl', 'daemon-reload')
+            assert gate in run('systemctl', 'show', core_unit, '-p', 'Requires')
             update('new_protocol_success', 'succeeded')
+            assert not gate_path.exists() and not recovery_dropin.exists()
+            assert custom_dropin.read_text() == '[Service]\nEnvironment=ACCEPTANCE_KEEP=1\n'
+            assert gate not in run('systemctl', 'show', core_unit, '-p', 'Requires', '-p', 'After')
+            report['cases'].append({'service': kind, 'case': 'upgrade_removes_legacy_recovery_dependency', 'status': 'succeeded'})
             update('download_http503', 'failed', 'http503')
             update('download_sha256_mismatch', 'failed', 'corrupt')
             update('new_executable_start_failure', 'rolled_back', 'bad_start')
             update('interrupted_update_worker', 'rolled_back', 'bad_start', True)
-            deployment_id = uuid.uuid4().hex
-            code, result = request(base + '/api/agents/upgrade-test-' + kind + '/push-config', {'deployment_id': deployment_id, 'restart': True})
-            assert code == 202, result
+            if kind == 'oxidns':
+                deployment_id = start_direct_deployment(target)
+            else:
+                deployment_id = uuid.uuid4().hex
+                code, result = request(base + '/api/agents/upgrade-test-' + kind + '/push-config', {'deployment_id': deployment_id, 'restart': True})
+                assert code == 202, result
+            status_url = ('http://127.0.0.1:23680/api/deployments/' + deployment_id if kind == 'oxidns'
+                          else base + '/api/agents/upgrade-test-' + kind + '/deployments/' + deployment_id)
             for _ in range(160):
-                _, result = request(base + '/api/agents/upgrade-test-' + kind + '/deployments/' + deployment_id)
+                code, result = request(status_url)
+                assert code == 200, result
                 if result['status'] == 'succeeded':
                     break
                 assert result['status'] not in ('failed', 'rolled_back', 'rollback_failed'), result
@@ -198,14 +239,15 @@ def main():
                 wait_http('http://127.0.0.1:23690/version')
             else:
                 assert dns_answer(23653) == '192.0.2.20'
-            report['cases'].append({'service': kind, 'case': 'publish_after_upgrade', 'status': 'succeeded'})
+            report['cases'].append({'service': kind, 'case': 'publish_after_upgrade', 'status': 'succeeded',
+                                    'entrypoint': 'agent_api' if kind == 'oxidns' else 'configflow_api'})
             print('PASS', kind, 'publish_after_upgrade', flush=True)
             run('systemctl', 'stop', 'configflow-agent', core_unit)
-            # Trigger the actual installed recovery gate before a fresh core start.
-            run('systemctl', 'stop', 'configflow-recover-' + kind, check=False)
+            # Core startup remains independent while the Agent is stopped.
             run('systemctl', 'start', core_unit)
-            assert run('systemctl', 'is-active', 'configflow-recover-' + kind).strip() == 'active'
-            report['cases'].append({'service': kind, 'case': 'recovery_gate_before_core', 'status': 'succeeded'})
+            assert run('systemctl', 'is-active', core_unit).strip() == 'active'
+            assert gate not in run('systemctl', 'show', core_unit, '-p', 'Requires', '-p', 'After')
+            report['cases'].append({'service': kind, 'case': 'core_starts_without_agent_or_recovery_gate', 'status': 'succeeded'})
             run('systemctl', 'stop', core_unit)
             shutil.rmtree(updates, ignore_errors=True)
         report['success'] = True
@@ -225,7 +267,7 @@ def main():
             Path('/etc/systemd/system', unit + '.service').unlink(missing_ok=True)
         for unit in units:
             run('systemctl', 'stop', unit, check=False)
-        for kind in ('mihomo', 'mosdns'):
+        for kind in args.kinds:
             run('systemctl', 'stop', 'configflow-recover-' + kind, check=False)
         for path in reversed(owned):
             if path.is_dir():

@@ -5,8 +5,8 @@ set -e
 # ConfigFlow Agent Docker Entrypoint (统一服务入口)
 # ------------------------------------------------------------------------------
 # 支持两种模式：
-#   1. 单服务模式：设置 SERVICE_TYPE=mihomo|mosdns（mihomo/mosdns 镜像使用）
-#   2. AIO 模式：设置 ENABLE_MIHOMO/ENABLE_MOSDNS（aio 镜像使用）
+#   1. 单服务模式：设置 SERVICE_TYPE=mihomo|mosdns|oxidns（独立核心镜像使用）
+#   2. AIO 模式：设置 ENABLE_MIHOMO/ENABLE_MOSDNS/ENABLE_OXIDNS（aio 镜像使用）
 # ==============================================================================
 
 SUPERVISORCTL_CMD="supervisorctl -c /etc/supervisor/supervisord.conf"
@@ -18,6 +18,10 @@ create_default_mihomo_config() {
     MIHOMO_CONFIG="${1:-/etc/mihomo/config.yaml}"
     mkdir -p "$(dirname "$MIHOMO_CONFIG")"
     if [ ! -f "$MIHOMO_CONFIG" ]; then
+        if [ -e "$(dirname "$MIHOMO_CONFIG")/.configflow-deployments" ]; then
+            echo "Mihomo config missing in a managed deployment directory; preserving files for manual recovery."
+            return 0
+        fi
         echo "Mihomo config not found, creating default config..."
         cat > "$MIHOMO_CONFIG" <<'EOFCONFIG'
 # Mihomo 默认配置
@@ -60,6 +64,10 @@ create_default_mosdns_config() {
     MOSDNS_CONFIG="${1:-/etc/mosdns/config.yaml}"
     mkdir -p "$(dirname "$MOSDNS_CONFIG")"
     if [ ! -f "$MOSDNS_CONFIG" ]; then
+        if [ -e "$(dirname "$MOSDNS_CONFIG")/.configflow-deployments" ]; then
+            echo "MosDNS config missing in a managed deployment directory; preserving files for manual recovery."
+            return 0
+        fi
         echo "MosDNS config not found, creating default config..."
         cat > "$MOSDNS_CONFIG" <<'EOFCONFIG'
 # MosDNS 默认配置
@@ -106,6 +114,10 @@ EOFCONFIG
 # The OxiDNS core owns state/, including learned rules and the recorder DB.
 create_default_oxidns_config() {
     OXIDNS_CONFIG="${1:-/etc/oxidns/config.yaml}"
+    if [ ! -f "$OXIDNS_CONFIG" ] && [ -e "$(dirname "$OXIDNS_CONFIG")/.configflow-deployments" ]; then
+        echo "OxiDNS config missing in a managed deployment directory; preserving files for manual recovery."
+        return 0
+    fi
     mkdir -p "$(dirname "$OXIDNS_CONFIG")/state"
     if [ ! -f "$OXIDNS_CONFIG" ]; then
         cat > "$OXIDNS_CONFIG" <<'EOFOXIDNS'
@@ -194,12 +206,6 @@ PYCONFIG
     echo "Agent config generated at $_config_file"
 }
 
-recover_service() {
-    # This happens before defaults and before supervisord can start a core.
-    # Failure propagates through set -e; never boot a partially restored config.
-    /usr/local/bin/configflow-agent -config "${AGENT_DIR}/config-$1.json" -recover-only
-}
-
 configure_supervisor_core() {
     python3 - "$1" "$2" <<'PYSUPERVISOR'
 import shlex
@@ -247,7 +253,6 @@ if [ -n "$SERVICE_TYPE" ]; then
             "${AGENT_NAME:-mihomo-agent}" \
             "${AGENT_PORT:-8080}" \
             "${CONFIG_PATH:-/etc/mihomo/config.yaml}"
-        recover_service mihomo
         create_default_mihomo_config "${CONFIG_PATH:-/etc/mihomo/config.yaml}"
         configure_supervisor_core mihomo "${CONFIG_PATH:-/etc/mihomo/config.yaml}"
         set_supervisor_autostart /etc/supervisor/conf.d/agent-mihomo.conf true
@@ -257,14 +262,12 @@ if [ -n "$SERVICE_TYPE" ]; then
             "${AGENT_NAME:-mosdns-agent}" \
             "${AGENT_PORT:-8080}" \
             "${CONFIG_PATH:-/etc/mosdns/config.yaml}"
-        recover_service mosdns
         create_default_mosdns_config "${CONFIG_PATH:-/etc/mosdns/config.yaml}"
         configure_supervisor_core mosdns "${CONFIG_PATH:-/etc/mosdns/config.yaml}"
         set_supervisor_autostart /etc/supervisor/conf.d/agent-mosdns.conf true
         set_supervisor_autostart /etc/supervisor/conf.d/mosdns.conf true
     elif [ "$SERVICE_TYPE" = "oxidns" ]; then
         generate_agent_config "oxidns" "${AGENT_NAME:-oxidns-agent}" "${AGENT_PORT:-8082}" "${CONFIG_PATH:-/etc/oxidns/config.yaml}"
-        recover_service oxidns
         create_default_oxidns_config "${CONFIG_PATH:-/etc/oxidns/config.yaml}"
         configure_supervisor_core oxidns "${CONFIG_PATH:-/etc/oxidns/config.yaml}"
         set_supervisor_autostart /etc/supervisor/conf.d/agent-oxidns.conf true
@@ -277,7 +280,7 @@ else
     # ---- AIO 模式 (aio 镜像) ----
     echo "Mode: AIO"
 
-    # Generate both recovery configs before touching either persistent tree.
+    # Agents report interrupted deployments independently after Supervisor starts.
     generate_agent_config "mihomo" "${AGENT_MIHOMO_NAME:-mihomo-agent}" "${AGENT_MIHOMO_PORT:-8080}" "/etc/mihomo/config.yaml"
     generate_agent_config "mosdns" "${AGENT_MOSDNS_NAME:-mosdns-agent}" "${AGENT_MOSDNS_PORT:-8081}" "/etc/mosdns/config.yaml"
     if [ "${ENABLE_OXIDNS:-false}" = "true" ] && [ "${ENABLE_MOSDNS:-false}" = "true" ]; then
@@ -286,10 +289,7 @@ else
     fi
     if [ "${ENABLE_OXIDNS:-false}" = "true" ]; then
         generate_agent_config "oxidns" "${AGENT_OXIDNS_NAME:-oxidns-agent}" "${AGENT_OXIDNS_PORT:-8082}" "/etc/oxidns/config.yaml"
-        recover_service oxidns
     fi
-    recover_service mihomo
-    recover_service mosdns
     create_default_mihomo_config
     create_default_mosdns_config
     if [ "${ENABLE_OXIDNS:-false}" = "true" ]; then

@@ -13,13 +13,15 @@ import time
 import uuid
 
 from acceptance import Target, dns_answer
-from online_upgrade_acceptance import request, run, wait_http
+from online_upgrade_acceptance import request, run, start_direct_deployment, wait_http
 
 root = Path('/acceptance')
 base = 'http://127.0.0.1:23601'
 binary = Path('/usr/local/bin/configflow-agent')
 identity = Path('/opt/configflow-agent')
 updates = Path('/usr/local/bin/.configflow-updates')
+kinds = os.environ.get('CONFIGFLOW_ACCEPTANCE_KINDS', 'mihomo mosdns oxidns').split()
+assert kinds and all(kind in ('mihomo', 'mosdns', 'oxidns') for kind in kinds)
 report = {'success': False, 'manager': 'openrc', 'legacy_version': '1.0.8-go', 'cases': []}
 Path('/run/openrc').mkdir(exist_ok=True)
 Path('/run/openrc/softlevel').write_text('default\n')
@@ -36,7 +38,7 @@ def service(name, executable, args):
 
 
 try:
-    for kind in ('mihomo', 'mosdns'):
+    for kind in kinds:
         target = Target(root, '', 'native', kind, uuid.uuid4().hex)
         target.base = 23600
         target.core_port = 23690 if kind == 'mihomo' else 23653
@@ -104,16 +106,37 @@ try:
             request(base + '/test/fault', {'fault': 'none'})
 
         update('legacy108_one_click_success', 'succeeded')
+        gate = 'configflow-recover-' + kind
+        gate_path = Path('/etc/init.d', gate)
+        core_conf = Path('/etc/conf.d', core)
+        assert not gate_path.exists()
+        assert not core_conf.exists() or gate not in core_conf.read_text()
+        # Recreate the previous release's ConfigFlow marker and an unrelated setting.
+        gate_path.write_text('#!/sbin/openrc-run\nstart() {\n return 1\n}\n')
+        gate_path.chmod(0o755)
+        preserved_conf = 'rc_need="localmount"\nacceptance_keep="unchanged"\n'
+        core_conf.write_text(preserved_conf + '# BEGIN CONFIGFLOW RECOVERY ' + kind + '\n'
+                             'rc_need="${rc_need:-} ' + gate + '"\n'
+                             '# END CONFIGFLOW RECOVERY ' + kind + '\n')
         update('new_protocol_success', 'succeeded')
+        assert not gate_path.exists()
+        assert core_conf.read_text() == preserved_conf
+        report['cases'].append({'service':kind,'case':'upgrade_removes_legacy_recovery_dependency','status':'succeeded'})
         update('download_http503', 'failed', 'http503')
         update('download_integrity', 'failed', 'corrupt')
         update('start_failure', 'rolled_back', 'bad_start')
         update('worker_interruption', 'rolled_back', 'bad_start', True)
-        deployment_id = uuid.uuid4().hex
-        code, result = request(base + '/api/agents/upgrade-test-' + kind + '/push-config', {'deployment_id':deployment_id,'restart':True})
-        assert code == 202, result
+        if kind == 'oxidns':
+            deployment_id = start_direct_deployment(target)
+        else:
+            deployment_id = uuid.uuid4().hex
+            code, result = request(base + '/api/agents/upgrade-test-' + kind + '/push-config', {'deployment_id':deployment_id,'restart':True})
+            assert code == 202, result
+        status_url = ('http://127.0.0.1:23680/api/deployments/' + deployment_id if kind == 'oxidns'
+                      else base + '/api/agents/upgrade-test-' + kind + '/deployments/' + deployment_id)
         for _ in range(200):
-            _, result = request(base + '/api/agents/upgrade-test-' + kind + '/deployments/' + deployment_id)
+            code, result = request(status_url)
+            assert code == 200, result
             if result['status'] == 'succeeded':
                 break
             assert result['status'] not in ('failed', 'rolled_back', 'rollback_failed'), result
@@ -123,13 +146,14 @@ try:
             wait_http('http://127.0.0.1:23690/version')
         else:
             assert dns_answer(23653) == '192.0.2.20'
-        report['cases'].append({'service':kind,'case':'publish_after_upgrade','status':'succeeded'})
+        report['cases'].append({'service':kind,'case':'publish_after_upgrade','status':'succeeded',
+                                'entrypoint':'agent_api' if kind == 'oxidns' else 'configflow_api'})
         run('rc-service', 'configflow-agent', 'stop')
         run('rc-service', core, 'stop')
-        run('rc-service', 'configflow-recover-' + kind, 'stop')
         run('rc-service', core, 'start')
-        run('rc-service', 'configflow-recover-' + kind, 'status')
-        report['cases'].append({'service':kind,'case':'recovery_gate_before_core','status':'succeeded'})
+        run('rc-service', core, 'status')
+        assert not gate_path.exists() and gate not in core_conf.read_text()
+        report['cases'].append({'service':kind,'case':'core_starts_without_agent_or_recovery_gate','status':'succeeded'})
         run('rc-service', core, 'stop')
         shutil.rmtree(updates)
     report['success'] = True

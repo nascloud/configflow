@@ -5,13 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
 func TestBootstrapWithoutInstalledCore(t *testing.T) {
 	for _, manager := range []string{"systemd", "openrc"} {
-		for _, kind := range []string{"mihomo", "mosdns"} {
+		for _, kind := range []string{"mihomo", "mosdns", "oxidns"} {
 			for _, binaryCase := range []string{"omitted", "bare-name", "missing-path", "on-path"} {
 				t.Run(manager+"/"+kind+"/"+binaryCase, func(t *testing.T) {
 					c, root := testConfig(t, manager)
@@ -66,7 +65,7 @@ func TestBootstrapWithoutInstalledCore(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if migrated.Values["upgrade_schema"] != float64(1) {
+					if migrated.Values["upgrade_schema"] != float64(migrationSchema) {
 						t.Fatalf("schema was not persisted: %v", migrated.Values["upgrade_schema"])
 					}
 					if migrated.String("service_binary") != wantCore {
@@ -98,31 +97,16 @@ func TestBootstrapWithoutInstalledCore(t *testing.T) {
 					gate := "configflow-recover-" + kind
 					gatePath := filepath.Join(root, "etc/init.d", gate)
 					dependencyPath := filepath.Join(root, "etc/conf.d/custom-core")
-					wantMode := os.FileMode(0755)
-					wantCommands := "rc-update -u\nrc-service " + gate + " start\n"
+					wantCommands := "rc-update -u\n"
 					if manager == "systemd" {
 						gatePath = filepath.Join(root, "etc/systemd/system", gate+".service")
 						dependencyPath = filepath.Join(root, "etc/systemd/system/custom-core.service.d/configflow-recovery.conf")
-						wantMode = 0644
-						wantCommands = "systemctl daemon-reload\nsystemctl start " + gate + "\n"
+						wantCommands = "systemctl daemon-reload\n"
 					}
-					gateData, err := os.ReadFile(gatePath)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !strings.Contains(string(gateData), binary) || !strings.Contains(string(gateData), c.Path) || !strings.Contains(string(gateData), "-recover-only") {
-						t.Fatalf("recovery gate does not launch Agent recovery: %s", gateData)
-					}
-					gateInfo, err := os.Stat(gatePath)
-					if err != nil || gateInfo.Mode().Perm() != wantMode {
-						t.Fatalf("unexpected recovery gate permissions: info=%v err=%v", gateInfo, err)
-					}
-					dependencyData, err := os.ReadFile(dependencyPath)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if !strings.Contains(string(dependencyData), gate) {
-						t.Fatalf("core startup has no recovery dependency: %s", dependencyData)
+					for _, path := range []string{gatePath, dependencyPath} {
+						if _, err := os.Lstat(path); !os.IsNotExist(err) {
+							t.Fatalf("migration created startup recovery file %s: %v", path, err)
+						}
 					}
 					commandLog, err := os.ReadFile(logPath)
 					if err != nil || string(commandLog) != wantCommands {
@@ -130,7 +114,7 @@ func TestBootstrapWithoutInstalledCore(t *testing.T) {
 					}
 					ready, err = migrationReady(c.Path, binary, root)
 					if err != nil || !ready {
-						t.Fatalf("installed recovery files were not ready: ready=%v err=%v", ready, err)
+						t.Fatalf("independent core startup was not ready: ready=%v err=%v", ready, err)
 					}
 					journalData, err := os.ReadFile(filepath.Join(root, ".agent-migration.json"))
 					if err != nil {
@@ -149,12 +133,12 @@ func TestBootstrapWithoutInstalledCore(t *testing.T) {
 						t.Fatalf("repeat startup reran the service manager: %q; err=%v", secondLog, err)
 					}
 
-					if err := os.Remove(gatePath); err != nil {
+					if err := AtomicWrite(gatePath, []byte("legacy recovery gate"), 0644); err != nil {
 						t.Fatal(err)
 					}
 					ready, err = migrationReady(c.Path, binary, root)
 					if err != nil || ready {
-						t.Fatalf("missing recovery gate was ready: ready=%v err=%v", ready, err)
+						t.Fatalf("reintroduced recovery gate was ready: ready=%v err=%v", ready, err)
 					}
 				})
 			}

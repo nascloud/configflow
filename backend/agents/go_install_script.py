@@ -28,7 +28,7 @@ def generate_go_agent_install_script(
     health_dns_name: str = "",
     deployment_health_timeout: int = 30,
 ) -> str:
-    """Generate an installer with explicit service lifecycle and boot recovery.
+    """Generate an installer with explicit service lifecycle and deployment checks.
 
     Standard native installs detect systemd/OpenRC on the target. A custom
     restart command is not parsed to invent stop/start/status operations.

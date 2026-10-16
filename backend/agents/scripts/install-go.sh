@@ -17,21 +17,149 @@ if command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1
 elif command -v systemctl >/dev/null 2>&1; then
     INIT_SYSTEM="systemd"
 else
-    echo "需要 systemd 或 OpenRC；自定义运行环境请显式配置停止、启动、状态命令及开机恢复。"
+    echo "需要 systemd 或 OpenRC；自定义运行环境请显式配置停止、启动、状态命令。"
     exit 1
 fi
 
+# Remove only this installation's recovery dependency, retaining unrelated unit
+# settings and custom drop-ins. Joining continuations also handles edited units.
+remove_systemd_recovery_dependency() {
+    dependency_file=$1
+    [ -f "$dependency_file" ] || return 0
+    dependency_tmp=$(mktemp "${dependency_file}.configflow-cleanup.XXXXXX")
+    cp -p "$dependency_file" "$dependency_tmp"
+    dependency_status=0
+    awk -v gate="${RECOVERY_SERVICE}.service" '
+        function emit(    line, key, value, count, fields, output, changed, i) {
+            line = logical
+            if (line ~ /^[ \t]*\[/) {
+                section = line
+                sub(/^[ \t]*/, "", section)
+                sub(/[ \t]*$/, "", section)
+            }
+            if (section == "[Unit]" && line ~ /^[ \t]*(Requires|Requisite|Wants|BindsTo|PartOf|Upholds|After|Before)[ \t]*=/) {
+                key = line
+                sub(/=.*/, "", key)
+                value = substr(line, index(line, "=") + 1)
+                count = split(value, fields, /[ \t]+/)
+                output = ""
+                changed = 0
+                for (i = 1; i <= count; i++) {
+                    if (fields[i] == gate) changed = 1
+                    else if (fields[i] != "") output = output (output == "" ? "" : " ") fields[i]
+                }
+                if (changed) {
+                    modified = 1
+                    if (output != "") print key "=" output
+                    return
+                }
+            }
+            printf "%s", original
+        }
+        {
+            original = original $0 "\n"
+            fragment = $0
+            if (sub(/\\$/, "", fragment)) {
+                logical = logical fragment " "
+                next
+            }
+            logical = logical fragment
+            emit()
+            logical = original = ""
+        }
+        END {
+            if (original != "") emit()
+            if (!modified) exit 3
+        }
+    ' "$dependency_file" > "$dependency_tmp" || dependency_status=$?
+    if [ "$dependency_status" -ne 0 ]; then
+        rm -f "$dependency_tmp"
+        [ "$dependency_status" -eq 3 ] && return 0
+        return "$dependency_status"
+    fi
+    if [ -L "$dependency_file" ]; then
+        rm -f "$dependency_tmp"
+        echo "恢复依赖位于符号链接服务文件，请在源文件中清理：$dependency_file" >&2
+        return 1
+    fi
+    mv "$dependency_tmp" "$dependency_file"
+    case "$dependency_file" in
+        */configflow-recovery.conf)
+            # Drop the old generated file only when it has no other settings.
+            if awk '/^[ \t]*($|[#;]|\[)/ { next } { found = 1 } END { exit found }' "$dependency_file"; then
+                rm -f "$dependency_file"
+            fi
+            ;;
+    esac
+}
+
+remove_openrc_recovery_dependency() {
+    dependency_file=$1
+    [ -f "$dependency_file" ] || return 0
+    dependency_tmp=$(mktemp "${dependency_file}.configflow-cleanup.XXXXXX")
+    cp -p "$dependency_file" "$dependency_tmp"
+    dependency_status=0
+    awk -v gate="$RECOVERY_SERVICE" '
+        $0 == "# BEGIN CONFIGFLOW RECOVERY {service_type}" || $0 == "# END CONFIGFLOW RECOVERY {service_type}" { modified = 1; next }
+        /^[ \t]*(need[ \t]|rc_need=)/ {
+            line = $0
+            offset = 1
+            while ((at = index(substr(line, offset), gate)) != 0) {
+                at += offset - 1
+                before = at == 1 ? "" : substr(line, at - 1, 1)
+                after = substr(line, at + length(gate), 1)
+                if ((before == "" || before ~ /[ \t"\047]/) && (after == "" || after ~ /[ \t"\047;]/)) {
+                    line = substr(line, 1, at - 1) substr(line, at + length(gate))
+                    modified = 1
+                    offset = at
+                } else offset = at + length(gate)
+            }
+            if (line ~ /^[ \t]*need[ \t]*$/ || line ~ /^[ \t]*rc_need="\$\{rc_need:-\}[ \t]*"[ \t]*$/) next
+            print line
+            next
+        }
+        { print }
+        END { if (!modified) exit 3 }
+    ' "$dependency_file" > "$dependency_tmp" || dependency_status=$?
+    if [ "$dependency_status" -ne 0 ]; then
+        rm -f "$dependency_tmp"
+        [ "$dependency_status" -eq 3 ] && return 0
+        return "$dependency_status"
+    fi
+    if [ -L "$dependency_file" ]; then
+        rm -f "$dependency_tmp"
+        echo "恢复依赖位于符号链接服务文件，请在源文件中清理：$dependency_file" >&2
+        return 1
+    fi
+    mv "$dependency_tmp" "$dependency_file"
+}
+
 remove_recovery_gate() {
+    previous_unit="$SERVICE_UNIT"
+    if [ -f "$CONFIG_FILE" ]; then
+        configured_unit=$(sed -n 's/.*"service_unit"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_.@-]*\)".*/\1/p' "$CONFIG_FILE" | head -n 1)
+        if [ -n "$configured_unit" ]; then
+            previous_unit=${configured_unit%.service}
+        fi
+    fi
     if [ "$INIT_SYSTEM" = "systemd" ]; then
-        rm -f "/etc/systemd/system/${SERVICE_UNIT}.service.d/configflow-recovery.conf"
-        systemctl stop "$RECOVERY_SERVICE" 2>/dev/null || true
+        for cleanup_unit in "$SERVICE_UNIT" "$previous_unit" configflow-agent; do
+            remove_systemd_recovery_dependency "/etc/systemd/system/${cleanup_unit}.service"
+            for dependency_file in /etc/systemd/system/"${cleanup_unit}.service.d/"*.conf; do
+                remove_systemd_recovery_dependency "$dependency_file"
+            done
+        done
+        # Reload the detached units BEFORE deleting the gate. Never stop it:
+        # stopping a still-required gate can propagate a stop to a running core.
+        systemctl daemon-reload
         rm -f "/etc/systemd/system/${RECOVERY_SERVICE}.service"
         systemctl daemon-reload
     else
-        if [ -f "/etc/conf.d/$SERVICE_UNIT" ]; then
-            sed -i '/# BEGIN CONFIGFLOW RECOVERY {service_type}/,/# END CONFIGFLOW RECOVERY {service_type}/d' "/etc/conf.d/$SERVICE_UNIT"
-        fi
-        rc-service "$RECOVERY_SERVICE" stop 2>/dev/null || true
+        for cleanup_unit in "$SERVICE_UNIT" "$previous_unit" configflow-agent; do
+            remove_openrc_recovery_dependency "/etc/conf.d/$cleanup_unit"
+            remove_openrc_recovery_dependency "/etc/init.d/$cleanup_unit"
+        done
+        rc-update -u
         rc-update del "$RECOVERY_SERVICE" boot 2>/dev/null || true
         rm -f "/etc/init.d/$RECOVERY_SERVICE"
         rc-update -u
@@ -111,6 +239,7 @@ fi
 chmod 755 "$BINARY_TMP"
 "$BINARY_TMP" -h >/dev/null 2>&1
 
+
 mkdir -p "$AGENT_DIR"
 chmod 700 "$AGENT_DIR"
 EXISTING_ID=""
@@ -136,6 +265,7 @@ else
     RESTART="rc-service $SERVICE_UNIT restart"
 fi
 sed -i "s/__CONFIGFLOW_INIT__/$INIT_SYSTEM/g; s/__CONFIGFLOW_RESTART__/$RESTART/g; s/__CONFIGFLOW_AGENT_ID__/$EXISTING_ID/g; s/__CONFIGFLOW_TOKEN__/$EXISTING_TOKEN/g" "$CONFIG_FILE.new"
+# Validate OxiDNS's working directory before stopping an existing Agent.
 "$BINARY_TMP" -config "$CONFIG_FILE.new" -validate-service
 # Stop the previous Go or legacy Shell Agent before replacing its binary/config.
 if [ "$INIT_SYSTEM" = "systemd" ]; then
@@ -144,12 +274,13 @@ else
     rc-service configflow-agent stop 2>/dev/null || true
 fi
 # Existing journals belong to the old config root, which may differ from the
-# newly requested config_path. Recover that root before losing its reference.
+# newly requested config_path. Report pending work before losing its reference.
 if [ -f "$CONFIG_FILE" ]; then
-    "$BINARY_TMP" -config "$CONFIG_FILE" -recover-and-exit
+    "$BINARY_TMP" -config "$CONFIG_FILE" -check-deployments
 fi
-# Verify/restore with the new binary before committing the installation config.
-"$BINARY_TMP" -config "$CONFIG_FILE.new" -recover-and-exit
+# Report interrupted deployments without changing core files or services.
+"$BINARY_TMP" -config "$CONFIG_FILE.new" -check-deployments
+remove_recovery_gate
 mv "$BINARY_TMP" /usr/local/bin/configflow-agent
 mv "$CONFIG_FILE.new" "$CONFIG_FILE"
 chmod 600 "$CONFIG_FILE"
@@ -171,29 +302,10 @@ LOGEOF
 fi
 
 if [ "$INIT_SYSTEM" = "systemd" ]; then
-    # RemainAfterExit makes this a boot gate, NOT a hook on every core restart.
-    cat > "/etc/systemd/system/${RECOVERY_SERVICE}.service" <<'RECOVERYEOF'
-[Unit]
-Description=Recover ConfigFlow {service_type} deployment before core startup
-After=local-fs.target
-Before={service_unit}.service configflow-agent.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/configflow-agent -config /opt/configflow-agent/config-{service_type}.json -recover-only
-RemainAfterExit=yes
-RECOVERYEOF
-    mkdir -p "/etc/systemd/system/${SERVICE_UNIT}.service.d"
-    cat > "/etc/systemd/system/${SERVICE_UNIT}.service.d/configflow-recovery.conf" <<'GATEEOF'
-[Unit]
-Requires=configflow-recover-{service_type}.service
-After=configflow-recover-{service_type}.service
-GATEEOF
     cat > /etc/systemd/system/configflow-agent.service <<'SERVICEEOF'
 [Unit]
 Description=ConfigFlow Agent (Go)
-Requires=configflow-recover-{service_type}.service
-After=network.target configflow-recover-{service_type}.service
+After=network.target
 
 [Service]
 Type=simple
@@ -211,28 +323,6 @@ SERVICEEOF
     systemctl start configflow-agent
     systemctl is-active --quiet configflow-agent
 else
-    cat > "/etc/init.d/$RECOVERY_SERVICE" <<'RECOVERYEOF'
-#!/sbin/openrc-run
-name="ConfigFlow deployment recovery ({service_type})"
-depend() {
-    need localmount
-    before {service_unit} configflow-agent
-}
-start() {
-    ebegin "Recovering ConfigFlow {service_type} deployment"
-    /usr/local/bin/configflow-agent -config /opt/configflow-agent/config-{service_type}.json -recover-only
-    eend $?
-}
-RECOVERYEOF
-    chmod 755 "/etc/init.d/$RECOVERY_SERVICE"
-    mkdir -p /etc/conf.d
-    touch "/etc/conf.d/$SERVICE_UNIT"
-    sed -i '/# BEGIN CONFIGFLOW RECOVERY {service_type}/,/# END CONFIGFLOW RECOVERY {service_type}/d' "/etc/conf.d/$SERVICE_UNIT"
-    cat >> "/etc/conf.d/$SERVICE_UNIT" <<'GATEEOF'
-# BEGIN CONFIGFLOW RECOVERY {service_type}
-rc_need="${rc_need:-} configflow-recover-{service_type}"
-# END CONFIGFLOW RECOVERY {service_type}
-GATEEOF
     cat > /etc/init.d/configflow-agent <<'SERVICEEOF'
 #!/sbin/openrc-run
 name="ConfigFlow Agent (Go)"
@@ -244,7 +334,7 @@ error_log="/var/log/configflow-agent.log"
 directory="/opt/configflow-agent"
 command_background="yes"
 depend() {
-    need net configflow-recover-{service_type}
+    need net
     after firewall
 }
 start_pre() {
@@ -261,7 +351,6 @@ start_pre() {
 }
 SERVICEEOF
     chmod 755 /etc/init.d/configflow-agent
-    rc-update add "$RECOVERY_SERVICE" boot
     rc-update add configflow-agent default
     rc-update -u
     rc-service configflow-agent start
