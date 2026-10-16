@@ -186,3 +186,63 @@ def test_default_cache_dump_lives_in_unmanaged_state_directory():
     p = plugins({'cache_dump_enabled': True})
     assert p['lazy_cache']['args']['dump_file'] == './state/cache.dump'
     assert get_oxidns_custom_files({'oxidns': {'cache_dump_enabled': True}}) == []
+
+
+@pytest.mark.parametrize('content', [
+    'router.test 192.0.2.10',
+    'router.test 2001:db8::10',
+    'full:router.test 192.0.2.10 192.0.2.11 2001:db8::10',
+    'domain:service.test 2001:db8::1 192.0.2.12 2001:db8::2',
+    'keyword:router 192.0.2.1 192.0.2.1',
+    r'regexp:^api[0-9]{1,3}\.test$ 192.0.2.10 2001:db8::10',
+    '# comment\n\n  full:router.test\t192.0.2.10\t2001:DB8::10 # dual stack\n',
+    'full:router.test 192.0.2.1\r\nfull:router.test 192.0.2.2\r\n',
+    '# temporarily no hosts\n',
+])
+def test_native_hosts_preserves_ipv6_all_addresses_rule_order_and_comments(content):
+    config = {'oxidns': {'custom_hosts': content}}
+    before = deepcopy(config)
+    files = get_oxidns_custom_files(config)
+    assert files == [{'path': './rules/custom_hosts.txt', 'content': content}]
+    p = plugins(config['oxidns'])
+    assert p['custom_hosts']['args']['files'] == [files[0]['path']]
+    assert p['sequence_main']['args'].index({'exec': '$custom_hosts'}) < p['sequence_main']['args'].index({'exec': 'goto proxy_dns_seq'})
+    assert config == before
+
+
+@pytest.mark.parametrize(('content', 'expected'), [
+    ('192.0.2.10 router.test', 'router.test 192.0.2.10'),
+    ('2001:db8::10 router.test', 'router.test 2001:db8::10'),
+    ('192.0.2.10 router.test alias.test # aliases\n',
+     'router.test 192.0.2.10 # aliases\nalias.test 192.0.2.10\n'),
+    ('2001:db8::10 router.test alias.test\r\n',
+     'router.test 2001:db8::10\r\nalias.test 2001:db8::10\r\n'),
+    ('192.0.2.10 domain:router.test', 'domain:router.test 192.0.2.10'),
+    ('192.0.2.10 router.test alias.test', 'router.test 192.0.2.10\nalias.test 192.0.2.10'),
+    ('router.test 192.0.2.1 2001:db8::1\n2001:db8::2 legacy.test',
+     'router.test 192.0.2.1 2001:db8::1\nlegacy.test 2001:db8::2'),
+])
+def test_legacy_hosts_ip_first_rows_and_aliases_convert_without_truncation(content, expected):
+    config = {'oxidns': {'custom_hosts': content}}
+    assert get_oxidns_custom_files(config) == [{'path': './rules/custom_hosts.txt', 'content': expected}]
+    document(config['oxidns'])
+
+
+@pytest.mark.parametrize('invalid', [
+    'router.test',
+    'router.test not-an-address',
+    'router.test 192.0.2.1 bad-address',
+    'router.test 999.999.999.999',
+    'router.test [2001:db8::1]',
+    'router.test fe80::1%eth0',
+    'router.test 192.0.2.1,2001:db8::1',
+    '192.0.2.1 router.test 2001:db8::1',
+    '192.0.2.1 999.999.999.999',
+    '2001:db8::1 https://router.test',
+    '192.0.2.1 full:',
+])
+def test_invalid_or_ambiguous_hosts_fail_in_preview_and_download_instead_of_dropping_data(invalid):
+    config = {'oxidns': {'custom_hosts': '# first line\n' + invalid}}
+    for render in (generate_oxidns_config, get_oxidns_custom_files):
+        with pytest.raises(OxidnsSettingsError, match='Hosts 第 2 行'):
+            render(config)

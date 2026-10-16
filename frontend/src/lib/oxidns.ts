@@ -1,7 +1,7 @@
 export interface OxidnsField {
   path: string
   label: string
-  type?: 'text' | 'number' | 'password' | 'switch' | 'tls' | 'textarea' | 'list' | 'numbers'
+  type?: 'text' | 'number' | 'password' | 'switch' | 'tls' | 'textarea' | 'list' | 'numbers' | 'upstreams' | 'lines'
   when?: string
   hint?: string
   placeholder?: string
@@ -9,6 +9,7 @@ export interface OxidnsField {
   max?: number
   rows?: number
   wide?: boolean
+  emptyHint?: string
   options?: Array<{ value: string; label: string }>
 }
 
@@ -22,16 +23,16 @@ export const coreFields: OxidnsField[] = [
   { ...number('worker_threads', '工作线程数'), max: 256, hint: '已验证模板使用 2 个线程。' },
   toggle('tcp_enabled', '启用 TCP DNS'), toggle('prefer_ipv4', '优先 IPv4'),
   toggle('metrics_enabled', '轻量指标'), toggle('aggregate_rules', '合并相邻同策略规则', '保留直连 / 代理的原始优先级顺序。'),
-  { path: 'block_qtypes', label: '屏蔽查询类型', type: 'numbers', hint: '每行一个数字；65 为 HTTPS，255 为 ANY。清空则不屏蔽。' },
+  { path: 'block_qtypes', label: '屏蔽查询类型', type: 'numbers', wide: true, hint: '65 为 HTTPS，255 为 ANY。删除全部条目则不屏蔽。' },
   { path: 'default_forward', label: '未匹配时转发到', options: [{ value: 'forward_remote', label: '代理 DNS' }, { value: 'forward_local', label: '直连 DNS' }] }
 ]
 
 export const upstreamFields: OxidnsField[] = [
-  { path: 'local_dns', label: '直连 DNS', type: 'textarea', wide: true, rows: 4, placeholder: '223.5.5.5\n119.29.29.29', hint: '每行一个地址，也支持上游 YAML 列表（addr、bootstrap、dial_addr 等）。留空使用默认上游。' },
+  { path: 'local_dns', label: '直连 DNS', type: 'upstreams', wide: true, placeholder: 'udp://223.5.5.5:53', emptyHint: '未配置条目，使用默认直连上游。', hint: '逐条添加地址，可展开设置 bootstrap、dial_addr 等参数；YAML 模式支持完整上游配置。' },
   number('local_concurrent', '直连并发数'),
-  { path: 'remote_dns', label: '代理 DNS / 外部 Fake-IP 上游', type: 'textarea', wide: true, rows: 4, placeholder: '192.168.0.3:1053', hint: 'Fake-IP 由外部 DNS 提供；仅填入你实际部署的服务地址。加密上游域名应配置 bootstrap 或 dial_addr，避免解析环路。' },
+  { path: 'remote_dns', label: '代理 DNS / 外部 Fake-IP 上游', type: 'upstreams', wide: true, placeholder: 'udp://192.0.2.53:1053', emptyHint: '未配置条目，使用默认代理上游。', hint: 'Fake-IP 由外部 DNS 提供。加密上游域名应配置 bootstrap 或 dial_addr，避免解析环路。' },
   number('remote_concurrent', '代理并发数'), number('remote_ttl', '代理响应 TTL（秒）', 0),
-  { path: 'fallback_dns', label: '备用 DNS', type: 'textarea', wide: true, rows: 3, hint: '留空使用直连 DNS。' },
+  { path: 'fallback_dns', label: '备用 DNS', type: 'upstreams', wide: true, emptyHint: '未配置条目，继承直连 DNS。' },
   number('fallback_concurrent', '备用并发数'), number('fallback_threshold', '触发备用等待时间（毫秒）'),
   toggle('always_standby', '同时请求备用上游')
 ]
@@ -76,7 +77,7 @@ export const featureGroups: Array<{ key: string; title: string; hint: string; fi
   { key: 'ip_selector', title: 'IP 优选（实验性）', hint: '只应用于直连的真实 IP 响应；代理 / Fake-IP 分支不探测。后台模式配合 top_n=0 仅调整顺序。', fields: [
     select('ip_selector.args.selection_mode', '探测模式', ['background', 'first_success', 'best_within_budget']),
     number('ip_selector.args.top_n', '保留 IP 数量', 0, '0 保留全部地址，仅按探测结果排序。'),
-    { path: 'ip_selector.args.probe_methods', label: '探测方法', type: 'list', hint: '每行一种，例如 tcp:443、tcp:80、ping。' },
+    { path: 'ip_selector.args.probe_methods', label: '探测方法', type: 'list', wide: true, hint: '例如 tcp:443、tcp:80、ping。' },
     select('ip_selector.args.dnssec_policy', 'DNSSEC 策略', ['reorder_only', 'skip']),
     number('ip_selector.args.probe_stagger', '探测间隔（毫秒）', 0), number('ip_selector.args.probe_timeout', '探测超时（毫秒）'),
     number('ip_selector.args.max_wait', '等待预算（毫秒）'), number('ip_selector.args.max_parallel_probes', '最大探测并发'),
@@ -85,18 +86,18 @@ export const featureGroups: Array<{ key: string; title: string; hint: string; fi
   ] },
   { key: 'dynamic_domain_set', title: '动态域名集与学习（实验性）', hint: '可通过 OxiDNS API 更新域名；启用学习后从已归类的响应学习，可能固定后续分流结果。运行数据保留在 state/。', fields: [
     text('dynamic_domain_set.args.path', '动态规则文件'), { path: 'dynamic_domain_set.route', label: '动态规则转发到', options: [{ value: 'direct', label: '直连 DNS' }, { value: 'proxy', label: '代理 DNS' }] },
-    { path: 'dynamic_domain_set.args.bootstrap_rules', label: '初始规则', type: 'list', wide: true, hint: '每行一个 full:example.com 或 domain:example.com。' },
+    { path: 'dynamic_domain_set.args.bootstrap_rules', label: '初始规则', type: 'list', wide: true, hint: '例如 full:example.com 或 domain:example.com。' },
     number('dynamic_domain_set.args.queue_size', '写入队列'), number('dynamic_domain_set.args.batch_size', '每批条数'), number('dynamic_domain_set.args.flush_interval_ms', '刷新间隔（毫秒）'),
     toggle('dynamic_domain_set.learn', '启用自动学习'), select('dynamic_domain_set.learn_args.phase', '学习阶段', ['after', 'before']),
     select('dynamic_domain_set.learn_args.questions', '学习问题范围', ['first', 'all']),
-    { path: 'dynamic_domain_set.learn_args.qtypes', label: '学习查询类型', type: 'list' },
+    { path: 'dynamic_domain_set.learn_args.qtypes', label: '学习查询类型', type: 'list', wide: true, hint: '例如 A、AAAA。' },
     select('dynamic_domain_set.learn_args.rule_kind', '学习规则类型', ['full', 'domain']), toggle('dynamic_domain_set.learn_args.success_only', '仅学习成功响应'),
     toggle('dynamic_domain_set.learn_args.answer_required', '要求响应中含答案'), toggle('dynamic_domain_set.learn_args.async', '异步学习'),
     select('dynamic_domain_set.learn_args.error_mode', '学习失败行为', ['continue', 'stop', 'fail']), text('dynamic_domain_set.learn_args.timeout', '学习超时')
   ] },
   { key: 'adguard', title: 'AdGuard DNS 过滤', hint: '支持 DNS 规则子集；不支持网页元素过滤、URL 路径、dnsrewrite 或 $client。规则文件包含在完整下载包中。', fields: [
     { path: 'adguard.content', label: '自定义规则', type: 'textarea', wide: true, rows: 5, placeholder: '||ads.example.com^\n@@||allowed.example.com^' },
-    { path: 'adguard.urls', label: '规则订阅', type: 'list', wide: true, hint: '每行一个 HTTP(S) 地址。' },
+    { path: 'adguard.urls', label: '规则订阅', type: 'list', wide: true, hint: '每个条目填写一个 HTTP(S) 地址。' },
     select('adguard.mode', '拦截响应', ['nxdomain', 'nodata', 'null', 'refused'])
   ] },
   { key: 'ros_address_list', title: 'RouterOS 地址列表', hint: '只写入直连分支的真实 A / AAAA 地址。需要 RouterOS API 权限及已有的地址列表策略。', fields: [

@@ -6,6 +6,7 @@ semantics differ between the two engines.
 """
 from copy import deepcopy
 from hashlib import sha256
+from ipaddress import ip_address
 from pathlib import PurePosixPath
 import re
 import yaml
@@ -13,7 +14,7 @@ import yaml
 from backend.common.oxidns_settings import normalize_oxidns_settings, OxidnsSettingsError
 from backend.converters.mosdns import (
     _build_rule_proxy_url, _parse_custom_matches, _ruleset_parts,
-    convert_rule_content_for_mosdns, get_mosdns_custom_files, parse_dns_upstreams,
+    convert_rule_content_for_mosdns, parse_dns_upstreams,
     split_rules_and_rulesets,
 )
 
@@ -80,14 +81,61 @@ def get_oxidns_ruleset_downloads(config_data, base_url=''):
 
 def get_oxidns_custom_files(config_data):
     settings = _settings(config_data)
-    # Reuse the hosts text parser only. Individual rules remain ordered inline
-    # provider rules instead of MosDNS's global direct/proxy merge.
-    adapter = {'mosdns': {'custom_hosts': settings['custom_hosts']}}
-    files = get_mosdns_custom_files(adapter)
+    files = []
+    if settings['custom_hosts'].strip():
+        files.append({'path': './rules/custom_hosts.txt',
+                      'content': _hosts_file_content(settings['custom_hosts'])})
     adguard = settings['adguard']
     if adguard['enabled'] and adguard['content'].strip():
         files.append({'path': './rules/adguard-custom.txt', 'content': adguard['content']})
     return files
+
+
+def _hosts_file_content(text):
+    """Keep native OxiDNS hosts rules intact; convert unambiguous IP-first rows.
+
+    v1.6.1 files use ``matcher ip1 ip2 ...`` and strip everything from the
+    first ``#`` on each line. Do not truncate addresses or reinterpret IPv6 as
+    a domain. Legacy hosts aliases become separate full-match rules.
+    """
+    def is_ip(value):
+        try:
+            # Python accepts scoped IPv6, but Rust's IpAddr used by OxiDNS does not.
+            return '%' not in value and bool(ip_address(value))
+        except ValueError:
+            return False
+
+    def is_legacy_name(value):
+        if value.startswith(('full:', 'domain:', 'keyword:', 'regexp:')):
+            return bool(value.split(':', 1)[1])
+        if re.fullmatch(r'[\d.]+', value):
+            return False  # Do not turn a mistyped IPv4 address into an alias.
+        return bool(re.fullmatch(r'[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?\.?', value))
+
+    output = []
+    for number, raw in enumerate(text.splitlines(keepends=True), 1):
+        line = raw.rstrip('\r\n')
+        ending = raw[len(line):]
+        rule, marker, comment = line.partition('#')
+        fields = rule.split()
+        if not fields:
+            output.append(raw)
+            continue
+        if len(fields) >= 2 and all(is_ip(value) for value in fields[1:]):
+            # Keep spelling, whitespace, address order, duplicates and comments.
+            output.append(raw)
+            continue
+        if (len(fields) >= 2 and is_ip(fields[0])
+                and all(not is_ip(value) and is_legacy_name(value) for value in fields[1:])):
+            converted = [f'{name} {fields[0]}' for name in fields[1:]]
+            if marker:
+                converted[0] += ' #' + comment
+            output.append((ending or '\n').join(converted) + ending)
+            continue
+        raise OxidnsSettingsError(
+            f'自定义 Hosts 第 {number} 行格式无效；请使用“域名规则 IPv4/IPv6 [更多 IP]”'
+            '，或“IP 域名 [别名]”，不能混合地址与别名')
+    return ''.join(output)
 
 
 def _routing_groups(config, settings):
@@ -175,6 +223,7 @@ def generate_oxidns_config(config_data, base_url=''):
         for group in entries:
             add(group['tag'], 'domain_set' if part == 'domain' else 'ip_set', group['args'])
     if s['custom_hosts'].strip():
+        _hosts_file_content(s['custom_hosts'])
         add('custom_hosts', 'hosts', {'files': ['./rules/custom_hosts.txt']})
     if s['cache_enabled']:
         cache = {'size': s['cache_size'], 'lazy_cache_ttl': s['cache_lazy_ttl'], 'short_circuit': True}
