@@ -226,7 +226,11 @@ def generate_oxidns_config(config_data, base_url=''):
         _hosts_file_content(s['custom_hosts'])
         add('custom_hosts', 'hosts', {'files': ['./rules/custom_hosts.txt']})
     if s['cache_enabled']:
-        cache = {'size': s['cache_size'], 'lazy_cache_ttl': s['cache_lazy_ttl'], 'short_circuit': True}
+        cache = {'size': s['cache_size']}
+        # OxiDNS rejects an explicit zero; omitting the field disables lazy cache.
+        if s['cache_lazy_ttl'] > 0:
+            cache['lazy_cache_ttl'] = s['cache_lazy_ttl']
+        cache['short_circuit'] = True
         if s['cache_dump_enabled']:
             cache.update(dump_file=s['cache_dump_file'], dump_interval=s['cache_dump_interval'])
         add('lazy_cache', 'cache', cache)
