@@ -10,6 +10,7 @@ Agent 启动时按以下顺序查找配置文件：
 2. 自动检测配置文件（按优先级排序）：
    - `/opt/configflow-agent/config-mihomo.json`（Mihomo 专用配置）
    - `/opt/configflow-agent/config-mosdns.json`（MosDNS 专用配置）
+   - `/opt/configflow-agent/config-oxidns.json`（OxiDNS 专用配置）
    - `/opt/configflow-agent/config.json`（通用配置）
 3. 未设置 `AGENT_DIR` 且上述目录没有配置时，以相同文件名顺序兼容 `/opt/sublink-agent/`。
 
@@ -50,7 +51,7 @@ Agent 启动时按以下顺序查找配置文件：
 ### service_type
 - **类型**：字符串
 - **必须**：是
-- **说明**：服务类型，目前支持 `mihomo` 和 `mosdns`
+- **说明**：服务类型，目前支持 `mihomo`、`mosdns` 和 `oxidns`
 - **示例**：`"mihomo"`
 
 ### service_name
@@ -98,9 +99,9 @@ Agent 启动时按以下顺序查找配置文件：
 | --- | --- |
 | `service_manager` | `systemd`、`openrc`、`supervisor` 或 `command` |
 | `service_unit` | 被管理的核心服务名称；systemd 可用 `mihomo` 或 `mihomo.service` |
-| `service_binary` | 与运行核心相同的可执行程序，Mihomo 用它执行 `-t` 检查 |
+| `service_binary` | 与运行核心相同的可执行程序，Mihomo 用它执行 `-t`，OxiDNS 用它执行原生 `check` |
 | `stop_command` / `start_command` / `status_command` | `command` 管理器必需的三个明确动作；不从重启命令推断 |
-| `health_url` | 可选 HTTP 健康检查地址，未配置时从 Mihomo 配置发现控制接口 |
+| `health_url` | 可选 HTTP 健康检查地址，未配置时从 Mihomo 控制接口或 OxiDNS API 配置发现探测目标 |
 | `health_dns_address` | 可选 DNS 探测地址，例如 `127.0.0.1:53` |
 | `health_dns_name` | DNS 探测域名，默认 `example.com`；可改为当前配置中可稳定解析的域名 |
 | `deployment_health_timeout` | 启动后检查超时秒数，默认 30 |
@@ -118,21 +119,28 @@ Agent 启动时按以下顺序查找配置文件：
 
 发布包、暂存区、备份、发布清单位于 `config_path` 同目录的 `.configflow-deployments/`，需要保留和持久化整个服务目录。不要在存在未完成事务时移动配置目录或删除该目录。
 
-Docker 入口会填写 `supervisor` 管理器。可通过 `MIHOMO_HEALTH_URL`、`MIHOMO_HEALTH_DNS_ADDRESS`、`MIHOMO_HEALTH_DNS_NAME` 或对应的 `MOSDNS_` 变量覆盖探测目标；`DEPLOYMENT_HEALTH_TIMEOUT` 设置等待秒数。
+Docker 入口会填写 `supervisor` 管理器。可通过 `MIHOMO_HEALTH_URL`、`MIHOMO_HEALTH_DNS_ADDRESS`、`MIHOMO_HEALTH_DNS_NAME` 或对应的 `MOSDNS_`、`OXIDNS_` 变量覆盖探测目标；`DEPLOYMENT_HEALTH_TIMEOUT` 设置等待秒数。
 
-### 启动恢复模式
+OxiDNS 的 `config_path` 必须与核心实际加载的配置一致；systemd 的 `-d`/`WorkingDirectory` 也必须等于配置所在目录。安装器通过 `-validate-service` 在替换 Agent 前检查该条件，推送和手动回滚继续校验。`state/` 中的动态域名、查询记录和缓存属于运行数据，不能作为受管配置覆盖；原生配置检查使用隔离目录。
+
+### 部署检查与人工恢复
 
 ```sh
-# 开机门禁：核心尚未启动时恢复文件，不注册、不监听 HTTP。
-configflow-agent -config /opt/configflow-agent/config-mihomo.json -recover-only
+# 只读检查部署记录，不停止核心、不改写文件、不注册、不监听 HTTP。
+configflow-agent -config /opt/configflow-agent/config-mihomo.json -check-deployments
 
-# 安装/维护：包含服务停止、恢复和检查，不注册、不监听 HTTP。
+# 人工恢复：包含服务停止、恢复和检查，不注册、不监听 HTTP。
 configflow-agent -config /opt/configflow-agent/config-mihomo.json -recover-and-exit
+
+# 旧参数兼容：已弃用，现等同 -check-deployments，仅检查，不恢复。
+configflow-agent -config /opt/configflow-agent/config-mihomo.json -recover-only
 ```
 
-正常 Agent 启动也会先检查未完成事务。恢复失败时保留备份和失败状态，继续提供经过鉴权的状态、日志查询；未解决事务会阻止新的发布、服务重启、Agent 更新和卸载。Agent 配置加载或首次注册自身失败仍可能导致 Agent 无法启动。
+正常 Agent 启动只读检查未完成事务，保留备份和原有状态，记录需要人工处理的提示并继续提供经过鉴权的状态、日志查询；不会停止核心、恢复文件或完成回滚。未解决事务会阻止新的发布、服务重启、Agent 更新和卸载。Agent 配置加载或首次注册自身失败仍可能导致 Agent 无法启动。
 
-`-recover-only` 和 `-recover-and-exit` 则在恢复失败时返回非零退出码。Docker 入口以及 systemd/OpenRC 启动门禁依赖这个结果阻止核心启动；文件恢复完成后的 `recovery_pending` 还需由正常 Agent 验证服务健康，之后才转为 `rolled_back`。`-recover-only` 仅适合核心尚未启动的阶段，不要对运行中的核心手工调用。
+`-check-deployments` 对未完成、损坏或无法读取的部署记录只输出提示，仍返回成功；需查看输出，不能把退出码 0 当作部署已完成。Agent 配置无法读取或 JSON 无效时仍返回非零退出码。`-recover-only` 是该只读检查的兼容入口，不取得服务操作锁，也不恢复文件。实际恢复统一使用 `-recover-and-exit`，失败时返回非零退出码。执行人工恢复前先停止对应 Agent，成功后再启动；原生及 Docker 命令见 [部署指南](DEPLOYMENT.md#失败诊断与恢复)。旧版本留下的 `recovery_pending` 需显式执行 `-recover-and-exit` 验证服务健康，之后才转为 `rolled_back`。
+
+Mihomo、MosDNS、OxiDNS 在 systemd、OpenRC 和 Docker 中启动均不依赖部署恢复；安装和升级会清理旧 ConfigFlow 启动恢复依赖。核心按自身服务配置启动，Agent 重启或容器重建不会自动修复未完成事务。推送期间的校验、备份、健康检查和失败回滚保持启用。成功发布后的显式手动回滚接口也保留；它只接受当前生效且备份完整、受管文件未被外部改写的发布，不代替中断事务恢复。
 
 ## MosDNS 旧版兼容配置字段
 
@@ -204,6 +212,16 @@ configflow-agent -config /opt/configflow-agent/config-mihomo.json -recover-and-e
 | `ENABLE_MOSDNS` | 是否启用 MosDNS | false |
 | `AGENT_MOSDNS_NAME` | MosDNS Agent 名称 | mosdns-agent |
 | `AGENT_MOSDNS_PORT` | MosDNS Agent 端口 | 8081 |
+
+### OxiDNS 相关环境变量
+
+| 环境变量 | 说明 | 默认值 |
+|---------|------|--------|
+| `ENABLE_OXIDNS` | 是否启用 OxiDNS | false |
+| `AGENT_OXIDNS_NAME` | OxiDNS Agent 名称 | oxidns-agent |
+| `AGENT_OXIDNS_PORT` | OxiDNS Agent 端口 | 8082 |
+
+AIO 的 MosDNS 和 OxiDNS 默认都使用 DNS 端口 53，入口要求二者只启用一个；这与部署恢复检查无关。
 
 ## 配置示例
 

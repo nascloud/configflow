@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real Linux acceptance: native systemd + Docker, actual Mihomo and MosDNS.
+"""Real Linux acceptance: native systemd + Docker, actual Mihomo, MosDNS and OxiDNS.
 
 Run as root on a disposable test host with --root pointing to a prepared directory
 containing bin/configflow-agent and src/ (repository source). Uses dedicated ports,
@@ -99,8 +99,8 @@ class Target:
         self.live.mkdir(exist_ok=True)
         self.identity.mkdir(exist_ok=True)
         self.base = 23000 if mode == 'native' else 23100
-        self.agent_port = self.base + (80 if kind == 'mihomo' else 81)
-        self.core_port = self.base + (90 if kind == 'mihomo' else 53)
+        self.agent_port = self.base + {'mihomo': 80, 'mosdns': 81, 'oxidns': 82}[kind]
+        self.core_port = self.base + {'mihomo': 90, 'mosdns': 53, 'oxidns': 54}[kind]
         self.url = 'http://127.0.0.1:' + str(self.agent_port)
         self.unit = self.name + '.service'
         self.agent_process = None
@@ -117,6 +117,17 @@ class Target:
             return {'config.yaml': json.dumps(config).encode(),
                     'ruleset/sample.list': (version + '.test\n').encode(),
                     'ruleset/empty.list': b''}
+        if self.kind == 'oxidns':
+            address = '192.0.2.10' if version == 'old' else '192.0.2.20'
+            answer = {'mode': 'refused'} if fail_start else {'mode': 'custom', 'ips': [address]}
+            answer['short_circuit'] = True
+            plugins = [
+                {'tag': 'learned', 'type': 'dynamic_domain_set', 'args': {'path': './state/learned.txt'}},
+                {'tag': 'answer', 'type': 'nonexistent_plugin' if invalid else 'black_hole', 'args': answer},
+                {'tag': 'main', 'type': 'sequence', 'args': [{'exec': '$answer'}]},
+                {'tag': 'udp', 'type': 'udp_server', 'args': {'entry': 'main', 'listen': '127.0.0.1:' + str(self.core_port)}}]
+            return {'config.yaml': json.dumps({'runtime': {'worker_threads': 2}, 'log': {'level': 'error'}, 'plugins': plugins}).encode(),
+                    'rules/sample.txt': ('full:' + version + '.test\n').encode(), 'rules/empty.txt': b''}
         plugins = [
             {'tag': 'hosts', 'type': 'nonexistent_plugin' if fail_start else 'hosts',
              'args': {'files': ['./rules/missing.txt' if invalid else './rules/hosts.txt']}},
@@ -133,6 +144,9 @@ class Target:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
         (self.live / 'cache.keep').write_bytes(b'preserve-runtime-state')
+        if self.kind == 'oxidns':
+            (self.live / 'state').mkdir(exist_ok=True)
+            (self.live / 'state/learned.txt').write_bytes(b'full:preserve.runtime.test\n')
 
     def start(self):
         self.write_initial()
@@ -154,7 +168,7 @@ class Target:
         else:
             binary = self.root / 'bin' / self.kind
             command = str(binary) + ' -d ' + str(self.live)
-            if self.kind == 'mosdns':
+            if self.kind != 'mihomo':
                 command = str(binary) + ' start -c ' + str(self.live / 'config.yaml') + ' -d ' + str(self.live)
             unit = '[Unit]\nDescription=Isolated ConfigFlow acceptance core\n[Service]\nType=simple\nExecStart=' + command + '\nRestart=no\n'
             Path('/run/systemd/system', self.unit).write_text(unit)
@@ -233,7 +247,7 @@ class Target:
         assert code == 202, (code, activation)
         self.wait(ident, {'succeeded'})
         self.probe()
-        if self.kind == 'mosdns':
+        if self.kind in ('mosdns', 'oxidns'):
             assert self.probe() == '192.0.2.20'
         assert (self.live / 'cache.keep').read_bytes() == b'preserve-runtime-state'
         results.append('real_core_publish_and_runtime_preserved')
@@ -259,10 +273,13 @@ class Target:
             assert not (self.live / 'ruleset/sample.list').exists()
             committed_files = files
             results.append('real_mrs_loaded_byte_exact_and_stale_managed_file_removed')
-        def snapshot():
+        def snapshot(paths=None):
             values = {}
-            for path in committed_files:
+            for path in committed_files if paths is None else paths:
                 file = self.live / path
+                if not file.exists():
+                    values[path] = None
+                    continue
                 metadata = file.stat()
                 values[path] = (file.read_bytes(), metadata.st_mode & 0o777, metadata.st_uid, metadata.st_gid)
             return values
@@ -290,7 +307,7 @@ class Target:
         assert not (self.live / 'rules/new-only.txt').exists()
         assert snapshot() == committed_snapshot
         self.probe()
-        results.append('real_start_failure_restores_complete_previous_version')
+        results.append('real_start_or_health_failure_restores_complete_previous_version')
         # Kill the actual worker/container after replacement, before durable success.
         files = self.files('interrupted')
         files['rules/interrupted-only.txt'] = b'not-committed\n'
@@ -298,10 +315,48 @@ class Target:
         self.wait(interrupted, {'checking'})
         if self.mode == 'docker':
             run(self.docker, 'kill', self.name)
-            run(self.docker, 'start', self.name)
         else:
             self.agent_process.kill()
             self.agent_process.wait(timeout=5)
+        state_path = self.live / '.configflow-deployments' / interrupted / 'state.json'
+        interrupted_state = state_path.read_bytes()
+        assert json.loads(interrupted_state)['status'] == 'checking', 'Crash missed the pre-confirmation window'
+        interrupted_paths = set(committed_files) | set(files)
+        interrupted_snapshot = snapshot(interrupted_paths)
+        if self.mode == 'docker':
+            run(self.docker, 'start', self.name)
+        else:
+            core_pid = run('systemctl', 'show', self.unit, '-p', 'MainPID', '--value').strip()
+            self.start_native_agent()
+        self.wait_ready()
+        assert state_path.read_bytes() == interrupted_state, 'Normal startup rewrote the interrupted transaction'
+        assert snapshot(interrupted_paths) == interrupted_snapshot, 'Normal startup restored files without an explicit recovery command'
+        assert (self.live / 'rules/interrupted-only.txt').read_bytes() == b'not-committed\n'
+        if self.mode == 'native':
+            assert core_pid == run('systemctl', 'show', self.unit, '-p', 'MainPID', '--value').strip()
+        assert request(self.url + '/api/restart', 'POST', b'')[0] == 409
+        results.append('crash_restart_preserves_transaction_and_core_until_manual_recovery')
+        if self.mode == 'docker':
+            agent_command = [self.docker, 'exec', self.name, '/usr/local/bin/configflow-agent',
+                             '-config', '/opt/configflow-agent/config-' + self.kind + '.json']
+            run(self.docker, 'exec', self.name, 'supervisorctl', '-c', '/etc/supervisor/supervisord.conf',
+                'stop', 'agent-' + self.kind)
+        else:
+            self.agent_process.terminate()
+            self.agent_process.wait(timeout=5)
+            agent_command = [self.root / 'bin/configflow-agent', '-config', self.identity / 'config.json']
+        for flag in ('-check-deployments', '-recover-only'):
+            checked = subprocess.run([str(arg) for arg in [*agent_command, flag]],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+            output = checked.stdout.decode(errors='replace')
+            assert checked.returncode == 0 and 'Deployment check requires attention:' in output, output
+            assert state_path.read_bytes() == interrupted_state and snapshot(interrupted_paths) == interrupted_snapshot
+        run(*agent_command, '-recover-and-exit')
+        run(*agent_command, '-check-deployments')
+        if self.mode == 'docker':
+            run(self.docker, 'exec', self.name, 'supervisorctl', '-c', '/etc/supervisor/supervisord.conf',
+                'start', 'agent-' + self.kind)
+        else:
             self.start_native_agent()
         self.wait_ready()
         self.wait(interrupted, {'rolled_back'})
@@ -309,7 +364,23 @@ class Target:
         assert not (self.live / 'rules/interrupted-only.txt').exists()
         assert snapshot() == committed_snapshot
         self.probe()
-        results.append('actual_process_or_container_crash_recovers_previous_version')
+        results.append('explicit_recovery_after_crash_restores_previous_version')
+        # Keep the explicit rollback API separate from interrupted-deployment recovery.
+        manual_files = self.files('manual')
+        manual_files['rules/manual-only.txt'] = b'operator-requested-revision\n'
+        manual, _, _ = self.upload(manual_files)
+        self.wait(manual, {'succeeded'})
+        code, response = service_request(self.url + '/api/deployments/' + manual + '/rollback', 'POST', b'')
+        assert code == 202, (code, response)
+        restored = self.wait(manual, {'rolled_back'})
+        assert restored.get('manual_rollback') and restored['success'] and restored.get('config_version')
+        assert snapshot() == committed_snapshot
+        assert not (self.live / 'rules/manual-only.txt').exists()
+        assert (self.live / 'cache.keep').read_bytes() == b'preserve-runtime-state'
+        if self.kind == 'oxidns':
+            assert (self.live / 'state/learned.txt').read_bytes() == b'full:preserve.runtime.test\n'
+        self.probe()
+        results.append('explicit_current_revision_rollback_keeps_runtime_state')
         return results
 
     def backend_tests(self):
@@ -353,7 +424,7 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--docker', default='/usr/local/bin/docker')
     parser.add_argument('--modes', nargs='+', default=['native', 'docker'])
-    parser.add_argument('--kinds', nargs='+', default=['mihomo', 'mosdns'])
+    parser.add_argument('--kinds', nargs='+', choices=['mihomo', 'mosdns', 'oxidns'], default=['mihomo', 'mosdns', 'oxidns'])
     parser.add_argument('--backend', action='store_true', help='Also exercise actual Flask HTTP publication endpoints')
     args = parser.parse_args()
     assert os.geteuid() == 0, 'Run inside an isolated acceptance host as root.'
@@ -371,8 +442,10 @@ def main():
                 try:
                     target.start()
                     item['checks'] = target.tests()
-                    if args.backend:
+                    if args.backend and kind != 'oxidns':
                         item['backend_checks'] = target.backend_tests()
+                    elif args.backend:
+                        item['backend_checks_skipped'] = 'The Flask publication fixture currently supports Mihomo/MosDNS only; OxiDNS Agent API checks ran separately.'
                     item['passed'] = True
                     print(json.dumps(item), flush=True)
                 except Exception as error:

@@ -106,7 +106,7 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	// Registration writes must not truncate the boot recovery configuration.
+	// Registration writes must not truncate the Agent configuration.
 	f, err := os.CreateTemp(filepath.Dir(c.filePath), ".agent-config-")
 	if err != nil {
 		return err

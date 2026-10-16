@@ -17,7 +17,8 @@ func main() {
 	printVersion := flag.Bool("version", false, "Print Agent version and exit")
 	cleanupOnly := flag.Bool("cleanup", false, "Reclaim completed deployment payloads and oversized Agent logs, then exit")
 	upgradeWorker := flag.String("upgrade-worker", "", "Run a durable Agent update outside the Agent service")
-	recoverOnly := flag.Bool("recover-only", false, "Restore interrupted deployments before managed services start; do not register or listen")
+	checkDeployments := flag.Bool("check-deployments", false, "Check deployment journals without changing files or services; do not register or listen")
+	recoverOnly := flag.Bool("recover-only", false, "Deprecated compatibility alias for -check-deployments; does not restore files")
 	recoverAndExit := flag.Bool("recover-and-exit", false, "Recover interrupted deployments with service lifecycle, then exit without registration")
 	validateService := flag.Bool("validate-service", false, "Validate OxiDNS service working directory without registration or mutation")
 
@@ -60,7 +61,7 @@ func main() {
 	}
 
 	log.Printf("Using config file: %s", *configPath)
-	if !*recoverOnly && !*recoverAndExit && !*cleanupOnly && !*validateService {
+	if !*checkDeployments && !*recoverOnly && !*recoverAndExit && !*cleanupOnly && !*validateService {
 		binary, err := os.Executable()
 		if err != nil {
 			log.Fatal(err)
@@ -90,18 +91,22 @@ func main() {
 		return
 	}
 
-	// Recovery must precede registration, heartbeat and API traffic. Boot gates call
-	// recover-only before the managed services or container defaults can run.
-	if err := routes.RecoverDeployments(toRoutesConfig(cfg), !*recoverOnly); err != nil {
-		if *recoverOnly || *recoverAndExit {
-			log.Fatalf("Fatal: Deployment recovery failed; refusing startup: %v", err)
+	// Recovery changes live files and can stop the core, so only an explicit
+	// operator request may run it. Old installed boot gates still invoke
+	// -recover-only during upgrades; keep that entry point read-only as well.
+	if *recoverAndExit {
+		if err := routes.RecoverDeployments(toRoutesConfig(cfg), true); err != nil {
+			log.Fatalf("Fatal: Deployment recovery failed: %v", err)
 		}
-		// Keep authenticated status/log APIs available for repair. All mutating
-		// service routes reject the unresolved durable recovery journal.
-		log.Printf("Deployment recovery requires attention; service mutations remain blocked: %v", err)
-	}
-	if *recoverOnly || *recoverAndExit {
 		log.Println("Deployment recovery completed.")
+		return
+	}
+	if err := routes.CheckDeployments(toRoutesConfig(cfg)); err != nil {
+		log.Printf("Deployment check requires attention: %v. Files and services were left unchanged; inspect the journal and use -recover-and-exit to recover explicitly.", err)
+	} else {
+		log.Println("Deployment check completed; no recovery required.")
+	}
+	if *checkDeployments || *recoverOnly {
 		return
 	}
 

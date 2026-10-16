@@ -466,7 +466,7 @@ func Run(path string) (result error) {
 		return err
 	}
 	for _, change := range changes {
-		snapshot, captureErr := Capture(change.Path)
+		snapshot, captureErr := captureChange(change)
 		if captureErr != nil {
 			return captureErr
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,10 +30,17 @@ func ensureInstalled(configPath, binary, systemRoot string) error {
 	if err != nil {
 		return err
 	}
-	if c.Docker() || Pending(binary) {
+	if c.Docker() {
 		return nil
 	}
-	if ready, _ := migrationReady(configPath, binary, systemRoot); ready {
+	if Pending(binary) {
+		if ready, _ := migrationReadyStrict(configPath, binary, systemRoot); ready {
+			return nil
+		}
+		// Older update workers install schema 1 gates before starting this
+		// binary. Wait for their transaction to commit before removing files
+		// that their in-memory rollback snapshots still own.
+		go deferMigration(configPath, binary, systemRoot)
 		return nil
 	}
 	journalPath := filepath.Join(filepath.Dir(configPath), ".agent-migration.json")
@@ -53,13 +61,18 @@ func ensureInstalled(configPath, binary, systemRoot string) error {
 	} else if !os.IsNotExist(readErr) {
 		return readErr
 	}
+	// An interrupted bootstrap must restore/reapply its journal even when its
+	// final config write happened before the crash but reload never completed.
+	if ready, _ := migrationReadyStrict(configPath, binary, systemRoot); ready {
+		return nil
+	}
 	changes, err := MigrationPlan(c, binary, systemRoot)
 	if err != nil {
 		return legacyFailure(c, binary, nil, err)
 	}
 	journal = bootstrapJournal{}
 	for _, change := range changes {
-		snapshot, captureErr := Capture(change.Path)
+		snapshot, captureErr := captureChange(change)
 		if captureErr != nil {
 			return captureErr
 		}
@@ -74,14 +87,6 @@ func ensureInstalled(configPath, binary, systemRoot string) error {
 	}
 	if err = ApplyChanges(changes); err == nil {
 		err = reload(c.String("service_manager"))
-		if err == nil {
-			gate := "configflow-recover-" + c.String("service_type")
-			if c.String("service_manager") == "systemd" {
-				err = command("systemctl", "start", gate)
-			} else {
-				err = command("rc-service", gate, "start")
-			}
-		}
 	}
 	if err != nil {
 		return legacyFailure(c, binary, journal.Snapshots, err)
@@ -130,6 +135,27 @@ func MigrationReady(configPath, binary string) (bool, error) {
 }
 
 func migrationReady(configPath, binary, systemRoot string) (bool, error) {
+	ready, err := migrationReadyStrict(configPath, binary, systemRoot)
+	if err != nil || ready {
+		return ready, err
+	}
+	c, err := ReadConfig(configPath)
+	if err != nil {
+		return false, err
+	}
+	// Let a schema 1 worker commit its update before the deferred cleanup.
+	// This exception applies only to its final startup probe, never to a
+	// completed update, an unreadable journal, or another Agent's task.
+	job, err := loadJob(CurrentPath(binary))
+	if err != nil {
+		return false, nil
+	}
+	return c.Values["upgrade_schema"] == float64(1) && job.Mutating &&
+		job.AgentID == c.String("agent_id") && job.Binary == binary &&
+		job.Version == Version && (job.Status.Status == "restarting" || job.Status.Status == "checking"), nil
+}
+
+func migrationReadyStrict(configPath, binary, systemRoot string) (bool, error) {
 	c, err := ReadConfig(configPath)
 	if err != nil {
 		return false, err
@@ -137,7 +163,7 @@ func migrationReady(configPath, binary, systemRoot string) (bool, error) {
 	if c.Docker() {
 		return false, nil
 	}
-	if value, ok := c.Values["upgrade_schema"].(float64); !ok || value != 1 {
+	if value, ok := c.Values["upgrade_schema"].(float64); !ok || value != migrationSchema {
 		return false, nil
 	}
 	changes, err := MigrationPlan(c, binary, systemRoot)
@@ -148,12 +174,56 @@ func migrationReady(configPath, binary, systemRoot string) (bool, error) {
 		if change.Path == configPath {
 			continue
 		}
+		if change.Delete {
+			if _, err := os.Lstat(change.Path); !os.IsNotExist(err) {
+				return false, err
+			}
+			continue
+		}
 		data, err := os.ReadFile(change.Path)
 		if err != nil || !bytes.Equal(data, change.Data) {
 			return false, nil
 		}
 	}
 	return true, nil
+}
+
+func deferMigration(configPath, binary, systemRoot string) {
+	for {
+		done, err := finishDeferredMigration(configPath, binary, systemRoot)
+		if err != nil {
+			log.Printf("Warning: could not remove legacy startup recovery dependencies after Agent update: %v", err)
+			return
+		}
+		if done {
+			return
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func finishDeferredMigration(configPath, binary, systemRoot string) (bool, error) {
+	job, err := loadJob(CurrentPath(binary))
+	if err != nil {
+		return true, err
+	}
+	if !terminal(job.Status.Status) {
+		return false, nil
+	}
+	if job.Status.Status != "succeeded" {
+		return true, nil
+	}
+	release, err := lock(filepath.Join(rootFor(binary), "update.lock"))
+	if err != nil {
+		return false, nil
+	}
+	defer release()
+	// Another update could have been reserved between reading the journal
+	// and acquiring its lock. Do not migrate during that transaction.
+	if Pending(binary) {
+		return false, nil
+	}
+	return true, ensureInstalled(configPath, binary, systemRoot)
 }
 
 func reportLegacyFailure(c *Config, message string) {

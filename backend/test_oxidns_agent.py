@@ -64,7 +64,9 @@ def test_oxidns_native_install_and_legacy_guard(tmp_path):
     assert config['service_binary'] == 'oxidns'
     assert config['service_unit'] == 'oxidns'
     assert config['config_path'] == '/etc/oxidns/config.yaml'
-    assert 'Requires=configflow-recover-oxidns.service' in script
+    assert 'Requires=configflow-recover-oxidns.service' not in script
+    assert '-validate-service' in script
+    assert '-check-deployments' in script
     assert '[ "$other_type" != "oxidns" ]' in script
     installer = tmp_path / 'install.sh'
     installer.write_text(script)
@@ -86,7 +88,7 @@ def test_oxidns_docker_persists_state_and_maps_udp_tcp():
         generate_docker_agent_compose('https://config.test', enable_mosdns=True, enable_oxidns=True)
 
 
-def test_docker_oxidns_boot_recovery_precedes_defaults(tmp_path):
+def test_docker_oxidns_boot_starts_without_recovery_gate(tmp_path):
     from backend.test_agent_transaction_install import entrypoint_harness
     entrypoint, env = entrypoint_harness(tmp_path)
     env.update(SERVICE_TYPE='oxidns', ENABLE_MIHOMO='false', ENABLE_MOSDNS='false')
@@ -96,7 +98,7 @@ def test_docker_oxidns_boot_recovery_precedes_defaults(tmp_path):
     result = subprocess.run(['sh', str(entrypoint), 'sh', '-c', 'echo supervisor >> "$EVENTS"'], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     events = (tmp_path / 'events').read_text().splitlines()
-    assert len(events) == 2 and 'config-oxidns.json -recover-only' in events[0]
+    assert events == ['supervisor']
     config = yaml.safe_load((tmp_path / 'etc/oxidns/config.yaml').read_text())
     assert config['runtime']['worker_threads'] == 2
     assert (tmp_path / 'etc/oxidns/state').is_dir()
