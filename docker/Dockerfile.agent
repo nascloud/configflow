@@ -52,7 +52,7 @@ COPY docker/docker-agent-entrypoint-service.sh /entrypoint.sh
 RUN { sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/repositories && apk update; } || \
     { echo "镜像源不可用，回退官方源" && \
       sed -i 's/mirrors.tuna.tsinghua.edu.cn/dl-cdn.alpinelinux.org/g' /etc/apk/repositories && apk update; } && \
-    apk add --no-cache ca-certificates su-exec supervisor python3-dev py3-pip bash && \
+    apk add --no-cache ca-certificates tzdata su-exec supervisor python3-dev py3-pip bash && \
     pip3 install --break-system-packages "setuptools<81" && \
     mkdir -p /etc/mihomo /etc/mosdns /etc/oxidns/state /etc/supervisor/conf.d /var/log/supervisor /run && \
     chmod +x /usr/local/bin/configflow-agent /usr/local/bin/mihomo /usr/local/bin/mosdns /usr/local/bin/oxidns /entrypoint.sh && \
