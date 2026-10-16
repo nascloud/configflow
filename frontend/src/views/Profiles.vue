@@ -176,7 +176,7 @@
           </DialogDescription>
         </DialogHeader>
 
-        <form class="flex flex-col gap-4" @submit.prevent="submitClientImport(false)">
+        <form class="flex min-w-0 flex-col gap-4" @submit.prevent="submitClientImport(false)">
           <div class="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
             <div class="flex flex-col gap-1.5">
               <Label for="client-type">配置类型</Label>
@@ -222,7 +222,7 @@
             <Textarea
               id="client-content"
               v-model="clientImport.content"
-              class="h-48 resize-none overflow-auto bg-background/50 font-mono text-[12px] [field-sizing:fixed] max-sm:h-36"
+              class="h-48 resize-none overflow-auto bg-background/50 font-mono text-[12px] field-sizing-fixed max-sm:h-36"
               :placeholder="clientImport.fileName ? '' : '粘贴配置内容，或选择配置文件'"
             />
             <p v-if="clientImport.fileName" class="m-0 text-[12px] text-muted-foreground">
@@ -264,7 +264,7 @@
               v-if="clientImport.result.warnings.length"
               class="m-0 flex max-h-40 flex-col gap-1 overflow-y-auto overscroll-contain pl-4 text-muted-foreground"
             >
-              <li v-for="warning in clientImport.result.warnings" :key="warning" class="break-words">{{ warning }}</li>
+              <li v-for="warning in clientImport.result.warnings" :key="warning" class="[overflow-wrap:anywhere]">{{ warning }}</li>
             </ul>
           </div>
         </form>

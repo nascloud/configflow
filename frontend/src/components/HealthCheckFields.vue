@@ -1,5 +1,5 @@
 <template>
-  <details class="group rounded-lg border border-border bg-background/30" data-health-advanced>
+  <details class="group min-w-0 rounded-lg border border-border bg-background/30" data-health-advanced>
     <summary class="flex cursor-pointer list-none items-center gap-2 rounded-lg px-3 py-2.5 select-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-primary-accent focus-visible:outline-none [&::-webkit-details-marker]:hidden">
       <ChevronRight class="size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-90" />
       <span class="shrink-0 text-sm font-medium">健康检查</span>
