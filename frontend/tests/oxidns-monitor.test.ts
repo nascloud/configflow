@@ -181,7 +181,7 @@ describe('OxiDNS monitor display', () => {
   })
   it('shows zero elapsed time and never labels a normal answer as a cache hit', () => {
     const wrapper = mount(OxiDNSQueryTable, { props: {
-      recorders: ['queries'], recorder: 'queries', filters: emptyQueryFilters(), data: records(),
+      agentId: 'one', recorders: ['queries'], recorder: 'queries', filters: emptyQueryFilters(), data: records(),
       loading: false, error: '', page: 1, hasNext: false
     } })
     wrappers.push(wrapper)

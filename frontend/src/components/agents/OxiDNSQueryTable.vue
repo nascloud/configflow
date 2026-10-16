@@ -21,7 +21,7 @@
         </template>
       </Toolbar>
       <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <label class="text-xs text-muted-foreground">客户端 IP<Input v-model="draft.client_ip" class="mt-1.5 min-h-11 bg-card font-mono" placeholder="例如 192.0.2.10" /></label>
+        <div class="min-w-0 text-xs text-muted-foreground"><span>客户端 IP</span><OxiDNSClientSelect class="mt-1.5" :model-value="draft.client_ip" :agent-id="agentId" :recorder="recorder" :range="draft.range" @update:model-value="selectClient" /></div>
         <label class="text-xs text-muted-foreground">查询类型<Input v-model="draft.qtype" class="mt-1.5 min-h-11 bg-card font-mono" placeholder="例如 A、AAAA" /></label>
         <label class="text-xs text-muted-foreground">响应码<Input v-model="draft.rcode" class="mt-1.5 min-h-11 bg-card font-mono" placeholder="例如 NOERROR" /></label>
         <label class="text-xs text-muted-foreground">匹配器标签<Input v-model="draft.matcher_tag" class="mt-1.5 min-h-11 bg-card font-mono" placeholder="按实际执行标签查询" /></label>
@@ -33,7 +33,7 @@
     </p>
     <LoadingRows v-if="loading && !data" :rows="5" />
     <EmptyState v-else-if="!data && error" title="查询记录读取失败" description="请检查核心连接后重试。" />
-    <EmptyState v-else-if="data && !data.records.length" :icon="Search" title="没有匹配的查询记录" description="可以调整时间范围或筛选条件。查询记录由核心记录器提供。" />
+    <EmptyState v-else-if="data && !data.records.length" :icon="Search" :title="hasNext ? '这一页暂无匹配的查询记录' : '没有匹配的查询记录'" :description="hasNext ? '还有更早的记录，可点击下一页继续查找。' : '可以调整时间范围或筛选条件。查询记录由核心记录器提供。'" />
     <DataTableShell v-else-if="data" :footer="'本页 ' + data.records.length + ' 条 · 第 ' + page + ' 页'">
       <TableHeader><TableRow><TableHead>时间</TableHead><TableHead>查询</TableHead><TableHead>客户端</TableHead><TableHead>结果</TableHead><TableHead class="text-right">耗时</TableHead><TableHead class="text-right">详情</TableHead></TableRow></TableHeader>
       <TableBody>
@@ -72,13 +72,14 @@ import Toolbar from '@/components/common/Toolbar.vue'
 import DataTableShell from '@/components/common/DataTableShell.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
+import OxiDNSClientSelect from '@/components/agents/OxiDNSClientSelect.vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatDNSType, formatDNSCode, formatMonitorNumber, formatQueryTime, monitorNumber, type OxiDNSQueries, type OxiDNSQuery, type OxiDNSQueryFilters } from '@/types/oxidnsMonitor'
 const props = defineProps<{
-  recorders: string[]; recorder: string; filters: OxiDNSQueryFilters; data: OxiDNSQueries | null
+  agentId: string; recorders: string[]; recorder: string; filters: OxiDNSQueryFilters; data: OxiDNSQueries | null
   loading: boolean; error: string; page: number; hasNext: boolean
 }>()
 const emit = defineEmits<{
@@ -86,5 +87,9 @@ const emit = defineEmits<{
   next: []; previous: []; retry: []
 }>()
 const draft = reactive({ ...props.filters })
+function selectClient(value: string) {
+  draft.client_ip = value
+  emit('filter', { ...draft })
+}
 watch(() => props.filters, value => Object.assign(draft, value))
 </script>

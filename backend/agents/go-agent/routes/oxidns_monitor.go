@@ -21,9 +21,11 @@ import (
 )
 
 const (
-	oxMonitorJSONLimit    = 4 << 20
-	oxMonitorMetricsLimit = 2 << 20
-	oxMonitorTimeout      = 5 * time.Second
+	oxMonitorJSONLimit         = 4 << 20
+	oxMonitorMetricsLimit      = 2 << 20
+	oxMonitorTimeout           = 5 * time.Second
+	oxMonitorClientSampleLimit = 10000
+	oxMonitorExactIPPages      = 10
 )
 
 type oxMonitorError struct {
@@ -303,6 +305,9 @@ func oxMonitorParseQuery(raw string, detail bool) (string, url.Values, *oxMonito
 				return "", nil, oxMonitorBadQuery()
 			}
 			value = strings.TrimSpace(value)
+			if key == "client_ip" && value != "" && net.ParseIP(value) == nil {
+				return "", nil, oxMonitorBadQuery()
+			}
 			if key == "qtype" {
 				value = strings.ToUpper(value)
 			}
@@ -324,6 +329,39 @@ func oxMonitorParseQuery(raw string, detail bool) (string, url.Values, *oxMonito
 		values.Set("limit", "100")
 	}
 	return recorder, values, nil
+}
+
+// Client options deliberately ignore the selected query's other filters. Only
+// the time range and an independent client search narrow this bounded sample.
+func oxMonitorParseClients(raw string) (string, url.Values, *oxMonitorError) {
+	if len(raw) > 8192 {
+		return "", nil, oxMonitorBadQuery()
+	}
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return "", nil, oxMonitorBadQuery()
+	}
+	for key, items := range values {
+		if key != "recorder" && key != "since_ms" && key != "until_ms" && key != "search" || len(items) != 1 {
+			return "", nil, oxMonitorBadQuery()
+		}
+		if key == "search" {
+			if len(items[0]) > 64 || !utf8.ValidString(items[0]) || strings.IndexFunc(items[0], unicode.IsControl) >= 0 {
+				return "", nil, oxMonitorBadQuery()
+			}
+		}
+	}
+	search := strings.TrimSpace(values.Get("search"))
+	values.Del("search")
+	recorder, query, queryErr := oxMonitorParseQuery(values.Encode(), false)
+	if queryErr != nil {
+		return "", nil, queryErr
+	}
+	query.Set("limit", strconv.Itoa(oxMonitorClientSampleLimit))
+	if search != "" {
+		query.Set("client_ip", search)
+	}
+	return recorder, query, nil
 }
 
 func (config *oxMonitorConfig) recorder(requested string) (string, *oxMonitorError) {
@@ -393,7 +431,7 @@ func (config *oxMonitorConfig) fetch(ctx context.Context, client *http.Client, p
 		var failure struct {
 			Code string `json:"code"`
 		}
-		if len(data) <= 8192 && json.Unmarshal(data, &failure) == nil && !strings.HasSuffix(path, "/records") && failure.Code == "record_not_found" {
+		if len(data) <= 8192 && json.Unmarshal(data, &failure) == nil && len(strings.Split(path, "/")) == 6 && strings.Split(path, "/")[4] == "records" && failure.Code == "record_not_found" {
 			return nil, oxMonitorFail(http.StatusNotFound, "RECORD_NOT_FOUND", "The query record is no longer available")
 		}
 		return nil, oxMonitorFail(http.StatusConflict, "RECORDER_NOT_CONFIGURED", "The query recorder API is not available in the running OxiDNS instance")
@@ -438,6 +476,26 @@ func oxMonitorValidJSON(path string, data []byte) bool {
 	if json.Unmarshal(object["ok"], &ok) != nil || !ok {
 		return false
 	}
+	if strings.HasSuffix(path, "/stats/top_clients") {
+		var sample uint64
+		var rows []struct {
+			Key   string `json:"key"`
+			Count uint64 `json:"count"`
+		}
+		if json.Unmarshal(object["sample_size"], &sample) != nil || string(object["sample_size"]) == "null" || sample > oxMonitorClientSampleLimit || json.Unmarshal(object["rows"], &rows) != nil || rows == nil || len(rows) > oxMonitorClientSampleLimit {
+			return false
+		}
+		seen := make(map[string]bool)
+		var total uint64
+		for _, row := range rows {
+			if net.ParseIP(row.Key) == nil || seen[row.Key] || row.Count == 0 || row.Count > sample {
+				return false
+			}
+			seen[row.Key] = true
+			total += row.Count
+		}
+		return total == sample
+	}
 	if strings.HasSuffix(path, "/records") {
 		var records []json.RawMessage
 		if json.Unmarshal(object["records"], &records) != nil || records == nil {
@@ -465,7 +523,78 @@ func oxMonitorRequestError(ctx context.Context, err error) *oxMonitorError {
 	return oxMonitorFail(http.StatusBadGateway, "CORE_UNREACHABLE", "Cannot reach the OxiDNS API")
 }
 
-// OxiDNSMonitorHandler exposes only the three explicitly supported read APIs.
+// The core's client_ip filter is a substring search. Apply numeric IP equality
+// over successive core pages, retaining the last scanned cursor even when a
+// sparse match reaches the scan bound. Request only the remaining row count so
+// no unreturned matches can be skipped at the end of a core page.
+func (config *oxMonitorConfig) exactIPRecords(ctx context.Context, client *http.Client, path string, query url.Values) ([]byte, *oxMonitorError) {
+	selected := net.ParseIP(query.Get("client_ip"))
+	if selected == nil {
+		return nil, oxMonitorBadQuery()
+	}
+	wanted, _ := strconv.Atoi(query.Get("limit"))
+	if wanted <= 0 || wanted > 100 {
+		return nil, oxMonitorBadQuery()
+	}
+	if selected.To4() != nil {
+		query.Set("client_ip", selected.String())
+	} else {
+		// Textual IPv6 compression/casing differs; a broad IPv6 prefilter
+		// avoids dropping numerically equal addresses before comparison.
+		query.Set("client_ip", ":")
+	}
+	records := make([]json.RawMessage, 0, wanted)
+	var next *string
+	seen := map[string]bool{}
+	if cursor := query.Get("cursor"); cursor != "" {
+		seen[cursor] = true
+	}
+	for page := 0; page < oxMonitorExactIPPages; page++ {
+		remaining := wanted - len(records)
+		query.Set("limit", strconv.Itoa(remaining))
+		data, err := config.fetch(ctx, client, path, query, oxMonitorJSONLimit, true)
+		if err != nil {
+			return nil, err
+		}
+		var result struct {
+			Records    []json.RawMessage `json:"records"`
+			NextCursor *string           `json:"next_cursor"`
+		}
+		if json.Unmarshal(data, &result) != nil || len(result.Records) > remaining {
+			return nil, oxMonitorFail(http.StatusBadGateway, "INVALID_RESPONSE", "OxiDNS API returned an invalid query page")
+		}
+		for _, row := range result.Records {
+			var record struct {
+				ClientIP string `json:"client_ip"`
+			}
+			if json.Unmarshal(row, &record) != nil {
+				return nil, oxMonitorFail(http.StatusBadGateway, "INVALID_RESPONSE", "OxiDNS API returned an invalid query record")
+			}
+			if selected.Equal(net.ParseIP(record.ClientIP)) {
+				records = append(records, row)
+			}
+		}
+		next = result.NextCursor
+		if next == nil {
+			break
+		}
+		if _, _, err := oxMonitorParseQuery(url.Values{"cursor": {*next}}.Encode(), false); err != nil || seen[*next] {
+			return nil, oxMonitorFail(http.StatusBadGateway, "INVALID_RESPONSE", "OxiDNS API returned an invalid query cursor")
+		}
+		seen[*next] = true
+		if len(records) == wanted {
+			break
+		}
+		query.Set("cursor", *next)
+	}
+	data, err := json.Marshal(map[string]interface{}{"ok": true, "records": records, "next_cursor": next})
+	if err != nil || len(data) > oxMonitorJSONLimit {
+		return nil, oxMonitorFail(http.StatusBadGateway, "INVALID_RESPONSE", "OxiDNS API response exceeds the monitoring size limit")
+	}
+	return data, nil
+}
+
+// OxiDNSMonitorHandler exposes only the explicitly supported read APIs.
 // It does not invoke lifecycle commands, deploy configuration, or open recorder
 // databases; all query data comes from the running core's official HTTP API.
 func OxiDNSMonitorHandler(cfg *Config) http.HandlerFunc {
@@ -478,6 +607,7 @@ func OxiDNSMonitorHandler(cfg *Config) http.HandlerFunc {
 		}
 		path := r.URL.Path
 		overview := path == "/api/oxidns/overview"
+		clients := path == "/api/oxidns/clients"
 		detail := strings.HasPrefix(path, "/api/oxidns/queries/")
 		id := ""
 		if detail {
@@ -488,7 +618,7 @@ func OxiDNSMonitorHandler(cfg *Config) http.HandlerFunc {
 				return
 			}
 		}
-		if (!overview && !detail && path != "/api/oxidns/queries") || r.URL.EscapedPath() != path {
+		if (!overview && !clients && !detail && path != "/api/oxidns/queries") || r.URL.EscapedPath() != path {
 			oxMonitorWriteError(w, oxMonitorFail(http.StatusNotFound, "NOT_FOUND", "Unknown monitoring endpoint"))
 			return
 		}
@@ -501,7 +631,11 @@ func OxiDNSMonitorHandler(cfg *Config) http.HandlerFunc {
 			}
 		} else {
 			var queryErr *oxMonitorError
-			recorder, query, queryErr = oxMonitorParseQuery(r.URL.RawQuery, detail)
+			if clients {
+				recorder, query, queryErr = oxMonitorParseClients(r.URL.RawQuery)
+			} else {
+				recorder, query, queryErr = oxMonitorParseQuery(r.URL.RawQuery, detail)
+			}
 			if queryErr != nil {
 				oxMonitorWriteError(w, queryErr)
 				return
@@ -538,10 +672,25 @@ func OxiDNSMonitorHandler(cfg *Config) http.HandlerFunc {
 		corePath := "/api/plugins/" + tag + "/records"
 		if detail {
 			corePath += "/" + id
+		} else if clients {
+			corePath = "/api/plugins/" + tag + "/stats/top_clients"
 		}
-		data, err := config.fetch(ctx, client, corePath, query, oxMonitorJSONLimit, true)
+		var data []byte
+		if !detail && !clients && query.Get("client_ip") != "" {
+			data, err = config.exactIPRecords(ctx, client, corePath, query)
+		} else {
+			data, err = config.fetch(ctx, client, corePath, query, oxMonitorJSONLimit, true)
+		}
 		if err != nil {
 			oxMonitorWriteError(w, err)
+			return
+		}
+		if clients {
+			var result map[string]json.RawMessage
+			_ = json.Unmarshal(data, &result)
+			selected, _ := json.Marshal(tag)
+			result["recorder"] = selected
+			JsonResponse(w, http.StatusOK, result)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
