@@ -1,10 +1,14 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.6.1-go"
+LATEST_AGENT_VERSION = "1.7.0-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.7.0-go": {
+        "date": "2026-10-16",
+        "features": ["OxiDNS 原生 DNS 监控：实时统计、缓存命中率、查询记录筛选与执行详情", "受限只读 API 连接，核心认证信息仅保留在 Agent 本机"]
+    },
     "1.6.1-go": {
         "date": "2026-10-16",
         "features": [

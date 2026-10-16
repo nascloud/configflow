@@ -33,6 +33,7 @@
 import type { Component } from 'vue'
 import { Motion } from 'motion-v'
 import { Download, LayoutDashboard, Link2, MoreHorizontal, Network } from '@lucide/vue'
+import { scopeOfPath } from '@/navigation'
 import { SPRING } from '@/lib/motion'
 import { cn } from '@/lib/utils'
 
@@ -54,5 +55,6 @@ const TABS: Tab[] = [
 const props = defineProps<{ activePath: string }>()
 const emit = defineEmits<{ (e: 'more'): void }>()
 
-const isActive = (tab: Tab) => !!tab.path && props.activePath === tab.path
+const isActive = (tab: Tab) => !!tab.path && (props.activePath === tab.path
+  || tab.path === '/dashboard' && scopeOfPath(props.activePath) === 'overview')
 </script>

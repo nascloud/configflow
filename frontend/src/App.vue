@@ -19,7 +19,7 @@
 
     <AppRail
       class="max-[900px]:hidden"
-      :active-path="route.path"
+      :active-path="navigationPath(route.path)"
       :profile-name="currentProfileName"
       :subscription-aggregation-enabled="subscriptionAggregationEnabled"
       :version="versionInfo"
@@ -150,7 +150,7 @@
           <!-- 不做整页过渡：out-in 会在两页之间留一帧空白，观感是闪一下。
                进场动效交给页面内的卡片与列表逐项播放。 -->
           <MobileGroupNav
-            :active-path="route.path"
+            :active-path="navigationPath(route.path)"
             :subscription-aggregation-enabled="subscriptionAggregationEnabled"
           />
           <router-view :key="pageKey" />
@@ -158,7 +158,7 @@
       </main>
     </div>
 
-    <MobileTabBar :active-path="route.path" @more="palette?.show()" />
+    <MobileTabBar :active-path="navigationPath(route.path)" @more="palette?.show()" />
 
     <CommandPalette
       ref="palette"
@@ -205,7 +205,7 @@ import { confirm, notify } from './lib/feedback'
 import { usePreferences } from './stores/preferences'
 import { useProfileStore } from './stores/profile'
 import { useThemeStore } from './stores/theme'
-import { groupOfScope, labelOfPath, scopeOfPath } from './navigation'
+import { groupOfScope, labelOfPath, navigationPath, scopeOfPath } from './navigation'
 
 const reduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
 const { prefs } = usePreferences()

@@ -290,9 +290,14 @@ describe('mobile group navigation', () => {
     expect(router.currentRoute.value.path).toBe('/subscriptions')
   })
 
-  it('hides group navigation for the single-page overview group', async () => {
-    const { wrapper } = await render('/dashboard')
-    expect(wrapper.find('nav[aria-label="分组内页面"]').exists()).toBe(false)
+  it('opens OxiDNS monitoring below the dashboard in the overview menu', async () => {
+    const { wrapper, router } = await render('/dashboard')
+    const menu = await openMenu(wrapper, '总览', '数据统计')
+    const links = Array.from(menu.querySelectorAll('a'))
+    expect(links.map(link => link.textContent?.trim())).toEqual(['数据统计', 'OxiDNS 监控'])
+    links[1]!.click()
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/oxidns')
     expect(openSheet()).toBeNull()
   })
 

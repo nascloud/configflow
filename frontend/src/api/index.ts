@@ -259,6 +259,16 @@ export const agentApi = {
     api.get('/agents/docker-run', { params, responseType: 'text' })
 }
 
+// OxiDNS monitoring never sends core credentials or addresses from the browser.
+export const oxidnsMonitorApi = {
+  overview: (id: string, options: { signal?: AbortSignal } = {}) =>
+    api.get(`/agents/${encodeURIComponent(id)}/oxidns/overview`, options),
+  queries: (id: string, params: Record<string, string | number | undefined>, options: { signal?: AbortSignal } = {}) =>
+    api.get(`/agents/${encodeURIComponent(id)}/oxidns/queries`, { params, ...options }),
+  query: (id: string, recordId: string | number, recorder: string, options: { signal?: AbortSignal } = {}) =>
+    api.get(`/agents/${encodeURIComponent(id)}/oxidns/queries/${encodeURIComponent(recordId)}`, { params: { recorder }, ...options })
+}
+
 // 系统信息
 export const systemApi = {
   getVersion: () => api.get('/version')

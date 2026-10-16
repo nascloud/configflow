@@ -27,6 +27,11 @@ const routes = [
     component: () => import('@/views/Dashboard.vue')
   },
   {
+    path: '/oxidns',
+    name: 'OxiDNSMonitorEntry',
+    component: () => import('@/views/OxiDNSMonitorEntry.vue')
+  },
+  {
     path: '/profiles',
     name: 'Profiles',
     component: () => import('@/views/Profiles.vue')
@@ -81,6 +86,11 @@ const routes = [
     path: '/agents',
     name: 'Agents',
     component: () => import('@/views/Agents.vue')
+  },
+  {
+    path: '/agents/:agentId/oxidns',
+    name: 'OxiDNSMonitor',
+    component: () => import('@/views/OxiDNSMonitor.vue')
   },
   {
     path: '/logs',
