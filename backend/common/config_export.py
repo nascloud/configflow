@@ -20,7 +20,7 @@ def redact_oxidns_settings(settings: Any) -> Any:
     Full administrator backups remain restorable. Upstream/native YAML strings
     can contain embedded credentials, so omit those opaque fields completely.
     """
-    opaque_fields = {'custom_config', 'local_dns', 'remote_dns', 'fallback_dns'}
+    opaque_fields = {'custom_config', 'native_config', 'local_dns', 'remote_dns', 'fallback_dns'}
     credential_fields = {'password', 'username', 'token', 'secret', 'authorization',
                          'private_key', 'private-key', 'key', 'socks5', 'proxy',
                          'url', 'urls', 'headers', 'bootstrap_rules'}
@@ -29,7 +29,7 @@ def redact_oxidns_settings(settings: Any) -> Any:
         if depth >= 64:
             return _REDACTED
         if isinstance(value, dict):
-            return {key: ('' if key in opaque_fields else
+            return {key: ([] if key == 'additional_files' else '' if key in opaque_fields else
                           _REDACTED if str(key).lower() in credential_fields and item else
                           redact(item, depth + 1)) for key, item in value.items()}
         if isinstance(value, list):

@@ -23,7 +23,7 @@ import urllib.request
 import yaml
 
 
-def prepare(root):
+def prepare(root, complete=False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from backend.common.oxidns_settings import get_default_oxidns_settings
     from backend.converters.oxidns import generate_oxidns_config, get_oxidns_custom_files
@@ -47,11 +47,46 @@ def prepare(root):
         settings[route + '_rules'].append(identity)
     config = {'oxidns': settings, 'rule_configs': rules}
     root.mkdir(parents=True, exist_ok=True)
-    (root / 'config.yaml').write_text(generate_oxidns_config(config))
+    generated = generate_oxidns_config(config)
+    if complete:
+        certs = root / 'certs'
+        certs.mkdir(exist_ok=True)
+        (certs / 'test.cnf').write_text('[req]\ndistinguished_name=dn\nx509_extensions=v3_req\nprompt=no\n[dn]\nCN=localhost\n[v3_req]\nsubjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n')
+        subprocess.run(['openssl', 'req', '-config', str(certs / 'test.cnf'), '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(certs / 'test.key'), '-out', str(certs / 'test.pem'), '-subj', '/CN=localhost', '-days', '1'], check=True, capture_output=True)
+        document = yaml.safe_load(generated)
+        document['network'] = {'outbound': {'default': 'direct', 'profiles': {'direct': {'resolver': 'system', 'proxy': 'none'}}}}
+        document['api']['http']['cors'] = {'allowed_origins': ['http://localhost']}
+        document['plugins'].extend([
+            {'tag': 'test_dot', 'type': 'tcp_server', 'args': {'listen': '127.0.0.1:18530', 'entry': 'sequence_main', 'cert': 'certs/test.pem', 'key': 'certs/test.key', 'idle_timeout': 10}},
+            {'tag': 'test_doh', 'type': 'http_server', 'args': {'listen': '127.0.0.1:18531', 'entries': [{'path': '/dns-query', 'exec': 'sequence_main', 'json_api': True}], 'cert': 'certs/test.pem', 'key': 'certs/test.key', 'enable_http3': True, 'idle_timeout': 30}},
+            {'tag': 'test_doq', 'type': 'quic_server', 'args': {'listen': '127.0.0.1:18532', 'entry': 'sequence_main', 'cert': 'certs/test.pem', 'key': 'certs/test.key', 'idle_timeout': 30}},
+        ])
+        # Include order, binary attachments and full-document preservation pass through the actual converter.
+        document['include'] = ['plugins/matchers.yaml']
+        settings.update(config_mode='native', native_config=yaml.safe_dump(document, sort_keys=False), additional_files=[
+            {'path': 'certs/test.pem', 'encoding': 'text', 'content': (certs / 'test.pem').read_text()},
+            {'path': 'certs/test.key', 'encoding': 'text', 'content': (certs / 'test.key').read_text()},
+            {'path': 'plugins/matchers.yaml', 'encoding': 'text', 'content': 'plugins:\n  - tag: test_qtype\n    type: qtype\n    args: [1, 28]\n'},
+            {'path': 'rules/binary-fixture.dat', 'encoding': 'base64', 'content': 'AP8='},
+        ])
+        generated = generate_oxidns_config(config)
+        actual = yaml.safe_load(generated)
+        assert actual['network'] == document['network']
+        assert actual['api'] == document['api']
+        assert actual['plugins'][0]['tag'] == 'test_qtype'
+        assert not actual.get('include')
+    (root / 'config.yaml').write_text(generated)
     for item in get_oxidns_custom_files(config):
         destination = root / item['path']
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(item['content'])
+        content = item['content']
+        if isinstance(content, bytes):
+            destination.write_bytes(content)
+        elif item.get('encoding') == 'base64':
+            import base64
+            destination.write_bytes(base64.b64decode(content))
+        else:
+            destination.write_text(content)
     print(json.dumps({'prepared': str(root)}))
 
 
@@ -152,6 +187,7 @@ def run(root, binary):
     import base64
     config = yaml.safe_load((root / 'config.yaml').read_text())
     dns_port, api_port = free_port(), free_port()
+    encrypted_ports = {name: free_port() for name in ('test_dot', 'test_doh', 'test_doq')}
     assert dns_port not in (53, 9199) and api_port not in (53, 9199)
     local, remote = MockDNS('10.1.2.3'), MockDNS('198.18.0.1')
     local.set('probe.test', '10.1.2.3')
@@ -161,6 +197,8 @@ def run(root, binary):
         if plugin['type'] == 'forward':
             mock = remote if plugin['tag'] == 'forward_remote' else local
             plugin['args']['upstreams'] = [{'addr': f'udp://127.0.0.1:{mock.server_address[1]}'}]
+        elif plugin['tag'] in encrypted_ports:
+            plugin['args']['listen'] = f"127.0.0.1:{encrypted_ports[plugin['tag']]}"
         elif plugin['type'] in ('udp_server', 'tcp_server'):
             plugin['args']['listen'] = f'127.0.0.1:{dns_port}'
     (root / 'state').mkdir(exist_ok=True)
@@ -191,6 +229,24 @@ def run(root, binary):
             except urllib.error.HTTPError as error:
                 assert error.code == 401
             results['api_basic_auth'] = True
+            if any(plugin['tag'] == 'test_doh' for plugin in config['plugins']):
+                import ssl
+                encrypted_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
+                with encrypted_opener.open(f"https://127.0.0.1:{encrypted_ports['test_doh']}/dns-query?name=direct.test&type=A", timeout=3) as response:
+                    answer = json.load(response)
+                    assert answer['Status'] == 0 and answer['Answer'][0]['data'] == '10.2.3.4', answer
+                    assert 'h3=' in response.headers.get('Alt-Svc', '')
+                results['doh_json_api_and_http3_advertisement'] = True
+                for tag, scheme in [('test_dot', 'tls'), ('test_doq', 'quic'), ('test_doh', 'https'), ('test_doh', 'h3')]:
+                    address = f"{scheme}://127.0.0.1:{encrypted_ports[tag]}" + ('/dns-query' if scheme in ('https', 'h3') else '')
+                    probe = subprocess.run([binary, 'probe', 'upstream', address, '--insecure-skip-verify', '--qname', 'proxy.test', '--serial-samples', '3', '--pipeline-concurrency', '4', '--pipeline-rounds', '2', '--json'], check=True, capture_output=True, text=True, timeout=30)
+                    report = json.loads(probe.stdout)
+                    assert report['serial']['success_count'] == report['serial']['total_queries'] == 3, report
+                    if report['pipeline']['applicable']:
+                        assert report['pipeline']['success_count'] == report['pipeline']['total_queries'], report
+                    results['test_doh3' if scheme == 'h3' else tag] = {'serial_queries': report['serial']['success_count'], 'concurrent_queries': report['pipeline']['success_count']}
+                assert (root / 'rules/binary-fixture.dat').read_bytes() == b'\x00\xff'
+                results['native_globals_include_and_binary_attachment'] = True
             for tcp in (False, True):
                 for _ in range(25):
                     for name, ip in (('direct.test', '10.2.3.4'), ('proxy.test', '198.18.0.1'),
@@ -248,8 +304,9 @@ if __name__ == '__main__':
     modes.add_argument('--prepare', type=Path)
     modes.add_argument('--run', type=Path)
     parser.add_argument('--binary', default='oxidns')
+    parser.add_argument('--complete', action='store_true', help='Prepare native mode with managed include/certificate/binary files and DoT/DoH/DoQ servers')
     args = parser.parse_args()
     if args.prepare:
-        prepare(args.prepare.resolve())
+        prepare(args.prepare.resolve(), complete=args.complete)
     else:
         run(args.run.resolve(), args.binary)

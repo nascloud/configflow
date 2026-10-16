@@ -69,9 +69,13 @@ func testBundle(t *testing.T, cfg *Config, id string, files map[string][]byte, e
 	h := sha256.Sum256(buf.Bytes())
 	return buf.Bytes(), hex.EncodeToString(h[:])
 }
-func submitBundle(t *testing.T, cfg *Config, id string, files map[string][]byte, activate bool) *DeploymentState {
+func submitBundle(t *testing.T, cfg *Config, id string, files map[string][]byte, activate bool, edits ...func(*DeploymentManifest)) *DeploymentState {
 	t.Helper()
-	body, digest := testBundle(t, cfg, id, files, nil)
+	var edit func(*DeploymentManifest)
+	if len(edits) > 0 {
+		edit = edits[0]
+	}
+	body, digest := testBundle(t, cfg, id, files, edit)
 	req := httptest.NewRequest(http.MethodPost, "/api/deployments", bytes.NewReader(body))
 	req.Header.Set("X-Deployment-ID", id)
 	req.Header.Set("X-Content-SHA256", digest)

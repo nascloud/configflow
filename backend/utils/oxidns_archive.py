@@ -1,6 +1,8 @@
 """Complete OxiDNS package using the shared bounded rule materializer."""
 import yaml
 from backend.utils.mosdns_archive import MosdnsArchiveError, build_mosdns_zip, _path
+from backend.common.oxidns_native import validate_resource_files
+from backend.common.oxidns_settings import OxidnsSettingsError
 
 OxidnsArchiveError = MosdnsArchiveError
 
@@ -17,23 +19,10 @@ def build_oxidns_zip(config, yaml_content, downloads, custom_files, *, base_url=
         raise OxidnsArchiveError('OxiDNS 配置格式无效')
     if document.get('include'):
         raise OxidnsArchiveError('OxiDNS 完整配置包不支持外部 include')
-    for plugin in document.get('plugins', []):
-        args = plugin.get('args') or {}
-        if not isinstance(args, dict):
-            continue
-        references = []
-        # Binary geosite/geoip and custom file-based providers use singular file.
-        if args.get('file'):
-            references.append(args['file'])
-        persistent = args.get('persistent', {})
-        if isinstance(persistent, dict):
-            refs = persistent.get('files', [])
-            if not isinstance(refs, list):
-                raise OxidnsArchiveError('OxiDNS 文件引用必须为列表')
-            references.extend(refs)
-        if any(_path(path) not in paths for path in references):
-            raise OxidnsArchiveError('OxiDNS 配置引用了未打包的规则文件')
     try:
-        return build_mosdns_zip(config, yaml_content, downloads, custom_files, base_url=base_url)
+        validate_resource_files(document, paths)
+        return build_mosdns_zip(config, yaml_content, downloads, custom_files, base_url=base_url, validate_references=False)
+    except OxidnsSettingsError as exc:
+        raise OxidnsArchiveError(str(exc)) from None
     except MosdnsArchiveError as exc:
         raise OxidnsArchiveError(str(exc).replace('MosDNS', 'OxiDNS')) from None

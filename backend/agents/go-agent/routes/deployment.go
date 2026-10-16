@@ -764,7 +764,8 @@ func replaceDeployment(cfg *Config, s *DeploymentState) error {
 			return e
 		}
 		mode := os.FileMode(0644)
-		if f.Path == s.Manifest.ConfigPath {
+		privateAsset := cfg.ServiceType == "oxidns" && f.Role == "custom"
+		if f.Path == s.Manifest.ConfigPath || cfg.ServiceType == "oxidns" {
 			mode = 0600
 		}
 		uid, gid := -1, -1
@@ -776,11 +777,17 @@ func replaceDeployment(cfg *Config, s *DeploymentState) error {
 		for _, prior := range s.Backups {
 			if prior.Path == f.Path && prior.Existed {
 				mode = os.FileMode(prior.Mode)
-				if prior.OwnershipKnown {
+				if prior.OwnershipKnown && !privateAsset {
 					uid, gid = prior.UID, prior.GID
 				}
 				break
 			}
+		}
+		// Uploaded OxiDNS assets can contain TLS keys or included credentials.
+		// Always install them privately for the core owner, even when replacing
+		// a formerly public file. Rollback retains its recorded mode/ownership.
+		if privateAsset {
+			mode = 0600
 		}
 		if e := ensureManagedParent(root, f.Path, uid, gid); e != nil {
 			return e

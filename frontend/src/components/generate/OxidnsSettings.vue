@@ -3,7 +3,7 @@
     <DialogContent class="flex max-h-[90dvh] max-w-[calc(100vw-2rem)] flex-col overflow-hidden sm:max-w-[860px]">
       <DialogHeader>
         <DialogTitle>OxiDNS 设置</DialogTitle>
-        <DialogDescription>当前配置空间的独立模板。保存后用于配置预览、完整下载与 Agent 发布。</DialogDescription>
+        <DialogDescription>保存到当前配置空间，用于配置预览、完整下载与 Agent 发布。</DialogDescription>
       </DialogHeader>
 
       <LoadingRows v-if="loading" :rows="5" />
@@ -11,11 +11,27 @@
         <p class="text-destructive-accent">{{ loadError }}</p>
         <Button variant="outline" @click="load">重新加载</Button>
       </div>
-      <Tabs v-else-if="settings" v-model="tab" class="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div v-else-if="settings" class="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <OxidnsEditorModeToggle :model-value="configMode" :options="[{ value: 'template', label: '快捷模板' }, { value: 'native', label: '完整配置' }]" label="OxiDNS 配置方式" :disabled="saving || rendering" @update:model-value="switchConfigMode" />
+          <FieldHelp label="OxiDNS 配置方式" text="快捷模板自动生成分流与缓存流程。完整配置可编辑官方全部全局参数、插件和执行链，表单与 YAML 可切换；首次切换会从当前模板草稿生成配置。两种草稿分别保留，保存时只使用选中模式；完整配置不会随模板选项自动变化。" />
+          <span v-if="rendering" class="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 class="size-3.5 animate-spin" />正在生成完整配置…</span>
+        </div>
+        <Tabs v-model="tab" class="flex min-h-0 min-w-0 flex-1 flex-col">
         <TabsList class="h-auto w-full shrink-0 flex-wrap justify-start">
-          <TabsTrigger v-for="item in tabs" :key="item.value" :value="item.value" class="min-h-11 text-xs">{{ item.label }}</TabsTrigger>
+          <TabsTrigger v-for="item in visibleTabs" :key="item.value" :value="item.value" class="min-h-11 text-xs">{{ item.label }}</TabsTrigger>
         </TabsList>
         <div class="cf-focus-gutter min-h-0 overflow-y-auto py-2">
+          <TabsContent force-mount value="native" class="data-[state=inactive]:hidden space-y-4">
+            <OxidnsNativeEditor v-if="configMode === 'native' || settings.native_config" v-model="settings.native_config" :disabled="saving" @error="setEditorError('native_config', $event)" />
+            <div v-else class="space-y-3 py-4">
+              <p class="text-sm text-muted-foreground">从当前模板生成完整配置后，可逐项编辑全部参数。</p>
+              <Button :disabled="rendering || saving" variant="outline" @click="initializeNative">从当前模板生成</Button>
+            </div>
+          </TabsContent>
+          <TabsContent force-mount value="files" class="data-[state=inactive]:hidden">
+            <OxidnsFilesEditor v-model="settings.additional_files" :disabled="saving" @error="setEditorError('additional_files', $event)" />
+          </TabsContent>
           <TabsContent force-mount value="core" class="data-[state=inactive]:hidden space-y-5">
             <div class="flex items-center gap-1">
               <Button variant="outline" class="min-h-11" @click="applyTemplate">应用已验证模板</Button>
@@ -68,12 +84,13 @@
             <OxidnsConfigEditor v-model="settings.custom_config" @error="setEditorError('custom_config', $event ? `基础配置扩展：${$event}` : '')" />
           </TabsContent>
         </div>
-      </Tabs>
+        </Tabs>
+      </div>
       <p v-if="saveError" role="alert" class="shrink-0 text-sm text-destructive-accent">{{ saveError }}</p>
       <p v-else-if="editorError" role="alert" class="shrink-0 text-sm text-destructive-accent">{{ editorError }} 修正后即可保存，草稿已保留。</p>
       <DialogFooter class="shrink-0">
         <Button variant="outline" :disabled="saving" class="min-h-11" @click="emit('update:open', false)">取消</Button>
-        <Button :disabled="loading || saving || !settings || Boolean(loadError) || Boolean(editorError)" class="min-h-11" @click="save"><Loader2 v-if="saving" class="size-4 animate-spin" />保存设置</Button>
+        <Button :disabled="loading || saving || rendering || !settings || Boolean(loadError) || Boolean(editorError)" class="min-h-11" @click="save"><Loader2 v-if="saving" class="size-4 animate-spin" />保存设置</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>
@@ -88,6 +105,9 @@ import { apiFields, applyVerifiedOxidnsTemplate, cacheFields, coreFields, featur
 import OxidnsFields from './OxidnsFields.vue'
 import OxidnsMatchEditor from './OxidnsMatchEditor.vue'
 import OxidnsConfigEditor from './OxidnsConfigEditor.vue'
+import OxidnsNativeEditor from './OxidnsNativeEditor.vue'
+import OxidnsFilesEditor from './OxidnsFilesEditor.vue'
+import OxidnsEditorModeToggle from './OxidnsEditorModeToggle.vue'
 import FormField from '@/components/common/FormField.vue'
 import FieldHelp from '@/components/common/FieldHelp.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
@@ -106,10 +126,12 @@ const rules = ref<any[]>([])
 const ruleSets = ref<any[]>([])
 const loading = ref(false)
 const saving = ref(false)
+const rendering = ref(false)
 const loadError = ref('')
 const saveError = ref('')
 const editorErrors = reactive<Record<string, string>>({})
-const editorError = computed(() => Object.values(editorErrors).find(Boolean) || '')
+const configMode = computed<'template' | 'native'>(() => settings.value?.config_mode === 'native' ? 'native' : 'template')
+const editorError = computed(() => Object.entries(editorErrors).find(([path, message]) => message && (path === 'additional_files' || (configMode.value === 'native' ? path === 'native_config' : path !== 'native_config')))?.[1] || '')
 const setEditorError = (path: string, message: string) => { editorErrors[path] = message; saveError.value = '' }
 const tab = ref('core')
 let loadVersion = 0
@@ -118,6 +140,35 @@ const tabs = [
   { value: 'upstreams', label: 'DNS 上游' }, { value: 'cache', label: '缓存' },
   { value: 'features', label: '特色功能' }, { value: 'access', label: 'WebUI / 日志' }, { value: 'advanced', label: '高级' }
 ]
+const visibleTabs = computed(() => configMode.value === 'native'
+  ? [{ value: 'native', label: '参数与插件' }, { value: 'files', label: '附加文件' }]
+  : [...tabs, { value: 'files', label: '附加文件' }])
+const initializeNative = async () => {
+  if (!settings.value || rendering.value) return false
+  const version = loadVersion
+  rendering.value = true
+  saveError.value = ''
+  try {
+    const response = await oxidnsApi.render({ ...settings.value, config_mode: 'template' }, props.profileId)
+    if (version !== loadVersion || !settings.value) return false
+    settings.value.native_config = response.data.config
+    return true
+  } catch (error: any) {
+    if (version === loadVersion) saveError.value = error.response?.data?.message || '生成完整配置失败，请检查当前模板。'
+    return false
+  } finally { rendering.value = false }
+}
+const switchConfigMode = async (mode: 'template' | 'native') => {
+  if (!settings.value || mode === configMode.value || rendering.value) return
+  if (mode === 'native' && !settings.value.native_config) {
+    if (editorError.value) { saveError.value = '请先修正当前模板的格式错误，再生成完整配置。'; return }
+    if (!await initializeNative()) return
+  }
+  if (!settings.value) return
+  settings.value.config_mode = mode
+  saveError.value = ''
+  tab.value = mode === 'native' ? 'native' : 'core'
+}
 const ruleGroups = [
   { key: 'direct_rulesets', opposite: 'proxy_rulesets', label: '直连规则集', sets: true, hint: '选择整组域名或 IP 规则，命中后使用直连 DNS。规则集内容会包含在完整下载包中；同一规则集不能同时归入代理分组。' },
   { key: 'proxy_rulesets', opposite: 'direct_rulesets', label: '代理规则集', sets: true, hint: '选择整组域名或 IP 规则，命中后进入代理 DNS 与备用 DNS 流程。同一规则集不能同时归入直连分组。' },
@@ -140,7 +191,9 @@ const load = async () => {
       oxidnsApi.getSettings(props.profileId), ruleApi.getAll(props.profileId), ruleSetApi.getAll(props.profileId)
     ])
     if (version !== loadVersion) return
-    settings.value = config.data
+    settings.value = { config_mode: 'template', native_config: '', additional_files: [], ...config.data }
+    if (settings.value!.config_mode === 'native') tab.value = 'native'
+    else if (tab.value === 'native') tab.value = 'core'
     rules.value = (availableRules.data || []).filter((item: any) => item.itemType === 'rule')
     ruleSets.value = availableSets.data || []
   } catch (error: any) {
@@ -155,7 +208,7 @@ const applyTemplate = () => {
   notify.success('已填入验证过的性能参数，保存后生效')
 }
 const save = async () => {
-  if (!settings.value || saving.value || editorError.value) return
+  if (!settings.value || saving.value || rendering.value || editorError.value) return
   saving.value = true
   saveError.value = ''
   try {

@@ -107,6 +107,20 @@ def install_profile_context(app) -> None:
                 return response
             if payload is not None:
                 sanitized = sanitize_external_payload(payload)
+                # These authenticated editor endpoints must round-trip native
+                # YAML and managed asset bytes, including rule capability URLs.
+                # Preview/share/export endpoints remain fully sanitized.
+                if response.status_code == 200 and isinstance(payload, dict):
+                    if endpoint in ('oxidns.render_oxidns_draft', 'profiles.profile_render_oxidns_draft'):
+                        if isinstance(payload.get('config'), str):
+                            sanitized['config'] = payload['config']
+                    elif endpoint in ('oxidns.oxidns_settings', 'profiles.profile_oxidns_settings'):
+                        original = payload.get('settings') if request.method == 'POST' else payload
+                        target = sanitized.get('settings') if request.method == 'POST' else sanitized
+                        if isinstance(original, dict) and isinstance(target, dict):
+                            for key in ('native_config', 'additional_files'):
+                                if key in original:
+                                    target[key] = original[key]
                 # The authenticated settings editor needs its proxy URL for edits.
                 # Keep credentials hidden in other metadata and shared exports.
                 if (

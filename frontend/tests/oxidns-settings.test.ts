@@ -8,7 +8,7 @@ import { notify } from '@/lib/feedback'
 import { featureGroups } from '@/lib/oxidns'
 
 vi.mock('@/api', () => ({
-  oxidnsApi: { getSettings: vi.fn(), saveSettings: vi.fn() },
+  oxidnsApi: { getSettings: vi.fn(), saveSettings: vi.fn(), render: vi.fn() },
   ruleApi: { getAll: vi.fn() }, ruleSetApi: { getAll: vi.fn() }
 }))
 const wrappers: ReturnType<typeof mount>[] = []
@@ -22,6 +22,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(oxidnsApi.getSettings).mockImplementation(async () => ({ data: settings() }) as any)
   vi.mocked(oxidnsApi.saveSettings).mockResolvedValue({ data: { success: true } } as any)
+  vi.mocked(oxidnsApi.render).mockResolvedValue({ data: { config: 'runtime: {worker_threads: 5}\nplugins: [{tag: main, type: sequence, args: [{exec: reject 0}]}]' } } as any)
   vi.mocked(ruleApi.getAll).mockResolvedValue({ data: [{ id: 'direct', name: 'Direct rule', itemType: 'rule' }] } as any)
   vi.mocked(ruleSetApi.getAll).mockResolvedValue({ data: [] } as any)
   vi.spyOn(notify, 'success').mockImplementation(() => 0)
@@ -221,6 +222,39 @@ describe('OxiDNS profile settings', () => {
     await click('保存设置')
     expect(savedPayload().custom_config).toBe('')
     expect(savedPayload().worker_threads).toBe(8)
+  })
+
+  it('initializes native mode from the unsaved template and retains both drafts across mode switches', async () => {
+    await render()
+    await input('#oxi-worker_threads', '5')
+    await click('完整配置', document.querySelector('[aria-label="OxiDNS 配置方式"]')!)
+    expect(oxidnsApi.render).toHaveBeenCalledWith(expect.objectContaining({ worker_threads: 5, config_mode: 'template', api: expect.objectContaining({ password: 'test-only-secret' }) }), 'oxi-profile')
+    expect(document.querySelector('section[aria-label="完整 OxiDNS 配置"]')).not.toBeNull()
+    await click('快捷模板')
+    expect((document.getElementById('oxi-worker_threads') as HTMLInputElement).value).toBe('5')
+    await click('完整配置', document.querySelector('[aria-label="OxiDNS 配置方式"]')!)
+    expect(oxidnsApi.render).toHaveBeenCalledTimes(1)
+    await click('保存设置')
+    expect(savedPayload()).toEqual(expect.objectContaining({ config_mode: 'native', worker_threads: 5, native_config: expect.stringContaining('worker_threads: 5') }))
+  })
+
+  it('keeps template mode editable when full configuration rendering fails', async () => {
+    vi.mocked(oxidnsApi.render).mockRejectedValue({ response: { data: { message: '规则文件缺失' } } })
+    await render()
+    await click('完整配置', document.querySelector('[aria-label="OxiDNS 配置方式"]')!)
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('规则文件缺失')
+    expect(button('快捷模板').getAttribute('aria-pressed')).toBe('true')
+    expect(button('保存设置').disabled).toBe(false)
+  })
+
+  it('saves attached text and binary files with native settings scoped to the current profile', async () => {
+    vi.mocked(oxidnsApi.getSettings).mockResolvedValue({ data: { ...settings(), config_mode: 'native', native_config: 'plugins: [{tag: main, type: sequence, args: [{exec: reject 0}]}]', additional_files: [{ path: 'certs/example.pem', content: 'TEST CERT', encoding: 'text' }, { path: 'rules/example.dat', content: 'AP8=', encoding: 'base64' }] } } as any)
+    await render()
+    await click('附加文件')
+    expect((document.querySelector('[aria-label="文件 1 路径"]') as HTMLInputElement).value).toBe('certs/example.pem')
+    await click('保存设置')
+    expect(savedPayload().additional_files).toEqual([{ path: 'certs/example.pem', content: 'TEST CERT', encoding: 'text' }, { path: 'rules/example.dat', content: 'AP8=', encoding: 'base64' }])
+    expect(savedPayload().config_mode).toBe('native')
   })
 
   it('clears feature editor errors on disable and restores its last valid values on re-enable', async () => {

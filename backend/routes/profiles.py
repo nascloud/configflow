@@ -219,3 +219,10 @@ def profile_preview_oxidns(profile_id):
 def profile_oxidns_settings(profile_id):
     from backend.routes.oxidns import oxidns_settings
     return oxidns_settings()
+
+
+@profiles_bp.route('/<profile_id>/oxidns/render', methods=['POST'])
+@require_auth
+def profile_render_oxidns_draft(profile_id):
+    from backend.routes.oxidns import render_oxidns_draft
+    return render_oxidns_draft()

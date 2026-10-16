@@ -10,6 +10,7 @@ class OxidnsSettingsError(ValueError):
 
 def get_default_oxidns_settings():
     return {
+        'config_mode': 'template', 'native_config': '', 'additional_files': [],
         'direct_rulesets': [], 'proxy_rulesets': [], 'direct_rules': [], 'proxy_rules': [],
         'local_dns': '', 'remote_dns': '', 'fallback_dns': '',
         'default_forward': 'forward_remote', 'custom_hosts': '', 'custom_config': '',
@@ -83,6 +84,16 @@ def normalize_oxidns_settings(value=None):
     if not isinstance(value, dict):
         raise OxidnsSettingsError('OxiDNS 设置必须是对象')
     settings = _merge(get_default_oxidns_settings(), value)
+    if settings['config_mode'] not in ('template', 'native'):
+        raise OxidnsSettingsError('OxiDNS 配置模式必须为 template 或 native')
+    if not isinstance(settings['native_config'], str):
+        raise OxidnsSettingsError('OxiDNS 完整配置必须为 YAML 文本')
+    from backend.common.oxidns_native import managed_files, native_document
+    managed_files(settings['additional_files'])
+    if settings['config_mode'] == 'native':
+        native_document(settings)
+        # Retain the template draft without validating inactive template fields.
+        return settings
 
     def integer(obj, key, minimum=1, maximum=2**31-1):
         item = obj.get(key)
