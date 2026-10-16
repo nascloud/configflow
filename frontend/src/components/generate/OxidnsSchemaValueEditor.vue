@@ -1,5 +1,17 @@
 <template>
   <div class="oxi-schema-value min-w-0 space-y-2" :data-value-type="node.type">
+    <div v-if="$slots.header || complex(node)" class="oxi-schema-header flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+      <div class="flex min-w-0 flex-1 items-center gap-1.5">
+        <slot name="header"><span class="text-xs font-medium">{{ scopeTitle || schema?.label || '参数' }}</span></slot>
+      </div>
+      <div v-if="complex(node) && !collapsed" role="group" :aria-label="`${label} 参数操作`" class="oxi-schema-actions flex min-w-0 flex-wrap items-center gap-1 max-md:basis-full">
+        <OxidnsParameterPicker v-if="node.type === 'object' && missingFields.length" :fields="missingFields" :label="label" :scope-title="scopeTitle || schema?.label || label" :disabled="disabled" @select="addField" />
+        <Button v-if="node.type === 'object'" type="button" variant="ghost" class="oxi-native-control text-xs text-muted-foreground" :disabled="disabled" :aria-label="`${label} 添加自定义字段`" @click="addUnknown"><Plus class="size-3.5" />自定义字段</Button>
+        <Button v-else type="button" variant="outline" class="oxi-native-control" :disabled="disabled" :aria-label="`${label} 添加条目`" @click="addItem"><Plus class="size-3.5" />添加条目</Button>
+        <Button type="button" variant="ghost" size="icon" class="oxi-native-icon text-muted-foreground" :disabled="disabled" :aria-label="`${label} 更改值类型`" :aria-expanded="showType" @click="showType = !showType"><Braces class="size-3.5" /></Button>
+      </div>
+    </div>
+    <template v-if="!collapsed">
     <div v-if="node.type !== 'object' && node.type !== 'array'" class="flex min-w-0 items-start gap-2">
       <Input v-if="node.type === 'string' && sensitive" type="password" autocomplete="new-password" :model-value="node.scalar" :disabled="disabled" :aria-label="`${label} 值`" class="oxi-native-control min-w-0 flex-1 font-mono text-xs" @update:model-value="node.scalar = String($event); emit('change')" />
       <Select v-else-if="schema?.enum?.length && !showType && node.type === schema.type" :model-value="node.scalar" :disabled="disabled" @update:model-value="node.scalar = String($event); emit('change')">
@@ -27,47 +39,43 @@
 
     <div v-if="node.type === 'object'" class="grid min-w-0 gap-3" :class="{ 'md:grid-cols-2': layout === 'plugin' }">
       <div v-for="(entry, index) in node.entries" :key="entry.id" class="min-w-0" :class="entryClasses(entry.key, entry.value)">
-        <div class="flex min-w-0 items-center gap-1.5">
-          <button v-if="complex(entry.value) && !inlineEntry(entry.key)" type="button" class="oxi-native-icon inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-primary-accent disabled:opacity-50" :disabled="disabled" :aria-label="`${label}.${entry.key} 展开参数`" :aria-expanded="isOpen(entry.id)" @click="toggle(entry.id)"><ChevronDown class="size-3.5" :class="{ '-rotate-90': !isOpen(entry.id) }" /></button>
-          <div v-if="knownField(entry.key)" class="min-w-0 flex-1">
-            <span class="block text-xs font-medium">{{ knownField(entry.key)?.label || entry.key }}</span>
-            <code v-if="knownField(entry.key)?.label && knownField(entry.key)?.label !== entry.key" class="block truncate text-[11px] text-muted-foreground" :title="entry.key">{{ entry.key }}</code>
-          </div>
-          <Input v-else :model-value="entry.key" :disabled="disabled" :aria-label="`${label} 字段名 ${index + 1}`" placeholder="字段名" class="oxi-native-control min-w-0 flex-1 font-mono text-xs" @update:model-value="entry.key = String($event); emit('change')" />
-          <FieldHelp :label="`${label}.${entry.key}`" :text="fieldHelp(entry.key)" />
-          <Button type="button" variant="ghost" size="icon" class="oxi-native-icon shrink-0 text-muted-foreground hover:text-destructive-accent" :disabled="disabled" :aria-label="`${label} 删除字段 ${entry.key}`" @click="node.entries.splice(index, 1); emit('change')"><Trash2 class="size-3.5" /></Button>
-        </div>
-        <OxidnsSchemaValueEditor v-if="!complex(entry.value) || inlineEntry(entry.key) || isOpen(entry.id)" :node="entry.value" :schema="fieldSchema(entry.key)" :label="`${label}.${entry.key}`" :depth="depth + 1" :auto-expand-depth="autoExpandDepth" :disabled="disabled" class="mt-1" @change="emit('change')" />
-        <div v-else class="ml-10 text-[11px] text-muted-foreground num">{{ countSummary(entry.value) }}</div>
-      </div>
-      <div class="flex min-w-0 flex-wrap items-center gap-2" :class="{ 'md:col-span-2': layout === 'plugin' }">
-        <OxidnsParameterPicker v-if="missingFields.length" :fields="missingFields" :label="label" :disabled="disabled" @select="addField" />
-        <Button type="button" variant="ghost" class="oxi-native-control text-xs text-muted-foreground" :disabled="disabled" :aria-label="`${label} 添加自定义字段`" @click="addUnknown"><Plus class="size-3.5" />自定义字段</Button>
-        <Button type="button" variant="ghost" size="icon" class="oxi-native-icon text-muted-foreground" :disabled="disabled" :aria-label="`${label} 更改值类型`" :aria-expanded="showType" @click="showType = !showType"><Braces class="size-3.5" /></Button>
+        <OxidnsSchemaValueEditor :node="entry.value" :schema="fieldSchema(entry.key)" :label="`${label}.${entry.key}`" :scope-title="knownField(entry.key)?.label || entry.key" :collapsed="complex(entry.value) && !inlineEntry(entry.key) && !isOpen(entry.id)" :depth="depth + 1" :auto-expand-depth="autoExpandDepth" :disabled="disabled" @change="emit('change')">
+          <template #header>
+            <button v-if="complex(entry.value) && !inlineEntry(entry.key)" type="button" class="oxi-native-icon inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-primary-accent disabled:opacity-50" :disabled="disabled" :aria-label="`${label}.${entry.key} 展开参数`" :aria-expanded="isOpen(entry.id)" @click="toggle(entry.id)"><ChevronDown class="size-3.5" :class="{ '-rotate-90': !isOpen(entry.id) }" /></button>
+            <div v-if="knownField(entry.key)" class="min-w-0 flex-1">
+              <span class="block text-xs font-medium">{{ knownField(entry.key)?.label || entry.key }}</span>
+              <code v-if="knownField(entry.key)?.label && knownField(entry.key)?.label !== entry.key" class="block truncate text-[11px] text-muted-foreground" :title="entry.key">{{ entry.key }}</code>
+            </div>
+            <Input v-else :model-value="entry.key" :disabled="disabled" :aria-label="`${label} 字段名 ${index + 1}`" placeholder="字段名" class="oxi-native-control min-w-0 flex-1 font-mono text-xs" @update:model-value="entry.key = String($event); emit('change')" />
+            <FieldHelp :label="`${label}.${entry.key}`" :text="fieldHelp(entry.key)" />
+            <Button type="button" variant="ghost" size="icon" class="oxi-native-icon shrink-0 text-muted-foreground hover:text-destructive-accent" :disabled="disabled" :aria-label="`${label} 删除字段 ${entry.key}`" @click="node.entries.splice(index, 1); emit('change')"><Trash2 class="size-3.5" /></Button>
+          </template>
+        </OxidnsSchemaValueEditor>
+        <div v-if="complex(entry.value) && !inlineEntry(entry.key) && !isOpen(entry.id)" class="ml-10 text-[11px] text-muted-foreground num">{{ countSummary(entry.value) }}</div>
       </div>
     </div>
 
     <div v-else-if="node.type === 'array'" class="min-w-0 space-y-2">
       <div v-for="(item, index) in node.items" :key="item.id" class="min-w-0 rounded-md border border-border py-2" :class="depth === 0 ? 'px-3' : 'px-2 max-md:border-x-0 max-md:px-0'">
-        <div class="oxi-schema-item-header grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-1 max-md:grid-cols-1">
-          <div class="oxi-schema-item-summary flex min-w-0 items-center gap-1">
-          <button v-if="complex(item)" type="button" class="oxi-native-icon inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-primary-accent disabled:opacity-50" :disabled="disabled" :aria-label="`${label}[${index + 1}] 展开参数`" :aria-expanded="isOpen(item.id)" @click="toggle(item.id)"><ChevronDown class="size-3.5" :class="{ '-rotate-90': !isOpen(item.id) }" /></button>
-          <span class="mr-auto min-w-0 truncate text-xs text-muted-foreground num">{{ index + 1 }}{{ complex(item) ? ` · ${itemSummary(item)}` : '' }}</span>
-          <FieldHelp v-if="schema?.items?.help" :label="`${label}[${index + 1}]`" :text="schema.items.help" />
-          </div>
-          <div class="oxi-schema-item-actions flex shrink-0 items-center justify-end gap-0.5" role="group" :aria-label="`${label} 条目 ${index + 1} 操作`">
-          <Button type="button" variant="ghost" size="icon" class="oxi-native-icon shrink-0" :disabled="disabled || index === 0" :aria-label="`${label} 上移条目 ${index + 1}`" @click="move(index, -1)"><ArrowUp class="size-3.5" /></Button>
-          <Button type="button" variant="ghost" size="icon" class="oxi-native-icon shrink-0" :disabled="disabled || index === node.items.length - 1" :aria-label="`${label} 下移条目 ${index + 1}`" @click="move(index, 1)"><ArrowDown class="size-3.5" /></Button>
-          <Button type="button" variant="ghost" size="icon" class="oxi-native-icon shrink-0 text-muted-foreground hover:text-destructive-accent" :disabled="disabled" :aria-label="`${label} 删除条目 ${index + 1}`" @click="node.items.splice(index, 1); emit('change')"><Trash2 class="size-3.5" /></Button>
-          </div>
-        </div>
-        <OxidnsSchemaValueEditor v-if="!complex(item) || isOpen(item.id)" :node="item" :schema="schema?.items" :label="`${label}[${index + 1}]`" :depth="depth + 1" :auto-expand-depth="autoExpandDepth" :disabled="disabled" class="mt-2" @change="emit('change')" />
-      </div>
-      <div class="flex items-center gap-2">
-        <Button type="button" variant="outline" class="oxi-native-control" :disabled="disabled" :aria-label="`${label} 添加条目`" @click="addItem"><Plus class="size-3.5" />添加条目</Button>
-        <Button type="button" variant="ghost" size="icon" class="oxi-native-icon text-muted-foreground" :disabled="disabled" :aria-label="`${label} 更改值类型`" :aria-expanded="showType" @click="showType = !showType"><Braces class="size-3.5" /></Button>
+        <OxidnsSchemaValueEditor :node="item" :schema="schema?.items" :label="`${label}[${index + 1}]`" :scope-title="`${scopeTitle || schema?.label || '条目'} ${index + 1}`" :collapsed="complex(item) && !isOpen(item.id)" :depth="depth + 1" :auto-expand-depth="autoExpandDepth" :disabled="disabled" @change="emit('change')">
+          <template #header>
+            <div class="oxi-schema-item-header flex min-w-0 flex-1 flex-wrap items-center gap-1">
+              <div class="oxi-schema-item-summary flex min-w-0 flex-1 items-center gap-1">
+                <button v-if="complex(item)" type="button" class="oxi-native-icon inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-primary-accent disabled:opacity-50" :disabled="disabled" :aria-label="`${label}[${index + 1}] 展开参数`" :aria-expanded="isOpen(item.id)" @click="toggle(item.id)"><ChevronDown class="size-3.5" :class="{ '-rotate-90': !isOpen(item.id) }" /></button>
+                <span class="mr-auto min-w-0 truncate text-xs text-muted-foreground num">{{ index + 1 }}{{ complex(item) ? ` · ${itemSummary(item)}` : '' }}</span>
+                <FieldHelp v-if="schema?.items?.help" :label="`${label}[${index + 1}]`" :text="schema.items.help" />
+              </div>
+              <div class="oxi-schema-item-actions ml-auto flex shrink-0 items-center justify-end gap-0.5 max-md:basis-full" role="group" :aria-label="`${label} 条目 ${index + 1} 操作`">
+                <Button type="button" variant="ghost" size="icon" class="oxi-native-icon shrink-0" :disabled="disabled || index === 0" :aria-label="`${label} 上移条目 ${index + 1}`" @click="move(index, -1)"><ArrowUp class="size-3.5" /></Button>
+                <Button type="button" variant="ghost" size="icon" class="oxi-native-icon shrink-0" :disabled="disabled || index === node.items.length - 1" :aria-label="`${label} 下移条目 ${index + 1}`" @click="move(index, 1)"><ArrowDown class="size-3.5" /></Button>
+                <Button type="button" variant="ghost" size="icon" class="oxi-native-icon shrink-0 text-muted-foreground hover:text-destructive-accent" :disabled="disabled" :aria-label="`${label} 删除条目 ${index + 1}`" @click="node.items.splice(index, 1); emit('change')"><Trash2 class="size-3.5" /></Button>
+              </div>
+            </div>
+          </template>
+        </OxidnsSchemaValueEditor>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -83,7 +91,7 @@ import OxidnsParameterPicker from './OxidnsParameterPicker.vue'
 import { appendConfigEntry, configValueTypes, defaultConfigNode, valueToConfigNode, type ConfigValueNode, type ConfigValueType } from '@/lib/oxidnsConfigEditor'
 import type { OxidnsSchema } from '@/lib/oxidnsSchema'
 
-const props = withDefaults(defineProps<{ node: ConfigValueNode; schema?: OxidnsSchema; label: string; depth?: number; disabled?: boolean; layout?: 'default' | 'plugin'; autoExpandDepth?: number }>(), { depth: 0, disabled: false, layout: 'default', autoExpandDepth: 0 })
+const props = withDefaults(defineProps<{ node: ConfigValueNode; schema?: OxidnsSchema; label: string; scopeTitle?: string; collapsed?: boolean; depth?: number; disabled?: boolean; layout?: 'default' | 'plugin'; autoExpandDepth?: number }>(), { depth: 0, disabled: false, collapsed: false, layout: 'default', autoExpandDepth: 0 })
 const emit = defineEmits<{ (event: 'change'): void }>()
 const showType = ref(false)
 const opened = ref(new Set<string>())

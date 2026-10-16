@@ -11,6 +11,7 @@ const props = withDefaults(defineProps<{
   label: string
   disabled?: boolean
   buttonText?: string
+  scopeTitle?: string
 }>(), { buttonText: '添加参数' })
 
 const emit = defineEmits<{ select: [key: string] }>()
@@ -48,11 +49,18 @@ function select(key: string) {
       class="w-[28rem] max-w-[min(calc(100vw-1.5rem),var(--reka-popover-content-available-width))] overflow-hidden p-0 shadow-overlay"
       :aria-label="`${label} 参数选择`"
     >
+      <div v-if="scopeTitle" class="flex h-9 min-w-0 items-center gap-1 border-b border-border px-3 text-xs text-muted-foreground">
+        <span class="shrink-0">添加到</span>
+        <span class="truncate font-medium text-foreground" :title="scopeTitle">{{ scopeTitle }}</span>
+      </div>
       <Command v-if="open" class="[&_[data-slot=command-input-wrapper]]:min-h-11 md:[&_[data-slot=command-input-wrapper]]:min-h-9 [@media(pointer:coarse)]:[&_[data-slot=command-input-wrapper]]:min-h-11">
         <CommandInput :aria-label="`${label} 搜索参数`" placeholder="搜索名称、参数或用途…" />
         <CommandList
           :aria-label="`${label} 可添加参数`"
-          class="max-h-[min(20rem,calc(var(--reka-popover-content-available-height)-3rem))] p-1"
+          class="p-1"
+          :class="scopeTitle
+            ? 'max-h-[min(20rem,calc(var(--reka-popover-content-available-height)-5.25rem))]'
+            : 'max-h-[min(20rem,calc(var(--reka-popover-content-available-height)-3rem))]'"
         >
           <CommandEmpty class="px-3 py-6 text-muted-foreground">没有匹配的参数</CommandEmpty>
           <CommandGroup class="p-0">
