@@ -29,7 +29,7 @@ const speedOf = (agent: any) => {
 const profileStore = useProfileStore()
 
 const boundAgents = computed(() =>
-  agents.value.filter(a => (a.profile_id || 'default') === profileStore.activeProfileId.value)
+  agents.value.filter(a => (a.profile_id || profileStore.defaultProfileId.value) === profileStore.activeProfileId.value)
 )
 
 const isOnline = (a: any) => a.status === 'online' && a.enabled !== false

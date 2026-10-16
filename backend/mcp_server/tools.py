@@ -53,7 +53,8 @@ def has_tool(name: str) -> bool:
 def call_tool(name: str, arguments: Dict[str, Any]) -> Any:
     """执行一个工具（tools/call）"""
     arguments = arguments or {}
-    selected_profile_id = arguments.get('profile_id', 'default')
+    from backend.common.config import get_default_profile_id
+    selected_profile_id = arguments.get('profile_id') or get_default_profile_id()
     token = set_profile_context(selected_profile_id)
     try:
         result = _REGISTRY[name]['handler'](arguments)
@@ -70,7 +71,7 @@ def obj(properties: Dict[str, Any], required: Optional[List[str]] = None) -> Dic
     properties = dict(properties)
     properties.setdefault(
         'profile_id',
-        {'type': 'string', 'description': "独立配置的目标 id；省略使用 'default'，不读取浏览器选择。全局资源和系统设置不受此参数限制。"},
+        {'type': 'string', 'description': "独立配置的目标 id；省略时使用当前默认配置空间，不读取浏览器选择。全局资源和系统设置不受此参数限制。"},
     )
     return {
         'type': 'object',
@@ -880,7 +881,8 @@ def _manage_config_backup(args):
         raise ApiError(400, f"不支持的 scope: {scope}")
 
     if scope == 'profile':
-        profile_id = args.get('profile_id', 'default')
+        from backend.common.config import get_default_profile_id
+        profile_id = args.get('profile_id') or get_default_profile_id()
         if action == 'export':
             return call_api('GET', f"/api/profiles/{profile_id}/export")
         if action == 'import':

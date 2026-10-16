@@ -373,9 +373,10 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
                 paths[index] = './' + path
     config_bytes = yaml.safe_dump(main, allow_unicode=True, sort_keys=False).encode('utf-8')
     add('config.yaml', config_bytes, 'config')
+    from backend.common.config import get_default_profile_id
     manifest = {
         'protocol_version': 1, 'deployment_id': deployment_id or uuid.uuid4().hex,
-        'agent_id': agent['id'], 'profile_id': config.get('profile_id') or agent.get('profile_id', 'default'),
+        'agent_id': agent['id'], 'profile_id': config.get('profile_id') or agent.get('profile_id') or get_default_profile_id(),
         'service_type': service, 'config_path': 'config.yaml',
         'files': [{'path': path, 'size': len(value), 'sha256': hashlib.sha256(value).hexdigest(), 'role': role}
                   for path, (value, role) in sorted(files.items())],

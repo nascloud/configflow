@@ -14,6 +14,7 @@ from datetime import datetime
 from flask import request, jsonify, current_app, Response
 
 from backend.common.config import (
+    get_default_profile_id,
     get_shared_config,
     save_shared_config,
     update_shared_config_transaction,
@@ -80,7 +81,7 @@ def generate_aggregation_provider(aggregation: Dict[str, Any], *, config=None,
     """
     # Dry rendering accepts explicit profile-scoped snapshots without requiring
     # that a pure converter fixture has already been persisted in a repository.
-    profile_id = (config.get('profile_id') or 'default') if config is not None and not persist else resolve_profile_id(
+    profile_id = (config.get('profile_id') or get_default_profile_id()) if config is not None and not persist else resolve_profile_id(
         config.get('profile_id') if config is not None else None)
     config_data = config if config is not None else get_resource_config('subscription_aggregations', aggregation['id'], profile_id)
     from backend.utils.dialer_references import validate_dialers

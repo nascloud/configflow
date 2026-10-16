@@ -60,8 +60,9 @@
               <p class="m-0 truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground">
                 {{ profile.name }}
               </p>
-              <p class="mt-0.5 mb-0 truncate font-mono text-[11.5px] text-muted-foreground">
-                {{ profile.id }}
+              <p class="mt-0.5 mb-0 flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
+                <span class="truncate font-mono">{{ profile.id }}</span>
+                <Badge v-if="isDefaultProfile(profile)" variant="outline" class="shrink-0 px-1.5 py-0 text-[10.5px]">默认</Badge>
               </p>
             </div>
           </div>
@@ -105,7 +106,7 @@
               <Download class="size-4" />
             </Button>
             <Button
-              v-if="profile.id !== 'default'"
+              v-if="!isDefaultProfile(profile) || profiles.length > 1"
               variant="ghost"
               size="icon-sm"
               class="text-destructive-accent hover:bg-destructive-soft"
@@ -162,6 +163,41 @@
           <Button :disabled="saving" @click="submit">
             <Loader2 v-if="saving" class="size-4 animate-spin" />
             保存
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="defaultDelete.visible">
+      <DialogContent class="max-w-[460px]">
+        <DialogHeader>
+          <DialogTitle>删除默认配置空间</DialogTitle>
+          <DialogDescription>
+            「{{ defaultDelete.profile?.name }}」是默认配置空间。删除前请选择一个配置空间接任默认：未指定配置空间的配置链接、新注册的 Agent 和 MCP 工具都会改用它。删除后不可撤销。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div class="flex min-w-0 flex-col gap-1.5">
+          <Label for="default-successor">新的默认配置空间</Label>
+          <Select v-model="defaultDelete.successor">
+            <SelectTrigger id="default-successor" class="w-full bg-background/50"><SelectValue placeholder="请选择配置空间" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem
+                v-for="option in profiles.filter(item => item.id !== defaultDelete.profile?.id)"
+                :key="option.id"
+                :value="option.id"
+              >
+                {{ option.name }}（{{ option.id }}）
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" @click="defaultDelete.visible = false">取消</Button>
+          <Button variant="destructive" :disabled="!defaultDelete.successor || defaultDelete.saving" @click="confirmDefaultDelete">
+            <Loader2 v-if="defaultDelete.saving" class="size-4 animate-spin" />
+            删除
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -331,7 +367,7 @@ import SectionCard from '@/components/common/SectionCard.vue'
 import { profileApi, subscriptionApi } from '@/api'
 import { confirmDanger, notify, prompt } from '@/lib/feedback'
 import { listItem } from '@/lib/motion'
-import { useProfileStore, type Profile } from '@/stores/profile'
+import { isDefaultProfile, useProfileStore, type Profile } from '@/stores/profile'
 
 const profileStore = useProfileStore()
 const { profiles, loading, scopedRequests, activeProfileId, refreshProfiles, switchProfile } = profileStore
@@ -402,7 +438,40 @@ const clone = async (profile: Profile) => {
   }
 }
 
+const defaultDelete = reactive({
+  visible: false,
+  saving: false,
+  profile: null as Profile | null,
+  successor: ''
+})
+
+const confirmDefaultDelete = async () => {
+  if (!defaultDelete.profile || !defaultDelete.successor) return
+  defaultDelete.saving = true
+  try {
+    await profileApi.delete(defaultDelete.profile.id, defaultDelete.successor)
+    defaultDelete.visible = false
+    await refreshProfiles()
+    notify.success('配置空间已删除', `默认配置空间已切换为「${profileStore.profileName(defaultDelete.successor)}」`)
+  } catch (error: any) {
+    notify.error('配置空间删除失败', error.response?.data?.message)
+  } finally {
+    defaultDelete.saving = false
+  }
+}
+
 const remove = async (profile: Profile) => {
+  if (isDefaultProfile(profile)) {
+    // 默认配置空间需要先选接任者，后端会在同一事务里切换默认并删除
+    const others = profiles.value.filter(item => item.id !== profile.id)
+    Object.assign(defaultDelete, {
+      visible: true,
+      saving: false,
+      profile,
+      successor: others.find(item => item.id === activeProfileId.value)?.id || others[0]?.id || ''
+    })
+    return
+  }
   const ok = await confirmDanger(
     `确定删除配置空间「${profile.name}」及其缓存和生成文件吗？此操作不可撤销。`,
     { title: '删除配置空间' }

@@ -598,11 +598,22 @@ class ProfileRepository:
     def _metadata(profile):
         return {key: copy.deepcopy(profile.get(key, '')) for key in ('id', 'name', 'description', 'created_at', 'updated_at')}
 
+    @classmethod
+    def _default_profile_id(cls, document):
+        """默认配置空间可以切换：记录在 system_config.default_profile_id，未设置时沿用 default。"""
+        return document['system']['system_config'].get('default_profile_id') or cls.DEFAULT_PROFILE_ID
+
+    def default_profile_id(self):
+        with self._document() as document:
+            return self._default_profile_id(document)
+
     def list_profiles(self):
         with self._document() as document:
             shared_revision = int(document['shared'].get('_revision', 0))
+            default_id = self._default_profile_id(document)
             # revision 即生成配置的版本号（见 config_revision），界面据此判断 Agent 是否待更新
-            return [dict(self._metadata(profile), revision=int(profile.get('_revision', 0)) + shared_revision)
+            return [dict(self._metadata(profile), revision=int(profile.get('_revision', 0)) + shared_revision,
+                         is_default=profile['id'] == default_id)
                     for profile in document['profiles'].values()]
 
     def _profile_metadata(self, profile_id):
@@ -681,15 +692,23 @@ class ProfileRepository:
             profile['updated_at'] = _now()
         return self._metadata(profile)
 
-    def delete_profile(self, profile_id):
-        if profile_id == self.DEFAULT_PROFILE_ID:
-            raise ProfileInUse('The default profile cannot be deleted')
+    def delete_profile(self, profile_id, new_default_id=None):
+        """删除配置空间；删除默认配置时必须指定接任默认的配置空间（new_default_id）。"""
         with self._lock(self._profile_operation_lock_path(profile_id)):
             tombstone = None
             directory = self.profile_dir(profile_id)
             try:
                 with self._document(write=True) as document:
                     profile = self._profile(document, profile_id)
+                    default_id = self._default_profile_id(document)
+                    is_default = profile_id == default_id
+                    if is_default:
+                        if len(document['profiles']) < 2:
+                            raise ProfileInUse('只有一个配置空间时不能删除默认配置')
+                        if not new_default_id:
+                            raise ProfileInUse('删除默认配置时需要指定新的默认配置空间')
+                        if new_default_id == profile_id or new_default_id not in document['profiles']:
+                            raise ProfileValidationError(f'新的默认配置空间不存在：{new_default_id}')
                     usages = [{'kind': 'agent', 'id': a['id'], 'name': a.get('name', a['id']), 'profile_id': profile_id, 'profile_name': profile['name']}
                               for a in document['system']['agents'] if a.get('profile_id') == profile_id]
                     if usages:
@@ -699,6 +718,9 @@ class ProfileRepository:
                         tombstone = self.migrations_dir / f'deleted-{profile_id}-{uuid.uuid4().hex}'
                         os.replace(directory, tombstone)
                     del document['profiles'][profile_id]
+                    if is_default:
+                        document['system']['system_config']['default_profile_id'] = new_default_id
+                        document['system']['_revision'] += 1
             except Exception:
                 if tombstone is not None and tombstone.exists():
                     os.replace(tombstone, directory)
@@ -1564,9 +1586,14 @@ class ProfileRepository:
         for key in ('system', 'shared', 'profiles'):
             if not isinstance(document.get(key), dict):
                 raise ProfileValidationError(f'缺少配置节：{key}')
-        if 'default' not in document['profiles']:
-            raise ProfileValidationError('必须保留默认配置')
         system = document['system']
+        if not isinstance(system.get('system_config'), dict):
+            raise ProfileValidationError('系统设置和备份设置必须是对象')
+        default_id = system['system_config'].get('default_profile_id')
+        if default_id is not None and not isinstance(default_id, str):
+            raise ProfileValidationError('默认配置空间 ID 必须是字符串')
+        if self._default_profile_id(document) not in document['profiles']:
+            raise ProfileValidationError('必须保留默认配置')
         if set(system) - self.SYSTEM_FIELDS:
             raise ProfileValidationError('system 节只接受全局设置、备份与 Agent')
         if not isinstance(system.get('system_config'), dict) or not isinstance(system.get('backup'), dict):

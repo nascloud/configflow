@@ -221,3 +221,38 @@ def test_obsolete_profile_resource_and_node_dialer_routes_are_absent(tmp_path, m
     response = getattr(client, method)(f"/api/profiles/default/{endpoint}", json={})
     assert response.status_code == 404
     assert repository.export_all() == before
+
+
+def test_default_profile_can_be_deleted_when_a_successor_is_chosen(tmp_path, monkeypatch):
+    repository = ProfileRepository(tmp_path)
+    repository.create_profile({"id": "alpha", "name": "Alpha"})
+    repository.save_profile("default", {"mihomo": {"custom_config": "port: 11111\n"}})
+    repository.save_profile("alpha", {"mihomo": {"custom_config": "port: 22222\n"}})
+    client = make_app(repository, monkeypatch).test_client()
+
+    assert [p["id"] for p in client.get("/api/profiles").get_json() if p["is_default"]] == ["default"]
+    assert client.delete("/api/profiles/default").status_code == 409
+    assert client.delete("/api/profiles/default?new_default=missing").status_code == 400
+    assert client.delete("/api/profiles/default?new_default=default").status_code == 400
+    assert client.delete("/api/profiles/default?new_default=alpha").status_code == 204
+
+    profiles = client.get("/api/profiles").get_json()
+    assert [(p["id"], p["is_default"]) for p in profiles] == [("alpha", True)]
+    # 未指定配置空间的旧链接改由新的默认配置提供
+    assert yaml.safe_load(client.get("/api/config/mihomo").get_data())["port"] == 22222
+    # 只剩一个配置空间时，默认配置不能再删
+    assert client.delete("/api/profiles/alpha").status_code == 409
+
+    repository.save_system({"system_config": {"server_domain": "https://cf.test"}})
+    assert ProfileRepository(tmp_path).default_profile_id() == "alpha"
+
+
+def test_default_profile_delete_is_blocked_by_bound_agents(tmp_path, monkeypatch):
+    repository = ProfileRepository(tmp_path)
+    repository.create_profile({"id": "alpha", "name": "Alpha"})
+    repository.update_system_transaction(
+        lambda system: system["agents"].append({"id": "a1", "name": "Bound", "profile_id": "default"}))
+    response = make_app(repository, monkeypatch).test_client().delete("/api/profiles/default?new_default=alpha")
+    assert response.status_code == 409
+    assert [u["id"] for u in response.get_json()["usages"]] == ["a1"]
+    assert repository.default_profile_id() == "default"

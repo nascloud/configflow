@@ -254,7 +254,7 @@ describe.each([
   const w = render(Profiles)
   render(host)
   await flushPromises()
-  await w.get('button[aria-label="删除"]').trigger('click')
+  await w.findAll('button[aria-label="删除"]').at(-1)!.trigger('click')
   await clickText('删除')
   expect(profileApi.delete).toHaveBeenCalledTimes(version.startsWith('legacy') ? 0 : 1)
   expect(feedback.confirmState.open).toBe(false)
@@ -273,7 +273,7 @@ describe.each([
    events.push(`${choice}:resolver=${Boolean(feedback.confirmState.resolve)}`)
    original(choice)
   })
-  await w.get('button[aria-label="删除"]').trigger('click')
+  await w.findAll('button[aria-label="删除"]').at(-1)!.trigger('click')
   await flushPromises()
   expect(feedback.confirmState.open).toBe(true)
   expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain('Synthetic target')
@@ -294,7 +294,7 @@ describe.each([
   const w = render(Profiles)
   render(host)
   await flushPromises()
-  await w.get('button[aria-label="删除"]').trigger('click')
+  await w.findAll('button[aria-label="删除"]').at(-1)!.trigger('click')
   await clickText('取消')
   expect(profileApi.delete).not.toHaveBeenCalled()
   expect(profileApi.list).toHaveBeenCalledTimes(1)
@@ -309,6 +309,22 @@ describe.each([
  })
 })
 
+describe('current Profiles default profile deletion', () => {
+ it('offers deletion once another profile exists and sends the chosen successor', async () => {
+  const w = render(Profiles)
+  await flushPromises()
+  const buttons = w.findAll('button[aria-label="删除"]')
+  expect(buttons).toHaveLength(2)
+  await buttons[0].trigger('click')
+  await flushPromises()
+  const dialog = document.querySelector('[role="dialog"]')
+  expect(dialog?.textContent).toContain('删除默认配置空间')
+  expect(dialog?.textContent).toContain('Synthetic target')
+  await clickText('删除')
+  expect(profileApi.delete).toHaveBeenCalledExactlyOnceWith('default', 'target')
+ })
+})
+
 describe('current Profiles API rejection feedback', () => {
  it('reports server denial rather than silently ignoring confirmed deletion', async () => {
   const w = render(Profiles)
@@ -316,7 +332,7 @@ describe('current Profiles API rejection feedback', () => {
   const error = vi.spyOn(feedback.notify, 'error').mockImplementation(() => 0)
   vi.mocked(profileApi.delete).mockRejectedValue({ response: { data: { message: 'Synthetic bound-profile denial' } } })
   await flushPromises()
-  await w.get('button[aria-label="删除"]').trigger('click')
+  await w.findAll('button[aria-label="删除"]').at(-1)!.trigger('click')
   await clickText('删除')
   expect(profileApi.delete).toHaveBeenCalledExactlyOnceWith('target')
   expect(error).toHaveBeenCalledWith('Synthetic bound-profile denial')

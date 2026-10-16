@@ -56,7 +56,8 @@ def _precondition(agent, config):
         return {'status': 'never-pushed'}
     if not isinstance(baseline, dict) or not isinstance(baseline.get('fingerprint'), str) or not _FINGERPRINT.fullmatch(baseline['fingerprint']):
         return _unknown('baseline_invalid')
-    profile_id = agent.get('profile_id') or 'default'
+    from backend.common.config import get_default_profile_id
+    profile_id = agent.get('profile_id') or get_default_profile_id()
     if baseline.get('profile_id') != profile_id or config.get('profile_id', profile_id) != profile_id:
         return _unknown('profile_mismatch')
     if baseline.get('service_type') != agent.get('service_type', 'mihomo'):

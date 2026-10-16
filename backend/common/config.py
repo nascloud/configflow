@@ -103,6 +103,11 @@ def get_repository() -> ProfileRepository:
     return _repository
 
 
+def get_default_profile_id() -> str:
+    """当前默认配置空间的 ID（可在删除默认配置时切换，未切换过时为 default）。"""
+    return get_repository().default_profile_id()
+
+
 def set_repository(repository: ProfileRepository) -> None:
     """Replace the repository for tests and embedded deployments."""
     global _repository

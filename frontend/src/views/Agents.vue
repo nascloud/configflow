@@ -113,7 +113,7 @@
           <div class="mb-3.5 flex items-center gap-2 text-[11.5px] text-muted-foreground">
             配置空间
             <Select
-              :model-value="agent.profile_id || 'default'"
+              :model-value="agent.profile_id || defaultProfileId"
               :disabled="bindingAgentId === agent.id || profileBindingBlocked(agent.id)"
               @update:model-value="value => handleAgentProfileChange(agent, String(value))"
             >
@@ -790,7 +790,7 @@ const queryUpgrade = async (agentId: string) => {
     notify.error(error.response?.data?.message || '查询更新结果失败，请稍后重试')
   }
 }
-const { profiles, refreshProfiles } = useProfileStore()
+const { profiles, refreshProfiles, defaultProfileId } = useProfileStore()
 const bindingAgentId = ref<string | null>(null)
 const scriptDialogVisible = ref(false)
 const dockerUpdateAgent = ref<Agent | null>(null)
@@ -1262,7 +1262,7 @@ const bindAgentProfile = async (agent: Agent, profileId: string): Promise<boolea
     notify.warning('请先完成发布或恢复服务，再更改绑定配置空间')
     return false
   }
-  const previousProfileId = agent.profile_id || 'default'
+  const previousProfileId = agent.profile_id || defaultProfileId.value
   if (profileId === previousProfileId) return true
   bindingAgentId.value = agent.id
   try {
@@ -1283,7 +1283,7 @@ const bindAgentProfile = async (agent: Agent, profileId: string): Promise<boolea
 
 /* bindAgentProfile 失败时不写回 agent.profile_id，Select 会自动回到原值 */
 const handleAgentProfileChange = async (agent: Agent, profileId: string) => {
-  if (!profileId || profileId === (agent.profile_id || 'default')) return
+  if (!profileId || profileId === (agent.profile_id || defaultProfileId.value)) return
   await bindAgentProfile(agent, profileId)
 }
 
@@ -2281,7 +2281,7 @@ const isNarrow = useMediaQuery('(max-width: 640px)')
 const profileStore = useProfileStore()
 
 const revisionOf = (profileId?: string) => {
-  const revision = profiles.value.find(p => p.id === (profileId || 'default'))?.revision
+  const revision = profiles.value.find(p => p.id === (profileId || defaultProfileId.value))?.revision
   return typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 0 ? revision : undefined
 }
 const activeRevision = computed(() => revisionOf(profileStore.activeProfileId.value))

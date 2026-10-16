@@ -23,7 +23,7 @@ from backend.converters.mosdns import generate_mosdns_config, get_mosdns_ruleset
 from backend.converters.surge import generate_surge_config
 from backend.routes import agents_bp as bp
 from backend.common.auth import is_token_within_length, parse_bearer_token, require_auth
-from backend.common.config import get_config, get_repository
+from backend.common.config import get_config, get_default_profile_id, get_repository
 from backend.common.config_repository import ProfileRepositoryError
 from backend.common.agent_manager import get_agent_manager
 from backend.common.utils import str_to_bool
@@ -152,7 +152,7 @@ def _agent_with_content_sync(agent, snapshots):
     from backend.agents.content_sync import get_content_sync
     public = _public_agent(agent)
     repository = get_repository()
-    profile_id = agent.get('profile_id', 'default')
+    profile_id = (agent.get('profile_id') or get_default_profile_id())
     try:
         if profile_id not in snapshots:
             snapshots[profile_id] = repository.get_compat_config(profile_id)
@@ -422,7 +422,7 @@ def agent_traffic_report(agent_id):
     return jsonify({
         'success': True,
         'enabled': True,
-        'rule_providers': discovery_provider_revisions(agent.get('profile_id', 'default')),
+        'rule_providers': discovery_provider_revisions((agent.get('profile_id') or get_default_profile_id())),
     }), 200
 
 
@@ -472,7 +472,7 @@ def get_agent_config(agent_id):
             return jsonify({'success': False, 'message': 'Invalid token'}), 401
 
         # 生成配置
-        profile_id = agent.get('profile_id', 'default')
+        profile_id = (agent.get('profile_id') or get_default_profile_id())
         config_result = generate_agent_config(
             get_config(profile_id), agent, base_url=request.url_root.rstrip('/'))
 
@@ -962,7 +962,7 @@ def push_config_to_agent(agent_id):
             scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
             host = request.headers.get('X-Forwarded-Host', request.host)
             base_url = f'{scheme}://{host}'
-        profile_id = agent.get('profile_id', 'default')
+        profile_id = (agent.get('profile_id') or get_default_profile_id())
         try:
             config_data = deepcopy(get_config(profile_id))
         except ProfileRepositoryError as exc:
