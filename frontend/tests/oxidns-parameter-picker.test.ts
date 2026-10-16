@@ -50,6 +50,22 @@ async function search(value: string) {
 }
 
 describe('OxiDNS parameter picker', () => {
+  it('identifies the destination scope without affecting search or parameter selection', async () => {
+    const wrapper = render()
+    await wrapper.setProps({ scopeTitle: '日志轮转' })
+    await open(wrapper)
+    const popover = document.querySelector('[aria-label="转发上游 参数选择"]')!
+    expect(popover.textContent).toContain('添加到日志轮转')
+    expect(popover.querySelector('[title="日志轮转"]')?.textContent).toBe('日志轮转')
+    expect(options()).toHaveLength(3)
+    await search('连接池')
+    expect(options()).toHaveLength(1)
+    options()[0].click()
+    await flushPromises()
+    expect(wrapper.emitted('select')).toEqual([['max_conns']])
+    expect(document.querySelector('[aria-label="转发上游 搜索参数"]')).toBeNull()
+  })
+
   it('supports a plugin addition label and disables the trigger when no choices remain', async () => {
     const wrapper = render()
     await wrapper.setProps({ label: '原生插件', buttonText: '添加插件' })

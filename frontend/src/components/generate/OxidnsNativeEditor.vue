@@ -10,12 +10,13 @@
     <Textarea v-if="mode === 'yaml'" :model-value="draft" :disabled="disabled" :rows="20" aria-label="OxiDNS 完整配置 YAML" :aria-invalid="Boolean(error)" class="min-w-0 font-mono text-xs" placeholder="runtime:\n  worker_threads: 2\nplugins: []" @update:model-value="editYaml(String($event))" />
     <div v-else class="min-w-0 space-y-5">
       <div class="min-w-0 space-y-2">
-        <div class="flex items-center gap-1">
+        <OxidnsSchemaValueEditor :node="globalTree" :schema="oxidnsGlobalSchema" label="全局参数" scope-title="全局参数" :disabled="disabled" @change="commitGlobals">
+          <template #header>
           <h4 class="text-sm font-medium">全局参数</h4>
           <FieldHelp label="完整配置全局参数" text="线程、日志、网络出口、API 与 WebUI、include 文件均可按官方字段配置。没有填写的参数使用 OxiDNS 自身默认值；这些参数不会再被简易模板覆盖。" />
           <a href="https://oxidns.org/configuration/global/" target="_blank" rel="noopener noreferrer" class="ml-auto inline-flex min-h-9 items-center gap-1 text-xs text-primary-accent underline-offset-4 hover:underline max-md:min-h-11">官方文档<ExternalLink class="size-3" /></a>
-        </div>
-        <OxidnsSchemaValueEditor :node="globalTree" :schema="oxidnsGlobalSchema" label="全局参数" :disabled="disabled" @change="commitGlobals" />
+          </template>
+        </OxidnsSchemaValueEditor>
       </div>
 
       <div class="min-w-0 space-y-3">
@@ -43,7 +44,7 @@
           </div>
           <div v-if="opened.has(plugin.id)" class="min-w-0 space-y-2 border-t border-border p-3">
             <a v-if="pluginDefinition(plugin)?.documentation" :href="pluginDefinition(plugin)!.documentation" target="_blank" rel="noopener noreferrer" class="inline-flex min-h-9 items-center gap-1 text-xs text-primary-accent underline-offset-4 hover:underline max-md:min-h-11">{{ pluginDefinition(plugin)!.label }}文档<ExternalLink class="size-3" /></a>
-            <OxidnsSchemaValueEditor :node="plugin" :schema="pluginSchema(plugin)" :label="`插件 ${index + 1}`" layout="plugin" :auto-expand-depth="3" :disabled="disabled" @change="commit" />
+            <OxidnsSchemaValueEditor :node="plugin" :schema="pluginSchema(plugin)" :label="`插件 ${index + 1}`" scope-title="插件字段" layout="plugin" :auto-expand-depth="3" :disabled="disabled" @change="commit" />
           </div>
         </div>
 

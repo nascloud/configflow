@@ -152,6 +152,35 @@ describe('complete OxiDNS editor', () => {
 })
 
 describe('schema-driven nested values', () => {
+  it('distinguishes parent and nested parameter destinations and writes only to the chosen group', async () => {
+    const node = valueToConfigNode({ log: { level: 'info', rotation: {} } })
+    const wrapper = mount(OxidnsSchemaValueEditor, { props: { node, label: '全局参数', autoExpandDepth: 3, schema: { type: 'object', help: '全局配置', properties: {
+      log: { type: 'object', label: '日志', help: '日志设置', properties: {
+        level: { type: 'string', label: '日志级别', help: '详细程度' },
+        file: { type: 'string', label: '日志文件', help: '保存路径' },
+        rotation: { type: 'object', label: '日志轮转', help: '轮转设置', properties: {
+          type: { type: 'string', label: '轮转方式', help: '切分周期', default: 'daily' },
+          max_files: { type: 'number', label: '保留文件数', help: '保留数量', default: 7 },
+        } },
+      } },
+    } } } })
+    wrappers.push(wrapper)
+    const picker = (label: string) => wrapper.findAllComponents(OxidnsParameterPicker).find(component => component.props('label') === label)!
+    expect(picker('全局参数.log').props('scopeTitle')).toBe('日志')
+    expect(picker('全局参数.log.rotation').props('scopeTitle')).toBe('日志轮转')
+    expect(picker('全局参数.log').props('fields').map((field: any) => field.key)).toEqual(['file'])
+    expect(picker('全局参数.log.rotation').props('fields').map((field: any) => field.key)).toEqual(['type', 'max_files'])
+    await pick(wrapper, '全局参数.log.rotation', 'type')
+    await pick(wrapper, '全局参数.log', 'file')
+    expect(configNodeToValue(node)).toEqual({ log: { level: 'info', rotation: { type: 'daily' }, file: '' } })
+    await wrapper.get('[aria-label="全局参数.log.file 值"]').setValue('state/dns.log')
+    await wrapper.get('[aria-label="全局参数.log.rotation 展开参数"]').trigger('click')
+    expect(wrapper.find('[aria-label="全局参数.log.rotation.type 值"]').exists()).toBe(false)
+    await wrapper.get('[aria-label="全局参数.log.rotation 展开参数"]').trigger('click')
+    expect((wrapper.get('[aria-label="全局参数.log.file 值"]').element as HTMLTextAreaElement).value).toBe('state/dns.log')
+    expect(configNodeToValue(node).log.rotation).toEqual({ type: 'daily' })
+  })
+
   it('adds nested array/map entries using schema, preserves false, and lets env references use text', async () => {
     const node = valueToConfigNode({ profiles: {} })
     const wrapper = mount(OxidnsSchemaValueEditor, { props: { node, label: '出口', schema: { type: 'object', help: '出口', properties: {
