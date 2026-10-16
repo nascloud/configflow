@@ -190,7 +190,8 @@ export const generateApi = {
 // OxiDNS 独立配置
 export const oxidnsApi = {
   getSettings: (profileId?: string) => api.get('/oxidns/settings', profileOptions(profileId)),
-  saveSettings: (settings: unknown, profileId?: string) => api.post('/oxidns/settings', settings, profileOptions(profileId))
+  saveSettings: (settings: unknown, profileId?: string) => api.post('/oxidns/settings', settings, profileOptions(profileId)),
+  render: (settings: unknown, profileId?: string) => api.post('/oxidns/render', { settings, base_url: getBaseUrl() }, profileOptions(profileId))
 }
 
 // 配置导入导出

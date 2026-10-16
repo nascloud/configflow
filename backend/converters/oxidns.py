@@ -12,6 +12,8 @@ import re
 import yaml
 
 from backend.common.oxidns_settings import normalize_oxidns_settings, OxidnsSettingsError
+from backend.common.oxidns_native import (managed_files, native_document,
+    relative_resource, resource_references)
 from backend.converters.mosdns import (
     _build_rule_proxy_url, _parse_custom_matches, _ruleset_parts,
     convert_rule_content_for_mosdns, parse_dns_upstreams,
@@ -57,23 +59,33 @@ def _rule_path(item, part):
 
 def get_oxidns_ruleset_downloads(config_data, base_url=''):
     settings = _settings(config_data)
+    native_paths = ({relative_resource(path) for path in resource_references(native_document(settings))}
+                    if settings['config_mode'] == 'native' else None)
     effective = _base(config_data, base_url)
     downloads = []
-    for item, _ in _selected(config_data, settings):
+    selections = {key: value if isinstance(value, list) else [] for key, value in settings.items()}
+    for item, _ in _selected(config_data, selections):
         if item.get('itemType') != 'ruleset':
+            continue
+        parts = _ruleset_parts(item.get('behavior', 'domain'))
+        if native_paths is not None:
+            parts = [part for part in parts if relative_resource(_rule_path(item, part)) in native_paths]
+        if not parts:
             continue
         url = item.get('url', '')
         if not url:
             raise OxidnsSettingsError('已选择的规则集缺少下载来源')
         if url.startswith('/'):
             url = effective + url
-        for part in _ruleset_parts(item.get('behavior', 'domain')):
+        for part in parts:
             downloads.append({'name': item.get('name') or '规则集',
                 'url': _build_rule_proxy_url(config_data, effective, url, part=part),
                 'local_path': _rule_path(item, part)})
-    adguard = settings['adguard']
-    if adguard['enabled']:
+    adguard = settings['adguard'] if isinstance(settings['adguard'], dict) else {}
+    if adguard.get('enabled') and isinstance(adguard.get('urls'), list):
         for url in adguard['urls']:
+            if native_paths is not None and relative_resource(f'./rules/{_tag("adguard", url)}.txt') not in native_paths:
+                continue
             downloads.append({'name': 'AdGuard DNS 规则', 'url': url,
                               'local_path': f'./rules/{_tag("adguard", url)}.txt'})
     return downloads
@@ -81,13 +93,16 @@ def get_oxidns_ruleset_downloads(config_data, base_url=''):
 
 def get_oxidns_custom_files(config_data):
     settings = _settings(config_data)
+    native_paths = ({relative_resource(path) for path in resource_references(native_document(settings))}
+                    if settings['config_mode'] == 'native' else None)
     files = []
-    if settings['custom_hosts'].strip():
+    if (native_paths is None or 'rules/custom_hosts.txt' in native_paths) and isinstance(settings['custom_hosts'], str) and settings['custom_hosts'].strip():
         files.append({'path': './rules/custom_hosts.txt',
                       'content': _hosts_file_content(settings['custom_hosts'])})
-    adguard = settings['adguard']
-    if adguard['enabled'] and adguard['content'].strip():
+    adguard = settings['adguard'] if isinstance(settings['adguard'], dict) else {}
+    if (native_paths is None or 'rules/adguard-custom.txt' in native_paths) and adguard.get('enabled') and isinstance(adguard.get('content'), str) and adguard['content'].strip():
         files.append({'path': './rules/adguard-custom.txt', 'content': adguard['content']})
+    files.extend(managed_files(settings['additional_files']))
     return files
 
 
@@ -183,6 +198,8 @@ def _forward(text, defaults):
 
 def generate_oxidns_config(config_data, base_url=''):
     s = _settings(config_data)
+    if s['config_mode'] == 'native':
+        return yaml.safe_dump(native_document(s), allow_unicode=True, sort_keys=False)
     try:
         custom = yaml.safe_load(s['custom_config']) if s['custom_config'].strip() else {}
     except yaml.YAMLError:

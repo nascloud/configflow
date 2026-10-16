@@ -3,7 +3,7 @@
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex items-center gap-1">
         <span class="text-xs text-muted-foreground">{{ rows.length }} 个条目</span>
-        <FieldHelp :label="`${label}编辑方式`" :text="`${kind === 'upstreams' ? '逐条添加上游地址，可展开常用参数；YAML 模式可填写完整上游配置。' : '逐条添加、删除或调整顺序，也可在 YAML 列表中批量编辑。'} 切换模式保留配置值；条目修改后 YAML 注释和排版可能重新整理。无效 YAML 会保留为草稿，修正后才能切回条目并保存。`" />
+        <FieldHelp :label="`${label}编辑方式`" :text="`${kind === 'upstreams' ? '逐条添加上游地址，展开后可配置官方全部上游参数；也可切换 YAML 批量编辑。' : '逐条添加、删除或调整顺序，也可在 YAML 列表中批量编辑。'} 切换模式保留配置值；条目修改后 YAML 注释和排版可能重新整理。无效 YAML 会保留为草稿，修正后才能切回条目并保存。`" />
       </div>
       <OxidnsEditorModeToggle :model-value="mode" :options="modes" :label="`${label}编辑模式`" @update:model-value="switchMode" />
     </div>
@@ -25,7 +25,7 @@
             <span class="ml-auto truncate text-xs"><template v-if="parameterCount(row.value)"><span class="max-sm:sr-only">已设置 </span>{{ parameterCount(row.value) }} 项</template><template v-else>默认</template></span>
             <ChevronDown class="size-3.5 shrink-0 group-data-[state=open]:rotate-180" aria-hidden="true" />
           </CollapsibleTrigger>
-          <CollapsibleContent class="col-span-2 col-start-1 row-start-3 mt-1 min-w-0 border-t border-border px-2 pt-3 pb-2">
+          <CollapsibleContent force-mount class="data-[state=closed]:hidden col-span-2 col-start-1 row-start-3 mt-1 min-w-0 border-t border-border px-2 pt-3 pb-2">
             <div class="grid min-w-0 gap-3 sm:grid-cols-2">
             <FormField v-for="key in ['bootstrap', 'dial_addr']" :key="key" :label="key === 'bootstrap' ? 'Bootstrap DNS' : '连接地址（dial_addr）'" :help="key === 'bootstrap' ? '当上游地址使用域名时，用此 DNS 查询上游服务器的 IP，例如 223.5.5.5:53；避免依赖本机 DNS 形成解析环路。上游已经是 IP 时无需填写；同时填写 dial_addr 时以后者为准。' : '直接指定连接上游的 IP，同时保留原域名用于 TLS 证书和 HTTP Host 校验。无需再解析上游域名；填写后优先于 bootstrap。'">
               <Input :model-value="upstreamField(row.value, key)" :aria-label="`${label}第 ${index + 1} 项 ${key}`" :placeholder="key === 'bootstrap' ? '例如 223.5.5.5:53' : '例如 1.1.1.1:443'" class="h-9 min-w-0 font-mono text-xs max-sm:min-h-11 pointer-coarse:min-h-11" @update:model-value="editUpstream(index, key, String($event))" />
@@ -37,7 +37,7 @@
               </Select>
             </FormField>
             </div>
-            <p v-if="extraCount(row.value)" class="mt-3 text-xs text-muted-foreground">另有 {{ extraCount(row.value) }} 个扩展参数，已保留，可在 YAML 中编辑。</p>
+            <OxidnsUpstreamExtras :model-value="row.value" :label="`${label}第 ${index + 1} 项`" @update:model-value="row.value = $event; send()" @error="setExtraError(row.id, $event)" />
           </CollapsibleContent>
         </Collapsible>
       </div>
@@ -61,6 +61,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import FormField from '@/components/common/FormField.vue'
 import FieldHelp from '@/components/common/FieldHelp.vue'
 import OxidnsEditorModeToggle from './OxidnsEditorModeToggle.vue'
+import OxidnsUpstreamExtras from './OxidnsUpstreamExtras.vue'
 import { encodeEntries, entryYaml, parseEntryModel, parseEntryYaml, type EntryKind, type EntryValue } from '@/lib/oxidnsEntries'
 
 const props = defineProps<{ modelValue: unknown; kind: EntryKind; label: string; id: string; placeholder?: string; emptyHint?: string }>()
@@ -72,7 +73,11 @@ const yamlDraft = ref('')
 const error = ref('')
 let sequence = 0
 let expected: string | undefined
-const setError = (message: string) => { error.value = message; emit('validity', !message); emit('error', message) }
+const extraErrors = new Map<number, string>()
+let baseError = ''
+const reportErrors = () => { const message = baseError || [...extraErrors.values()].find(Boolean) || ''; error.value = message; emit('validity', !message); emit('error', message) }
+const setError = (message: string) => { baseError = message; reportErrors() }
+const setExtraError = (id: number, message: string) => { if (message) extraErrors.set(id, message); else extraErrors.delete(id); reportErrors() }
 onUnmounted(() => { emit('validity', true); emit('error', '') })
 const values = () => rows.value.map(row => row.value)
 const replaceRows = (entries: EntryValue[]) => { rows.value = entries.map(value => ({ id: ++sequence, value })) }
@@ -92,6 +97,7 @@ watch(() => props.modelValue, value => {
 }, { immediate: true, deep: true })
 const switchMode = (next: 'entries' | 'yaml') => {
   if (next === mode.value) return
+  if (next === 'yaml' && error.value) return
   if (next === 'entries') {
     try { replaceRows(parseEntryYaml(yamlDraft.value, props.kind)); if (!send()) return }
     catch (cause: any) { setError(cause.message); return }
@@ -110,7 +116,6 @@ const upstreamAddress = (value: EntryValue) => typeof value === 'string' ? value
 const upstreamField = (value: EntryValue, key: string) => typeof value === 'object' ? value[key] ?? '' : ''
 const pipeline = (value: EntryValue) => typeof value === 'object' && typeof value.enable_pipeline === 'boolean' ? String(value.enable_pipeline) : 'default'
 const parameterCount = (value: EntryValue) => typeof value === 'object' ? Object.keys(value).filter(key => key !== 'addr' && value[key] !== undefined).length : 0
-const extraCount = (value: EntryValue) => typeof value === 'object' ? Object.keys(value).filter(key => !['addr', 'bootstrap', 'dial_addr', 'enable_pipeline'].includes(key)).length : 0
 const editValue = (index: number, value: string) => {
   if (props.kind === 'upstreams') {
     const before = rows.value[index].value

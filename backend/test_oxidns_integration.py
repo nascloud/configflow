@@ -70,6 +70,56 @@ def test_settings_are_independent_and_clone_backup_restore_roundtrip(oxidns_app)
     assert repository.get_profile('office')['oxidns']['worker_threads'] == 2
 
 
+def test_authenticated_draft_render_is_profile_scoped_lossless_and_does_not_save(oxidns_app):
+    app, repository = oxidns_app
+    client = app.test_client()
+    before = repository.get_profile('office')
+    settings = client.get('/api/oxidns/settings?profile=office').get_json()
+    settings['worker_threads'] = 7
+    settings['api'].update(enabled=True, username='draft', password='draft-secret')
+    settings['rule_update']['enabled'] = True
+    response = client.post('/api/profiles/office/oxidns/render', json={'settings': settings})
+    assert response.status_code == 200, response.get_json()
+    document = yaml.safe_load(response.get_json()['config'])
+    assert document['runtime']['worker_threads'] == 7
+    assert document['api']['http']['auth']['password'] == 'draft-secret'
+    assert any(plugin['type'] == 'download' for plugin in document['plugins'])
+    assert '[REDACTED]' not in response.get_json()['config']
+    assert response.headers['Cache-Control'] == 'no-store'
+    assert repository.get_profile('office') == before
+    assert client.post('/api/oxidns/render', json={'settings': []}).status_code == 400
+    # The rendered template contains authenticated rule callbacks. Editing and
+    # saving it must not replace its entire native YAML string with [REDACTED].
+    settings.update(config_mode='native', native_config=response.get_json()['config'],
+                    additional_files=[{'path': 'private-notes.txt', 'encoding': 'text',
+                                       'content': repository.get_compat_config('office')['system_config']['rule_proxy_token']}])
+    saved = client.post('/api/profiles/office/oxidns/settings', json=settings)
+    assert saved.get_json()['settings']['native_config'] == settings['native_config']
+    loaded = client.get('/api/profiles/office/oxidns/settings').get_json()
+    assert loaded['native_config'] == settings['native_config']
+    assert loaded['additional_files'] == settings['additional_files']
+    public_preview = client.post('/api/profiles/office/generate/oxidns/preview', json={}).get_json()['content']
+    assert repository.get_compat_config('office')['system_config']['rule_proxy_token'] not in public_preview
+
+
+def test_native_settings_files_clone_and_download_roundtrip(oxidns_app):
+    app, repository = oxidns_app
+    client = app.test_client()
+    native = {'runtime': {'worker_threads': 5}, 'plugins': [
+        {'tag': 'hosts', 'type': 'hosts', 'args': {'files': ['rules/native.txt']}}]}
+    settings = {'config_mode': 'native', 'native_config': yaml.safe_dump(native),
+                'additional_files': [{'path': 'rules/native.txt', 'encoding': 'text', 'content': 'full:example.test 192.0.2.1\n'}]}
+    saved = client.post('/api/profiles/office/oxidns/settings', json=settings)
+    assert saved.status_code == 200, saved.get_json()
+    result = client.post('/api/profiles/office/generate/oxidns', json={})
+    assert result.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(result.data)) as archive:
+        assert yaml.safe_load(archive.read('config.yaml')) == native
+        assert archive.read('rules/native.txt') == b'full:example.test 192.0.2.1\n'
+    repository.create_profile({'id': 'native-copy', 'name': 'Copy'}, clone_from='office')
+    assert repository.get_profile('native-copy')['oxidns'] == repository.get_profile('office')['oxidns']
+
+
 def test_preview_subscription_and_complete_zip_match_selected_profile(oxidns_app):
     app, repository = oxidns_app
     client = app.test_client()
@@ -176,6 +226,11 @@ def test_subscription_token_works_with_global_login_wall_enabled(oxidns_app, mon
         assert client.get(path + '?token=invalid').status_code == 401
         assert client.get(path + '?token=admin-token').status_code == 200
     assert client.get('/api/oxidns/settings?token=admin-token').status_code == 401
+    for path in ('/api/oxidns/render', '/api/profiles/office/oxidns/render'):
+        assert client.post(path + '?token=admin-token', json={'settings': {}}).status_code == 401
+        response = client.post(path, json={'settings': {}}, headers={
+            'Authorization': 'Bearer ' + auth_utils.generate_token('test-admin')})
+        assert response.status_code == 200
 
 
 def test_rule_update_preview_redacts_only_capability_urls_and_full_download_keeps_them(oxidns_app):

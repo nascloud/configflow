@@ -275,20 +275,27 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
             if not isinstance(args, dict) or not isinstance(args.get('files', []), list):
                 raise DeploymentPreparationError('MosDNS file references must be a list')
             for reference in args.get('files', []):
+                if service == 'oxidns':
+                    from backend.common.oxidns_native import relative_resource
+                    if relative_resource(reference) is None:
+                        continue
                 path = relative_path(reference)
                 if path in rule_types and rule_types[path] != rule_type:
                     raise DeploymentPreparationError('MosDNS file is used by both domain_set and ip_set: ' + path)
                 rule_types[path] = rule_type
     files = {}
 
-    def add(path, value, role):
+    def add(path, value, role, *, native=False):
         path = relative_path(path)
         if service == 'oxidns' and (path == 'state' or path.startswith('state/')):
             raise DeploymentPreparationError('OxiDNS runtime state cannot be managed by a deployment')
         value = value.encode('utf-8') if isinstance(value, str) else value
         if not isinstance(value, bytes):
             raise DeploymentPreparationError('Missing deployment file content')
-        if path in rule_types:
+        # OxiDNS attachments already contain native provider syntax. In
+        # particular, a bare domain is a suffix rule, not MosDNS's full: rule.
+        # Only downloaded/shared rule sources go through the rule converter.
+        if path in rule_types and not (service == 'oxidns' and native):
             value = convert_mosdns_rules(value, rule_types[path])
         if len(value) > MAX_FILE_BYTES:
             raise DeploymentPreparationError('Deployment file exceeds size limit')
@@ -302,7 +309,7 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
     for item in provider_downloads:
         add(item['local_path'], item.get('content'), 'provider')
     for item in custom_files:
-        add(item['path'], item.get('content'), 'custom')
+        add(item['path'], item.get('content'), 'custom', native=item.get('native', False))
 
     # Use the final Mihomo configuration rather than reconstructing paths from
     # source suffixes; custom configuration can change provider format/path.
@@ -343,6 +350,14 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
                 if path not in files:
                     raise DeploymentPreparationError(f'Provider {name} has no bundled file')
                 provider['path'] = './' + path
+    elif service == 'oxidns':
+        from backend.common.oxidns_native import validate_resource_files
+        from backend.common.oxidns_settings import OxidnsSettingsError
+        try:
+            validate_resource_files(main, files)
+        except OxidnsSettingsError as exc:
+            raise DeploymentPreparationError(str(exc).replace(
+                'OxiDNS 配置引用了未打包的资源文件：', 'OxiDNS references an unbundled resource file: ')) from None
     else:
         for plugin in main.get('plugins', []):
             args = plugin.get('args') or {}
@@ -356,18 +371,6 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
                 if path not in files:
                     raise DeploymentPreparationError('MosDNS references an unbundled file: ' + path)
                 paths[index] = './' + path
-            if service == 'oxidns':
-                references = [args['file']] if args.get('file') else []
-                persistent = args.get('persistent') or {}
-                if isinstance(persistent, dict):
-                    persistent_paths = persistent.get('files', [])
-                    if not isinstance(persistent_paths, list):
-                        raise DeploymentPreparationError('OxiDNS persistent files must be a list')
-                    references.extend(persistent_paths)
-                for value in references:
-                    path = relative_path(value)
-                    if path not in files:
-                        raise DeploymentPreparationError('OxiDNS references an unbundled file: ' + path)
     config_bytes = yaml.safe_dump(main, allow_unicode=True, sort_keys=False).encode('utf-8')
     add('config.yaml', config_bytes, 'config')
     manifest = {

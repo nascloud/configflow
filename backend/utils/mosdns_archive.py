@@ -108,7 +108,7 @@ def _source(url, config, base_url, depth=0):
     raise MosdnsArchiveError('规则不在当前配置快照中')
 
 
-def build_mosdns_zip(config, yaml_content, downloads, custom_files, *, base_url=''):
+def build_mosdns_zip(config, yaml_content, downloads, custom_files, *, base_url='', validate_references=True):
     """Fetch each original URL once, convert each part, then create the ZIP."""
     # Workers must never select a default profile or read a changed setting.
     config = deepcopy(config)
@@ -213,7 +213,7 @@ def build_mosdns_zip(config, yaml_content, downloads, custom_files, *, base_url=
     document = yaml.safe_load(yaml_content)
     if not isinstance(document, dict) or not isinstance(document.get('plugins', []), list):
         raise MosdnsArchiveError('MosDNS 配置格式无效')
-    for plugin in document.get('plugins', []):
+    for plugin in document.get('plugins', []) if validate_references else []:
         args = plugin.get('args') or {}
         if not isinstance(args, dict):
             continue

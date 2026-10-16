@@ -42,6 +42,11 @@ func prepareOxiDNSRuntimeDirectories(cfg *Config) error {
 		if path == "" {
 			continue
 		}
+		// External/runtime-expanded locations are owned by the installed core.
+		// Never create or rewrite them as part of an Agent configuration revision.
+		if filepath.IsAbs(path) || strings.Contains(path, "${") {
+			continue
+		}
 		rel := filepath.ToSlash(filepath.Clean(path))
 		if !safeRelative(rel) {
 			return fmt.Errorf("OxiDNS runtime path escapes service directory")
@@ -136,9 +141,6 @@ func validateOxiDNSSystemdDirectory(properties, expectedConfig string) error {
 // OxiDNS state belongs to the running service, not a configuration revision.
 // Native checking uses an isolated state directory and never opens the live DB.
 func validateOxiDNS(cfg *Config, doc map[string]interface{}, stage, config string, manifest *DeploymentManifest) error {
-	if err := validateMosDNS(doc, stage, manifest); err != nil {
-		return err
-	}
 	for _, f := range manifest.Files {
 		if f.Path == "state" || strings.HasPrefix(f.Path, "state/") {
 			return fmt.Errorf("OxiDNS runtime state cannot be replaced by a deployment")
@@ -147,34 +149,81 @@ func validateOxiDNS(cfg *Config, doc map[string]interface{}, stage, config strin
 	if includes, ok := doc["include"].([]interface{}); ok && len(includes) > 0 {
 		return fmt.Errorf("OxiDNS deployment must inline included plugin definitions")
 	}
-	plugins, _ := doc["plugins"].([]interface{})
+	// The shadow document is only for native validation. Absolute/environment
+	// runtime outputs are redirected into the staging directory so checking can
+	// never open or change a running service's SQLite/cache/provider state.
+	shadowBytes, err := yaml.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	var shadow map[string]interface{}
+	if err := yaml.Unmarshal(shadowBytes, &shadow); err != nil {
+		return err
+	}
+	plugins, ok := shadow["plugins"].([]interface{})
+	if !ok {
+		return fmt.Errorf("OxiDNS plugins must be a sequence")
+	}
+	shadowNeeded := false
 	listed := map[string]bool{}
 	for _, file := range manifest.Files {
 		listed[file.Path] = true
 	}
-	for _, value := range plugins {
-		p, _ := value.(map[string]interface{})
+	checkReference := func(value interface{}) error {
+		raw, ok := value.(string)
+		if !ok || raw == "" {
+			return fmt.Errorf("invalid OxiDNS resource file reference")
+		}
+		// These are explicitly provisioned on the target. The native core checks
+		// their format/existence; they are never included in the managed manifest.
+		if filepath.IsAbs(raw) || strings.Contains(raw, "${") {
+			return nil
+		}
+		rel := filepath.ToSlash(filepath.Clean(raw))
+		if !safeRelative(rel) || !listed[rel] {
+			return fmt.Errorf("OxiDNS resource files must be included in the deployment")
+		}
+		_, err := resolveStagedReference(cfg, stage, raw)
+		return err
+	}
+	tags := map[string]bool{}
+	for index, value := range plugins {
+		p, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid OxiDNS plugin")
+		}
 		args, _ := p["args"].(map[string]interface{})
 		kind, _ := p["type"].(string)
+		tag, _ := p["tag"].(string)
+		if kind == "" || tag == "" || tags[tag] {
+			return fmt.Errorf("OxiDNS plugin type/tag missing or duplicated")
+		}
+		tags[tag] = true
 		references := []interface{}{}
-		if file, ok := args["file"]; ok {
-			references = append(references, file)
+		for _, key := range []string{"file", "cert", "key"} {
+			if file, ok := args[key]; ok && file != "" && file != nil {
+				references = append(references, file)
+			}
+		}
+		if values, exists := args["files"]; exists {
+			files, ok := values.([]interface{})
+			if !ok {
+				return fmt.Errorf("OxiDNS files must be a sequence")
+			}
+			references = append(references, files...)
 		}
 		if persistent, ok := args["persistent"].(map[string]interface{}); ok {
 			if files, ok := persistent["files"].([]interface{}); ok {
 				references = append(references, files...)
 			}
 		}
+		if tls, ok := args["tls"].(map[string]interface{}); ok {
+			if ca, exists := tls["ca"]; exists && ca != "" && ca != nil {
+				references = append(references, ca)
+			}
+		}
 		for _, value := range references {
-			raw, ok := value.(string)
-			if !ok {
-				return fmt.Errorf("invalid OxiDNS managed file reference")
-			}
-			rel := filepath.ToSlash(filepath.Clean(raw))
-			if !safeRelative(rel) || !listed[rel] {
-				return fmt.Errorf("OxiDNS rule files must be included in the deployment")
-			}
-			if _, err := resolveStagedReference(cfg, stage, raw); err != nil {
+			if err := checkReference(value); err != nil {
 				return err
 			}
 		}
@@ -190,19 +239,73 @@ func validateOxiDNS(cfg *Config, doc map[string]interface{}, stage, config strin
 			raw, _ := args[key].(string)
 			if raw != "" {
 				rel := filepath.ToSlash(filepath.Clean(raw))
-				if !safeRelative(rel) {
+				external := filepath.IsAbs(raw) || strings.Contains(raw, "${")
+				if !external && !safeRelative(rel) {
 					return fmt.Errorf("OxiDNS runtime paths must be relative to the service directory")
+				}
+				if filepath.IsAbs(raw) {
+					if relative, err := filepath.Rel(filepath.Dir(cfg.ConfigPath), raw); err == nil {
+						rel = filepath.ToSlash(relative)
+					}
 				}
 				for _, f := range manifest.Files {
 					if f.Path == rel {
 						return fmt.Errorf("OxiDNS runtime file collides with managed deployment file")
 					}
 				}
+				if external {
+					rel = fmt.Sprintf(".configflow-check-state/%d/runtime", index)
+					args[key] = rel
+					shadowNeeded = true
+				}
 				if err := os.MkdirAll(filepath.Join(stage, filepath.Dir(rel)), 0700); err != nil {
 					return err
 				}
 			}
 		}
+	}
+	if api, ok := shadow["api"].(map[string]interface{}); ok {
+		if http, ok := api["http"].(map[string]interface{}); ok {
+			if ssl, ok := http["ssl"].(map[string]interface{}); ok {
+				for _, key := range []string{"cert", "key", "client_ca"} {
+					if value, ok := ssl[key]; ok && value != "" && value != nil {
+						if err := checkReference(value); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			if webui, ok := http["webui"].(map[string]interface{}); ok {
+				if root, ok := webui["root"].(string); ok && root != "" {
+					index, _ := webui["index"].(string)
+					if index == "" {
+						index = "index.html"
+					}
+					if err := checkReference(filepath.Join(root, index)); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	if shadowNeeded {
+		content, err := yaml.Marshal(shadow)
+		if err != nil {
+			return err
+		}
+		shadowFile, err := os.CreateTemp(stage, ".configflow-check-*.yaml")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(shadowFile.Name())
+		if _, err := shadowFile.Write(content); err != nil {
+			shadowFile.Close()
+			return err
+		}
+		if err := shadowFile.Close(); err != nil {
+			return err
+		}
+		config = shadowFile.Name()
 	}
 	binary := cfg.ServiceBinary
 	if binary == "" {

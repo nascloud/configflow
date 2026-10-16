@@ -183,3 +183,127 @@ func TestOxiDNSTLSHealthDoesNotDisableCertificateVerification(t *testing.T) {
 		t.Fatal("explicit certificate-valid endpoint lost")
 	}
 }
+
+func TestOxiDNSNativeManagedTLSAndWebUIResources(t *testing.T) {
+	cfg, content := testOxiDeployment(t)
+	content += "extra: retained\n"
+	// Add read-only resources without depending on a live TLS listener. The
+	// fixture core validates transaction plumbing; a real-core suite covers PEM.
+	content = strings.Replace(content, "    auth:", "    webui: {root: './webui'}\n    auth:", 1)
+	content += "# managed resources\n"
+	content = strings.Replace(content, "plugins:\n", "plugins:\n  - tag: dot\n    type: tcp_server\n    args: {cert: './tls/server.crt', key: './tls/server.key'}\n  - tag: ros\n    type: ros_address_list\n    args: {tls: {ca: './tls/ca.pem'}}\n", 1)
+	resources := map[string][]byte{
+		"config.yaml": []byte(content), "tls/server.crt": []byte("certificate"),
+		"tls/server.key": []byte("private key"), "tls/ca.pem": []byte("CA"),
+		"webui/index.html": []byte("<html>test</html>"),
+	}
+	for _, missing := range []string{"tls/server.crt", "tls/server.key", "tls/ca.pem", "webui/index.html"} {
+		value := resources[missing]
+		delete(resources, missing)
+		result := submitBundle(t, cfg, "missing-"+strings.NewReplacer("/", "-", ".", "-").Replace(missing), resources, false)
+		if result.Status != "failed" {
+			t.Fatalf("missing %s accepted: %+v", missing, result)
+		}
+		resources[missing] = value
+	}
+	result := submitBundle(t, cfg, "all-native-assets", resources, false)
+	if result.Status != "ready" {
+		t.Fatalf("managed native resources: %+v", result)
+	}
+}
+
+func TestOxiDNSAbsoluteAndEnvironmentStateAreCheckedInIsolation(t *testing.T) {
+	cfg, content := testOxiDeployment(t)
+	live := filepath.Join(t.TempDir(), "learned.txt")
+	if err := os.WriteFile(live, []byte("live state untouched"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The native checker must only see the shadow runtime path, and the original
+	// document must be the one that is eventually committed to the service.
+	script := "#!/bin/sh\n[ \"$1\" = check ] || exit 91\ngrep -q '.configflow-check-state/' \"$3\" || exit 92\nif grep -q 'EXTERNAL_DB' \"$3\"; then exit 93; fi\n"
+	if err := os.WriteFile(cfg.ServiceBinary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	content = strings.Replace(content, "'./state/learned.txt'", "'"+live+"'", 1)
+	content += "  - tag: records\n    type: query_recorder\n    args: {path: '${EXTERNAL_DB}'}\n"
+	result := submitBundle(t, cfg, "external-runtime", map[string][]byte{"config.yaml": []byte(content)}, true)
+	if result.Status != "succeeded" {
+		t.Fatalf("isolated external runtime: %+v", result)
+	}
+	actual, err := os.ReadFile(cfg.ConfigPath)
+	if err != nil || string(actual) != content {
+		t.Fatal("shadow configuration leaked into installed config")
+	}
+	if actual, err := os.ReadFile(live); err != nil || string(actual) != "live state untouched" {
+		t.Fatal("live external state changed")
+	}
+}
+
+func TestOxiDNSAllowsExplicitTargetResourcesAndRejectsAbsoluteManagedCollision(t *testing.T) {
+	cfg, content := testOxiDeployment(t)
+	content = strings.Replace(content, "plugins:\n", "plugins:\n  - tag: installed\n    type: domain_set\n    args: {files: ['/etc/oxidns/shared.txt', '${INSTALLED_RULES}']}\n", 1)
+	result := submitBundle(t, cfg, "external-rules", map[string][]byte{"config.yaml": []byte(content)}, false)
+	if result.Status != "ready" {
+		t.Fatalf("target-owned resources: %+v", result)
+	}
+	collision := filepath.Join(filepath.Dir(cfg.ConfigPath), "rules/collision.txt")
+	content = strings.Replace(content, "'./state/learned.txt'", "'"+collision+"'", 1)
+	result = submitBundle(t, cfg, "absolute-collision", map[string][]byte{"config.yaml": []byte(content), "rules/collision.txt": []byte("managed")}, false)
+	if result.Status != "failed" {
+		t.Fatalf("absolute runtime collision accepted: %+v", result)
+	}
+}
+
+func TestOxiDNSActivatedAssetsArePrivateAndExistingRuleModeIsPreserved(t *testing.T) {
+	cfg, content := testOxiDeployment(t)
+	root := filepath.Dir(cfg.ConfigPath)
+	for _, directory := range []string{"tls", "rules"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "tls/existing.key"), []byte("old key"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "rules/existing.txt"), []byte("old rule"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	assets := map[string][]byte{
+		"config.yaml": []byte(content), "tls/new.key": []byte("new private key"),
+		"tls/existing.key": []byte("replacement private key"), "plugins/credentials.yaml": []byte("password: private"),
+		"rules/existing.txt": []byte("full:example.test"), "rules/new.txt": []byte("full:new.test"),
+	}
+	roles := func(manifest *DeploymentManifest) {
+		for index := range manifest.Files {
+			if strings.HasPrefix(manifest.Files[index].Path, "tls/") || strings.HasPrefix(manifest.Files[index].Path, "plugins/") {
+				manifest.Files[index].Role = "custom"
+			}
+		}
+	}
+	result := submitBundle(t, cfg, "private-native-assets", assets, true, roles)
+	if result.Status != "succeeded" {
+		t.Fatalf("activation failed: %+v", result)
+	}
+	configInfo, err := os.Stat(cfg.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid, gid := fileOwnership(configInfo)
+	for path := range assets {
+		info, err := os.Stat(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected := os.FileMode(0600)
+		if path == "rules/existing.txt" {
+			expected = 0640
+		}
+		if info.Mode().Perm() != expected {
+			t.Fatalf("%s installed as %o; want %o", path, info.Mode().Perm(), expected)
+		}
+		owner, group := fileOwnership(info)
+		if owner != uid || group != gid {
+			t.Fatalf("%s does not belong to the core owner", path)
+		}
+	}
+}

@@ -67,7 +67,7 @@ describe('OxiDNS entry editor', () => {
     expect(parameters(1).attributes('aria-expanded')).toBe('false')
     expect(parameters(1).text()).toContain('已设置 2 项')
     expect(parameters(2).text()).toContain('默认')
-    expect(wrapper.find('[aria-label="测试列表第 1 项 bootstrap"]').exists()).toBe(false)
+    expect(wrapper.get('[aria-label="测试列表第 1 项 bootstrap"]').element.closest('[data-state="closed"]')).not.toBeNull()
 
     await parameters(1).trigger('click')
     await wrapper.get('[aria-label="测试列表第 1 项 bootstrap"]').setValue('192.0.2.53:53')
@@ -85,6 +85,21 @@ describe('OxiDNS entry editor', () => {
       { addr: 'udp://192.0.2.2' },
       { addr: 'tls://dns.example.test', enable_pipeline: false, extra: { nested: [1, false] }, bootstrap: '192.0.2.53:53' }
     ])
+  })
+  it('edits all documented extra upstream fields and keeps invalid numeric drafts when collapsed', async () => {
+    const wrapper = render('- addr: tls://dns.example.test\n  max_conns: 4\n  enable_http3: false\n  extension: {keep: true}')
+    const parameters = wrapper.get('[aria-label="测试列表第 1 项上游参数"]')
+    await parameters.trigger('click')
+    const field = wrapper.get('[aria-label="测试列表第 1 项其他上游参数.max_conns 值"]')
+    await field.setValue('broken')
+    expect((wrapper.vm as any).valid).toBe(false)
+    await parameters.trigger('click')
+    expect((wrapper.vm as any).valid).toBe(false)
+    await parameters.trigger('click')
+    expect((field.element as HTMLInputElement).value).toBe('broken')
+    await field.setValue('12')
+    expect((wrapper.vm as any).valid).toBe(true)
+    expect(load((wrapper.vm as any).value)).toEqual([{ addr: 'tls://dns.example.test', max_conns: 12, enable_http3: false, extension: {keep: true} }])
   })
   it('keeps invalid YAML drafts and last valid model until repaired', async () => {
     const wrapper = render('udp://192.0.2.1')
