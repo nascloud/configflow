@@ -91,10 +91,118 @@ def object_paths(value, prefix=''):
             yield from object_paths(child, prefix + '[]')
 
 
-def schema_at(schema, path):
+def schema_nodes(schema, path):
+    """Follow declared fields across JSON Schema unions, arrays and named maps."""
+    nodes = [schema]
     for key in re.findall(r'\[\]|[^.\[\]]+', path):
-        schema = schema.get('items', {}) if key == '[]' else schema.get('properties', {}).get(key, schema.get('additionalProperties', {}))
-    return schema
+        next_nodes = []
+        pending = list(nodes)
+        while pending:
+            node = pending.pop()
+            if not isinstance(node, dict):
+                continue
+            pending.extend(node.get('anyOf', []))
+            if key == '[]':
+                child = node.get('items')
+            elif key == '*':
+                child = node.get('additionalProperties')
+            else:
+                child = node.get('properties', {}).get(key)
+                if child is None:
+                    child = node.get('additionalProperties')
+            if isinstance(child, dict):
+                next_nodes.append(child)
+        nodes = next_nodes
+    return nodes
+
+
+def schema_at(schema, path):
+    return bool(schema_nodes(schema, path))
+
+
+def schema_properties(schema, path=''):
+    pending = schema_nodes(schema, path)
+    fields = set()
+    while pending:
+        node = pending.pop()
+        fields.update(node.get('properties', {}))
+        pending.extend(node.get('anyOf', []))
+    return fields
+
+
+def declared_paths(schema, prefix=''):
+    """All UI field paths, including nested array and arbitrary-name map items."""
+    for key, child in schema.get('properties', {}).items():
+        path = f'{prefix}.{key}' if prefix else key
+        yield path
+        yield from declared_paths(child, path)
+    if isinstance(schema.get('items'), dict):
+        yield from declared_paths(schema['items'], prefix + '[]')
+    if isinstance(schema.get('additionalProperties'), dict):
+        yield from declared_paths(schema['additionalProperties'], prefix + '.*')
+    for variant in schema.get('anyOf', []):
+        yield from declared_paths(variant, prefix)
+
+
+# Nested YAML-facing structures are checked separately so a new child field is
+# detected even when the parent object already exists in both catalogs.
+NESTED_STRUCTS = [
+    ('http_server', 'entries[]', 'plugin/server/http/mod.rs', 'Entry'),
+    ('forward', 'upstreams[]', 'infra/network/upstream/config.rs', 'UpstreamConfig'),
+    ('sequence', '[]', 'plugin/executor/sequence/mod.rs', 'Rule'),
+    ('ip_selector', 'cache', 'plugin/executor/ip_selector/config.rs', 'IpSelectorCacheConfig'),
+    ('nftset', 'ipv4', 'plugin/executor/nftset.rs', 'NftSetArgs'),
+    ('nftset', 'ipv6', 'plugin/executor/nftset.rs', 'NftSetArgs'),
+    ('download', 'downloads[]', 'plugin/executor/download.rs', 'DownloadItemConfig'),
+    ('cron', 'jobs[]', 'plugin/executor/cron.rs', 'JobConfig'),
+    ('time', 'periods[]', 'plugin/matcher/time.rs', 'PeriodConfig'),
+    ('prefer_ipv6', '', 'plugin/executor/dual_selector.rs', 'DualSelectorConfig'),
+]
+for kind in ('ros_route', 'ros_address_list'):
+    NESTED_STRUCTS.extend([
+        (kind, 'persistent', f'plugin/executor/{kind}/config.rs', 'PersistentArgs'),
+        (kind, 'tls', 'plugin/executor/routeros/transport.rs', 'RouterOsTlsArgs'),
+    ])
+GLOBAL_STRUCTS = {
+    '': 'Config', 'runtime': 'RuntimeConfig', 'log': 'LogConfig',
+    'network': 'NetworkConfig', 'network.outbound': 'NetworkOutboundConfig',
+    'network.outbound.profiles.*': 'OutboundProfileConfig',
+    'network.outbound.profiles.*.resolver': 'OutboundResolverDetailedConfig',
+    'network.outbound.profiles.*.resolver.nameservers[]': 'OutboundNameserverConfig',
+    'api': 'ApiConfig', 'api.http': 'ApiHttpDetailedConfig',
+    'api.http.cors': 'ApiCorsConfig', 'api.http.webui': 'ApiWebUiConfig',
+    'api.http.ssl': 'ApiTlsConfig',
+}
+GLOBAL_ENUMS = {
+    'log.rotation': 'LogRotation', 'api.http.auth': 'ApiAuthConfig',
+    'network.outbound.profiles.*.proxy': 'OutboundProxyConfig',
+}
+
+
+def native_fields(text, name, enum=False):
+    match = re.search(('enum ' if enum else 'struct ') + name + r'\s*{(.*?)\n}', text, re.S)
+    if not match:
+        raise ValueError('Native type not found: ' + name)
+    body = re.sub(r'(?m)^\s*///.*$', '', match[1])
+    if enum:
+        fields = set(re.findall(r'\b(\w+)\s*:\s*(?:String|Option<)', body))
+        # Both of these enums are internally tagged; outbound proxy is untagged.
+        if name in ('LogRotation', 'ApiAuthConfig'):
+            fields.add('type')
+        return fields
+    fields = set()
+    attributes = ''
+    for line in body.splitlines():
+        if '#[' in line:
+            attributes += line
+            continue
+        field = re.match(r'\s*(?:pub(?:\([^)]*\))?\s+)?(\w+)\s*:', line)
+        if field:
+            if not re.search(r'\bskip(?:_deserializing)?\b', attributes):
+                renamed = re.search(r'rename\s*=\s*"([^"]+)"', attributes)
+                fields.add(renamed[1] if renamed else field[1])
+            attributes = ''
+    return fields
 
 
 def main():
@@ -107,6 +215,12 @@ def main():
     actual_commit = subprocess.check_output(['git', '-C', str(official), 'rev-parse', 'HEAD'], text=True).strip()
     expected_commit = exported['oxidnsSchemaSource']['commit']
     failures = []
+    backend_documents = [json.loads((REPO / 'backend/schemas/oxidns' / name).read_text()) for name in ('global.json', 'plugins.json')]
+    backend_plugins = {key: value for document in backend_documents for key, value in document['plugins'].items()}
+    backend_global = backend_documents[0]['global']
+    for document in backend_documents:
+        if document['source']['commit'] != actual_commit or document['version'] != exported['oxidnsSchemaVersion']:
+            failures.append('Backend schema version/source does not match official checkout and UI catalog')
     if actual_commit != expected_commit:
         failures.append(f'Source commit changed: {actual_commit}; catalog pins {expected_commit}')
     inventory = set()
@@ -114,6 +228,8 @@ def main():
         inventory.update(re.findall(r'`(\w+)`', names))
     if set(catalog) != inventory:
         failures.append(f'Plugin inventory: missing {inventory - set(catalog)}, extra {set(catalog) - inventory}')
+    if set(backend_plugins) != inventory:
+        failures.append(f'Backend plugin inventory: missing {inventory - set(backend_plugins)}, extra {set(backend_plugins) - inventory}')
     documented = {}
 
     def collect_examples(value):
@@ -158,22 +274,40 @@ def main():
                 continue
             field_count += 1
             if not schema_at(catalog[kind]['args'], path):
-                failures.append(f'Missing documented field: {kind}.args.{path}')
+                failures.append(f'UI missing documented field: {kind}.args.{path}')
+            if not schema_at(backend_plugins.get(kind, {}), path):
+                failures.append(f'Backend missing documented field: {kind}.args.{path}')
+    ui_path_count = 0
+    for label, ui_schema, backend_schema in [('global', exported['oxidnsGlobalSchema'], backend_global)] + [
+        (kind + '.args', plugin['args'], backend_plugins.get(kind, {})) for kind, plugin in catalog.items()
+    ]:
+        for path in sorted(set(declared_paths(ui_schema))):
+            ui_path_count += 1
+            if not schema_at(backend_schema, path):
+                failures.append(f'Backend missing UI field: {label}.{path}')
+
+    def check_fields(label, source, name, path, ui_schema, backend_schema, enum=False):
+        try:
+            native = native_fields((official / 'src' / source).read_text(), name, enum)
+        except ValueError as error:
+            failures.append(str(error))
+            return
+        for surface, schema in [('UI', ui_schema), ('Backend', backend_schema)]:
+            fields = schema_properties(schema, path)
+            compared = native - ({'plugins'} if label == 'global' and not path and surface == 'UI' else set())
+            if compared != fields:
+                failures.append(f'{surface} {label}.{path} ({name}): missing {compared - fields}, extra {fields - compared}')
+
     for kind, (filename, struct_name) in STRUCTS.items():
-        text = (official / 'src' / filename).read_text()
-        match = re.search(r'struct ' + struct_name + r'\s*{(.*?)\n}', text, re.S)
-        if not match:
-            failures.append(f'Native struct not found: {filename}:{struct_name}')
-            continue
-        native = set(re.findall(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(\w+)\s*:', match[1], re.M))
-        if 'async_mode' in native:
-            native.remove('async_mode')
-            native.add('async')
-        fields = set(catalog[kind]['args'].get('properties', {}))
-        if native != fields:
-            failures.append(f'{kind} native fields: missing {native - fields}, extra {fields - native}')
+        check_fields(kind, filename, struct_name, '', catalog[kind]['args'], backend_plugins.get(kind, {}))
+    for kind, path, filename, struct_name in NESTED_STRUCTS:
+        check_fields(kind, filename, struct_name, path, catalog[kind]['args'], backend_plugins.get(kind, {}))
+    for path, name in GLOBAL_STRUCTS.items():
+        check_fields('global', 'config/types.rs', name, path, exported['oxidnsGlobalSchema'], backend_global)
+    for path, name in GLOBAL_ENUMS.items():
+        check_fields('global', 'config/types.rs', name, path, exported['oxidnsGlobalSchema'], backend_global, enum=True)
     print(f'Official source: {actual_commit}')
-    print(f'Checked {len(inventory)} plugins, {field_count} documented paths, {len(STRUCTS)} native YAML structs.')
+    print(f'Checked {len(inventory)} plugins, {field_count} documented paths, {ui_path_count} UI/backend paths, {len(STRUCTS) + len(NESTED_STRUCTS) + len(GLOBAL_STRUCTS) + len(GLOBAL_ENUMS)} native YAML structures.')
     if failures:
         print('\n'.join(failures))
         return 1

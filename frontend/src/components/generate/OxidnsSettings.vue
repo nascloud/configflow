@@ -1,123 +1,86 @@
 <template>
-  <Dialog :open="open" @update:open="emit('update:open', $event)">
-    <DialogContent class="flex max-h-[90dvh] max-w-[calc(100vw-2rem)] flex-col overflow-hidden sm:max-w-[860px]">
+  <Dialog :open="open" @update:open="!saving && emit('update:open', $event)">
+    <DialogContent class="flex h-[92dvh] max-h-[92dvh] max-w-[calc(100vw-2rem)] flex-col overflow-hidden sm:max-w-[1200px] max-sm:gap-3 max-sm:p-3">
       <DialogHeader>
         <DialogTitle>OxiDNS 设置</DialogTitle>
-        <DialogDescription>保存到当前配置空间，用于配置预览、完整下载与 Agent 发布。</DialogDescription>
+        <DialogDescription class="max-sm:sr-only">常用设置、完整参数与 YAML 共用一份草稿。保存不会发布；发布前必须通过规则检查和目标 OxiDNS 核心检查。</DialogDescription>
       </DialogHeader>
-
       <LoadingRows v-if="loading" :rows="5" />
       <div v-else-if="loadError" role="alert" class="space-y-3 py-4">
-        <p class="text-destructive-accent">{{ loadError }}</p>
-        <Button variant="outline" @click="load">重新加载</Button>
+        <p class="text-destructive-accent">{{ loadError }}</p><Button variant="outline" @click="load">重新加载</Button>
       </div>
       <div v-else-if="settings" class="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-        <div class="flex flex-wrap items-center gap-2">
-          <OxidnsEditorModeToggle :model-value="configMode" :options="[{ value: 'template', label: '快捷模板' }, { value: 'native', label: '完整配置' }]" label="OxiDNS 配置方式" :disabled="saving || rendering" @update:model-value="switchConfigMode" />
-          <FieldHelp label="OxiDNS 配置方式" text="快捷模板自动生成分流与缓存流程。完整配置可编辑官方全部全局参数、插件和执行链，表单与 YAML 可切换；首次切换会从当前模板草稿生成配置。两种草稿分别保留，保存时只使用选中模式；完整配置不会随模板选项自动变化。" />
-          <span v-if="rendering" class="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 class="size-3.5 animate-spin" />正在生成完整配置…</span>
+        <div class="flex shrink-0 flex-wrap items-center justify-between gap-2">
+          <OxidnsEditorModeToggle v-model="tab" :options="[{ value: 'config', label: '配置' }, { value: 'files', label: '附加文件' }]" label="OxiDNS 设置内容" :disabled="editorLocked" />
+          <div v-if="settings.legacy_native_config" class="flex items-center gap-1">
+            <Button variant="ghost" size="sm" class="min-h-11 max-sm:w-11 max-sm:px-0" :disabled="saving" aria-label="旧草稿备份" @click="downloadLegacy"><Download class="size-3.5" /><span class="max-sm:sr-only">旧草稿备份</span></Button>
+            <FieldHelp label="旧草稿备份" text="旧版快捷模板和完整配置分别保存。当前已载入原来生效的配置，另一份未生效的完整配置已保留在备份中，可下载查看或复制所需参数。保存后备份仍保留。" />
+          </div>
         </div>
-        <Tabs v-model="tab" class="flex min-h-0 min-w-0 flex-1 flex-col">
-        <TabsList class="h-auto w-full shrink-0 flex-wrap justify-start">
-          <TabsTrigger v-for="item in visibleTabs" :key="item.value" :value="item.value" class="min-h-11 text-xs">{{ item.label }}</TabsTrigger>
-        </TabsList>
-        <div class="cf-focus-gutter min-h-0 overflow-y-auto py-2">
-          <TabsContent force-mount value="native" class="data-[state=inactive]:hidden space-y-4">
-            <OxidnsNativeEditor v-if="configMode === 'native' || settings.native_config" v-model="settings.native_config" :disabled="saving" @error="setEditorError('native_config', $event)" />
-            <div v-else class="space-y-3 py-4">
-              <p class="text-sm text-muted-foreground">从当前模板生成完整配置后，可逐项编辑全部参数。</p>
-              <Button :disabled="rendering || saving" variant="outline" @click="initializeNative">从当前模板生成</Button>
+        <OxidnsNativeEditor ref="nativeEditor" v-show="tab === 'config'" v-model="settings.native_config" :disabled="editorLocked" @view="nativeView = $event" @error="editorErrors.native_config = $event">
+          <template #common>
+            <LoadingRows v-if="projecting" :rows="4" />
+            <div v-else-if="projectionError" class="space-y-3 p-3">
+              <p role="alert" class="text-sm text-destructive-accent">{{ projectionError }}</p>
+              <Button variant="outline" @click="projectCommon">重新读取常用设置</Button>
             </div>
-          </TabsContent>
-          <TabsContent force-mount value="files" class="data-[state=inactive]:hidden">
-            <OxidnsFilesEditor v-model="settings.additional_files" :disabled="saving" @error="setEditorError('additional_files', $event)" />
-          </TabsContent>
-          <TabsContent force-mount value="core" class="data-[state=inactive]:hidden space-y-5">
-            <div class="flex items-center gap-1">
-              <Button variant="outline" class="min-h-11" @click="applyTemplate">应用已验证模板</Button>
-              <FieldHelp label="已验证模板" text="填入已测试的性能参数：2 个工作线程、合并相邻同策略规则、300 秒 lazy cache 和 2048 条国内探测缓存，以及对应的上游并发与备用等待参数。上游地址、规则选择和特色功能继续使用当前值；保存后才生效。" />
-            </div>
-            <OxidnsFields :settings="settings" @error="setEditorError" :fields="coreFields" />
-          </TabsContent>
-          <TabsContent force-mount value="rules" class="data-[state=inactive]:hidden space-y-5">
-            <div class="flex items-center gap-1">
-              <h3 class="text-sm font-medium">分流规则</h3>
-              <FieldHelp label="分流规则" text="只有选中的规则参与分流，按规则管理中的顺序执行。先匹配域名规则，未命中时通过直连 DNS 探测，再用响应 IP 判断 IP 规则。合并相邻同策略规则不会改变直连与代理之间的优先级。" />
-            </div>
-            <div class="grid min-w-0 gap-4 sm:grid-cols-2">
-              <FormField v-for="group in ruleGroups" :key="group.key" :label="group.label" :help="group.hint">
-                <MultiSelect v-model="settings[group.key]" :options="ruleOptions(group)" :placeholder="`选择${group.label}`" />
-              </FormField>
-            </div>
-            <p v-if="!rules.length && !ruleSets.length" class="text-sm text-muted-foreground">当前空间尚无规则，可先在「规则管理」中添加。</p>
-            <OxidnsFields :settings="settings" @error="setEditorError" :fields="[{ path: 'custom_hosts', label: '自定义 Hosts', type: 'lines', wide: true, placeholder: 'full:example.com 192.0.2.10 2001:db8::10', hint: '每条填写域名规则和一个或多个 IP；支持 IPv4、IPv6。可切换 YAML 批量编辑。' }]" />
-          </TabsContent>
-          <TabsContent force-mount value="upstreams" class="data-[state=inactive]:hidden "><OxidnsFields :settings="settings" @error="setEditorError" :fields="upstreamFields" /></TabsContent>
-          <TabsContent force-mount value="cache" class="data-[state=inactive]:hidden space-y-4">
-            <OxidnsFields :settings="settings" @error="setEditorError" :fields="cacheFields" />
-          </TabsContent>
-          <TabsContent force-mount value="features" class="data-[state=inactive]:hidden space-y-3">
-            <Collapsible v-for="feature in featureGroups" :key="feature.key" class="group rounded-lg border border-border bg-card">
-              <div class="relative flex min-h-12 items-center justify-between gap-3 px-4 py-3 text-sm font-medium">
-                <CollapsibleTrigger type="button" :aria-label="`${feature.title}设置`" class="absolute inset-0 cursor-pointer rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-primary-accent" />
-                <span class="pointer-events-none flex min-w-0 flex-1 items-center gap-1">
-                  <span class="min-w-0">{{ feature.title }}</span>
-                  <span class="pointer-events-auto relative z-10"><FieldHelp :label="feature.title" :text="feature.hint" /></span>
-                </span>
-                <span class="chip pointer-events-none shrink-0" :class="settings[feature.key].enabled ? 'chip-ok' : ''">{{ settings[feature.key].enabled ? '已启用' : '未启用' }}</span><ChevronDown class="pointer-events-none size-4 shrink-0 text-muted-foreground group-data-[state=open]:rotate-180" aria-hidden="true" />
-              </div>
-              <CollapsibleContent force-mount class="data-[state=closed]:hidden space-y-4 border-t border-border px-4 py-4">
-                <div class="flex min-h-11 items-center gap-3">
-                  <Switch :id="`oxi-enable-${feature.key}`" v-model="settings[feature.key].enabled" />
-                  <Label :for="`oxi-enable-${feature.key}`">启用{{ feature.title }}</Label>
-                </div>
-                <OxidnsFields v-if="settings[feature.key].enabled" :settings="settings" @error="setEditorError" :fields="feature.fields" />
-              </CollapsibleContent>
-            </Collapsible>
-          </TabsContent>
-          <TabsContent force-mount value="access" class="data-[state=inactive]:hidden space-y-4">
-            <OxidnsFields :settings="settings" @error="setEditorError" :fields="apiFields" />
-          </TabsContent>
-          <TabsContent force-mount value="advanced" class="data-[state=inactive]:hidden space-y-4">
-            <OxidnsFields :settings="settings" @error="setEditorError" :fields="[{ path: 'custom_match_position', label: '自定义匹配位置', hint: '决定自定义匹配与自动域名分流规则的先后顺序。放在前面可优先覆盖自动规则；放在后面则在自动域名规则未结束请求时执行，仍早于动态域名集和 IP 分流判断。', options: [{ value: 'head', label: '在自动规则之前' }, { value: 'tail', label: '在自动规则之后' }] }]" />
-            <OxidnsMatchEditor v-model="settings.custom_matches" :disabled="saving" @error="setEditorError('custom_matches', $event ? `自定义匹配：${$event}` : '')" />
-            <OxidnsConfigEditor v-model="settings.custom_config" @error="setEditorError('custom_config', $event ? `基础配置扩展：${$event}` : '')" />
-          </TabsContent>
+            <OxidnsCommonSettings v-else-if="commonValues" :key="commonKey" :values="commonValues" :capabilities="commonCapabilities" :rules="rules" :rule-sets="ruleSets" :disabled="saving" :navigation-disabled="editorLocked" @change="queueChanges" @error="editorErrors.common = $event" @navigate="nativeEditor?.showFull($event)" @full="nativeEditor?.showFull()" />
+          </template>
+        </OxidnsNativeEditor>
+        <div ref="filesPanel" v-show="tab === 'files'" class="min-h-0 flex-1 overflow-y-auto">
+          <OxidnsFilesEditor v-model="settings.additional_files" :disabled="editorLocked" @error="editorErrors.additional_files = $event" />
         </div>
-        </Tabs>
+        <div v-if="applyError" class="flex shrink-0 flex-wrap items-center gap-2">
+          <p role="alert" class="min-w-0 flex-1 break-words text-sm text-destructive-accent">{{ applyError }}</p>
+          <Button variant="outline" size="sm" :disabled="applying || Boolean(editorErrors.common)" @click="retryChanges">重试同步</Button>
+          <Button variant="ghost" size="sm" :disabled="applying" @click="discardPending">撤销未同步修改</Button>
+        </div>
+        <p v-else-if="applying || pendingCount" role="status" class="flex shrink-0 items-center gap-2 text-xs text-muted-foreground"><Loader2 class="size-3.5 animate-spin" />正在同步当前草稿…</p>
       </div>
-      <p v-if="saveError" role="alert" class="shrink-0 text-sm text-destructive-accent">{{ saveError }}</p>
-      <p v-else-if="editorError" role="alert" class="shrink-0 text-sm text-destructive-accent">{{ editorError }} 修正后即可保存，草稿已保留。</p>
-      <DialogFooter class="shrink-0">
+      <section v-if="settings && !loading && !loadError" class="shrink-0 text-xs" aria-label="配置检查结果">
+        <p v-if="validationState === 'pending'" role="status" class="flex min-h-8 items-center gap-2 text-muted-foreground"><Loader2 class="size-3.5 animate-spin" />正在检查草稿参数，可继续编辑或保存…</p>
+        <div v-else-if="validationError" class="flex flex-wrap items-center gap-2">
+          <p role="alert" class="min-w-0 flex-1 break-words text-destructive-accent">{{ validationError }} 可先保存草稿，发布前需重新检查。</p>
+          <Button variant="outline" size="sm" class="min-h-11" :disabled="saving" @click="validateDraft">重新检查</Button>
+        </div>
+        <details v-else-if="validationIssues.length" :open="validationErrors.length > 0" class="rounded-md border border-border px-3">
+          <summary class="min-h-11 cursor-pointer content-center font-medium" :class="validationErrors.length ? 'text-destructive-accent' : 'text-warning-accent'">
+            {{ validationErrors.length ? `${validationErrors.length} 项发布前需要修正` : '规则检查通过，存在待目标环境验证项' }}<span v-if="validationWarnings.length"> · {{ validationWarnings.length }} 项提示</span>
+          </summary>
+          <p class="border-t border-border py-2 text-muted-foreground">草稿可以保存；发布必须通过规则检查和目标 OxiDNS 核心检查。</p>
+          <ul class="max-h-36 space-y-1 overflow-y-auto border-t border-border py-2" aria-label="配置检查问题">
+            <li v-for="(issue, index) in validationIssues" :key="index">
+              <button type="button" class="flex min-h-11 w-full min-w-0 flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accent disabled:opacity-50" :class="issue.severity === 'error' ? 'text-destructive-accent' : 'text-warning-accent'" :disabled="editorLocked || Boolean(editorError)" :aria-label="`定位${issue.severity === 'error' ? '错误' : '提示'} ${index + 1}`" @click="locateValidationIssue(issue)">
+                <span class="break-words">{{ issue.message }}</span><code class="break-all text-[11px] text-muted-foreground">{{ issue.source ? `${issue.source} · ` : '' }}{{ formatOxidnsIssuePath(issue.path) }}</code>
+              </button>
+            </li>
+          </ul>
+        </details>
+        <p v-else-if="validationCurrent" role="status" class="flex min-h-8 items-center gap-1.5 text-muted-foreground"><Check class="size-3.5 text-success-accent" />规则检查通过；发布时还需目标核心检查</p>
+      </section>
+      <p v-if="saveError" role="alert" class="shrink-0 break-words text-sm text-destructive-accent">{{ saveError }}</p>
+      <p v-else-if="editorError && !(tab === 'config' && editorError === editorErrors.native_config)" role="alert" class="shrink-0 break-words text-sm text-destructive-accent">{{ editorError }}</p>
+      <DialogFooter class="shrink-0 flex-row justify-end">
         <Button variant="outline" :disabled="saving" class="min-h-11" @click="emit('update:open', false)">取消</Button>
-        <Button :disabled="loading || saving || rendering || !settings || Boolean(loadError) || Boolean(editorError)" class="min-h-11" @click="save"><Loader2 v-if="saving" class="size-4 animate-spin" />保存设置</Button>
+        <Button :disabled="loading || editorLocked || projecting || !settings || Boolean(loadError) || Boolean(editorError)" class="min-h-11" @click="save"><Loader2 v-if="saving" class="size-4 animate-spin" />保存草稿</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>
 </template>
-
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
-import { ChevronDown, Loader2 } from '@lucide/vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { Check, Download, Loader2 } from '@lucide/vue'
 import { oxidnsApi, ruleApi, ruleSetApi } from '@/api'
 import { notify } from '@/lib/feedback'
-import { apiFields, applyVerifiedOxidnsTemplate, cacheFields, coreFields, featureGroups, upstreamFields } from '@/lib/oxidns'
-import OxidnsFields from './OxidnsFields.vue'
-import OxidnsMatchEditor from './OxidnsMatchEditor.vue'
-import OxidnsConfigEditor from './OxidnsConfigEditor.vue'
+import { formatOxidnsIssuePath, readOxidnsValidationResult, type OxidnsValidationIssue } from '@/lib/oxidnsNativeValidation'
 import OxidnsNativeEditor from './OxidnsNativeEditor.vue'
+import OxidnsCommonSettings from './OxidnsCommonSettings.vue'
 import OxidnsFilesEditor from './OxidnsFilesEditor.vue'
 import OxidnsEditorModeToggle from './OxidnsEditorModeToggle.vue'
-import FormField from '@/components/common/FormField.vue'
 import FieldHelp from '@/components/common/FieldHelp.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
-import MultiSelect from '@/components/common/MultiSelect.vue'
 import { Button } from '@/components/ui/button'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 const props = defineProps<{ open: boolean; profileId: string }>()
 const emit = defineEmits<{ (event: 'update:open', value: boolean): void; (event: 'saved'): void }>()
@@ -126,105 +89,257 @@ const rules = ref<any[]>([])
 const ruleSets = ref<any[]>([])
 const loading = ref(false)
 const saving = ref(false)
-const rendering = ref(false)
 const loadError = ref('')
 const saveError = ref('')
+const tab = ref('config')
+const nativeView = ref('common')
+const nativeEditor = ref<InstanceType<typeof OxidnsNativeEditor>>()
+const filesPanel = ref<HTMLElement>()
 const editorErrors = reactive<Record<string, string>>({})
-const configMode = computed<'template' | 'native'>(() => settings.value?.config_mode === 'native' ? 'native' : 'template')
-const editorError = computed(() => Object.entries(editorErrors).find(([path, message]) => message && (path === 'additional_files' || (configMode.value === 'native' ? path === 'native_config' : path !== 'native_config')))?.[1] || '')
-const setEditorError = (path: string, message: string) => { editorErrors[path] = message; saveError.value = '' }
-const tab = ref('core')
+const editorError = computed(() => Object.values(editorErrors).find(Boolean) || '')
+const commonValues = ref<Record<string, any> | null>(null)
+const commonCapabilities = ref<Record<string, any>>({})
+const commonKey = ref(0)
+const projecting = ref(false)
+const projectionError = ref('')
+const applying = ref(false)
+const applyError = ref('')
+const pending = ref<Record<string, unknown>>({})
+const pendingCount = computed(() => Object.keys(pending.value).length)
+const editorLocked = computed(() => saving.value || applying.value || Boolean(pendingCount.value || editorErrors.common || applyError.value))
 let loadVersion = 0
-const tabs = [
-  { value: 'core', label: '核心模板' }, { value: 'rules', label: '分流规则' },
-  { value: 'upstreams', label: 'DNS 上游' }, { value: 'cache', label: '缓存' },
-  { value: 'features', label: '特色功能' }, { value: 'access', label: 'WebUI / 日志' }, { value: 'advanced', label: '高级' }
-]
-const visibleTabs = computed(() => configMode.value === 'native'
-  ? [{ value: 'native', label: '参数与插件' }, { value: 'files', label: '附加文件' }]
-  : [...tabs, { value: 'files', label: '附加文件' }])
-const initializeNative = async () => {
-  if (!settings.value || rendering.value) return false
-  const version = loadVersion
-  rendering.value = true
-  saveError.value = ''
-  try {
-    const response = await oxidnsApi.render({ ...settings.value, config_mode: 'template' }, props.profileId)
-    if (version !== loadVersion || !settings.value) return false
-    settings.value.native_config = response.data.config
-    return true
-  } catch (error: any) {
-    if (version === loadVersion) saveError.value = error.response?.data?.message || '生成完整配置失败，请检查当前模板。'
-    return false
-  } finally { rendering.value = false }
-}
-const switchConfigMode = async (mode: 'template' | 'native') => {
-  if (!settings.value || mode === configMode.value || rendering.value) return
-  if (mode === 'native' && !settings.value.native_config) {
-    if (editorError.value) { saveError.value = '请先修正当前模板的格式错误，再生成完整配置。'; return }
-    if (!await initializeNative()) return
-  }
-  if (!settings.value) return
-  settings.value.config_mode = mode
-  saveError.value = ''
-  tab.value = mode === 'native' ? 'native' : 'core'
-}
-const ruleGroups = [
-  { key: 'direct_rulesets', opposite: 'proxy_rulesets', label: '直连规则集', sets: true, hint: '选择整组域名或 IP 规则，命中后使用直连 DNS。规则集内容会包含在完整下载包中；同一规则集不能同时归入代理分组。' },
-  { key: 'proxy_rulesets', opposite: 'direct_rulesets', label: '代理规则集', sets: true, hint: '选择整组域名或 IP 规则，命中后进入代理 DNS 与备用 DNS 流程。同一规则集不能同时归入直连分组。' },
-  { key: 'direct_rules', opposite: 'proxy_rules', label: '直连规则', sets: false, hint: '选择规则管理中单独添加的域名或 IP 规则，命中后使用直连 DNS。与规则集一起按原有顺序参与分流。' },
-  { key: 'proxy_rules', opposite: 'direct_rules', label: '代理规则', sets: false, hint: '选择规则管理中单独添加的域名或 IP 规则，命中后进入代理 DNS 与备用 DNS 流程。与规则集一起按原有顺序参与分流。' }
-]
-const ruleOptions = (group: typeof ruleGroups[number]) => (group.sets ? ruleSets.value : rules.value)
-  .filter(item => !settings.value?.[group.opposite].includes(item.id) || settings.value?.[group.key].includes(item.id))
-  .map(item => ({ value: item.id, label: item.name || `${item.type || item.rule_type || '规则'} · ${item.value || item.rule_value || item.id}` }))
+let projectionVersion = 0
+let projectionSource: string | undefined
+let changeTimer: ReturnType<typeof setTimeout> | undefined
+const validationState = ref<'pending' | 'ready' | 'failed'>('pending')
+const validationIssues = ref<OxidnsValidationIssue[]>([])
+const validationError = ref('')
+const validationSource = computed(() => settings.value ? JSON.stringify(settings.value) : '')
+const validatedSource = ref('')
+const validationErrors = computed(() => validationIssues.value.filter(issue => issue.severity === 'error'))
+const validationWarnings = computed(() => validationIssues.value.filter(issue => issue.severity === 'warning'))
+const validationCurrent = computed(() => validationState.value === 'ready' && validatedSource.value === validationSource.value)
+let validationVersion = 0
+let validationTimer: ReturnType<typeof setTimeout> | undefined
 
-const load = async () => {
+function invalidateValidation() {
+  if (validationTimer) clearTimeout(validationTimer)
+  validationTimer = undefined
+  ++validationVersion
+  validatedSource.value = ''
+  validationState.value = 'pending'
+  validationError.value = ''
+  validationIssues.value = []
+}
+function scheduleValidation() {
+  invalidateValidation()
+  if (!props.open || !settings.value || loading.value) return
+  validationTimer = setTimeout(() => { validationTimer = undefined; void validateDraft() }, 300)
+}
+async function validateDraft(): Promise<boolean> {
+  if (!settings.value || !props.open) return false
+  if (validationTimer) clearTimeout(validationTimer)
+  validationTimer = undefined
+  const request = ++validationVersion
+  const version = loadVersion
+  const profileId = props.profileId
+  const source = validationSource.value
+  validationState.value = 'pending'
+  validationError.value = ''
+  try {
+    const response = await oxidnsApi.validateSettings(JSON.parse(source), profileId)
+    if (request !== validationVersion || version !== loadVersion || profileId !== props.profileId || !props.open || validationSource.value !== source) return false
+    const result = readOxidnsValidationResult(response.data)
+    validationIssues.value = result.issues
+    validatedSource.value = source
+    validationState.value = 'ready'
+    return result.valid
+  } catch (error: any) {
+    if (request !== validationVersion || version !== loadVersion || profileId !== props.profileId || !props.open || validationSource.value !== source) return false
+    validationState.value = 'failed'
+    validatedSource.value = ''
+    validationIssues.value = []
+    validationError.value = error.response?.data?.message || error.message || '配置检查失败，请重试后保存。'
+    return false
+  }
+}
+async function locateValidationIssue(issue: OxidnsValidationIssue) {
+  if (editorLocked.value || editorError.value) return
+  const path = issue.source?.replace(/^\.\//, '')
+  if ((path && path !== 'config.yaml') || issue.path[0] === 'additional_files') {
+    tab.value = 'files'
+    await nextTick()
+    const index = issue.path[0] === 'additional_files' && typeof issue.path[1] === 'number'
+      ? issue.path[1] : settings.value?.additional_files?.findIndex((file: any) => file.path.replace(/^\.\//, '') === path)
+    if (typeof index === 'number' && index >= 0) {
+      const field = filesPanel.value?.querySelector<HTMLInputElement>(`[aria-label="文件 ${index + 1} 路径"]`)
+      field?.focus()
+      field?.scrollIntoView?.({ block: 'nearest' })
+    }
+  } else {
+    tab.value = 'config'
+    nativeEditor.value?.locateIssue(issue.path)
+  }
+}
+
+
+function clearTimer() { if (changeTimer) clearTimeout(changeTimer); changeTimer = undefined }
+function resetCommon() {
+  clearTimer()
+  ++projectionVersion
+  ++commonKey.value
+  commonValues.value = null
+  commonCapabilities.value = {}
+  projectionSource = undefined
+  projectionError.value = ''
+  projecting.value = false
+  applying.value = false
+  applyError.value = ''
+  pending.value = {}
+}
+async function projectCommon() {
+  if (!settings.value || applying.value || pendingCount.value) return
+  const version = loadVersion
+  const request = ++projectionVersion
+  const source = settings.value.native_config
+  projecting.value = true
+  projectionError.value = ''
+  try {
+    const response = await oxidnsApi.readCommonSettings(settings.value, props.profileId)
+    if (version !== loadVersion || request !== projectionVersion || settings.value?.native_config !== source) return
+    commonValues.value = response.data.values
+    commonCapabilities.value = response.data.capabilities
+    projectionSource = source
+  } catch (error: any) {
+    if (version === loadVersion && request === projectionVersion) projectionError.value = error.response?.data?.message || '读取常用设置失败，请重试或使用完整参数编辑。'
+  } finally { if (version === loadVersion && request === projectionVersion) projecting.value = false }
+}
+async function load() {
   const version = ++loadVersion
   loading.value = true
+  saving.value = false
   loadError.value = ''
   saveError.value = ''
   settings.value = null
+  resetCommon()
+  invalidateValidation()
   Object.keys(editorErrors).forEach(key => delete editorErrors[key])
   try {
     const [config, availableRules, availableSets] = await Promise.all([
       oxidnsApi.getSettings(props.profileId), ruleApi.getAll(props.profileId), ruleSetApi.getAll(props.profileId)
     ])
     if (version !== loadVersion) return
-    settings.value = { config_mode: 'template', native_config: '', additional_files: [], ...config.data }
-    if (settings.value!.config_mode === 'native') tab.value = 'native'
-    else if (tab.value === 'native') tab.value = 'core'
+    const prepared = await oxidnsApi.prepareEditor(config.data, props.profileId)
+    if (version !== loadVersion) return
+    settings.value = prepared.data.settings
+    tab.value = 'config'
+    nativeView.value = 'common'
     rules.value = (availableRules.data || []).filter((item: any) => item.itemType === 'rule')
     ruleSets.value = availableSets.data || []
+    await projectCommon()
   } catch (error: any) {
-    if (version === loadVersion) loadError.value = error.response?.data?.message || '加载 OxiDNS 设置失败，请重试。'
+    if (version === loadVersion) loadError.value = error.response?.data?.message || '加载 OxiDNS 配置失败，请重试。'
   } finally {
-    if (version === loadVersion) loading.value = false
+    if (version === loadVersion) {
+      loading.value = false
+      if (settings.value && !loadError.value) await validateDraft()
+    }
   }
 }
-const applyTemplate = () => {
-  if (!settings.value) return
-  applyVerifiedOxidnsTemplate(settings.value)
-  notify.success('已填入验证过的性能参数，保存后生效')
+function queueChanges(changes: Record<string, unknown>) {
+  if (!settings.value || saving.value) return
+  pending.value = { ...pending.value, ...Object.fromEntries(Object.entries(changes).map(([key, value]) => [key, value === undefined ? null : value])) }
+  applyError.value = ''
+  saveError.value = ''
+  clearTimer()
+  changeTimer = setTimeout(() => { changeTimer = undefined; void flushChanges() }, 150)
 }
-const save = async () => {
-  if (!settings.value || saving.value || rendering.value || editorError.value) return
+async function flushChanges() {
+  if (!settings.value || applying.value || !pendingCount.value || editorErrors.common || applyError.value) return
+  const changes = pending.value
+  pending.value = {}
+  const version = loadVersion
+  const profileId = props.profileId
+  const source = settings.value.native_config
+  applying.value = true
+  try {
+    const response = await oxidnsApi.applyCommonSettings(settings.value, changes, profileId)
+    if (version !== loadVersion || profileId !== props.profileId) return
+    if (settings.value?.native_config !== source) throw new Error('配置已变化，请撤销未同步修改后重新编辑。')
+    projectionSource = response.data.settings.native_config
+    settings.value = response.data.settings
+    if (!pendingCount.value) {
+      commonValues.value = response.data.values
+      commonCapabilities.value = response.data.capabilities
+    }
+  } catch (error: any) {
+    if (version !== loadVersion) return
+    const newerChanges = pendingCount.value > 0
+    pending.value = { ...changes, ...pending.value }
+    applyError.value = newerChanges ? '' : error.response?.data?.message || error.message || '同步草稿失败，请重试。'
+  } finally {
+    if (version === loadVersion) {
+      applying.value = false
+      if (pendingCount.value && !applyError.value && !editorErrors.common) void flushChanges()
+    }
+  }
+}
+function retryChanges() { applyError.value = ''; void flushChanges() }
+async function discardPending() {
+  if (applying.value) return
+  clearTimer()
+  pending.value = {}
+  applyError.value = ''
+  editorErrors.common = ''
+  ++commonKey.value
+  await projectCommon()
+}
+function downloadLegacy() {
+  if (typeof settings.value?.legacy_native_config !== 'string') return
+  const url = URL.createObjectURL(new Blob([settings.value.legacy_native_config], { type: 'text/yaml;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'oxidns-legacy-draft.yaml'
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+async function save() {
+  if (!settings.value || editorLocked.value || projecting.value || editorError.value) return
   saving.value = true
+  const version = loadVersion
+  const profileId = props.profileId
   saveError.value = ''
   try {
-    await oxidnsApi.saveSettings({ ...settings.value }, props.profileId)
-    notify.success('OxiDNS 设置已保存')
+    // Draft storage does not require an online validator or a publishable
+    // configuration. Publication performs rule and target-core checks again.
+    await oxidnsApi.saveSettings({ ...settings.value, config_mode: 'native' }, profileId)
+    if (version !== loadVersion) return
+    notify.success('OxiDNS 草稿已保存，尚未发布')
     emit('saved')
     emit('update:open', false)
   } catch (error: any) {
+    if (version !== loadVersion) return
+    if (Array.isArray(error.response?.data?.issues)) {
+      try {
+        const result = readOxidnsValidationResult({ valid: false, issues: error.response.data.issues })
+        validationIssues.value = result.issues
+        validationState.value = 'ready'
+        validatedSource.value = validationSource.value
+      } catch { validationState.value = 'failed'; validationError.value = '配置检查未完成，请重新检查。' }
+    }
     saveError.value = error.response?.data?.message || error.message || '保存 OxiDNS 设置失败。'
     notify.error(saveError.value)
-  } finally {
-    saving.value = false
-  }
+  } finally { if (version === loadVersion) saving.value = false }
 }
+watch(validationSource, () => { if (!loading.value && props.open) scheduleValidation() }, { flush: 'sync' })
+watch(() => editorErrors.common, value => { if (!value && pendingCount.value) { applyError.value = ''; void flushChanges() } })
+watch(() => [nativeView.value, settings.value?.native_config], () => {
+  if (!loading.value && props.open && nativeView.value === 'common' && !applying.value && !pendingCount.value
+    && settings.value && settings.value.native_config !== projectionSource) void projectCommon()
+}, { flush: 'post' })
 watch(() => [props.open, props.profileId], () => {
   if (props.open) void load()
-  else ++loadVersion
+  else { ++loadVersion; resetCommon(); invalidateValidation() }
 }, { immediate: true })
+onBeforeUnmount(() => { ++loadVersion; resetCommon(); invalidateValidation() })
 </script>

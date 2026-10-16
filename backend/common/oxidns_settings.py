@@ -78,7 +78,7 @@ def safe_relative_path(value, label='文件路径'):
     return path.as_posix()
 
 
-def normalize_oxidns_settings(value=None):
+def normalize_oxidns_settings(value=None, *, validate_native_arguments=True):
     if value is None:
         value = {}
     if not isinstance(value, dict):
@@ -91,7 +91,13 @@ def normalize_oxidns_settings(value=None):
     from backend.common.oxidns_native import managed_files, native_document
     managed_files(settings['additional_files'])
     if settings['config_mode'] == 'native':
-        native_document(settings)
+        if validate_native_arguments:
+            native_document(settings)
+        else:
+            # A stored draft may be incomplete; only enforce safe YAML and
+            # bounded, explicitly managed attachment data at this boundary.
+            from backend.common.oxidns_native import load_native_yaml
+            load_native_yaml(settings['native_config'])
         # Retain the template draft without validating inactive template fields.
         return settings
 

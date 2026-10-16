@@ -165,6 +165,7 @@ func validateOxiDNS(cfg *Config, doc map[string]interface{}, stage, config strin
 		return fmt.Errorf("OxiDNS plugins must be a sequence")
 	}
 	shadowNeeded := false
+	runtimeExpressions := []string{}
 	listed := map[string]bool{}
 	for _, file := range manifest.Files {
 		listed[file.Path] = true
@@ -254,6 +255,9 @@ func validateOxiDNS(cfg *Config, doc map[string]interface{}, stage, config strin
 					}
 				}
 				if external {
+					if strings.Contains(raw, "${") {
+						runtimeExpressions = append(runtimeExpressions, raw)
+					}
 					rel = fmt.Sprintf(".configflow-check-state/%d/runtime", index)
 					args[key] = rel
 					shadowNeeded = true
@@ -289,6 +293,21 @@ func validateOxiDNS(cfg *Config, doc map[string]interface{}, stage, config strin
 		}
 	}
 	if shadowNeeded {
+		if len(runtimeExpressions) > 0 {
+			// OxiDNS expands the entire parsed YAML tree before deserializing
+			// Config, whose unknown top-level fields are ignored. Keep each
+			// original expression in inert metadata so the installed core still
+			// validates missing variables, defaults and escaping itself, while
+			// plugin runtime paths remain isolated. Comments would not be expanded.
+			key := "__configflow_check_runtime_expressions"
+			for {
+				if _, exists := shadow[key]; !exists {
+					break
+				}
+				key += "_"
+			}
+			shadow[key] = runtimeExpressions
+		}
 		content, err := yaml.Marshal(shadow)
 		if err != nil {
 			return err

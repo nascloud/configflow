@@ -4,7 +4,9 @@ import { JSON_SCHEMA, load } from 'js-yaml'
 import OxidnsNativeEditor from '@/components/generate/OxidnsNativeEditor.vue'
 import OxidnsSchemaValueEditor from '@/components/generate/OxidnsSchemaValueEditor.vue'
 import OxidnsParameterPicker from '@/components/generate/OxidnsParameterPicker.vue'
+import OxidnsConfigNavigation from '@/components/generate/OxidnsConfigNavigation.vue'
 import { Select } from '@/components/ui/select'
+import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { configNodeToValue, valueToConfigNode } from '@/lib/oxidnsConfigEditor'
 
 // Small official-shaped catalog keeps these tests focused on editor semantics.
@@ -12,7 +14,17 @@ import { configNodeToValue, valueToConfigNode } from '@/lib/oxidnsConfigEditor'
 vi.mock('@/lib/oxidnsSchema', () => ({
   oxidnsGlobalSchema: { type: 'object', help: '全局配置', properties: {
     runtime: { type: 'object', label: '运行时', help: '线程设置', properties: { worker_threads: { type: 'number', label: '线程数', help: '工作线程', default: 2 } } },
-    api: { type: 'object', help: 'API', properties: { password: { type: 'string', help: '密码' } } },
+    api: { type: 'object', label: '管理 API', help: 'API', properties: {
+      password: { type: 'string', help: '密码' },
+      http: { type: 'object', label: 'HTTP 服务', help: 'HTTP 管理服务', properties: {
+        listen: { type: 'string', label: '监听地址', help: '绑定地址', default: '127.0.0.1:9090' },
+        auth: { type: 'object', label: '身份认证', help: '管理认证', properties: {
+          enabled: { type: 'boolean', help: '认证开关', default: false },
+          password: { type: 'string', help: '认证密码' },
+        } },
+        webui: { type: 'object', label: 'WebUI', help: '管理界面', properties: { enabled: { type: 'boolean', help: '界面开关', default: false } } },
+      } },
+    } },
   } },
   oxidnsPluginCatalog: [
     { type: 'forward', category: 'executor', label: '转发', help: '向上游转发查询', documentation: 'https://oxidns.org/plugin-reference/executor/resolution/', args: { type: 'object', label: '参数', help: '转发参数', properties: {
@@ -26,7 +38,7 @@ vi.mock('@/lib/oxidnsSchema', () => ({
 const wrappers: VueWrapper[] = []
 afterEach(() => wrappers.splice(0).forEach(wrapper => wrapper.unmount()))
 function render(modelValue = 'plugins: []\n') {
-  const wrapper = mount(OxidnsNativeEditor, { props: { modelValue } })
+  const wrapper = mount(OxidnsNativeEditor, { props: { modelValue, initialView: 'full' } })
   wrappers.push(wrapper)
   return wrapper
 }
@@ -49,21 +61,47 @@ async function pick(wrapper: VueWrapper, label: string, key: string) {
   picker!.vm.$emit('select', key)
   await flushPromises()
 }
+async function menuAction(wrapper: VueWrapper, label: string, action: string) {
+  await wrapper.get(`[aria-label="${label} 更多操作"]`).trigger('keydown', { key: 'Enter' })
+  await flushPromises()
+  const item = wrapper.findAllComponents(DropdownMenuItem).find(item => item.attributes('aria-label') === `${label} ${action}`)
+  expect(item, `${label} ${action}`).toBeDefined()
+  item!.vm.$emit('select')
+  await flushPromises()
+}
+interface NavigationItem { id: string; label: string; code?: string; children?: NavigationItem[]; available?: boolean; disabled?: boolean }
+function navigationItems(wrapper: VueWrapper): NavigationItem[] {
+  const flatten = (items: NavigationItem[]): NavigationItem[] => items.flatMap(item => [item, ...flatten(item.children ?? [])])
+  return flatten(wrapper.getComponent(OxidnsConfigNavigation).props('items'))
+}
+async function navigate(wrapper: VueWrapper, path: string) {
+  const item = navigationItems(wrapper).find(item => item.id === path || item.code === path || item.code?.endsWith(` · ${path}`) || item.label === path)
+  expect(item, `navigation target ${path}`).toBeDefined()
+  wrapper.getComponent(OxidnsConfigNavigation).vm.$emit('select', item!.id)
+  await flushPromises()
+  return item!
+}
+function selectedId(wrapper: VueWrapper) { return wrapper.getComponent(OxidnsConfigNavigation).props('selectedId') }
 function model(wrapper: VueWrapper): any { return load(wrapper.emitted('update:modelValue')!.at(-1)![0] as string, { schema: JSON_SCHEMA }) }
 function error(wrapper: VueWrapper): string { return wrapper.emitted('error')!.at(-1)![0] as string }
 
 describe('complete OxiDNS editor', () => {
-  it('does not emit defaults or rewrite comments on mode changes; preserves unknown fields when edited', async () => {
+  it('does not emit defaults or rewrite comments on navigation or mode changes; preserves unknown fields when edited', async () => {
     const original = '# retained until a form edit\nfuture: {off: false, zero: 0, empty: "", nullish: null}\nplugins:\n  - tag: custom\n    type: future_type\n    args: {list: [0, false, "", null]}\n    future_flag: true\n'
     const wrapper = render(original)
     expect(wrapper.emitted('update:modelValue')).toBeUndefined()
     expect(wrapper.find('[aria-label="插件 1.tag 值"]').exists()).toBe(false)
-    expect(wrapper.find('[aria-label="插件 1 future_type说明"]').exists()).toBe(true)
+    await navigate(wrapper, 'plugins[1]')
+    expect(wrapper.get('[aria-label="插件 1.tag 值"]').exists()).toBe(true)
+    await navigate(wrapper, 'future')
+    await navigate(wrapper, 'plugins[1]')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    const activeId = selectedId(wrapper)
     await click(wrapper, 'YAML')
     expect((wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').element as HTMLTextAreaElement).value).toBe(original)
-    await click(wrapper, '表单')
+    await click(wrapper, '完整参数')
+    expect(selectedId(wrapper)).toBe(activeId)
     expect(wrapper.emitted('update:modelValue')).toBeUndefined()
-    await wrapper.get('[aria-label="插件 1 展开设置"]').trigger('click')
     await wrapper.get('[aria-label="插件 1.tag 值"]').setValue('renamed')
     expect(model(wrapper)).toEqual({ future: { off: false, zero: 0, empty: '', nullish: null }, plugins: [{ tag: 'renamed', type: 'future_type', args: { list: [0, false, '', null] }, future_flag: true }] })
     expect(error(wrapper)).toBe('')
@@ -84,9 +122,11 @@ describe('complete OxiDNS editor', () => {
     expect(model(wrapper).plugins[2].tag).toBe('forward_2')
   })
 
-  it('shows upstream fields after a single plugin expansion and adds a described parameter in one choice', async () => {
+  it('shows upstream fields directly after selecting a plugin and adds described parameters in one choice', async () => {
     const wrapper = render('plugins: [{tag: forward_local, type: forward, args: {concurrent: 2, upstreams: [{addr: "223.5.5.5"}, {addr: "1.1.1.1"}]}}]')
-    await wrapper.get('[aria-label="插件 1 展开设置"]').trigger('click')
+    await navigate(wrapper, 'plugins[1]')
+    expect(wrapper.find('[aria-label="插件 1 展开设置"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="插件 1.args 展开参数"]').exists()).toBe(false)
     expect(wrapper.get('[aria-label="插件 1.args.concurrent 值"]').exists()).toBe(true)
     expect(wrapper.get('[aria-label="插件 1.args.upstreams[1].addr 值"]').exists()).toBe(true)
     expect(wrapper.get('[aria-label="插件 1.args.upstreams[2].addr 值"]').exists()).toBe(true)
@@ -95,60 +135,326 @@ describe('complete OxiDNS editor', () => {
     expect(model(wrapper).plugins[0].args.upstreams[0]).toEqual({ addr: '223.5.5.5', enable_pipeline: false })
     expect(wrapper.get('[aria-label="插件 1.args.upstreams[1].enable_pipeline说明"]').exists()).toBe(true)
     expect(wrapper.find('[aria-label="插件 1.args.upstreams[1] 添加所选参数"]').exists()).toBe(false)
-    await wrapper.get('[aria-label="插件 1.args.upstreams[1] 展开参数"]').trigger('click')
     await wrapper.get('[aria-label="插件 1.args.concurrent 值"]').setValue('3')
-    expect(wrapper.find('[aria-label="插件 1.args.upstreams[1].addr 值"]').exists()).toBe(false)
-    await wrapper.get('[aria-label="插件 1.args.upstreams 下移条目 1"]').trigger('click')
-    expect(wrapper.get('[aria-label="插件 1.args.upstreams[2] 展开参数"]').attributes('aria-expanded')).toBe('false')
+    await navigate(wrapper, 'globals')
+    await navigate(wrapper, 'plugins[1]')
+    expect((wrapper.get('[aria-label="插件 1.args.concurrent 值"]').element as HTMLInputElement).value).toBe('3')
     await click(wrapper, 'YAML')
     expect(load((wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').element as HTMLTextAreaElement).value)).toEqual(model(wrapper))
   })
 
-  it('retains malformed YAML and invalid numeric drafts, blocking unsafe mode changes', async () => {
+  it('retains malformed YAML and incomplete numeric drafts across groups, blocking unsafe mode changes', async () => {
     const wrapper = render('plugins: [broken')
     expect(error(wrapper)).not.toBe('')
     expect(wrapper.emitted('update:modelValue')).toBeUndefined()
-    await click(wrapper, '表单')
+    await click(wrapper, '完整参数')
     expect(wrapper.find('[aria-label="OxiDNS 完整配置 YAML"]').exists()).toBe(true)
-    await wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').setValue('runtime: {worker_threads: 2}\nplugins: []')
-    await click(wrapper, '表单')
-    await wrapper.get('[aria-label="全局参数.runtime 展开参数"]').trigger('click')
+    await wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').setValue('runtime: {worker_threads: 2}\napi: {password: private}\nplugins: []')
+    await click(wrapper, '完整参数')
+    await navigate(wrapper, 'runtime')
     const before = wrapper.emitted('update:modelValue')!.length
     await wrapper.get('[aria-label="全局参数.runtime.worker_threads 值"]').setValue('2e')
     expect(error(wrapper)).toContain('数字')
+    expect(wrapper.emitted('update:modelValue')!.length).toBe(before)
+    await navigate(wrapper, 'api')
+    await wrapper.get('[aria-label="全局参数.api.password 值"]').setValue('updated-private')
+    expect(error(wrapper)).toContain('数字')
+    await navigate(wrapper, 'runtime')
+    expect((wrapper.get('[aria-label="全局参数.runtime.worker_threads 值"]').element as HTMLInputElement).value).toBe('2e')
     expect(wrapper.emitted('update:modelValue')!.length).toBe(before)
     const yaml = wrapper.findAll('button').find(button => button.text().trim() === 'YAML')!
     expect(yaml.attributes('disabled')).toBeDefined()
     await wrapper.get('[aria-label="全局参数.runtime.worker_threads 值"]').setValue('3')
     expect(error(wrapper)).toBe('')
     expect(model(wrapper).runtime.worker_threads).toBe(3)
+    expect(model(wrapper).api.password).toBe('updated-private')
   })
 
-  it('keeps duplicate plugin tags editable in either mode and blocks empty native configurations', async () => {
-    const wrapper = render('')
-    expect(error(wrapper)).toContain('不能为空')
-    await wrapper.setProps({ modelValue: 'plugins: [{tag: same, type: forward}, {tag: same, type: sequence}]' })
-    expect(error(wrapper)).toContain('重复')
-    await click(wrapper, 'YAML')
-    await wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').setValue('plugins: [{tag: one, type: forward}, {tag: two, type: sequence}]')
+  it('returns to the remaining invalid input after another invalid group is repaired', async () => {
+    const wrapper = render('runtime: {worker_threads: 2}\nplugins: [{tag: dns, type: forward, args: {concurrent: 1, upstreams: [{addr: dns.example}]}}]')
+    await navigate(wrapper, 'runtime')
+    await wrapper.get('[aria-label="全局参数.runtime.worker_threads 值"]').setValue('2e')
+    await navigate(wrapper, 'plugins[1]')
+    await wrapper.get('[aria-label="插件 1.args.concurrent 值"]').setValue('3e')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await navigate(wrapper, 'runtime')
+    await wrapper.get('[aria-label="全局参数.runtime.worker_threads 值"]').setValue('4')
+    expect(error(wrapper)).toContain('数字')
+    await click(wrapper, '返回未完成输入')
+    expect(wrapper.getComponent(OxidnsSchemaValueEditor).props('label')).toBe('插件 1.args.concurrent')
+    expect((wrapper.get('[aria-label="插件 1.args.concurrent 值"]').element as HTMLInputElement).value).toBe('3e')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await wrapper.get('[aria-label="插件 1.args.concurrent 值"]').setValue('3')
     expect(error(wrapper)).toBe('')
-    await click(wrapper, '表单')
+    expect(model(wrapper)).toEqual({ runtime: { worker_threads: 4 }, plugins: [{ tag: 'dns', type: 'forward', args: { concurrent: 3, upstreams: [{ addr: 'dns.example' }] } }] })
+  })
+
+  it('keeps empty and duplicate-tag drafts editable for shared server validation', async () => {
+    const wrapper = render('')
+    expect(error(wrapper)).toBe('')
+    await wrapper.setProps({ modelValue: 'plugins: [{tag: same, type: forward}, {tag: same, type: sequence}]' })
+    expect(error(wrapper)).toBe('')
+    await click(wrapper, 'YAML')
+    await wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').setValue('plugins: [{tag: one, type: forward, args: {upstreams: [{addr: dns.example}]}}, {tag: two, type: sequence}]')
+    expect(error(wrapper)).toBe('')
+    await click(wrapper, '完整参数')
+    await navigate(wrapper, 'plugins[2]')
     await wrapper.get('[aria-label="上移原生插件 2"]').trigger('click')
     expect(model(wrapper).plugins.map((plugin: any) => plugin.tag)).toEqual(['two', 'one'])
     await wrapper.get('[aria-label="删除原生插件 1"]').trigger('click')
-    expect(model(wrapper).plugins).toEqual([{ tag: 'one', type: 'forward' }])
+    expect(model(wrapper).plugins).toEqual([{ tag: 'one', type: 'forward', args: { upstreams: [{ addr: 'dns.example' }] } }])
+    expect(navigationItems(wrapper).some(item => item.id === selectedId(wrapper))).toBe(true)
   })
 
-  it('helps collapsed plugin titles without expanding them and masks native password fields', async () => {
+  it('keeps help available for selected groups and masks native password fields', async () => {
     const wrapper = render('api: {password: private}\nplugins: [{tag: dns, type: forward, args: {}}]')
-    await wrapper.get('[aria-label="插件 1 forward说明"]').trigger('click')
-    expect(wrapper.get('[aria-label="插件 1 展开设置"]').attributes('aria-expanded')).toBe('false')
-    await wrapper.get('[aria-label="全局参数.api 展开参数"]').trigger('click')
+    await navigate(wrapper, 'api')
+    expect(wrapper.get('[aria-label="全局参数.api.password说明"]').exists()).toBe(true)
     expect(wrapper.get('[aria-label="全局参数.api.password 值"]').attributes('type')).toBe('password')
     await wrapper.setProps({ disabled: true })
     expect(wrapper.get('[aria-label="全局参数.api.password 值"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[aria-label="插件 1 展开设置"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.getComponent(OxidnsConfigNavigation).props('disabled')).toBe(true)
   })
+
+  it('exposes the actual parent-child hierarchy without changing any configured values', async () => {
+    const original = 'api: {http: {listen: "127.0.0.1:9090", auth: {enabled: false, password: secret}, webui: {enabled: false}}}\nfuture: {zero: 0, nil: null, flag: false}\nplugins: []'
+    const wrapper = render(original)
+    const items = navigationItems(wrapper)
+    const api = items.find(item => item.code === 'api')!
+    const http = api.children!.find(item => item.code === 'api.http')!
+    expect(http.children!.map(item => item.code)).toEqual(expect.arrayContaining(['api.http.auth', 'api.http.webui']))
+    for (const path of ['api', 'api.http', 'api.http.auth', 'api.http.webui', 'future', 'globals']) await navigate(wrapper, path)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await navigate(wrapper, 'api.http')
+    expect(wrapper.get('[aria-label="全局参数.api.http.listen 值"]').exists()).toBe(true)
+    await wrapper.get('[aria-label="全局参数.api.http.listen 值"]').setValue('127.0.0.1:9199')
+    const expected = load(original, { schema: JSON_SCHEMA }) as any
+    expected.api.http.listen = '127.0.0.1:9199'
+    expect(model(wrapper)).toEqual(expected)
+    await navigate(wrapper, 'api.http.auth')
+    expect(wrapper.get('[aria-label="全局参数.api.http.auth.password 值"]').attributes('type')).toBe('password')
+    await click(wrapper, 'YAML')
+    expect(load((wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').element as HTMLTextAreaElement).value, { schema: JSON_SCHEMA })).toEqual(expected)
+    await click(wrapper, '完整参数')
+    expect(wrapper.get('[aria-label="全局参数.api.http.auth.password 值"]').exists()).toBe(true)
+  })
+
+  it('keeps the same plugin selected after reordering and edits that plugin at its new index', async () => {
+    const wrapper = render('plugins: [{tag: first, type: forward, args: {concurrent: 1}}, {tag: second, type: forward, args: {concurrent: 2}}]')
+    const second = await navigate(wrapper, 'plugins[2]')
+    await wrapper.get('[aria-label="上移原生插件 2"]').trigger('click')
+    expect(selectedId(wrapper)).toBe(second.id)
+    expect((wrapper.get('[aria-label="插件 1.tag 值"]').element as HTMLTextAreaElement).value).toBe('second')
+    await wrapper.get('[aria-label="插件 1.args.concurrent 值"]').setValue('0')
+    expect(model(wrapper).plugins).toEqual([{ tag: 'second', type: 'forward', args: { concurrent: 0 } }, { tag: 'first', type: 'forward', args: { concurrent: 1 } }])
+  })
+
+  it('restores selection after YAML edits and falls back safely when the selected group is removed', async () => {
+    const wrapper = render('api: {http: {listen: "127.0.0.1:9090", auth: {enabled: false}}}\nplugins: []')
+    await navigate(wrapper, 'api.http.auth')
+    await click(wrapper, 'YAML')
+    await wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').setValue('api: {http: {listen: "127.0.0.1:9199", auth: {enabled: true}}}\nplugins: []')
+    await click(wrapper, '完整参数')
+    expect(navigationItems(wrapper).find(item => item.id === selectedId(wrapper))?.code).toBe('api.http.auth')
+    await click(wrapper, 'YAML')
+    await wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').setValue('runtime: {worker_threads: 0}\nplugins: []')
+    await click(wrapper, '完整参数')
+    expect(navigationItems(wrapper).some(item => item.id === selectedId(wrapper))).toBe(true)
+    await navigate(wrapper, 'runtime')
+    expect((wrapper.get('[aria-label="全局参数.runtime.worker_threads 值"]').element as HTMLInputElement).value).toBe('0')
+    expect(error(wrapper)).toBe('')
+  })
+
+  it('tracks a selected plugin by its tag when YAML changes plugin order', async () => {
+    const wrapper = render('plugins: [{tag: first, type: forward, args: {concurrent: 1}}, {tag: second, type: forward, args: {concurrent: 2}}]')
+    await navigate(wrapper, 'plugins[2]')
+    await click(wrapper, 'YAML')
+    await wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').setValue('plugins: [{tag: second, type: forward, args: {concurrent: 0}}, {tag: first, type: forward, args: {concurrent: 1}}]')
+    await click(wrapper, '完整参数')
+    expect(navigationItems(wrapper).find(item => item.id === selectedId(wrapper))?.label).toBe('second')
+    expect((wrapper.get('[aria-label="插件 1.tag 值"]').element as HTMLTextAreaElement).value).toBe('second')
+    expect((wrapper.get('[aria-label="插件 1.args.concurrent 值"]').element as HTMLInputElement).value).toBe('0')
+  })
+
+  it('locks the global document to an object and retains all configured groups', async () => {
+    const wrapper = render('runtime: {worker_threads: 2}\nplugins: [{tag: dns, type: forward, args: {}}]')
+    await navigate(wrapper, 'globals')
+    expect(wrapper.getComponent(OxidnsSchemaValueEditor).props('typeLocked')).toBe(true)
+    await wrapper.get('[aria-label="全局参数 更多操作"]').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(wrapper.findAllComponents(DropdownMenuItem).some(item => item.attributes('aria-label') === '全局参数 更改值类型')).toBe(false)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await navigate(wrapper, 'runtime')
+    expect(wrapper.getComponent(OxidnsSchemaValueEditor).props('typeLocked')).toBe(false)
+    expect((wrapper.get('[aria-label="全局参数.runtime.worker_threads 值"]').element as HTMLInputElement).value).toBe('2')
+  })
+
+  it('commits a selected nested object changed to a scalar and keeps the resulting value editable', async () => {
+    const wrapper = render('api: {http: {auth: {enabled: false}, webui: {enabled: false}}}\nplugins: []')
+    const auth = await navigate(wrapper, 'api.http.auth')
+    await menuAction(wrapper, '全局参数.api.http.auth', '更改值类型')
+    await select(wrapper, '全局参数.api.http.auth 类型', 'string')
+    expect(selectedId(wrapper)).toBe(auth.id)
+    expect(model(wrapper)).toEqual({ api: { http: { auth: '', webui: { enabled: false } } }, plugins: [] })
+    await wrapper.get('[aria-label="全局参数.api.http.auth 值"]').setValue('${API_AUTH}')
+    expect(model(wrapper).api.http.auth).toBe('${API_AUTH}')
+    await navigate(wrapper, 'api.http')
+    expect((wrapper.get('[aria-label="全局参数.api.http.auth 值"]').element as HTMLTextAreaElement).value).toBe('${API_AUTH}')
+  })
+
+  it('removes a selected argument group from its real owner when navigation skips args', async () => {
+    const wrapper = render('plugins: [{tag: dns, type: forward, args: {concurrent: 0, upstreams: [{addr: "223.5.5.5", future: false}]}, future: null}]')
+    const plugin = navigationItems(wrapper).find(item => item.label === 'dns')!
+    const upstream = await navigate(wrapper, 'plugins[1].args.upstreams')
+    expect(plugin.children!.some(item => item.id === upstream.id)).toBe(true)
+    expect(wrapper.getComponent(OxidnsSchemaValueEditor).props('removable')).toBe(true)
+    await menuAction(wrapper, '插件 1.args.upstreams', '删除字段')
+    expect(model(wrapper)).toEqual({ plugins: [{ tag: 'dns', type: 'forward', args: { concurrent: 0 }, future: null }] })
+    expect(selectedId(wrapper)).toBe(plugin.id)
+    expect(wrapper.get('[aria-label="插件 1.args.concurrent 值"]').exists()).toBe(true)
+  })
+
+  it('keeps unknown keys containing dots distinct from visually similar nested paths', async () => {
+    const wrapper = render('future: {"a.b": {flag: false}, a: {b: {zero: 0}}}\nplugins: []')
+    const paths = navigationItems(wrapper).filter(item => item.code === 'future.a.b')
+    expect(paths).toHaveLength(2)
+    wrapper.getComponent(OxidnsConfigNavigation).vm.$emit('select', paths[0].id)
+    await flushPromises()
+    expect(wrapper.getComponent(OxidnsSchemaValueEditor).props('node').entries[0].key).toBe('flag')
+    wrapper.getComponent(OxidnsConfigNavigation).vm.$emit('select', paths[1].id)
+    await flushPromises()
+    await wrapper.get('[aria-label="全局参数.future.a.b.zero 值"]').setValue('1')
+    expect(model(wrapper)).toEqual({ future: { 'a.b': { flag: false }, a: { b: { zero: 1 } } }, plugins: [] })
+    await click(wrapper, 'YAML')
+    await click(wrapper, '完整参数')
+    expect(wrapper.getComponent(OxidnsSchemaValueEditor).props('node').entries[0].key).toBe('zero')
+  })
+
+  it('allows every parent and child schema parameter to be added in its own selected group', async () => {
+    const wrapper = render('plugins: []')
+    await navigate(wrapper, 'globals')
+    await pick(wrapper, '全局参数', 'runtime')
+    await navigate(wrapper, 'runtime')
+    await pick(wrapper, '全局参数.runtime', 'worker_threads')
+    await navigate(wrapper, 'globals')
+    await pick(wrapper, '全局参数', 'api')
+    await navigate(wrapper, 'api')
+    await pick(wrapper, '全局参数.api', 'password')
+    await pick(wrapper, '全局参数.api', 'http')
+    await navigate(wrapper, 'api.http')
+    await pick(wrapper, '全局参数.api.http', 'listen')
+    await pick(wrapper, '全局参数.api.http', 'auth')
+    await navigate(wrapper, 'api.http.auth')
+    await pick(wrapper, '全局参数.api.http.auth', 'enabled')
+    await pick(wrapper, '全局参数.api.http.auth', 'password')
+    await navigate(wrapper, 'api.http')
+    await pick(wrapper, '全局参数.api.http', 'webui')
+    await navigate(wrapper, 'api.http.webui')
+    await pick(wrapper, '全局参数.api.http.webui', 'enabled')
+    expect(model(wrapper)).toEqual({ runtime: { worker_threads: 2 }, api: { password: '', http: { listen: '127.0.0.1:9090', auth: { enabled: false, password: '' }, webui: { enabled: false } } }, plugins: [] })
+  })
+  it('browses functional categories and absent features without writing any defaults', async () => {
+    const original = '# untouched comment\nplugins: []\n'
+    const wrapper = render(original)
+    const groups = wrapper.getComponent(OxidnsConfigNavigation).props('items')
+    expect(groups.map((item: NavigationItem) => item.label)).toEqual(['运行设置', '监听服务', 'DNS 上游', '缓存', '分流规则', '规则资源', '特色功能', '网络出站', '扩展配置'])
+    expect(navigationItems(wrapper).find(item => item.code === 'api.http.webui')?.available).toBe(true)
+    expect(navigationItems(wrapper).find(item => item.id === 'add:plugin:forward')?.available).toBe(true)
+    for (const group of groups) await navigate(wrapper, group.id)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await click(wrapper, 'YAML')
+    expect((wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').element as HTMLTextAreaElement).value).toBe(original)
+    await click(wrapper, '完整参数')
+    expect(selectedId(wrapper)).toBe('category:advanced')
+  })
+
+  it('adds an absent nested global feature in one action without sibling fields or default values', async () => {
+    const wrapper = render('future: {off: false, zero: 0, nil: null}\nplugins: []')
+    await navigate(wrapper, 'api.http.webui')
+    expect(model(wrapper)).toEqual({ future: { off: false, zero: 0, nil: null }, api: { http: { webui: {} } }, plugins: [] })
+    expect(wrapper.getComponent(OxidnsSchemaValueEditor).props('label')).toBe('全局参数.api.http.webui')
+    expect(navigationItems(wrapper).find(item => item.code === 'api.http.webui')?.available).not.toBe(true)
+    expect(navigationItems(wrapper).find(item => item.code === 'api.http.auth')?.available).toBe(true)
+    await navigate(wrapper, 'api.http.auth')
+    expect(model(wrapper).api).toEqual({ http: { webui: {}, auth: {} } })
+    await click(wrapper, 'YAML')
+    expect(load((wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').element as HTMLTextAreaElement).value)).toEqual(model(wrapper))
+    await click(wrapper, '完整参数')
+    expect(wrapper.getComponent(OxidnsSchemaValueEditor).props('label')).toBe('全局参数.api.http.auth')
+  })
+
+  it.each(['api: null', 'api: {http: "${HTTP}"}', 'api: {http: []}'])('does not replace existing native alternatives while exposing missing features: %s', async api => {
+    const original = `${api}\nplugins: []`
+    const wrapper = render(original)
+    expect(navigationItems(wrapper).some(item => item.code === 'api.http.webui')).toBe(false)
+    await navigate(wrapper, api === 'api: null' ? 'api' : 'api.http')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await navigate(wrapper, 'add:plugin:forward')
+    expect(model(wrapper).api).toEqual((load(original) as any).api)
+    expect(model(wrapper).plugins).toEqual([{ tag: 'forward', type: 'forward', args: {} }])
+  })
+
+  it('adds and re-adds a plugin from its category while preserving same-type instances and YAML order', async () => {
+    const wrapper = render('plugins: [{tag: first, type: forward, args: {concurrent: 0}}, {tag: sequence, type: future_plugin, args: false}, {tag: second, type: forward, args: {}}]')
+    const groups = wrapper.getComponent(OxidnsConfigNavigation).props('items')
+    expect(groups.find((item: NavigationItem) => item.id === 'category:upstreams').children.map((item: NavigationItem) => item.label)).toEqual(['first', 'second'])
+    expect(groups.find((item: NavigationItem) => item.id === 'category:advanced').children.some((item: NavigationItem) => item.label === 'sequence')).toBe(true)
+    expect(navigationItems(wrapper).some(item => item.id === 'add:plugin:forward')).toBe(false)
+    await navigate(wrapper, 'add:plugin:sequence')
+    expect(model(wrapper).plugins.map((plugin: any) => plugin.tag)).toEqual(['first', 'sequence', 'second', 'sequence_2'])
+    expect(model(wrapper).plugins[3].args).toEqual([])
+    expect(model(wrapper).plugins[1].args).toBe(false)
+    await wrapper.get('[aria-label="删除原生插件 4"]').trigger('click')
+    expect(navigationItems(wrapper).find(item => item.id === 'add:plugin:sequence')?.available).toBe(true)
+    await navigate(wrapper, 'add:plugin:sequence')
+    expect(model(wrapper).plugins[3]).toEqual({ tag: 'sequence_2', type: 'sequence', args: [] })
+    await navigate(wrapper, 'category:upstreams')
+    await pick(wrapper, 'DNS 上游', 'forward')
+    expect(model(wrapper).plugins[4]).toEqual({ tag: 'forward', type: 'forward', args: {} })
+  })
+
+  it('retains unfinished input and feature additions together until the value is repaired', async () => {
+    const wrapper = render('runtime: {worker_threads: 2}\nplugins: []')
+    await navigate(wrapper, 'runtime')
+    await wrapper.get('[aria-label="全局参数.runtime.worker_threads 值"]').setValue('2e')
+    await navigate(wrapper, 'add:plugin:sequence')
+    await navigate(wrapper, 'api.http.webui')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    expect(error(wrapper)).toContain('数字')
+    await click(wrapper, '返回未完成输入')
+    expect((wrapper.get('[aria-label="全局参数.runtime.worker_threads 值"]').element as HTMLInputElement).value).toBe('2e')
+    await wrapper.get('[aria-label="全局参数.runtime.worker_threads 值"]').setValue('3')
+    expect(error(wrapper)).toBe('')
+    expect(model(wrapper)).toEqual({ runtime: { worker_threads: 3 }, api: { http: { webui: {} } }, plugins: [{ tag: 'sequence', type: 'sequence', args: [] }] })
+  })
+
+  it('locates server-reported paths while keeping incomplete plugins editable in YAML', async () => {
+    const wrapper = render('plugins: [{tag: dns, type: forward, args: {}}]')
+    expect(error(wrapper)).toBe('')
+    await navigate(wrapper, 'category:runtime')
+    ;(wrapper.vm as any).locateIssue(['plugins', 0, 'args', 'upstreams'])
+    await flushPromises()
+    expect(wrapper.getComponent(OxidnsSchemaValueEditor).props('label')).toBe('插件 1.args')
+    await click(wrapper, 'YAML')
+    expect((wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').element as HTMLTextAreaElement).value).toContain('args: {}')
+    await wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').setValue('plugins: [{tag: dns, type: forward, args: {upstreams: [{addr: dns.example}]}}]')
+    expect(error(wrapper)).toBe('')
+    await click(wrapper, '完整参数')
+    expect(wrapper.findAll('button').some(button => button.text().trim() === '补全必填参数')).toBe(false)
+  })
+
+  it('keeps invalid plugin structures visible and disables additions until their type is repaired', async () => {
+    const wrapper = render('plugins: {future: null}')
+    expect(navigationItems(wrapper).find(item => item.id === 'add:plugin:forward')?.disabled).toBe(true)
+    await navigate(wrapper, 'add:plugin:forward')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await navigate(wrapper, 'plugins')
+    await wrapper.setProps({ modelValue: 'plugins: [null, {tag: missing_type}, {type: future_plugin, args: false}]' })
+    for (const path of ['plugins[1]', 'plugins[2]', 'plugins[3]']) await navigate(wrapper, path)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    expect(error(wrapper)).toBe('')
+  })
+
 })
 
 describe('schema-driven nested values', () => {

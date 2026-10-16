@@ -12,6 +12,7 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   buttonText?: string
   scopeTitle?: string
+  compactMobile?: boolean
 }>(), { buttonText: '添加参数' })
 
 const emit = defineEmits<{ select: [key: string] }>()
@@ -36,11 +37,13 @@ function select(key: string) {
         variant="outline"
         size="sm"
         class="min-h-11 gap-1.5 md:min-h-9 [@media(pointer:coarse)]:min-h-11"
+        :class="compactMobile ? 'max-md:size-11 max-md:p-0' : ''"
+        :title="compactMobile ? buttonText : undefined"
         :aria-label="`${label} ${buttonText}`"
         :disabled="disabled || !fields.length"
       >
         <Plus class="size-3.5" aria-hidden="true" />
-        {{ buttonText }}
+        <span :class="compactMobile ? 'max-md:hidden' : ''">{{ buttonText }}</span>
       </Button>
     </PopoverTrigger>
     <PopoverContent

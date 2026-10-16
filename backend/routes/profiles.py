@@ -226,3 +226,38 @@ def profile_oxidns_settings(profile_id):
 def profile_render_oxidns_draft(profile_id):
     from backend.routes.oxidns import render_oxidns_draft
     return render_oxidns_draft()
+
+
+@profiles_bp.route('/<profile_id>/oxidns/validate', methods=['POST'])
+@require_auth
+def profile_validate_oxidns_draft(profile_id):
+    from backend.routes.oxidns import validate_oxidns_draft
+    return validate_oxidns_draft()
+
+
+@profiles_bp.route('/<profile_id>/oxidns/editor', methods=['POST'])
+@require_auth
+def profile_prepare_oxidns_editor(profile_id):
+    from backend.routes.oxidns import prepare_oxidns_editor
+    return prepare_oxidns_editor()
+
+
+@profiles_bp.route('/<profile_id>/oxidns/template-preview', methods=['POST'])
+@require_auth
+def profile_preview_oxidns_template(profile_id):
+    from backend.routes.oxidns import preview_oxidns_template
+    return preview_oxidns_template()
+
+
+@profiles_bp.route('/<profile_id>/oxidns/common-settings', methods=['POST'])
+@require_auth
+def profile_read_oxidns_common_settings(profile_id):
+    from backend.routes.oxidns import read_oxidns_common_settings
+    return read_oxidns_common_settings()
+
+
+@profiles_bp.route('/<profile_id>/oxidns/common-settings/apply', methods=['POST'])
+@require_auth
+def profile_apply_oxidns_common_settings(profile_id):
+    from backend.routes.oxidns import apply_oxidns_common_settings
+    return apply_oxidns_common_settings()

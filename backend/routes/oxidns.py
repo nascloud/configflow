@@ -13,16 +13,19 @@ def oxidns_settings():
     config = get_config()
     try:
         if request.method == 'GET':
-            return jsonify(normalize_oxidns_settings(config.get('oxidns', {})))
+            # Older versions allowed incomplete plugin instances to be saved.
+            # Keep them editable; new writes and every render still validate.
+            return jsonify(normalize_oxidns_settings(
+                config.get('oxidns', {}), validate_native_arguments=False))
         value = request.get_json(silent=True)
         if not isinstance(value, dict):
             raise OxidnsSettingsError('OxiDNS 设置必须是对象')
         # Whole-object updates are deliberate: the editor always loads defaults,
         # and callers can reset a feature without stale fields surviving.
-        settings = normalize_oxidns_settings(value)
+        settings = normalize_oxidns_settings(value, validate_native_arguments=False)
         config['oxidns'] = settings
         save_config(config)
-        return jsonify({'success': True, 'settings': settings})
+        return jsonify({'success': True, 'settings': settings, 'draft': True})
     except OxidnsSettingsError as exc:
         return jsonify({'success': False, 'message': str(exc)}), 400
 
@@ -44,5 +47,81 @@ def render_oxidns_draft():
         response = jsonify({'config': generate_oxidns_config(config, base_url)})
         response.headers['Cache-Control'] = 'no-store'
         return response
+    except OxidnsSettingsError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+
+
+def _editor_request():
+    value = request.get_json(silent=True)
+    if not isinstance(value, dict) or not isinstance(value.get('settings'), dict):
+        raise OxidnsSettingsError('请提供 settings 配置对象')
+    base_url = value.get('base_url', request.url_root.rstrip('/'))
+    if not isinstance(base_url, str):
+        raise OxidnsSettingsError('base_url 必须为文本')
+    return value, base_url
+
+
+def _editor_response(value):
+    response = jsonify(value)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@oxidns_bp.route('/validate', methods=['POST'])
+@require_auth
+def validate_oxidns_draft():
+    from backend.common.oxidns_validation import validate_settings
+    try:
+        value, base_url = _editor_request()
+        return _editor_response(validate_settings(value['settings'], get_config(), base_url))
+    except OxidnsSettingsError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+
+
+@oxidns_bp.route('/editor', methods=['POST'])
+@require_auth
+def prepare_oxidns_editor():
+    """Prepare a unified native draft; saving remains an explicit separate call."""
+    from backend.common.oxidns_editor import prepare_editor
+    try:
+        value, base_url = _editor_request()
+        return _editor_response({'settings': prepare_editor(value['settings'], get_config(), base_url)})
+    except OxidnsSettingsError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+
+
+@oxidns_bp.route('/template-preview', methods=['POST'])
+@require_auth
+def preview_oxidns_template():
+    """Compare the template with its prior baseline without changing saved state."""
+    from backend.common.oxidns_editor import preview_template
+    try:
+        value, base_url = _editor_request()
+        return _editor_response(preview_template(value['settings'], value.get('template_settings'),
+                                                 get_config(), base_url, value.get('resolutions')))
+    except OxidnsSettingsError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+
+
+@oxidns_bp.route('/common-settings', methods=['POST'])
+@require_auth
+def read_oxidns_common_settings():
+    """Read common controls from the native draft without persisting anything."""
+    from backend.common.oxidns_common import read_common_settings
+    try:
+        value, base_url = _editor_request()
+        return _editor_response(read_common_settings(value['settings'], get_config(), base_url))
+    except OxidnsSettingsError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+
+
+@oxidns_bp.route('/common-settings/apply', methods=['POST'])
+@require_auth
+def apply_oxidns_common_settings():
+    """Patch requested native draft fields, retaining every unrelated value."""
+    from backend.common.oxidns_common import apply_common_settings
+    try:
+        value, base_url = _editor_request()
+        return _editor_response(apply_common_settings(value['settings'], value.get('changes'), get_config(), base_url))
     except OxidnsSettingsError as exc:
         return jsonify({'success': False, 'message': str(exc)}), 400

@@ -859,6 +859,15 @@ func activateDeployment(cfg *Config, s *DeploymentState) {
 			return
 		}
 	}
+	if cfg.ServiceType == "oxidns" {
+		// A ready candidate may outlive the installed core or its environment.
+		// Recheck with the current binary before any service/file mutation; the
+		// staging validator also re-verifies the immutable manifest afterward.
+		if e := validateStagedDeployment(cfg, s); e != nil {
+			failBefore(e)
+			return
+		}
+	}
 	if e := validateServiceLifecycle(cfg); e != nil {
 		failBefore(e)
 		return

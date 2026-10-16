@@ -1,28 +1,44 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { load as loadYaml } from 'js-yaml'
+import { load as loadYaml, dump as dumpYaml } from 'js-yaml'
 import OxidnsSettings from '@/components/generate/OxidnsSettings.vue'
-import OxidnsFields from '@/components/generate/OxidnsFields.vue'
+import OxidnsNativeEditor from '@/components/generate/OxidnsNativeEditor.vue'
+import OxidnsConfigNavigation from '@/components/generate/OxidnsConfigNavigation.vue'
+import OxidnsCommonSettings from '@/components/generate/OxidnsCommonSettings.vue'
 import { oxidnsApi, ruleApi, ruleSetApi } from '@/api'
 import { notify } from '@/lib/feedback'
-import { featureGroups } from '@/lib/oxidns'
 
 vi.mock('@/api', () => ({
-  oxidnsApi: { getSettings: vi.fn(), saveSettings: vi.fn(), render: vi.fn() },
+  oxidnsApi: { getSettings: vi.fn(), saveSettings: vi.fn(), prepareEditor: vi.fn(), readCommonSettings: vi.fn(), applyCommonSettings: vi.fn(), validateSettings: vi.fn() },
   ruleApi: { getAll: vi.fn() }, ruleSetApi: { getAll: vi.fn() }
 }))
 const wrappers: ReturnType<typeof mount>[] = []
-const settings = () => ({
-  worker_threads: 8, local_dns: '192.0.2.53', remote_dns: '192.0.2.54',
-  direct_rules: ['direct'], proxy_rules: [], direct_rulesets: [], proxy_rulesets: [],
-  custom_matches: [], custom_config: '', api: { enabled: true, username: 'reader', password: 'test-only-secret' },
-  ...Object.fromEntries(featureGroups.map(feature => [feature.key, { enabled: false, args: {} }]))
-})
+const config = 'runtime: {worker_threads: 8, extension: false}\nplugins: [{tag: main, type: sequence, args: [{exec: reject 0}]}]\nunknown: {values: [0, false, null]}'
+const projection = (settings: any) => ({ values: { worker_threads: (loadYaml(settings.native_config) as any)?.runtime?.worker_threads }, capabilities: {} })
+const settings = () => ({ config_mode: 'native', native_config: config, additional_files: [], template_settings: { worker_threads: 2 } })
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(oxidnsApi.getSettings).mockImplementation(async () => ({ data: settings() }) as any)
+  vi.mocked(oxidnsApi.validateSettings).mockImplementation(async (value: any) => {
+    const doc = loadYaml(value.native_config) as any
+    const issues: any[] = []
+    if (doc?.runtime?.worker_threads === 0) issues.push({path: ['runtime', 'worker_threads'], message: '工作线程数必须大于 0。', code: 'minimum', severity: 'error'})
+    doc?.plugins?.forEach((plugin: any, index: number) => {
+      if (['http_server', 'quic_server'].includes(plugin.type) && !plugin.args?.listen) issues.push({path: ['plugins', index, 'args', 'listen'], message: '请填写监听地址。', code: 'required', severity: 'error'})
+    })
+    return {data: {valid: !issues.length, issues}} as any
+  })
   vi.mocked(oxidnsApi.saveSettings).mockResolvedValue({ data: { success: true } } as any)
-  vi.mocked(oxidnsApi.render).mockResolvedValue({ data: { config: 'runtime: {worker_threads: 5}\nplugins: [{tag: main, type: sequence, args: [{exec: reject 0}]}]' } } as any)
+  vi.mocked(oxidnsApi.prepareEditor).mockImplementation(async value => ({ data: { settings: structuredClone(value) } }) as any)
+  vi.mocked(oxidnsApi.readCommonSettings).mockImplementation(async value => ({ data: projection(value) }) as any)
+  vi.mocked(oxidnsApi.applyCommonSettings).mockImplementation(async (value: any, changes) => {
+    const settings = JSON.parse(JSON.stringify(value))
+    const document = loadYaml(settings.native_config) as any
+    document.runtime ??= {}
+    if ('worker_threads' in changes) document.runtime.worker_threads = changes.worker_threads
+    settings.native_config = dumpYaml(document)
+    return { data: { settings, ...projection(settings) } } as any
+  })
   vi.mocked(ruleApi.getAll).mockResolvedValue({ data: [{ id: 'direct', name: 'Direct rule', itemType: 'rule' }] } as any)
   vi.mocked(ruleSetApi.getAll).mockResolvedValue({ data: [] } as any)
   vi.spyOn(notify, 'success').mockImplementation(() => 0)
@@ -51,237 +67,360 @@ async function click(text: string, scope: ParentNode = document) {
   button!.click()
   await flushPromises()
 }
+async function settleValidation() {
+  if (document.querySelector('[aria-label="配置检查结果"]')?.textContent?.includes('正在检查')) {
+    await new Promise(resolve => setTimeout(resolve, 330)); await flushPromises()
+  }
+}
 async function input(selector: string, value: string) {
   const element = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement
   expect(element, selector).not.toBeNull()
   element.value = value
   element.dispatchEvent(new Event('input', { bubbles: true }))
   await flushPromises()
+  if (selector === worker) { await new Promise(resolve => setTimeout(resolve, 180)); await flushPromises() }
+  await settleValidation()
 }
-const matchEditor = () => document.querySelector('[data-testid="oxidns-match-editor"]')!
-const entryEditor = (label: string) => document.querySelector(`section[aria-label="${label}"]`)!
 const savedPayload = () => vi.mocked(oxidnsApi.saveSettings).mock.calls.at(-1)?.[0] as Record<string, any>
 
-describe('OxiDNS profile settings', () => {
-  it('loads and saves the chosen profile; applying the verified template preserves rules, upstreams and credentials', async () => {
+const views = () => document.querySelector('[aria-label="配置编辑方式"]')!
+const worker = '#oxi-worker_threads'
+const yamlInput = '[aria-label="OxiDNS 完整配置 YAML"]'
+
+describe('unified OxiDNS profile settings', () => {
+  it('edits one document in all views and saves once to the chosen profile', async () => {
     const wrapper = await render()
-    expect(oxidnsApi.getSettings).toHaveBeenCalledWith('oxi-profile')
-    expect((document.getElementById('oxi-worker_threads') as HTMLInputElement).value).toBe('8')
-    await click('应用已验证模板')
-    await click('保存设置')
-    expect(oxidnsApi.saveSettings).toHaveBeenCalledWith(expect.objectContaining({
-      worker_threads: 2, cache_lazy_ttl: 300, probe_cache_size: 2048,
-      local_dns: '192.0.2.53', remote_dns: '192.0.2.54', direct_rules: ['direct'],
-      api: { enabled: true, username: 'reader', password: 'test-only-secret' },
-      ip_selector: { enabled: false, args: {} }
-    }), 'oxi-profile')
+    expect(oxidnsApi.prepareEditor).toHaveBeenCalledWith(settings(), 'oxi-profile')
+    expect(button('常用设置', views()).getAttribute('aria-pressed')).toBe('true')
+    await input(worker, '5')
+    await click('完整参数', views())
+    await click('YAML', views())
+    const text = (document.querySelector(yamlInput) as HTMLTextAreaElement).value
+    expect((loadYaml(text) as any).runtime.worker_threads).toBe(5)
+    await input(yamlInput, text.replace('worker_threads: 5', 'worker_threads: 6'))
+    await click('常用设置', views())
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('6')
+    expect(oxidnsApi.saveSettings).not.toHaveBeenCalled()
+    await click('保存草稿')
+    expect(oxidnsApi.saveSettings).toHaveBeenCalledTimes(1)
+    expect(oxidnsApi.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ config_mode: 'native' }), 'oxi-profile')
+    expect(loadYaml(savedPayload().native_config)).toEqual({ ...(loadYaml(config) as any), runtime: { worker_threads: 6, extension: false } })
+    expect(savedPayload().template_settings).toEqual({ worker_threads: 2 })
     expect(wrapper.emitted('saved')).toHaveLength(1)
   })
 
-  it('shows every feature, masks credentials and keeps API errors editable', async () => {
+  it('prepares the active legacy template and retains the inactive native backup', async () => {
+    const dormant = 'plugins: [{tag: empty_http, type: http_server, args: {}}]'
+    const legacy = { config_mode: 'template', native_config: dormant, worker_threads: 8 }
+    vi.mocked(oxidnsApi.getSettings).mockResolvedValue({ data: legacy } as any)
+    vi.mocked(oxidnsApi.prepareEditor).mockResolvedValue({ data: { settings: { ...settings(), legacy_native_config: dormant } } } as any)
     await render()
-    await click('特色功能')
-    for (const feature of featureGroups) expect(document.body.textContent).toContain(feature.title)
-    await click('WebUI / 日志')
-    expect(document.getElementById('oxi-api.password')?.getAttribute('type')).toBe('password')
-    vi.mocked(oxidnsApi.saveSettings).mockRejectedValue({ response: { data: { message: 'API 用户名和密码必须同时设置' } } })
-    await click('保存设置')
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain('API 用户名和密码必须同时设置')
-    expect((Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === '保存设置') as HTMLButtonElement).disabled).toBe(false)
-  })
-
-  it('shows feature help while collapsed without expanding or enabling the feature', async () => {
-    await render()
-    await click('特色功能')
-    for (const feature of featureGroups) {
-      expect(document.querySelector(`button[aria-label="${feature.title}说明"]`)).not.toBeNull()
-    }
-    const trigger = document.querySelector('button[aria-label="查询记录设置"]') as HTMLButtonElement
-    const help = document.querySelector('button[aria-label="查询记录说明"]') as HTMLButtonElement
-    const toggle = document.getElementById('oxi-enable-query_recorder') as HTMLButtonElement
-    expect(trigger.getAttribute('aria-expanded')).toBe('false')
-    expect(trigger.contains(help)).toBe(false)
-    help.click()
-    await flushPromises()
-    expect(document.querySelector('[data-field-help-content]')?.textContent).toContain('SQLite 查询历史')
-    expect(trigger.getAttribute('aria-expanded')).toBe('false')
-    expect(toggle.getAttribute('aria-checked')).toBe('false')
-    trigger.click()
-    await flushPromises()
-    expect(trigger.getAttribute('aria-expanded')).toBe('true')
-    expect(toggle.getAttribute('aria-checked')).toBe('false')
-  })
-
-  it('blocks malformed custom matches, retains the draft across tabs, then saves repaired values', async () => {
-    await render()
-    await click('高级')
-    await click('YAML', matchEditor())
-    await input('#oxi-custom-matches', 'unexpected: mapping')
-    expect(button('保存设置').disabled).toBe(true)
-    await click('保存设置')
+    expect(oxidnsApi.prepareEditor).toHaveBeenCalledWith(legacy, 'oxi-profile')
+    expect(document.querySelector('[aria-label="旧草稿备份说明"]')).not.toBeNull()
+    expect(button('保存草稿').disabled).toBe(false)
     expect(oxidnsApi.saveSettings).not.toHaveBeenCalled()
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain('YAML 列表')
-    await click('缓存')
-    expect(button('保存设置').disabled).toBe(true)
-    await click('高级')
-    expect((document.getElementById('oxi-custom-matches') as HTMLTextAreaElement).value).toBe('unexpected: mapping')
-    await input('#oxi-custom-matches', '- matches: qtype 1\n  exec: goto china_dns\n  enabled: false\n  extension: {keep: true}')
-    expect(button('保存设置').disabled).toBe(false)
-    await click('保存设置')
-    expect(savedPayload().custom_matches).toEqual([{ matches: 'qtype 1', exec: 'goto china_dns', enabled: false, extension: { keep: true } }])
+    await click('保存草稿')
+    expect(savedPayload().legacy_native_config).toBe(dormant)
+    expect(savedPayload().native_config).toBe(config)
   })
 
-  it('edits list entries and represents RouterOS TLS as an optional object', async () => {
-    const model: Record<string, any> = { urls: [], ros: { args: {} } }
-    const wrapper = mount(OxidnsFields, { props: { settings: model, fields: [
-      { path: 'urls', label: 'URLs', type: 'list' }, { path: 'ros.args.tls', label: 'TLS', type: 'tls' }
-    ] } })
-    wrappers.push(wrapper)
-    const add = () => wrapper.findAll('button').find(button => button.text().trim() === '添加条目')!
-    await add().trigger('click')
-    await wrapper.get('[aria-label="URLs第 1 项"]').setValue('https://example.test/a')
-    await add().trigger('click')
-    await wrapper.get('[aria-label="URLs第 2 项"]').setValue('https://example.test/b')
-    expect(model.urls).toEqual(['https://example.test/a', 'https://example.test/b'])
-    await wrapper.get('[role="switch"]').trigger('click')
-    expect(model.ros.args.tls).toEqual({})
-    await wrapper.get('[role="switch"]').trigger('click')
-    expect('tls' in model.ros.args).toBe(false)
-  })
-
-  it('validates upstream YAML across tabs and saves all complete upstream parameters after repair', async () => {
+  it.each(['load', 'prepare'])('blocks saving on %s failure and allows retry', async stage => {
+    const api = stage === 'load' ? oxidnsApi.getSettings : oxidnsApi.prepareEditor
+    vi.mocked(api).mockRejectedValueOnce({ response: { data: { message: '配置加载失败' } } })
     await render()
-    await click('DNS 上游')
-    await click('YAML', entryEditor('直连 DNS'))
-    await input('#oxi-local_dns-yaml', '- addr: [broken')
-    expect(button('保存设置').disabled).toBe(true)
-    await click('核心模板')
-    await click('DNS 上游')
-    expect((document.getElementById('oxi-local_dns-yaml') as HTMLTextAreaElement).value).toBe('- addr: [broken')
-    expect(button('保存设置').disabled).toBe(true)
-    await input('#oxi-local_dns-yaml', '- addr: https://dns.example.test/query\n  bootstrap: 192.0.2.1\n  enable_pipeline: false\n  extension: {nested: [1, true]}')
-    await click('保存设置')
-    expect(loadYaml(savedPayload().local_dns)).toEqual([{ addr: 'https://dns.example.test/query', bootstrap: '192.0.2.1', enable_pipeline: false, extension: { nested: [1, true] } }])
-    expect(savedPayload().remote_dns).toBe('192.0.2.54')
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('配置加载失败')
+    expect(button('保存草稿').disabled).toBe(true)
+    await click('重新加载')
+    expect(button('保存草稿').disabled).toBe(false)
   })
 
-  it('keeps multiple editor errors independent until every draft is repaired', async () => {
-    await render()
-    await click('高级')
-    await click('YAML', matchEditor())
-    await input('#oxi-custom-matches', 'invalid: mapping')
-    await click('YAML', entryEditor('基础配置扩展'))
-    await input('#oxi-custom-config', 'plugins: [broken')
-    await input('#oxi-custom-matches', '[]')
-    expect(button('保存设置').disabled).toBe(true)
-    await click('WebUI / 日志')
-    await click('高级')
-    expect((document.getElementById('oxi-custom-config') as HTMLTextAreaElement).value).toBe('plugins: [broken')
-    await input('#oxi-custom-config', 'extra_setting: {keep: [1, false]}')
-    expect(button('保存设置').disabled).toBe(false)
-    await click('保存设置')
-    expect(loadYaml(savedPayload().custom_config)).toEqual({ extra_setting: { keep: [1, false] } })
-    expect(savedPayload().custom_matches).toEqual([])
-  })
-
-  it('resets invalid drafts and errors when switching profiles without leaking changes', async () => {
-    const profileB = { ...settings(), worker_threads: 3, local_dns: '192.0.2.99', custom_matches: [{ matches: ['qtype 28'], exec: 'accept', enabled: false }] }
-    vi.mocked(oxidnsApi.getSettings).mockImplementation(async (profileId) => ({ data: profileId === 'other-profile' ? structuredClone(profileB) : settings() }) as any)
+  it.each(['http_server', 'quic_server'])('reports incomplete %s while allowing draft storage', async type => {
     const wrapper = await render()
-    await click('高级')
-    await click('YAML', matchEditor())
-    await input('#oxi-custom-matches', '- matches: [broken')
-    expect(button('保存设置').disabled).toBe(true)
-    await wrapper.setProps({ profileId: 'other-profile' })
-    await flushPromises()
-    expect(oxidnsApi.getSettings).toHaveBeenLastCalledWith('other-profile')
-    expect(document.getElementById('oxi-custom-matches')).toBeNull()
-    expect((document.querySelector('[aria-label="匹配项 1 条件 1"]') as HTMLTextAreaElement).value).toBe('qtype 28')
-    expect(button('保存设置').disabled).toBe(false)
-    await click('保存设置')
-    expect(oxidnsApi.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ worker_threads: 3, local_dns: '192.0.2.99', custom_matches: profileB.custom_matches }), 'other-profile')
+    await click('完整参数', views())
+    wrapper.getComponent(OxidnsNativeEditor).getComponent(OxidnsConfigNavigation).vm.$emit('select', `add:plugin:${type}`)
+    await flushPromises(); await settleValidation()
+    expect(button('保存草稿').disabled).toBe(false)
+    expect(document.body.textContent).toContain('必填 · 待填写')
+    expect(document.querySelector('[aria-label="配置检查问题"]')?.textContent).toContain('请填写监听地址')
+    expect(document.body.textContent).toContain('发布前需要修正')
+    expect(oxidnsApi.saveSettings).not.toHaveBeenCalled()
+    await click('YAML', views())
+    const args = type === 'http_server'
+      ? '{listen: "127.0.0.1:8053", entries: [{path: /dns-query, exec: main}]}'
+      : '{listen: "127.0.0.1:8853", entry: main, cert: cert.pem, key: key.pem}'
+    await input(yamlInput, `plugins: [{tag: main, type: sequence, args: [{exec: reject 0}]}, {tag: ${type}, type: ${type}, args: ${args}}]`)
+    expect(button('保存草稿').disabled).toBe(false)
+    await click('保存草稿')
+    expect((loadYaml(savedPayload().native_config) as any).plugins[1].args.listen).toMatch(/^127/)
   })
 
-  it('discards unsaved edits and invalid drafts after cancel and reopening', async () => {
+  it('retains valid empty reverse_lookup args with default help', async () => {
     const wrapper = await render()
-    await input('#oxi-worker_threads', '5')
-    await click('高级')
-    await click('YAML', entryEditor('基础配置扩展'))
-    await input('#oxi-custom-config', 'plugins: [broken')
-    expect(button('保存设置').disabled).toBe(true)
-    await click('取消')
-    expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false])
-    await wrapper.setProps({ open: false })
-    await flushPromises()
-    await wrapper.setProps({ open: true })
-    await flushPromises()
-    expect(oxidnsApi.getSettings).toHaveBeenCalledTimes(2)
-    expect((document.getElementById('oxi-worker_threads') as HTMLInputElement).value).toBe('8')
-    expect(document.getElementById('oxi-custom-config')).toBeNull()
-    expect(button('保存设置').disabled).toBe(false)
-    await click('保存设置')
-    expect(savedPayload().custom_config).toBe('')
-    expect(savedPayload().worker_threads).toBe(8)
+    await click('完整参数', views())
+    wrapper.getComponent(OxidnsNativeEditor).getComponent(OxidnsConfigNavigation).vm.$emit('select', 'add:plugin:reverse_lookup')
+    await flushPromises(); await settleValidation()
+    expect(document.body.textContent).toContain('使用默认参数')
+    expect(document.querySelector('[aria-label="反向查询缓存默认参数说明"]')).not.toBeNull()
+    expect(button('保存草稿').disabled).toBe(false)
+    await click('保存草稿')
+    expect((loadYaml(savedPayload().native_config) as any).plugins.at(-1)).toEqual({ tag: 'reverse_lookup', type: 'reverse_lookup', args: {} })
   })
 
-  it('initializes native mode from the unsaved template and retains both drafts across mode switches', async () => {
-    await render()
-    await input('#oxi-worker_threads', '5')
-    await click('完整配置', document.querySelector('[aria-label="OxiDNS 配置方式"]')!)
-    expect(oxidnsApi.render).toHaveBeenCalledWith(expect.objectContaining({ worker_threads: 5, config_mode: 'template', api: expect.objectContaining({ password: 'test-only-secret' }) }), 'oxi-profile')
-    expect(document.querySelector('section[aria-label="完整 OxiDNS 配置"]')).not.toBeNull()
-    await click('快捷模板')
-    expect((document.getElementById('oxi-worker_threads') as HTMLInputElement).value).toBe('5')
-    await click('完整配置', document.querySelector('[aria-label="OxiDNS 配置方式"]')!)
-    expect(oxidnsApi.render).toHaveBeenCalledTimes(1)
-    await click('保存设置')
-    expect(savedPayload()).toEqual(expect.objectContaining({ config_mode: 'native', worker_threads: 5, native_config: expect.stringContaining('worker_threads: 5') }))
-  })
-
-  it('keeps template mode editable when full configuration rendering fails', async () => {
-    vi.mocked(oxidnsApi.render).mockRejectedValue({ response: { data: { message: '规则文件缺失' } } })
-    await render()
-    await click('完整配置', document.querySelector('[aria-label="OxiDNS 配置方式"]')!)
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain('规则文件缺失')
-    expect(button('快捷模板').getAttribute('aria-pressed')).toBe('true')
-    expect(button('保存设置').disabled).toBe(false)
-  })
-
-  it('saves attached text and binary files with native settings scoped to the current profile', async () => {
-    vi.mocked(oxidnsApi.getSettings).mockResolvedValue({ data: { ...settings(), config_mode: 'native', native_config: 'plugins: [{tag: main, type: sequence, args: [{exec: reject 0}]}]', additional_files: [{ path: 'certs/example.pem', content: 'TEST CERT', encoding: 'text' }, { path: 'rules/example.dat', content: 'AP8=', encoding: 'base64' }] } } as any)
+  it('preserves attached files and unknown values through panel changes', async () => {
+    const files = [{ path: 'certs/example.pem', content: 'TEST CERT', encoding: 'text' }, { path: 'rules/example.dat', content: 'AP8=', encoding: 'base64' }]
+    vi.mocked(oxidnsApi.getSettings).mockResolvedValue({ data: { ...settings(), additional_files: files, extension_settings: { keep: false } } } as any)
     await render()
     await click('附加文件')
     expect((document.querySelector('[aria-label="文件 1 路径"]') as HTMLInputElement).value).toBe('certs/example.pem')
-    await click('保存设置')
-    expect(savedPayload().additional_files).toEqual([{ path: 'certs/example.pem', content: 'TEST CERT', encoding: 'text' }, { path: 'rules/example.dat', content: 'AP8=', encoding: 'base64' }])
-    expect(savedPayload().config_mode).toBe('native')
+    await click('配置')
+    await click('保存草稿')
+    expect(savedPayload().additional_files).toEqual(files)
+    expect(savedPayload().extension_settings).toEqual({ keep: false })
+    expect(loadYaml(savedPayload().native_config)).toEqual(loadYaml(config))
   })
 
-  it('clears feature editor errors on disable and restores its last valid values on re-enable', async () => {
-    const original = settings()
-    original.adguard = { enabled: true, args: {}, urls: ['https://rules.example.test/original'] }
-    vi.mocked(oxidnsApi.getSettings).mockResolvedValue({ data: original } as any)
+  it('removes the template tool and applies common changes to the shared draft without saving', async () => {
+    const wrapper = await render()
+    expect(document.querySelector('[aria-label="模板工具"]')).toBeNull()
+    wrapper.getComponent(OxidnsCommonSettings).vm.$emit('change', { worker_threads: 3 })
+    await new Promise(resolve => setTimeout(resolve, 180)); await flushPromises(); await settleValidation()
+    expect(oxidnsApi.applyCommonSettings).toHaveBeenCalledWith(expect.objectContaining({ native_config: config }), { worker_threads: 3 }, 'oxi-profile')
+    expect(oxidnsApi.saveSettings).not.toHaveBeenCalled()
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('3')
+    await click('保存草稿')
+    expect((loadYaml(savedPayload().native_config) as any).runtime.worker_threads).toBe(3)
+    expect(savedPayload().template_settings).toEqual({ worker_threads: 2 })
+  })
+
+  it('orders rapid edits and blocks saving until the queue is drained', async () => {
     await render()
-    await click('特色功能')
-    const toggle = document.getElementById('oxi-enable-adguard') as HTMLButtonElement
-    const feature = featureGroups.find(feature => feature.key === 'adguard')!
-    const trigger = document.querySelector(`button[aria-label="${feature.title}设置"]`) as HTMLButtonElement
-    trigger.click()
+    let resolveFirst!: (value: any) => void
+    vi.mocked(oxidnsApi.applyCommonSettings).mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve }))
+    await input(worker, '3')
+    expect(button('保存草稿').disabled).toBe(true)
+    expect(button('YAML', views()).disabled).toBe(true)
+    await input(worker, '4')
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('4')
+    const first = { ...settings(), native_config: config.replace('worker_threads: 8', 'worker_threads: 3') }
+    resolveFirst({ data: { settings: first, ...projection(first) } }); await flushPromises(); await settleValidation()
+    expect(oxidnsApi.applyCommonSettings).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(oxidnsApi.applyCommonSettings).mock.calls[1][0]).toEqual(first)
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('4')
+    expect(button('保存草稿').disabled).toBe(false)
+    await click('保存草稿')
+    expect((loadYaml(savedPayload().native_config) as any).runtime.worker_threads).toBe(4)
+  })
+
+  it('retains invalid drafts without turning an empty number into zero', async () => {
+    await render()
+    await input(worker, '')
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('')
+    expect(button('保存草稿').disabled).toBe(true)
+    expect(oxidnsApi.applyCommonSettings).not.toHaveBeenCalled()
+    await input(worker, '3')
+    expect(button('保存草稿').disabled).toBe(false)
+    expect(vi.mocked(oxidnsApi.applyCommonSettings).mock.calls[0][1]).toEqual({ worker_threads: 3 })
+  })
+
+  it('retains failed changes until retry without saving stale values', async () => {
+    await render()
+    vi.mocked(oxidnsApi.applyCommonSettings).mockRejectedValueOnce({ response: { data: { message: '当前结构无法自动修改' } } })
+    await input(worker, '3')
+    expect(document.body.textContent).toContain('当前结构无法自动修改')
+    expect(button('保存草稿').disabled).toBe(true)
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('3')
+    await click('重试同步'); await settleValidation()
+    expect(button('保存草稿').disabled).toBe(false)
+    await click('YAML', views())
+    expect((loadYaml((document.querySelector(yamlInput) as HTMLTextAreaElement).value) as any).runtime.worker_threads).toBe(3)
+  })
+
+  it('discards only unsynchronized edits and restores the actual values', async () => {
+    await render()
+    await input(worker, '4')
+    vi.mocked(oxidnsApi.applyCommonSettings).mockRejectedValueOnce(new Error('Unavailable'))
+    await input(worker, '5')
+    await click('撤销未同步修改')
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('4')
+    expect(button('保存草稿').disabled).toBe(false)
+    await click('保存草稿')
+    expect((loadYaml(savedPayload().native_config) as any).runtime.worker_threads).toBe(4)
+  })
+
+  it('ignores a stale apply response after changing profile', async () => {
+    const wrapper = await render()
+    let resolveFirst!: (value: any) => void
+    vi.mocked(oxidnsApi.applyCommonSettings).mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve }))
+    await input(worker, '3')
+    vi.mocked(oxidnsApi.getSettings).mockResolvedValue({ data: { ...settings(), native_config: config.replace('worker_threads: 8', 'worker_threads: 6') } } as any)
+    await wrapper.setProps({ profileId: 'next-profile' }); await flushPromises()
+    const first = { ...settings(), native_config: config.replace('worker_threads: 8', 'worker_threads: 3') }
+    resolveFirst({ data: { settings: first, ...projection(first) } }); await flushPromises(); await settleValidation()
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('6')
+    await click('保存草稿')
+    expect(oxidnsApi.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ native_config: expect.stringContaining('worker_threads: 6') }), 'next-profile')
+  })
+
+  it('allows complete editing when projection fails and retries common settings', async () => {
+    vi.mocked(oxidnsApi.readCommonSettings).mockRejectedValueOnce(new Error('Unavailable'))
+    await render()
+    expect(document.body.textContent).toContain('读取常用设置失败')
+    await click('完整参数', views())
+    expect(button('完整参数', views()).getAttribute('aria-pressed')).toBe('true')
+    await click('常用设置', views())
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('8')
+  })
+
+  it('keeps edits on save failure and discards them after cancel/reopen', async () => {
+    const wrapper = await render()
+    await input(worker, '5')
+    vi.mocked(oxidnsApi.saveSettings).mockRejectedValueOnce({ response: { data: { message: '保存暂时失败' } } })
+    await click('保存草稿')
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('保存暂时失败')
+    expect(button('保存草稿').disabled).toBe(false)
+    await click('取消')
+    expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false])
+    await wrapper.setProps({ open: false })
+    await wrapper.setProps({ open: true })
     await flushPromises()
-    await click('YAML', entryEditor('规则订阅'))
-    await input('[id="oxi-adguard.urls-yaml"]', '- https://rules.example.test/updated')
-    await input('[id="oxi-adguard.urls-yaml"]', 'invalid: mapping')
-    expect(button('保存设置').disabled).toBe(true)
-    toggle.click()
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('8')
+    expect(oxidnsApi.getSettings).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['plugins: [broken', '[1, 2]'])('blocks malformed or non-object draft %s and clears it across profiles', async malformed => {
+    const wrapper = await render()
+    await click('YAML', views())
+    await input(yamlInput, malformed)
+    expect(button('保存草稿').disabled).toBe(true)
+    vi.mocked(oxidnsApi.getSettings).mockResolvedValue({ data: { ...settings(), native_config: config.replace('worker_threads: 8', 'worker_threads: 4') } } as any)
+    await wrapper.setProps({ profileId: 'other-profile' })
     await flushPromises()
-    expect(entryEditor('规则订阅')).toBeNull()
-    expect(button('保存设置').disabled).toBe(false)
-    toggle.click()
-    await flushPromises()
-    expect(document.getElementById('oxi-adguard.urls-yaml')).toBeNull()
-    expect((document.querySelector('[aria-label="规则订阅第 1 项"]') as HTMLInputElement).value).toBe('https://rules.example.test/updated')
-    expect(button('保存设置').disabled).toBe(false)
-    await click('保存设置')
-    expect(savedPayload().adguard).toEqual(expect.objectContaining({ enabled: true, urls: ['https://rules.example.test/updated'] }))
+    expect(button('保存草稿').disabled).toBe(false)
+    await click('保存草稿')
+    expect(oxidnsApi.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ native_config: expect.stringContaining('worker_threads: 4') }), 'other-profile')
+  })
+
+
+  it('shows the same server parameter errors in all views without preventing draft storage', async () => {
+    const wrapper = await render()
+    await input(worker, '0')
+    expect(oxidnsApi.applyCommonSettings).toHaveBeenLastCalledWith(expect.anything(), {worker_threads: 0}, 'oxi-profile')
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('0')
+    expect(document.body.textContent).toContain('工作线程数必须大于 0')
+    expect(button('保存草稿').disabled).toBe(false)
+    document.querySelector<HTMLButtonElement>('[aria-label="定位错误 1"]')!.click(); await flushPromises()
+    expect(button('完整参数', views()).getAttribute('aria-pressed')).toBe('true')
+    await input('[aria-label="全局参数.runtime.worker_threads 值"]', '4')
+    expect(document.body.textContent).not.toContain('工作线程数必须大于 0')
+    await input('[aria-label="全局参数.runtime.worker_threads 值"]', '0')
+    expect(document.body.textContent).toContain('工作线程数必须大于 0')
+    await click('YAML', views())
+    const text = (document.querySelector(yamlInput) as HTMLTextAreaElement).value
+    await input(yamlInput, text.replace('worker_threads: 0', 'worker_threads: 3'))
+    expect(document.body.textContent).not.toContain('工作线程数必须大于 0')
+    await input(yamlInput, text)
+    expect(document.body.textContent).toContain('工作线程数必须大于 0')
+    expect(button('保存草稿').disabled).toBe(false)
+    await click('保存草稿')
+    expect(savedPayload().native_config).toContain('worker_threads: 0')
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+  })
+
+  it('allows offline draft storage when validation is unavailable or malformed and supports retry', async () => {
+    vi.mocked(oxidnsApi.validateSettings).mockRejectedValueOnce(new Error('校验服务不可用'))
+    await render()
+    expect(document.body.textContent).toContain('校验服务不可用')
+    expect(document.body.textContent).toContain('可先保存草稿')
+    expect(button('保存草稿').disabled).toBe(false)
+    vi.mocked(oxidnsApi.validateSettings).mockResolvedValueOnce({data: {valid: true}} as any)
+    await click('重新检查')
+    expect(button('保存草稿').disabled).toBe(false)
+    expect(document.body.textContent).toContain('无效结果')
+    await click('重新检查')
+    expect(document.body.textContent).toContain('规则检查通过')
+    await click('保存草稿')
+    expect(oxidnsApi.saveSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('saves without waiting for a slow validator or triggering an extra check', async () => {
+    let resolveValidation!: (value: any) => void
+    vi.mocked(oxidnsApi.validateSettings).mockImplementationOnce(() => new Promise(resolve => {resolveValidation = resolve}))
+    const wrapper = await render()
+    expect(document.body.textContent).toContain('正在检查草稿参数')
+    expect(button('保存草稿').disabled).toBe(false)
+    await click('保存草稿')
+    expect(oxidnsApi.validateSettings).toHaveBeenCalledTimes(1)
+    expect(oxidnsApi.saveSettings).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('saved')).toHaveLength(1)
+    await wrapper.setProps({open: false})
+    resolveValidation({data: {valid: false, issues: [{path: [], code: 'stale', message: '关闭后的错误', severity: 'error'}]}}); await flushPromises()
+    expect(document.body.textContent).not.toContain('关闭后的错误')
+  })
+
+  it('shows warning scope and keeps valid empty/default values unchanged', async () => {
+    const native = 'plugins: [{tag: reverse, type: reverse_lookup, args: {}}, {tag: cache, type: cache, args: null}]\nunknown: {empty: "", nil: null, zero: 0, off: false}\n'
+    vi.mocked(oxidnsApi.getSettings).mockResolvedValueOnce({data: {...settings(), native_config: native}} as any)
+    vi.mocked(oxidnsApi.validateSettings).mockResolvedValueOnce({data: {valid: true, issues: [{path: ['unknown'], code: 'unknown_field', message: '扩展字段由目标核心验证。', severity: 'warning'}]}} as any)
+    await render()
+    expect(document.body.textContent).toContain('规则检查通过，存在待目标环境验证项')
+    expect(button('保存草稿').disabled).toBe(false)
+    await click('保存草稿')
+    expect(savedPayload().native_config).toBe(native)
+  })
+
+  it('ignores an older validation result after a newer edit was checked', async () => {
+    await render()
+    await click('YAML', views())
+    let resolveFirst!: (value: any) => void
+    vi.mocked(oxidnsApi.validateSettings).mockImplementationOnce(() => new Promise(resolve => {resolveFirst = resolve}))
+    await input(yamlInput, config.replace('worker_threads: 8', 'worker_threads: 3'))
+    expect(button('保存草稿').disabled).toBe(false)
+    await input(yamlInput, config.replace('worker_threads: 8', 'worker_threads: 4'))
+    expect(document.body.textContent).toContain('规则检查通过')
+    resolveFirst({data: {valid: false, issues: [{path: ['runtime'], code: 'stale', message: '过期检查', severity: 'error'}]}}); await flushPromises()
+    expect(document.body.textContent).not.toContain('过期检查')
+    await click('保存草稿')
+    expect(savedPayload().native_config).toContain('worker_threads: 4')
+  })
+
+  it('ignores validation results from a previous profile or cancelled dialog', async () => {
+    let resolveFirst!: (value: any) => void
+    vi.mocked(oxidnsApi.validateSettings).mockImplementationOnce(() => new Promise(resolve => {resolveFirst = resolve}))
+    const wrapper = await render()
+    await wrapper.setProps({profileId: 'next-profile'}); await flushPromises()
+    resolveFirst({data: {valid: false, issues: [{path: [], code: 'stale', message: '其他空间检查', severity: 'error'}]}}); await flushPromises()
+    expect(document.body.textContent).not.toContain('其他空间检查')
+    let resolveSecond!: (value: any) => void
+    vi.mocked(oxidnsApi.validateSettings).mockImplementationOnce(() => new Promise(resolve => {resolveSecond = resolve}))
+    await click('YAML', views())
+    await input(yamlInput, config.replace('worker_threads: 8', 'worker_threads: 3'))
+    await wrapper.setProps({open: false})
+    resolveSecond({data: {valid: false, issues: [{path: [], code: 'stale', message: '已取消检查', severity: 'error'}]}}); await flushPromises()
+    await wrapper.setProps({open: true}); await flushPromises()
+    expect(document.body.textContent).not.toContain('已取消检查')
+    expect(button('保存草稿').disabled).toBe(false)
+    expect(oxidnsApi.saveSettings).not.toHaveBeenCalled()
+  })
+
+  it('checks attached-file changes and locates include diagnostics in the files panel', async () => {
+    const file = {path: 'plugins/cache.yaml', content: 'plugins: []', encoding: 'text'}
+    vi.mocked(oxidnsApi.getSettings).mockResolvedValueOnce({data: {...settings(), additional_files: [file]}} as any)
+    vi.mocked(oxidnsApi.validateSettings).mockResolvedValueOnce({data: {valid: false, issues: [{path: ['plugins', 0, 'args', 'size'], source: file.path, code: 'minimum', message: '缓存容量不能小于零。', severity: 'error'}]}} as any)
+    await render()
+    document.querySelector<HTMLButtonElement>('[aria-label="定位错误 1"]')!.click(); await flushPromises()
+    expect(button('附加文件').getAttribute('aria-pressed')).toBe('true')
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('文件 1 路径')
+    await input('[aria-label="文件 1 路径"]', 'plugins/updated.yaml')
+    expect(vi.mocked(oxidnsApi.validateSettings).mock.calls.at(-1)?.[0]).toMatchObject({additional_files: [{...file, path: 'plugins/updated.yaml'}]})
+    expect(button('保存草稿').disabled).toBe(false)
+  })
+
+  it('shows structural save-endpoint issues while retaining the editable draft', async () => {
+    await render()
+    vi.mocked(oxidnsApi.saveSettings).mockRejectedValueOnce({response: {data: {message: '配置结构检查未通过。', issues: [{path: ['include'], code: 'invalid_structure', message: '附加配置结构无效。', severity: 'error'}]}}})
+    await click('保存草稿')
+    expect(document.body.textContent).toContain('附加配置结构无效')
+    expect(button('保存草稿').disabled).toBe(false)
+    expect(document.querySelector('[aria-label="定位错误 1"]')).not.toBeNull()
   })
 })
