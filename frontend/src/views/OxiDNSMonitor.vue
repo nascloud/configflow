@@ -1,6 +1,24 @@
 <template>
   <div class="min-w-0">
     <PageHeader title="OxiDNS 监控">
+      <template #title-extra>
+        <Select :model-value="agentId" :disabled="!devices?.length || switchingDevice" @update:model-value="switchDevice(String($event))">
+          <SelectTrigger class="min-h-11 w-auto min-w-0 max-w-32 sm:max-w-48" aria-label="监控设备" :title="currentDevice?.name || currentDevice?.id">
+            <SelectValue class="min-w-0 flex-1 text-left" :placeholder="devicesLoading ? '读取设备…' : '选择设备'">
+              <span class="truncate font-medium">{{ currentDevice?.name || currentDevice?.id || (devicesLoading ? '读取设备…' : '选择设备') }}</span>
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent class="w-80 max-w-[calc(100vw-2rem)]">
+            <SelectItem v-for="device in devices || []" :key="device.id" :value="device.id" :text-value="device.name || device.id" class="min-h-14 [&>span:last-child]:min-w-0 [&>span:last-child]:flex-1">
+              <span class="min-w-0 flex-1">
+                <span class="block whitespace-normal break-all font-medium">{{ device.name || device.id }}</span>
+                <span class="block whitespace-normal break-all font-mono text-xs text-muted-foreground">{{ device.host || '—' }}</span>
+              </span>
+              <StatusDot class="shrink-0" :tone="device.status === 'online' ? 'success' : 'muted'" :label="device.status === 'online' ? '在线' : '离线'" />
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </template>
       <template #actions>
         <label class="flex min-h-11 items-center gap-2 text-[13px] text-muted-foreground">
           <Switch v-model="autoRefresh" aria-label="每 10 秒自动刷新监控" />自动刷新 · 10 秒
@@ -10,35 +28,9 @@
         </Button>
       </template>
     </PageHeader>
-    <div class="mb-5 min-w-0 space-y-2">
-      <label id="oxidns-device-label" class="block text-xs font-medium text-muted-foreground">监控设备</label>
-      <Select :model-value="agentId" :disabled="!devices?.length || switchingDevice" @update:model-value="switchDevice(String($event))">
-        <SelectTrigger class="h-auto min-h-14 w-full min-w-0 sm:max-w-md" aria-labelledby="oxidns-device-label">
-          <SelectValue class="min-w-0 flex-1 text-left" :placeholder="devicesLoading ? '正在读取设备…' : '选择 OxiDNS 设备'">
-            <span v-if="currentDevice" class="flex min-w-0 flex-1 items-center gap-3">
-              <span class="min-w-0 flex-1">
-                <span class="block truncate font-medium" :title="currentDevice.name || currentDevice.id">{{ currentDevice.name || currentDevice.id }}</span>
-                <span class="block truncate font-mono text-xs text-muted-foreground" :title="currentDevice.host">{{ currentDevice.host || '—' }}</span>
-              </span>
-              <StatusDot class="shrink-0" :tone="currentDevice.status === 'online' ? 'success' : 'muted'" :label="currentDevice.status === 'online' ? '在线' : '离线'" />
-            </span>
-            <span v-else class="truncate text-muted-foreground">{{ devicesLoading ? '正在读取设备…' : '选择 OxiDNS 设备' }}</span>
-          </SelectValue>
-        </SelectTrigger>
-        <SelectContent class="max-w-[calc(100vw-2rem)]">
-          <SelectItem v-for="device in devices || []" :key="device.id" :value="device.id" :text-value="device.name || device.id" class="min-h-14 [&>span:last-child]:min-w-0 [&>span:last-child]:flex-1">
-            <span class="min-w-0 flex-1">
-              <span class="block truncate font-medium" :title="device.name || device.id">{{ device.name || device.id }}</span>
-              <span class="block truncate font-mono text-xs text-muted-foreground">{{ device.host || '—' }}</span>
-            </span>
-            <StatusDot class="shrink-0" :tone="device.status === 'online' ? 'success' : 'muted'" :label="device.status === 'online' ? '在线' : '离线'" />
-          </SelectItem>
-        </SelectContent>
-      </Select>
-      <div v-if="devicesError || switchError" role="alert" class="flex flex-wrap items-center gap-x-3 text-sm text-warning-accent">
-        <span>{{ devicesError || switchError }}</span>
-        <Button v-if="devicesError" variant="ghost" class="min-h-11" :disabled="devicesLoading" @click="loadDevices">重试设备列表</Button>
-      </div>
+    <div v-if="devicesError || switchError" role="alert" class="mb-4 flex flex-wrap items-center gap-x-3 text-sm text-warning-accent">
+      <span>{{ devicesError || switchError }}</span>
+      <Button v-if="devicesError" variant="ghost" class="min-h-11" :disabled="devicesLoading" @click="loadDevices">重试设备列表</Button>
     </div>
     <SectionCard v-if="devices && !devices.length">
       <EmptyState :icon="Server" title="暂无 OxiDNS Agent" description="接入 OxiDNS Agent 后，即可在这里查看查询记录、缓存命中率和运行统计。">
@@ -46,11 +38,13 @@
       </EmptyState>
     </SectionCard>
     <template v-else>
-      <div v-if="overview" class="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12.5px] text-muted-foreground">
-        <StatusDot :tone="coreRunning ? 'success' : 'warning'" :label="coreRunning ? '核心运行中' : '核心状态：' + overview.core.status" />
-        <span v-if="overview.core.version" class="font-mono">OxiDNS {{ overview.core.version }}</span>
-        <span>已运行 {{ uptime }}</span>
-        <span class="ml-auto text-xs">采样 {{ sampleTime }}</span>
+      <div v-if="currentDevice || overview" class="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12.5px] text-muted-foreground">
+        <StatusDot v-if="currentDevice?.status === 'offline'" tone="muted" label="Agent 离线" />
+        <StatusDot v-if="overview" :tone="coreRunning ? 'success' : 'warning'" :label="coreRunning ? '核心运行中' : '核心状态：' + overview.core.status" />
+        <span v-if="currentDevice?.host" class="min-w-0 break-all font-mono" aria-label="当前设备 IP">{{ currentDevice.host }}</span>
+        <span v-if="overview?.core.version" class="font-mono">OxiDNS {{ overview.core.version }}</span>
+        <span v-if="overview">已运行 {{ uptime }}</span>
+        <span v-if="overview" class="ml-auto text-xs">采样 {{ sampleTime }}</span>
       </div>
       <p v-if="overviewError && overview" role="alert" class="mb-4 rounded-lg border border-warning-accent/30 bg-warning-soft p-3 text-sm text-warning-accent">
         {{ overviewError }} 保留上次成功读取的数据，采样时间见上方。
