@@ -1,44 +1,50 @@
 <template>
   <section class="min-w-0 space-y-3" :aria-label="label">
     <div class="flex flex-wrap items-center justify-between gap-2">
-      <span class="text-xs text-muted-foreground">{{ rows.length }} 个条目</span>
-      <div class="inline-flex rounded-lg border border-border bg-secondary p-1" :aria-label="`${label}编辑模式`" role="group">
-        <Button v-for="option in modes" :key="option.value" size="sm" :variant="mode === option.value ? 'secondary' : 'ghost'" class="min-h-11" :aria-pressed="mode === option.value" @click="switchMode(option.value)">{{ option.label }}</Button>
+      <div class="flex items-center gap-1">
+        <span class="text-xs text-muted-foreground">{{ rows.length }} 个条目</span>
+        <FieldHelp :label="`${label}编辑方式`" :text="`${kind === 'upstreams' ? '逐条添加上游地址，可展开常用参数；YAML 模式可填写完整上游配置。' : '逐条添加、删除或调整顺序，也可在 YAML 列表中批量编辑。'} 切换模式保留配置值；条目修改后 YAML 注释和排版可能重新整理。无效 YAML 会保留为草稿，修正后才能切回条目并保存。`" />
       </div>
+      <OxidnsEditorModeToggle :model-value="mode" :options="modes" :label="`${label}编辑模式`" @update:model-value="switchMode" />
     </div>
     <template v-if="mode === 'entries'">
       <p v-if="!rows.length" class="rounded-lg border border-dashed border-border px-3 py-5 text-sm text-muted-foreground">{{ emptyHint || '暂无条目，点击下方按钮添加。' }}</p>
-      <div v-for="(row, index) in rows" :key="row.id" class="min-w-0 space-y-2 rounded-lg border border-border p-3">
-        <div class="flex min-w-0 items-center gap-2">
-          <span class="w-5 shrink-0 font-mono text-xs text-muted-foreground">{{ index + 1 }}</span>
-          <Input :id="index === 0 ? id : undefined" :model-value="kind === 'upstreams' ? upstreamAddress(row.value) : String(row.value)" :aria-label="`${label}第 ${index + 1} 项${kind === 'upstreams' ? '地址' : ''}`" :placeholder="placeholder" :type="kind === 'numbers' ? 'number' : 'text'" :min="kind === 'numbers' ? 1 : undefined" :max="kind === 'numbers' ? 65535 : undefined" class="min-h-11 min-w-0 flex-1 font-mono text-xs" @update:model-value="editValue(index, String($event))" />
-          <Button variant="ghost" size="icon" class="size-11 shrink-0" :aria-label="`删除${label}第 ${index + 1} 项`" @click="remove(index)"><Trash2 class="size-4" /></Button>
+      <div v-for="(row, index) in rows" :key="row.id" class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 rounded-lg border border-border p-2">
+        <div class="col-start-1 row-start-1 flex min-w-0 items-center gap-2" :class="kind === 'upstreams' ? 'max-sm:col-span-2' : ''">
+          <span class="w-4 shrink-0 text-center font-mono text-xs text-muted-foreground">{{ index + 1 }}</span>
+          <Input :id="index === 0 ? id : undefined" :model-value="kind === 'upstreams' ? upstreamAddress(row.value) : String(row.value)" :aria-label="`${label}第 ${index + 1} 项${kind === 'upstreams' ? '地址' : ''}`" :placeholder="placeholder" :type="kind === 'numbers' ? 'number' : 'text'" :min="kind === 'numbers' ? 1 : undefined" :max="kind === 'numbers' ? 65535 : undefined" class="h-9 min-w-0 flex-1 font-mono text-xs max-sm:min-h-11 pointer-coarse:min-h-11" @update:model-value="editValue(index, String($event))" />
         </div>
-        <div class="flex flex-wrap items-center gap-1 pl-7">
-          <Button variant="ghost" size="sm" class="min-h-11" :disabled="index === 0" :aria-label="`上移${label}第 ${index + 1} 项`" @click="move(index, -1)"><ArrowUp class="size-3.5" />上移</Button>
-          <Button variant="ghost" size="sm" class="min-h-11" :disabled="index === rows.length - 1" :aria-label="`下移${label}第 ${index + 1} 项`" @click="move(index, 1)"><ArrowDown class="size-3.5" />下移</Button>
-          <span v-if="kind === 'upstreams' && extraCount(row.value)" class="text-xs text-muted-foreground">另有 {{ extraCount(row.value) }} 个扩展参数，已保留，可在 YAML 中编辑</span>
+        <div class="col-start-2 row-start-1 flex shrink-0 items-center" :class="kind === 'upstreams' ? 'max-sm:row-start-2 max-sm:mt-1' : ''" role="group" :aria-label="`${label}第 ${index + 1} 项操作`">
+          <Button type="button" variant="ghost" size="icon" class="size-9 text-muted-foreground max-sm:size-11 pointer-coarse:size-11" :disabled="index === 0" :aria-label="`上移${label}第 ${index + 1} 项`" title="上移" @click="move(index, -1)"><ArrowUp class="size-3.5" /></Button>
+          <Button type="button" variant="ghost" size="icon" class="size-9 text-muted-foreground max-sm:size-11 pointer-coarse:size-11" :disabled="index === rows.length - 1" :aria-label="`下移${label}第 ${index + 1} 项`" title="下移" @click="move(index, 1)"><ArrowDown class="size-3.5" /></Button>
+          <Button type="button" variant="ghost" size="icon" class="size-9 text-muted-foreground hover:bg-destructive-soft hover:text-destructive-accent max-sm:size-11 pointer-coarse:size-11" :aria-label="`删除${label}第 ${index + 1} 项`" title="删除" @click="remove(index)"><Trash2 class="size-3.5" /></Button>
         </div>
-        <details v-if="kind === 'upstreams'" class="pl-7">
-          <summary class="min-h-11 cursor-pointer py-3 text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">上游参数</summary>
-          <div class="grid min-w-0 gap-3 sm:grid-cols-2">
-            <FormField v-for="key in ['bootstrap', 'dial_addr']" :key="key" :label="key === 'bootstrap' ? 'Bootstrap DNS' : '连接地址（dial_addr）'">
-              <Input :model-value="upstreamField(row.value, key)" :aria-label="`${label}第 ${index + 1} 项 ${key}`" class="min-h-11 min-w-0 font-mono text-xs" @update:model-value="editUpstream(index, key, String($event))" />
+        <Collapsible v-if="kind === 'upstreams'" class="contents">
+          <CollapsibleTrigger type="button" class="group col-span-2 col-start-1 row-start-2 mt-1 flex h-8 min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 text-xs text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary-accent max-sm:col-span-1 max-sm:h-11 pointer-coarse:min-h-11" :aria-label="`${label}第 ${index + 1} 项上游参数`">
+            <span class="shrink-0">上游参数</span>
+            <span class="ml-auto truncate text-xs"><template v-if="parameterCount(row.value)"><span class="max-sm:sr-only">已设置 </span>{{ parameterCount(row.value) }} 项</template><template v-else>默认</template></span>
+            <ChevronDown class="size-3.5 shrink-0 group-data-[state=open]:rotate-180" aria-hidden="true" />
+          </CollapsibleTrigger>
+          <CollapsibleContent class="col-span-2 col-start-1 row-start-3 mt-1 min-w-0 border-t border-border px-2 pt-3 pb-2">
+            <div class="grid min-w-0 gap-3 sm:grid-cols-2">
+            <FormField v-for="key in ['bootstrap', 'dial_addr']" :key="key" :label="key === 'bootstrap' ? 'Bootstrap DNS' : '连接地址（dial_addr）'" :help="key === 'bootstrap' ? '当上游地址使用域名时，用此 DNS 查询上游服务器的 IP，例如 223.5.5.5:53；避免依赖本机 DNS 形成解析环路。上游已经是 IP 时无需填写；同时填写 dial_addr 时以后者为准。' : '直接指定连接上游的 IP，同时保留原域名用于 TLS 证书和 HTTP Host 校验。无需再解析上游域名；填写后优先于 bootstrap。'">
+              <Input :model-value="upstreamField(row.value, key)" :aria-label="`${label}第 ${index + 1} 项 ${key}`" :placeholder="key === 'bootstrap' ? '例如 223.5.5.5:53' : '例如 1.1.1.1:443'" class="h-9 min-w-0 font-mono text-xs max-sm:min-h-11 pointer-coarse:min-h-11" @update:model-value="editUpstream(index, key, String($event))" />
             </FormField>
-            <FormField label="连接流水线（enable_pipeline）">
+            <FormField class="sm:col-span-2 sm:flex-row sm:items-center sm:justify-between" label="连接流水线（enable_pipeline）" help="允许在同一条 TCP / DoT 连接上同时发送多个 DNS 查询，减少并发时的连接开销。UDP 不受此项影响。先用 OxiDNS 的 probe upstream 检查上游兼容性，再启用；核心默认值为关闭。">
               <Select :model-value="pipeline(row.value)" @update:model-value="editUpstream(index, 'enable_pipeline', $event === 'default' ? undefined : $event === 'true')">
-                <SelectTrigger class="min-h-11" :aria-label="`${label}第 ${index + 1} 项连接流水线（enable_pipeline）`"><SelectValue /></SelectTrigger>
+                <SelectTrigger class="h-9 w-full sm:w-40 max-sm:min-h-11 pointer-coarse:min-h-11" :aria-label="`${label}第 ${index + 1} 项连接流水线（enable_pipeline）`"><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="default">核心默认</SelectItem><SelectItem value="true">启用</SelectItem><SelectItem value="false">关闭</SelectItem></SelectContent>
               </Select>
             </FormField>
-          </div>
-        </details>
+            </div>
+            <p v-if="extraCount(row.value)" class="mt-3 text-xs text-muted-foreground">另有 {{ extraCount(row.value) }} 个扩展参数，已保留，可在 YAML 中编辑。</p>
+          </CollapsibleContent>
+        </Collapsible>
       </div>
       <Button variant="outline" class="min-h-11" @click="add"><Plus class="size-4" />添加{{ kind === 'upstreams' ? '上游' : '条目' }}</Button>
     </template>
     <div v-else class="space-y-2">
       <Textarea :id="`${id}-yaml`" :model-value="yamlDraft" :aria-label="`${label} YAML`" :rows="Math.min(14, Math.max(5, rows.length * 3))" class="min-w-0 font-mono text-xs" spellcheck="false" @update:model-value="editYaml(String($event))" />
-      <p class="text-xs text-muted-foreground">{{ kind === 'upstreams' ? '使用 YAML 列表填写地址和完整上游参数。' : '使用 YAML 列表批量编辑，每个列表项对应一条。' }} 切换模式会保留配置值，YAML 注释与排版可能重新整理。</p>
     </div>
     <p v-if="error" role="alert" class="break-words text-sm text-destructive-accent">{{ error }}</p>
   </section>
@@ -46,12 +52,15 @@
 
 <script setup lang="ts">
 import { onUnmounted, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, Plus, Trash2 } from '@lucide/vue'
+import { ArrowDown, ArrowUp, ChevronDown, Plus, Trash2 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import FormField from '@/components/common/FormField.vue'
+import FieldHelp from '@/components/common/FieldHelp.vue'
+import OxidnsEditorModeToggle from './OxidnsEditorModeToggle.vue'
 import { encodeEntries, entryYaml, parseEntryModel, parseEntryYaml, type EntryKind, type EntryValue } from '@/lib/oxidnsEntries'
 
 const props = defineProps<{ modelValue: unknown; kind: EntryKind; label: string; id: string; placeholder?: string; emptyHint?: string }>()
@@ -100,6 +109,7 @@ const move = (index: number, step: number) => { const [row] = rows.value.splice(
 const upstreamAddress = (value: EntryValue) => typeof value === 'string' ? value : typeof value === 'object' ? value.addr : ''
 const upstreamField = (value: EntryValue, key: string) => typeof value === 'object' ? value[key] ?? '' : ''
 const pipeline = (value: EntryValue) => typeof value === 'object' && typeof value.enable_pipeline === 'boolean' ? String(value.enable_pipeline) : 'default'
+const parameterCount = (value: EntryValue) => typeof value === 'object' ? Object.keys(value).filter(key => key !== 'addr' && value[key] !== undefined).length : 0
 const extraCount = (value: EntryValue) => typeof value === 'object' ? Object.keys(value).filter(key => !['addr', 'bootstrap', 'dial_addr', 'enable_pipeline'].includes(key)).length : 0
 const editValue = (index: number, value: string) => {
   if (props.kind === 'upstreams') {

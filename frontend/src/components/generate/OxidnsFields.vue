@@ -1,6 +1,6 @@
 <template>
   <div class="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2">
-    <FormField v-for="field in visibleFields" :key="field.path" :label="field.label" :html-for="`oxi-${field.path}`" :hint="field.hint" :class="field.wide && 'sm:col-span-2'">
+    <FormField v-for="field in visibleFields" :key="field.path" :label="field.label" :html-for="`oxi-${field.path}`" :help="field.hint" :documentation="field.documentation" :class="field.wide && 'sm:col-span-2'">
       <OxidnsEntryEditor v-if="['list', 'numbers', 'upstreams', 'lines'].includes(field.type || '')" :id="`oxi-${field.path}`" :model-value="read(field.path)" :label="field.label" :kind="field.type === 'list' ? 'strings' : field.type as 'numbers' | 'upstreams' | 'lines'" :placeholder="field.placeholder" :empty-hint="field.emptyHint" @update:model-value="write(field.path, $event)" @error="emit('error', field.path, $event ? `${field.label}：${$event}` : '')" />
       <div v-else-if="field.type === 'switch' || field.type === 'tls'" class="flex min-h-11 items-center">
         <Switch :id="`oxi-${field.path}`" :model-value="Boolean(read(field.path))" @update:model-value="write(field.path, field.type === 'tls' ? ($event ? {} : undefined) : $event)" />

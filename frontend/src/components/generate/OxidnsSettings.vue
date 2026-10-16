@@ -17,20 +17,19 @@
         </TabsList>
         <div class="cf-focus-gutter min-h-0 overflow-y-auto py-2">
           <TabsContent force-mount value="core" class="data-[state=inactive]:hidden space-y-5">
-            <InfoNote>
-              <p>已验证模板：2 线程、相邻同策略规则合并、300 秒 lazy cache、2048 条独立探测缓存。</p>
-              <p>应用模板会填写这些性能参数；上游、规则选择与特色功能继续使用本页设置。</p>
-            </InfoNote>
-            <Button variant="outline" class="min-h-11" @click="applyTemplate">应用已验证模板</Button>
+            <div class="flex items-center gap-1">
+              <Button variant="outline" class="min-h-11" @click="applyTemplate">应用已验证模板</Button>
+              <FieldHelp label="已验证模板" text="填入已测试的性能参数：2 个工作线程、合并相邻同策略规则、300 秒 lazy cache 和 2048 条国内探测缓存，以及对应的上游并发与备用等待参数。上游地址、规则选择和特色功能继续使用当前值；保存后才生效。" />
+            </div>
             <OxidnsFields :settings="settings" @error="setEditorError" :fields="coreFields" />
           </TabsContent>
           <TabsContent force-mount value="rules" class="data-[state=inactive]:hidden space-y-5">
-            <InfoNote>
-              <p>只有选中的规则参与分流，按「规则管理」中的顺序执行。相邻同策略规则可合并，直连 / 代理交替优先级保持不变。</p>
-              <p>域名规则优先匹配；未命中时使用国内探测结果继续判断 IP 规则。</p>
-            </InfoNote>
+            <div class="flex items-center gap-1">
+              <h3 class="text-sm font-medium">分流规则</h3>
+              <FieldHelp label="分流规则" text="只有选中的规则参与分流，按规则管理中的顺序执行。先匹配域名规则，未命中时通过直连 DNS 探测，再用响应 IP 判断 IP 规则。合并相邻同策略规则不会改变直连与代理之间的优先级。" />
+            </div>
             <div class="grid min-w-0 gap-4 sm:grid-cols-2">
-              <FormField v-for="group in ruleGroups" :key="group.key" :label="group.label">
+              <FormField v-for="group in ruleGroups" :key="group.key" :label="group.label" :help="group.hint">
                 <MultiSelect v-model="settings[group.key]" :options="ruleOptions(group)" :placeholder="`选择${group.label}`" />
               </FormField>
             </div>
@@ -39,30 +38,32 @@
           </TabsContent>
           <TabsContent force-mount value="upstreams" class="data-[state=inactive]:hidden "><OxidnsFields :settings="settings" @error="setEditorError" :fields="upstreamFields" /></TabsContent>
           <TabsContent force-mount value="cache" class="data-[state=inactive]:hidden space-y-4">
-            <InfoNote>探测缓存仅存储国内探测响应，返回后仍继续 IP 分流。此缓存不使用 lazy cache，避免过期 IP 延迟重新分类。</InfoNote>
             <OxidnsFields :settings="settings" @error="setEditorError" :fields="cacheFields" />
           </TabsContent>
           <TabsContent force-mount value="features" class="data-[state=inactive]:hidden space-y-3">
-            <details v-for="feature in featureGroups" :key="feature.key" class="group rounded-lg border border-border bg-card">
-              <summary class="flex min-h-12 cursor-pointer items-center justify-between gap-3 px-4 py-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <span class="min-w-0 flex-1">{{ feature.title }}</span><span class="chip shrink-0" :class="settings[feature.key].enabled ? 'chip-ok' : ''">{{ settings[feature.key].enabled ? '已启用' : '未启用' }}</span><ChevronDown class="size-4 shrink-0 text-muted-foreground group-open:rotate-180" aria-hidden="true" />
-              </summary>
-              <div class="space-y-4 border-t border-border px-4 py-4">
-                <p class="text-xs leading-relaxed text-muted-foreground">{{ feature.hint }}</p>
+            <Collapsible v-for="feature in featureGroups" :key="feature.key" class="group rounded-lg border border-border bg-card">
+              <div class="relative flex min-h-12 items-center justify-between gap-3 px-4 py-3 text-sm font-medium">
+                <CollapsibleTrigger type="button" :aria-label="`${feature.title}设置`" class="absolute inset-0 cursor-pointer rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-primary-accent" />
+                <span class="pointer-events-none flex min-w-0 flex-1 items-center gap-1">
+                  <span class="min-w-0">{{ feature.title }}</span>
+                  <span class="pointer-events-auto relative z-10"><FieldHelp :label="feature.title" :text="feature.hint" /></span>
+                </span>
+                <span class="chip pointer-events-none shrink-0" :class="settings[feature.key].enabled ? 'chip-ok' : ''">{{ settings[feature.key].enabled ? '已启用' : '未启用' }}</span><ChevronDown class="pointer-events-none size-4 shrink-0 text-muted-foreground group-data-[state=open]:rotate-180" aria-hidden="true" />
+              </div>
+              <CollapsibleContent force-mount class="data-[state=closed]:hidden space-y-4 border-t border-border px-4 py-4">
                 <div class="flex min-h-11 items-center gap-3">
                   <Switch :id="`oxi-enable-${feature.key}`" v-model="settings[feature.key].enabled" />
                   <Label :for="`oxi-enable-${feature.key}`">启用{{ feature.title }}</Label>
                 </div>
                 <OxidnsFields v-if="settings[feature.key].enabled" :settings="settings" @error="setEditorError" :fields="feature.fields" />
-              </div>
-            </details>
+              </CollapsibleContent>
+            </Collapsible>
           </TabsContent>
           <TabsContent force-mount value="access" class="data-[state=inactive]:hidden space-y-4">
-            <InfoNote>WebUI 与 API 使用同一组用户名、密码。预览、下载的运行配置包含这些凭据，请妥善保存。</InfoNote>
             <OxidnsFields :settings="settings" @error="setEditorError" :fields="apiFields" />
           </TabsContent>
           <TabsContent force-mount value="advanced" class="data-[state=inactive]:hidden space-y-4">
-            <OxidnsFields :settings="settings" @error="setEditorError" :fields="[{ path: 'custom_match_position', label: '自定义匹配位置', options: [{ value: 'head', label: '在自动规则之前' }, { value: 'tail', label: '在自动规则之后' }] }]" />
+            <OxidnsFields :settings="settings" @error="setEditorError" :fields="[{ path: 'custom_match_position', label: '自定义匹配位置', hint: '决定自定义匹配与自动域名分流规则的先后顺序。放在前面可优先覆盖自动规则；放在后面则在自动域名规则未结束请求时执行，仍早于动态域名集和 IP 分流判断。', options: [{ value: 'head', label: '在自动规则之前' }, { value: 'tail', label: '在自动规则之后' }] }]" />
             <OxidnsMatchEditor v-model="settings.custom_matches" :disabled="saving" @error="setEditorError('custom_matches', $event ? `自定义匹配：${$event}` : '')" />
             <OxidnsConfigEditor v-model="settings.custom_config" @error="setEditorError('custom_config', $event ? `基础配置扩展：${$event}` : '')" />
           </TabsContent>
@@ -88,10 +89,11 @@ import OxidnsFields from './OxidnsFields.vue'
 import OxidnsMatchEditor from './OxidnsMatchEditor.vue'
 import OxidnsConfigEditor from './OxidnsConfigEditor.vue'
 import FormField from '@/components/common/FormField.vue'
-import InfoNote from '@/components/common/InfoNote.vue'
+import FieldHelp from '@/components/common/FieldHelp.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
 import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -117,10 +119,10 @@ const tabs = [
   { value: 'features', label: '特色功能' }, { value: 'access', label: 'WebUI / 日志' }, { value: 'advanced', label: '高级' }
 ]
 const ruleGroups = [
-  { key: 'direct_rulesets', opposite: 'proxy_rulesets', label: '直连规则集', sets: true },
-  { key: 'proxy_rulesets', opposite: 'direct_rulesets', label: '代理规则集', sets: true },
-  { key: 'direct_rules', opposite: 'proxy_rules', label: '直连规则', sets: false },
-  { key: 'proxy_rules', opposite: 'direct_rules', label: '代理规则', sets: false }
+  { key: 'direct_rulesets', opposite: 'proxy_rulesets', label: '直连规则集', sets: true, hint: '选择整组域名或 IP 规则，命中后使用直连 DNS。规则集内容会包含在完整下载包中；同一规则集不能同时归入代理分组。' },
+  { key: 'proxy_rulesets', opposite: 'direct_rulesets', label: '代理规则集', sets: true, hint: '选择整组域名或 IP 规则，命中后进入代理 DNS 与备用 DNS 流程。同一规则集不能同时归入直连分组。' },
+  { key: 'direct_rules', opposite: 'proxy_rules', label: '直连规则', sets: false, hint: '选择规则管理中单独添加的域名或 IP 规则，命中后使用直连 DNS。与规则集一起按原有顺序参与分流。' },
+  { key: 'proxy_rules', opposite: 'direct_rules', label: '代理规则', sets: false, hint: '选择规则管理中单独添加的域名或 IP 规则，命中后进入代理 DNS 与备用 DNS 流程。与规则集一起按原有顺序参与分流。' }
 ]
 const ruleOptions = (group: typeof ruleGroups[number]) => (group.sets ? ruleSets.value : rules.value)
   .filter(item => !settings.value?.[group.opposite].includes(item.id) || settings.value?.[group.key].includes(item.id))

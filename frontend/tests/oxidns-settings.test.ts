@@ -89,6 +89,28 @@ describe('OxiDNS profile settings', () => {
     expect((Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === '保存设置') as HTMLButtonElement).disabled).toBe(false)
   })
 
+  it('shows feature help while collapsed without expanding or enabling the feature', async () => {
+    await render()
+    await click('特色功能')
+    for (const feature of featureGroups) {
+      expect(document.querySelector(`button[aria-label="${feature.title}说明"]`)).not.toBeNull()
+    }
+    const trigger = document.querySelector('button[aria-label="查询记录设置"]') as HTMLButtonElement
+    const help = document.querySelector('button[aria-label="查询记录说明"]') as HTMLButtonElement
+    const toggle = document.getElementById('oxi-enable-query_recorder') as HTMLButtonElement
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(trigger.contains(help)).toBe(false)
+    help.click()
+    await flushPromises()
+    expect(document.querySelector('[data-field-help-content]')?.textContent).toContain('SQLite 查询历史')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    trigger.click()
+    await flushPromises()
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+  })
+
   it('blocks malformed custom matches, retains the draft across tabs, then saves repaired values', async () => {
     await render()
     await click('高级')
@@ -208,7 +230,10 @@ describe('OxiDNS profile settings', () => {
     await render()
     await click('特色功能')
     const toggle = document.getElementById('oxi-enable-adguard') as HTMLButtonElement
-    toggle.closest('details')!.open = true
+    const feature = featureGroups.find(feature => feature.key === 'adguard')!
+    const trigger = document.querySelector(`button[aria-label="${feature.title}设置"]`) as HTMLButtonElement
+    trigger.click()
+    await flushPromises()
     await click('YAML', entryEditor('规则订阅'))
     await input('[id="oxi-adguard.urls-yaml"]', '- https://rules.example.test/updated')
     await input('[id="oxi-adguard.urls-yaml"]', 'invalid: mapping')

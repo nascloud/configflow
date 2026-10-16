@@ -60,6 +60,32 @@ describe('OxiDNS entry editor', () => {
     await wrapper.get('[aria-label="删除测试列表第 1 项"]').trigger('click')
     expect((load((wrapper.vm as any).value) as any[])[0].extra.nested).toEqual([1, false])
   })
+  it('retains edited parameters and expanded row identity through collapsing and reordering', async () => {
+    const wrapper = render('- addr: tls://dns.example.test\n  enable_pipeline: false\n  extra: {nested: [1, false]}\n- addr: udp://192.0.2.2')
+    const parameters = (index: number) => wrapper.get(`[aria-label="测试列表第 ${index} 项上游参数"]`)
+
+    expect(parameters(1).attributes('aria-expanded')).toBe('false')
+    expect(parameters(1).text()).toContain('已设置 2 项')
+    expect(parameters(2).text()).toContain('默认')
+    expect(wrapper.find('[aria-label="测试列表第 1 项 bootstrap"]').exists()).toBe(false)
+
+    await parameters(1).trigger('click')
+    await wrapper.get('[aria-label="测试列表第 1 项 bootstrap"]').setValue('192.0.2.53:53')
+    expect(parameters(1).text()).toContain('已设置 3 项')
+    await parameters(1).trigger('click')
+    expect(parameters(1).attributes('aria-expanded')).toBe('false')
+    await parameters(1).trigger('click')
+    expect((wrapper.get('[aria-label="测试列表第 1 项 bootstrap"]').element as HTMLInputElement).value).toBe('192.0.2.53:53')
+
+    await wrapper.get('[aria-label="下移测试列表第 1 项"]').trigger('click')
+    expect(parameters(1).attributes('aria-expanded')).toBe('false')
+    expect(parameters(2).attributes('aria-expanded')).toBe('true')
+    expect((wrapper.get('[aria-label="测试列表第 2 项 bootstrap"]').element as HTMLInputElement).value).toBe('192.0.2.53:53')
+    expect(load((wrapper.vm as any).value)).toEqual([
+      { addr: 'udp://192.0.2.2' },
+      { addr: 'tls://dns.example.test', enable_pipeline: false, extra: { nested: [1, false] }, bootstrap: '192.0.2.53:53' }
+    ])
+  })
   it('keeps invalid YAML drafts and last valid model until repaired', async () => {
     const wrapper = render('udp://192.0.2.1')
     await button(wrapper, 'YAML').trigger('click')

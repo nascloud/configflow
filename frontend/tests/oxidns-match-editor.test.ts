@@ -165,10 +165,12 @@ describe('OxiDNS custom match editor', () => {
     expect((wrapper.get('#oxi-custom-matches').element as HTMLTextAreaElement).value).toContain('qtype 28')
   })
 
-  it('disables all controls while the parent form is busy', async () => {
+  it('disables editing controls while keeping help available when the parent form is busy', async () => {
     const wrapper = render([direct()])
     await wrapper.setProps({ disabled: true })
-    expect(wrapper.findAll('button').every(button => button.attributes('disabled') !== undefined)).toBe(true)
+    const editingButtons = wrapper.findAll('button').filter(button => !button.attributes('aria-label')?.endsWith('说明'))
+    expect(editingButtons.every(button => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(wrapper.get('[aria-label="自定义匹配说明"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('textarea').attributes('disabled')).toBeDefined()
   })
 })

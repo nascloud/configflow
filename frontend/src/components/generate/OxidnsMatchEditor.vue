@@ -1,16 +1,17 @@
 <template>
   <div class="flex min-w-0 flex-col gap-3" data-testid="oxidns-match-editor">
-    <div class="flex flex-wrap items-center gap-2">
-      <span class="mr-auto text-sm font-medium">自定义匹配</span>
-      <div class="inline-flex rounded-lg border border-border bg-secondary p-1" role="group" aria-label="自定义匹配编辑模式">
-        <Button type="button" size="sm" :variant="mode === 'entries' ? 'secondary' : 'ghost'" class="min-h-11" :aria-pressed="mode === 'entries'" :disabled="disabled" @click="changeMode('entries')">条目</Button>
-        <Button type="button" size="sm" :variant="mode === 'yaml' ? 'secondary' : 'ghost'" class="min-h-11" :aria-pressed="mode === 'yaml'" :disabled="disabled" @click="changeMode('yaml')">YAML</Button>
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex w-full items-center gap-1 sm:w-auto">
+        <span class="text-sm font-medium">自定义匹配</span>
+        <FieldHelp label="自定义匹配" text="按条目顺序执行；同一条目的多个条件需要同时满足。暂停的条目不参与生成。扩展字段可在 YAML 中编辑，切换模式保留其值；无效 YAML 会保留为草稿，修正后才能保存。" />
       </div>
-      <Button v-if="mode === 'entries'" type="button" variant="outline" size="sm" class="min-h-11" :disabled="disabled" @click="addItem">
-        <Plus class="size-3.5" />添加匹配项
-      </Button>
+      <div class="flex items-center gap-2">
+        <OxidnsEditorModeToggle :model-value="mode" :options="[{ value: 'entries', label: '条目' }, { value: 'yaml', label: 'YAML' }]" label="自定义匹配编辑模式" :disabled="disabled" @update:model-value="changeMode" />
+        <Button v-if="mode === 'entries'" type="button" variant="outline" size="sm" class="h-9 text-xs max-sm:h-[50px] pointer-coarse:h-[50px]" :disabled="disabled" @click="addItem">
+          <Plus class="size-3.5" />添加匹配项
+        </Button>
+      </div>
     </div>
-    <p class="m-0 text-xs leading-relaxed text-muted-foreground">按顺序匹配；同一条目的多个条件需要同时满足。暂停的条目不参与生成。扩展字段可在 YAML 中编辑，切换模式会保留其值。</p>
 
     <template v-if="mode === 'entries'">
       <p v-if="items.length === 0" class="m-0 rounded-lg border border-border bg-background/40 p-3 text-xs text-muted-foreground">尚未添加自定义匹配项，点击「添加匹配项」设置条件和动作。</p>
@@ -29,7 +30,10 @@
         </div>
         <div class="flex min-w-0 flex-col gap-2">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <span class="text-xs font-medium">匹配条件</span>
+            <div class="flex items-center gap-1">
+              <span class="text-xs font-medium">匹配条件</span>
+              <FieldHelp :label="`匹配项 ${index + 1} 条件`" text="每条填写一段 OxiDNS 匹配表达式，例如 qname full:example.com 匹配完整域名，qtype 1 匹配 A 查询。多条条件之间是“并且”；没有条件时，该条目对所有到达此处的请求生效。" />
+            </div>
             <Button type="button" variant="ghost" size="sm" class="min-h-11" :aria-label="`为匹配项 ${index + 1} 添加条件`" :disabled="disabled" @click="addCondition(item)"><Plus class="size-3.5" />添加条件</Button>
           </div>
           <div v-for="(condition, conditionIndex) in conditions(item)" :key="conditionIndex" class="flex min-w-0 items-start gap-1">
@@ -37,7 +41,7 @@
             <Button type="button" variant="ghost" size="icon" class="size-11 shrink-0 text-muted-foreground" :aria-label="`删除匹配项 ${index + 1} 条件 ${conditionIndex + 1}`" :disabled="disabled" @click="removeCondition(item, conditionIndex)"><Trash2 class="size-4" /></Button>
           </div>
         </div>
-        <FormField label="执行动作" :html-for="`${item.key}-action`" hint="自定义动作可引用已定义的插件，例如 $my_plugin。">
+        <FormField label="执行动作" :html-for="`${item.key}-action`" help="条件全部满足后执行。直连、代理或备用会跳转到对应 DNS 序列；拒绝返回 NXDOMAIN，空响应返回 NOERROR 且不含答案。自定义动作可引用已定义插件，如 $my_plugin，或填写 goto 序列名。">
           <Select :model-value="item.customAction ? 'custom' : String(item.data.exec)" :disabled="disabled" @update:model-value="setAction(item, String($event))">
             <SelectTrigger :id="`${item.key}-action`" class="min-h-11 w-full" :aria-label="`匹配项 ${index + 1} 执行动作`"><SelectValue placeholder="选择执行动作" /></SelectTrigger>
             <SelectContent>
@@ -51,7 +55,7 @@
       </section>
     </template>
 
-    <FormField v-else label="自定义匹配 YAML" html-for="oxi-custom-matches" hint="使用 YAML 列表。每项的 matches 可为字符串或字符串列表，exec 为执行动作，enabled: false 表示暂停。">
+    <FormField v-else label="自定义匹配 YAML" html-for="oxi-custom-matches" help="使用 YAML 列表。每项的 matches 可为字符串或字符串列表，exec 为执行动作，enabled: false 表示暂停。清空所有匹配项可填写 []。">
       <Textarea id="oxi-custom-matches" :model-value="yamlDraft" :rows="12" class="min-w-0 font-mono text-xs" :disabled="disabled" :aria-invalid="Boolean(error)" :aria-describedby="error ? 'oxi-match-error' : undefined" spellcheck="false" placeholder="- matches: qname full:example.com&#10;  exec: goto china_dns" @update:model-value="updateYaml(String($event))" />
     </FormField>
     <p v-if="error" id="oxi-match-error" role="alert" class="m-0 whitespace-pre-wrap break-words rounded-lg bg-destructive-soft p-3 text-xs text-destructive-accent">{{ error }}</p>
@@ -63,6 +67,8 @@ import { ref, watch } from 'vue'
 import { dump, JSON_SCHEMA, load } from 'js-yaml'
 import { ChevronDown, ChevronUp, Plus, Trash2 } from '@lucide/vue'
 import FormField from '@/components/common/FormField.vue'
+import FieldHelp from '@/components/common/FieldHelp.vue'
+import OxidnsEditorModeToggle from './OxidnsEditorModeToggle.vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
