@@ -40,7 +40,7 @@ def get_mihomo_config():
     2. 外部请求：使用 URL 参数 ?token=xxx
     """
     try:
-        config_data = get_config(resolve_profile_id(fallback='default'))
+        config_data = get_config(resolve_profile_id())
 
         auth_error = _reject_invalid_config_auth(config_data)
         if auth_error:
@@ -76,7 +76,7 @@ def get_surge_config():
     2. 外部请求：使用 URL 参数 ?token=xxx
     """
     try:
-        config_data = get_config(resolve_profile_id(fallback='default'))
+        config_data = get_config(resolve_profile_id())
 
         auth_error = _reject_invalid_config_auth(config_data)
         if auth_error:
@@ -116,7 +116,7 @@ def get_loon_config():
     2. 外部请求：使用 URL 参数 ?token=xxx
     """
     try:
-        config_data = get_config(resolve_profile_id(fallback='default'))
+        config_data = get_config(resolve_profile_id())
 
         auth_error = _reject_invalid_config_auth(config_data)
         if auth_error:
@@ -148,7 +148,7 @@ def get_mosdns_config():
     2. 外部请求：使用 URL 参数 ?token=xxx
     """
     try:
-        config_data = get_config(resolve_profile_id(fallback='default'))
+        config_data = get_config(resolve_profile_id())
 
         auth_error = _reject_invalid_config_auth(config_data)
         if auth_error:
@@ -182,7 +182,7 @@ def get_profile_mihomo_config(profile_id):
 @config_bp.route('/<profile_id>/oxidns', methods=['GET'])
 def get_oxidns_config(profile_id=None):
     """Profile-scoped live OxiDNS configuration with the usual subscription auth."""
-    config_data = get_config(resolve_profile_id(explicit=profile_id, fallback='default'))
+    config_data = get_config(resolve_profile_id(explicit=profile_id))
     auth_error = _reject_invalid_config_auth(config_data)
     if auth_error:
         return auth_error

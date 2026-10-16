@@ -106,7 +106,7 @@ class AgentManager:
                     'port': agent_data.get('port', 8080),
                     'token': token,
                     'service_type': agent_data.get('service_type', 'mihomo'),
-                    'profile_id': requested_profile_id or existing_agent.get('profile_id', 'default'),
+                    'profile_id': requested_profile_id or (existing_agent.get('profile_id') or self.repository.default_profile_id()),
                     'deployment_method': agent_data.get('deployment_method', existing_agent.get('deployment_method', 'unknown')),
                     'status': 'online',
                     'last_heartbeat': datetime.now().isoformat(),
@@ -136,7 +136,7 @@ class AgentManager:
                 'port': agent_data.get('port', 8080),
                 'token': token,
                 'service_type': agent_data.get('service_type', 'mihomo'),
-                'profile_id': requested_profile_id or 'default',
+                'profile_id': requested_profile_id or self.repository.default_profile_id(),
                 'deployment_method': agent_data.get('deployment_method', 'unknown'),
                 'status': 'online',
                 'last_heartbeat': datetime.now().isoformat(),
@@ -201,7 +201,7 @@ class AgentManager:
                     continue
                 if _upgrade_busy(agent):
                     raise AgentDeploymentConflict('Agent update is in progress; wait for confirmation before editing it')
-                if ('profile_id' in updates and updates['profile_id'] != agent.get('profile_id', 'default')
+                if ('profile_id' in updates and updates['profile_id'] != (agent.get('profile_id') or self.repository.default_profile_id())
                         and any(task.get('status') not in ('succeeded', 'failed', 'rolled_back')
                                 for task in agent.get('deployments', {}).values())):
                     # Runs under the same repository transaction lock used by
@@ -335,7 +335,7 @@ class AgentManager:
                 return {'success': False, 'message': 'Agent already has an unfinished deployment',
                         'deployment_id': active['deployment_id'], 'status': active['status'], 'http_status': 409}
             record = {'success': True, 'deployment_id': deployment_id, 'status': 'preparing',
-                      'profile_id': agent.get('profile_id', 'default'),
+                      'profile_id': (agent.get('profile_id') or self.repository.default_profile_id()),
                       'service_type': agent.get('service_type', 'mihomo'), 'created_at': datetime.now().isoformat()}
             handle = self._preparation_file(agent_id, deployment_id)
             try:
@@ -389,7 +389,7 @@ class AgentManager:
             state['updated_at'] = datetime.now().isoformat()
             is_latest = (agent.get('latest_deployment') or {}).get('deployment_id') == deployment_id
             if (state.get('status') == 'succeeded' and is_latest
-                    and state.get('profile_id') == agent.get('profile_id', 'default')
+                    and state.get('profile_id') == (agent.get('profile_id') or self.repository.default_profile_id())
                     and state.get('service_type', agent.get('service_type')) == agent.get('service_type')):
                 agent['config_version'] = state.get('config_version', agent.get('config_version', '0'))
                 # Revisions are diagnostic; only server-prepared complete contents
@@ -449,7 +449,7 @@ class AgentManager:
         state = agent.get('deployments', {}).get(deployment_id)
         if not state:
             return {'success': False, 'message': 'Deployment not found', 'http_status': 404}
-        if state.get('profile_id') != agent.get('profile_id', 'default'):
+        if state.get('profile_id') != (agent.get('profile_id') or self.repository.default_profile_id()):
             return {'success': False, 'message': 'Deployment belongs to a different profile', 'http_status': 409}
         if state.get('status') in ('succeeded', 'failed', 'rolled_back'):
             return state
@@ -532,7 +532,7 @@ class AgentManager:
                 return {'success': False, 'message': 'Deployment not found', 'http_status': 404}
             if _upgrade_busy(agent):
                 return {'success': False, 'message': 'Agent update is in progress', 'http_status': 409}
-            if (state.get('profile_id') != agent.get('profile_id', 'default')
+            if (state.get('profile_id') != (agent.get('profile_id') or self.repository.default_profile_id())
                     or state.get('service_type', agent.get('service_type')) != agent.get('service_type')
                     or (agent.get('latest_deployment') or {}).get('deployment_id') != deployment_id):
                 return {'success': False, 'message': 'Only the latest deployment of this profile can be rolled back', 'http_status': 409}
@@ -610,7 +610,7 @@ class AgentManager:
             if not result.get('success'):
                 return result
         try:
-            if agent.get('profile_id', 'default') != bundle.manifest['profile_id']:
+            if (agent.get('profile_id') or self.repository.default_profile_id()) != bundle.manifest['profile_id']:
                 raise ValueError('Agent profile changed during preparation')
             capability = self._deployment_request(agent, 'get', 'capabilities', timeout=5)
             if 1 not in capability.get('deployment_protocols', []) or capability.get('service_type') != agent.get('service_type'):

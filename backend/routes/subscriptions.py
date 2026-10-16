@@ -6,7 +6,7 @@ import yaml
 
 from backend.routes import subscriptions_bp
 from backend.common.auth import require_auth, validate_token_or_jwt
-from backend.common.config import get_resource_config, get_shared_config, save_shared_config, update_shared_config_transaction
+from backend.common.config import get_default_profile_id, get_resource_config, get_shared_config, save_shared_config, update_shared_config_transaction
 from backend.common.config_repository import ProfileRepositoryError
 from backend.utils.reorder import resolve_new_order
 from backend.utils.subscription_cache import (
@@ -343,7 +343,7 @@ def get_all_subscription_proxies():
         from backend.converters.mihomo import generate_mihomo_config
         from backend.utils.strategy_references import StrategyReferenceError
         # Bind both topology and fallback caches before any remote fetch.
-        snapshot = DeliverySnapshot.capture(config_data.get('profile_id') or 'default',
+        snapshot = DeliverySnapshot.capture(config_data.get('profile_id') or get_default_profile_id(),
             yaml.safe_load(generate_mihomo_config(config_data, preflight_providers=False)), profile=config_data)
 
         # 收集所有订阅的代理列表
@@ -484,7 +484,7 @@ def get_subscription_proxies(sub_id):
         from backend.utils.provider_delivery import DeliverySnapshot
         from backend.converters.mihomo import generate_mihomo_config
         # Capture the originating graph before a remote fetch can change state.
-        snapshot = DeliverySnapshot.capture(config_data.get('profile_id') or 'default',
+        snapshot = DeliverySnapshot.capture(config_data.get('profile_id') or get_default_profile_id(),
             yaml.safe_load(generate_mihomo_config(config_data, preflight_providers=False)), profile=config_data)
         if snapshot.has_chains:
             from backend.utils.provider_delivery import prepare_provider_bundle, commit_provider_bundle

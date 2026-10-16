@@ -221,7 +221,8 @@ def prepare_provider_bundle(config, main, *, requested=None, render_all=False, a
                 result.set_exception(exc)
         return result.result()
 
-    snapshot = DeliverySnapshot.capture(config.get('profile_id') or 'default', main, profile=config)
+    from backend.common.config import get_default_profile_id
+    snapshot = DeliverySnapshot.capture(config.get('profile_id') or get_default_profile_id(), main, profile=config)
     definitions = main.get('proxy-providers', {})
     if requested and requested_name not in definitions:
         main = deepcopy(main)
@@ -230,7 +231,7 @@ def prepare_provider_bundle(config, main, *, requested=None, render_all=False, a
         segment, suffix = ('subscriptions', 'proxies') if kind == 'subscription' else ('aggregations', 'provider')
         definitions[requested_name] = {'url': f"/{segment}/{resource['id']}/{suffix}",
                                        'path': f"./providers/{resource['id']}.yaml"}
-        snapshot = DeliverySnapshot.capture(config.get('profile_id') or 'default', main, profile=config)
+        snapshot = DeliverySnapshot.capture(config.get('profile_id') or get_default_profile_id(), main, profile=config)
     sources = {}
     for name, definition in definitions.items():
         url = definition.get('url', '')

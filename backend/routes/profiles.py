@@ -65,7 +65,8 @@ def handle_profile(profile_id):
         return jsonify(repository._profile_metadata(profile_id))
     if request.method == 'PUT':
         return jsonify(repository.update_profile(profile_id, request.get_json(silent=True) or {}))
-    repository.delete_profile(profile_id)
+    body = request.get_json(silent=True) or {}
+    repository.delete_profile(profile_id, request.args.get('new_default') or body.get('new_default'))
     return '', 204
 
 

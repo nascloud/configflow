@@ -11,6 +11,8 @@ export interface Profile {
   updated_at?: string
   /** 配置内容的修订号，每次内容变化 +1 */
   revision?: number
+  /** 是否为默认配置空间（未指定配置空间时使用；删除默认配置时可切换给其他配置空间） */
+  is_default?: boolean
 }
 
 const profiles = ref<Profile[]>([])
@@ -25,7 +27,7 @@ const refreshProfiles = (): Promise<Profile[]> => {
       const { data } = await profileApi.list()
       profiles.value = data
       if (!profiles.value.some(profile => profile.id === activeProfileId.value)) {
-        setActiveProfileId(profiles.value.find(profile => profile.id === 'default')?.id || profiles.value[0]?.id || 'default')
+        setActiveProfileId(defaultProfileId.value || profiles.value[0]?.id || 'default')
       }
       return profiles.value
     } finally {
@@ -55,6 +57,13 @@ const switchProfile = async (profileId: string): Promise<boolean> => {
   return true
 }
 
+// 旧后端不返回 is_default，此时 default 即默认配置空间
+export const isDefaultProfile = (profile: Profile): boolean => profile.is_default ?? profile.id === 'default'
+
+const defaultProfileId = computed(() =>
+  profiles.value.find(isDefaultProfile)?.id || 'default'
+)
+
 const activeProfile = computed(() =>
   profiles.value.find(profile => profile.id === activeProfileId.value)
 )
@@ -69,6 +78,7 @@ export const useProfileStore = () => ({
   scopedRequests,
   activeProfileId,
   activeProfile,
+  defaultProfileId,
   refreshProfiles,
   switchProfile,
   profileName,

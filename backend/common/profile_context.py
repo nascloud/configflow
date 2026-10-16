@@ -69,7 +69,7 @@ def resolve_profile_id(explicit: Optional[str] = None, fallback: Optional[str] =
         candidate = None
 
     if candidate is None:
-        candidate = fallback if fallback is not None else "default"
+        candidate = fallback if fallback is not None else repository.default_profile_id()
     repository.validate_profile_id(candidate)
     repository._profile_metadata(candidate)
     return candidate

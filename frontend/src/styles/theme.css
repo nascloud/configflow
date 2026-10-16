@@ -241,6 +241,16 @@
     color: var(--foreground);
     font-family: var(--font-sans);
   }
+
+  /* 滚动条默认透明（仍占位，避免内容跳动），滚动期间由 main.ts 打上 data-scrolling 后才显示 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+
+  [data-scrolling] {
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 55%, transparent) transparent;
+  }
 }
 
 /* ============================================================

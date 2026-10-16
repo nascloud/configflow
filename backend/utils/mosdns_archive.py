@@ -61,7 +61,8 @@ def _local_path(url, config, base_url):
             prefix = candidate.path.rstrip('/')
             if origin == expected and parsed.path.startswith(prefix + '/'):
                 paths.append(unquote(parsed.path[len(prefix):]))
-    profile_id = config.get('profile_id', 'default')
+    from backend.common.config import get_default_profile_id
+    profile_id = config.get('profile_id') or get_default_profile_id()
     for path in paths:
         if path.startswith('/api/profiles/'):
             prefix = f'/api/profiles/{profile_id}/'

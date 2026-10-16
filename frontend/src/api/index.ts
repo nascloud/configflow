@@ -158,7 +158,8 @@ export const profileApi = {
   get: (id: string) => api.get(profilePath(id)),
   create: (data: any) => api.post('/profiles', data),
   update: (id: string, data: any) => api.put(profilePath(id), data),
-  delete: (id: string) => api.delete(profilePath(id)),
+  delete: (id: string, newDefault?: string) =>
+    api.delete(profilePath(id), newDefault ? { params: { new_default: newDefault } } : undefined),
   clone: (id: string, data: any) => api.post(profilePath(id, '/clone'), data),
   export: (id: string) => api.get(profilePath(id, '/export'), { responseType: 'blob' }),
   import: (id: string, data: any) => api.post(profilePath(id, '/import'), data),

@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, Optional
 from backend.agents.traffic_store import get_traffic_store
 from backend.agents.version import compare_versions
 from backend.common.agent_manager import get_agent_manager
-from backend.common.config import get_config, update_config_transaction, update_shared_config_transaction
+from backend.common.config import get_config, get_default_profile_id, update_config_transaction, update_shared_config_transaction
 from backend.common.config_repository import ProfileValidationError
 from backend.utils.domain_discovery import TARGETS, format_ruleset_line, summarize
 from backend.utils.domain_matcher_cache import local_matcher
@@ -345,7 +345,7 @@ def agent_supported(version, minimum=MIN_AGENT_VERSION):
 
 def profile_agents(profile_id):
     return [agent for agent in get_agent_manager().get_all_agents()
-            if agent.get('profile_id', 'default') == profile_id and agent.get('service_type') == 'mihomo']
+            if (agent.get('profile_id') or get_default_profile_id()) == profile_id and agent.get('service_type') == 'mihomo']
 
 
 def _probe_agents(profile_id):
