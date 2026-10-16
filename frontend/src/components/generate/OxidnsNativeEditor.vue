@@ -43,24 +43,13 @@
           </div>
           <div v-if="opened.has(plugin.id)" class="min-w-0 space-y-2 border-t border-border p-3">
             <a v-if="pluginDefinition(plugin)?.documentation" :href="pluginDefinition(plugin)!.documentation" target="_blank" rel="noopener noreferrer" class="inline-flex min-h-9 items-center gap-1 text-xs text-primary-accent underline-offset-4 hover:underline max-md:min-h-11">{{ pluginDefinition(plugin)!.label }}文档<ExternalLink class="size-3" /></a>
-            <OxidnsSchemaValueEditor :node="plugin" :schema="pluginSchema(plugin)" :label="`插件 ${index + 1}`" :disabled="disabled" @change="commit" />
+            <OxidnsSchemaValueEditor :node="plugin" :schema="pluginSchema(plugin)" :label="`插件 ${index + 1}`" layout="plugin" :auto-expand-depth="3" :disabled="disabled" @change="commit" />
           </div>
         </div>
 
-        <div class="min-w-0 space-y-2 rounded-lg border border-dashed border-border-strong p-3">
-          <div class="flex items-center gap-1"><h5 class="text-xs font-medium">添加插件</h5><FieldHelp label="添加原生插件" text="搜索官方插件类型，添加后填写参数；自定义类型适合更新版本或第三方扩展。添加时只创建 tag、type 和空参数，不会把文档默认值自动写入其他现有配置。" /></div>
-          <Input v-model="catalogFilter" :disabled="disabled || nonListPlugins" aria-label="搜索可添加插件" placeholder="搜索名称、类型或功能…" class="oxi-native-control text-xs" />
-          <div class="flex min-w-0 flex-wrap items-center gap-2">
-            <Select v-model="selectedType" :disabled="disabled || nonListPlugins">
-              <SelectTrigger class="oxi-native-control min-w-0 flex-1 basis-48" aria-label="选择插件类型"><SelectValue placeholder="选择插件类型…" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem v-for="plugin in filteredCatalog" :key="plugin.type" :value="plugin.type">{{ plugin.label }} · {{ plugin.type }}</SelectItem>
-                <SelectItem value="__custom__">自定义类型</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button type="button" variant="outline" class="oxi-native-control" :disabled="disabled || nonListPlugins || !selectedType" @click="addPlugin"><Plus class="size-3.5" />添加插件</Button>
-          </div>
-          <p v-if="catalogFilter && !filteredCatalog.length" class="text-xs text-muted-foreground">没有匹配的官方插件，可以选择自定义类型。</p>
+        <div class="flex min-w-0 items-center gap-1 border-t border-border pt-3">
+          <OxidnsParameterPicker :fields="pluginChoices" label="原生插件" button-text="添加插件" :disabled="disabled || nonListPlugins" @select="addPlugin" />
+          <FieldHelp label="添加原生插件" text="搜索官方插件类型并查看用途，点选即可添加；自定义类型适合更新版本或第三方扩展。添加时只创建 tag、type 和空参数，不会把文档默认值自动写入其他现有配置。" />
         </div>
       </div>
     </div>
@@ -70,14 +59,14 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, ChevronDown, ExternalLink, Plus, Trash2 } from '@lucide/vue'
+import { ArrowDown, ArrowUp, ChevronDown, ExternalLink, Trash2 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import FieldHelp from '@/components/common/FieldHelp.vue'
 import OxidnsEditorModeToggle from './OxidnsEditorModeToggle.vue'
 import OxidnsSchemaValueEditor from './OxidnsSchemaValueEditor.vue'
+import OxidnsParameterPicker from './OxidnsParameterPicker.vue'
 import { appendConfigEntry, configNodeToValue, defaultConfigNode, parseConfigDocument, serializeConfigDocument, valueToConfigNode, type ConfigValueNode } from '@/lib/oxidnsConfigEditor'
 import { oxidnsGlobalSchema, oxidnsPluginCatalog, type OxidnsSchema } from '@/lib/oxidnsSchema'
 
@@ -90,18 +79,13 @@ const mode = ref<'form' | 'yaml'>('form')
 const error = ref('')
 const formDraftError = ref(false)
 const opened = ref(new Set<string>())
-const selectedType = ref('')
 const pluginFilter = ref('')
-const catalogFilter = ref('')
 let lastEmitted: string | undefined
 const plugins = computed(() => tree.value.entries.find(entry => entry.key === 'plugins' && entry.value.type === 'array'))
 const nonListPlugins = computed(() => tree.value.entries.some(entry => entry.key === 'plugins' && entry.value.type !== 'array'))
 const scalarField = (node: ConfigValueNode, key: string) => node.entries.find(entry => entry.key === key)?.value.scalar ?? ''
 const pluginDefinition = (node: ConfigValueNode) => oxidnsPluginCatalog.find(plugin => plugin.type === scalarField(node, 'type'))
-const filteredCatalog = computed(() => {
-  const query = catalogFilter.value.toLowerCase().trim()
-  return oxidnsPluginCatalog.filter(plugin => `${plugin.type} ${plugin.category} ${plugin.label} ${plugin.help}`.toLowerCase().includes(query))
-})
+const pluginChoices = [...oxidnsPluginCatalog.map(plugin => ({ key: plugin.type, schema: { type: 'string' as const, label: plugin.label, help: plugin.help } })), { key: '__custom__', schema: { type: 'string' as const, label: '自定义类型', help: '用于更新版本或第三方插件，添加后手动填写类型及参数。' } }]
 const visiblePlugins = computed(() => {
   const query = pluginFilter.value.toLowerCase().trim()
   return (plugins.value?.value.items ?? []).map((plugin, index) => ({ plugin, index })).filter(({ plugin }) => `${scalarField(plugin, 'tag')} ${scalarField(plugin, 'type')}`.toLowerCase().includes(query))
@@ -153,8 +137,9 @@ function switchMode(next: 'form' | 'yaml') {
   mode.value = next
 }
 function toggle(id: string) { opened.value.has(id) ? opened.value.delete(id) : opened.value.add(id) }
-function addPlugin() {
-  const type = selectedType.value === '__custom__' ? '' : selectedType.value
+function addPlugin(selectedType: string) {
+  if (props.disabled || nonListPlugins.value) return
+  const type = selectedType === '__custom__' ? '' : selectedType
   const definition = oxidnsPluginCatalog.find(plugin => plugin.type === type)
   const target = plugins.value ?? appendConfigEntry(tree.value, 'plugins', [])
   const used = new Set(target.value.items.map(plugin => scalarField(plugin, 'tag')))
@@ -165,7 +150,6 @@ function addPlugin() {
   target.value.items.push(plugin)
   opened.value.add(plugin.id)
   pluginFilter.value = ''
-  selectedType.value = ''
   syncGlobals()
   commit()
 }

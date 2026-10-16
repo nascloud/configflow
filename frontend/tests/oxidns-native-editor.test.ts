@@ -3,6 +3,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { JSON_SCHEMA, load } from 'js-yaml'
 import OxidnsNativeEditor from '@/components/generate/OxidnsNativeEditor.vue'
 import OxidnsSchemaValueEditor from '@/components/generate/OxidnsSchemaValueEditor.vue'
+import OxidnsParameterPicker from '@/components/generate/OxidnsParameterPicker.vue'
 import { Select } from '@/components/ui/select'
 import { configNodeToValue, valueToConfigNode } from '@/lib/oxidnsConfigEditor'
 
@@ -41,6 +42,13 @@ async function select(wrapper: VueWrapper, ariaLabel: string, value: string) {
   control!.vm.$emit('update:modelValue', value)
   await flushPromises()
 }
+async function pick(wrapper: VueWrapper, label: string, key: string) {
+  const picker = wrapper.findAllComponents(OxidnsParameterPicker).find(component => component.props('label') === label)
+  expect(picker, label).toBeDefined()
+  expect(picker!.props('fields').some((field: any) => field.key === key && field.schema.help)).toBe(true)
+  picker!.vm.$emit('select', key)
+  await flushPromises()
+}
 function model(wrapper: VueWrapper): any { return load(wrapper.emitted('update:modelValue')!.at(-1)![0] as string, { schema: JSON_SCHEMA }) }
 function error(wrapper: VueWrapper): string { return wrapper.emitted('error')!.at(-1)![0] as string }
 
@@ -63,21 +71,37 @@ describe('complete OxiDNS editor', () => {
 
   it('adds native plugin types with native argument shapes and only explicit parameters', async () => {
     const wrapper = render()
-    await select(wrapper, '选择插件类型', 'forward')
-    await click(wrapper, '添加插件')
+    await pick(wrapper, '原生插件', 'forward')
     expect(model(wrapper)).toEqual({ plugins: [{ tag: 'forward', type: 'forward', args: {} }] })
-    await wrapper.get('[aria-label="插件 1.args 展开参数"]').trigger('click')
-    await select(wrapper, '插件 1.args 可添加参数', 'concurrent')
-    await wrapper.get('[aria-label="插件 1.args 添加所选参数"]').trigger('click')
+    expect(wrapper.find('[aria-label="插件 1.args 展开参数"]').exists()).toBe(false)
+    await pick(wrapper, '插件 1.args', 'concurrent')
     expect(model(wrapper).plugins[0].args).toEqual({ concurrent: 1 })
     await wrapper.get('[aria-label="插件 1.args.concurrent 值"]').setValue('0')
     expect(model(wrapper).plugins[0].args).toEqual({ concurrent: 0 })
-    await select(wrapper, '选择插件类型', 'sequence')
-    await click(wrapper, '添加插件')
+    await pick(wrapper, '原生插件', 'sequence')
     expect(model(wrapper).plugins[1]).toEqual({ tag: 'sequence', type: 'sequence', args: [] })
-    await select(wrapper, '选择插件类型', 'forward')
-    await click(wrapper, '添加插件')
+    await pick(wrapper, '原生插件', 'forward')
     expect(model(wrapper).plugins[2].tag).toBe('forward_2')
+  })
+
+  it('shows upstream fields after a single plugin expansion and adds a described parameter in one choice', async () => {
+    const wrapper = render('plugins: [{tag: forward_local, type: forward, args: {concurrent: 2, upstreams: [{addr: "223.5.5.5"}, {addr: "1.1.1.1"}]}}]')
+    await wrapper.get('[aria-label="插件 1 展开设置"]').trigger('click')
+    expect(wrapper.get('[aria-label="插件 1.args.concurrent 值"]').exists()).toBe(true)
+    expect(wrapper.get('[aria-label="插件 1.args.upstreams[1].addr 值"]').exists()).toBe(true)
+    expect(wrapper.get('[aria-label="插件 1.args.upstreams[2].addr 值"]').exists()).toBe(true)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await pick(wrapper, '插件 1.args.upstreams[1]', 'enable_pipeline')
+    expect(model(wrapper).plugins[0].args.upstreams[0]).toEqual({ addr: '223.5.5.5', enable_pipeline: false })
+    expect(wrapper.get('[aria-label="插件 1.args.upstreams[1].enable_pipeline说明"]').exists()).toBe(true)
+    expect(wrapper.find('[aria-label="插件 1.args.upstreams[1] 添加所选参数"]').exists()).toBe(false)
+    await wrapper.get('[aria-label="插件 1.args.upstreams[1] 展开参数"]').trigger('click')
+    await wrapper.get('[aria-label="插件 1.args.concurrent 值"]').setValue('3')
+    expect(wrapper.find('[aria-label="插件 1.args.upstreams[1].addr 值"]').exists()).toBe(false)
+    await wrapper.get('[aria-label="插件 1.args.upstreams 下移条目 1"]').trigger('click')
+    expect(wrapper.get('[aria-label="插件 1.args.upstreams[2] 展开参数"]').attributes('aria-expanded')).toBe('false')
+    await click(wrapper, 'YAML')
+    expect(load((wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').element as HTMLTextAreaElement).value)).toEqual(model(wrapper))
   })
 
   it('retains malformed YAML and invalid numeric drafts, blocking unsafe mode changes', async () => {
@@ -137,11 +161,9 @@ describe('schema-driven nested values', () => {
     await wrapper.get('[aria-label="出口.profiles 展开参数"]').trigger('click')
     await wrapper.get('[aria-label="出口.profiles 添加自定义字段"]').trigger('click')
     await wrapper.get('[aria-label="出口.profiles 字段名 1"]').setValue('proxy')
-    await select(wrapper, '出口.profiles.proxy 可添加参数', 'enabled')
-    await wrapper.get('[aria-label="出口.profiles.proxy 添加所选参数"]').trigger('click')
+    await pick(wrapper, '出口.profiles.proxy', 'enabled')
     expect(configNodeToValue(node)).toEqual({ profiles: { proxy: { enabled: false } } })
-    await select(wrapper, '出口.profiles.proxy 可添加参数', 'timeout')
-    await wrapper.get('[aria-label="出口.profiles.proxy 添加所选参数"]').trigger('click')
+    await pick(wrapper, '出口.profiles.proxy', 'timeout')
     await wrapper.get('[aria-label="出口.profiles.proxy.timeout 更改值类型"]').trigger('click')
     await select(wrapper, '出口.profiles.proxy.timeout 类型', 'string')
     await wrapper.get('[aria-label="出口.profiles.proxy.timeout 值"]').setValue('${TIMEOUT:-5}')
