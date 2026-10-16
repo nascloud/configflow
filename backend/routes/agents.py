@@ -776,7 +776,9 @@ def get_docker_agent_compose():
             'enable_mihomo': str_to_bool(request.args.get('enable_mihomo', 'true')),
             'enable_mosdns': str_to_bool(request.args.get('enable_mosdns', 'false')),
             'mihomo_port': request.args.get('mihomo_port', 8080, type=int),
-            'mosdns_port': request.args.get('mosdns_port', 8081, type=int)
+            'mosdns_port': request.args.get('mosdns_port', 8081, type=int),
+            'enable_oxidns': str_to_bool(request.args.get('enable_oxidns', 'false')),
+            'oxidns_port': request.args.get('oxidns_port', 8082, type=int)
         }
 
         script = generate_docker_agent_compose(**params)
@@ -802,7 +804,9 @@ def get_docker_agent_run():
             'enable_mihomo': str_to_bool(request.args.get('enable_mihomo', 'true')),
             'enable_mosdns': str_to_bool(request.args.get('enable_mosdns', 'false')),
             'mihomo_port': request.args.get('mihomo_port', 8080, type=int),
-            'mosdns_port': request.args.get('mosdns_port', 8081, type=int)
+            'mosdns_port': request.args.get('mosdns_port', 8081, type=int),
+            'enable_oxidns': str_to_bool(request.args.get('enable_oxidns', 'false')),
+            'oxidns_port': request.args.get('oxidns_port', 8082, type=int)
         }
 
         script = generate_docker_agent_run(**params)
@@ -912,6 +916,11 @@ def _prepare_transactional_content(agent, config_data, *, base_url='', deploymen
         config_content = generate_mosdns_config(config_data, base_url=base_url)
         ruleset_downloads = get_mosdns_ruleset_downloads(config_data, base_url=base_url)
         custom_files = get_mosdns_custom_files(config_data)
+    elif service_type == 'oxidns':
+        from backend.converters.oxidns import generate_oxidns_config, get_oxidns_ruleset_downloads, get_oxidns_custom_files
+        config_content = generate_oxidns_config(config_data, base_url=base_url)
+        ruleset_downloads = get_oxidns_ruleset_downloads(config_data, base_url=base_url)
+        custom_files = get_oxidns_custom_files(config_data)
     else:
         raise ValueError('Unsupported service type')
     bundle = build_deployment_bundle(agent, config_data, config_content,
@@ -973,7 +982,7 @@ def push_config_to_agent(agent_id):
                     result['restart'] = ({'success': True, 'message': 'Restart delegated to agent after config is written'}
                                          if self_restart else agent_manager.restart_agent_service(agent_id))
             return jsonify(result), 200 if result.get('success') else 500
-        if service_type not in ('mihomo', 'mosdns'):
+        if service_type not in ('mihomo', 'mosdns', 'oxidns'):
             return jsonify({'success': False, 'message': 'Unsupported service type'}), 400
         activate = data.get('restart', True)
         if not isinstance(activate, bool):
@@ -1048,6 +1057,12 @@ def get_agent_deployment(agent_id, deployment_id):
 @require_auth
 def activate_agent_deployment(agent_id, deployment_id):
     return _deployment_response(get_agent_manager().activate_deployment(agent_id, deployment_id))
+
+
+@bp.route('/<agent_id>/deployments/<deployment_id>/rollback', methods=['POST'])
+@require_auth
+def rollback_agent_deployment(agent_id, deployment_id):
+    return _deployment_response(get_agent_manager().rollback_deployment(agent_id, deployment_id))
 
 
 @bp.route('/<agent_id>/metrics', methods=['GET'])

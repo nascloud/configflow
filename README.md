@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Vue](https://img.shields.io/badge/Vue-3.x-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org)
 
-**一站式管理订阅、节点、规则，一键生成 Mihomo / Surge / Loon / MosDNS 配置**
+**一站式管理订阅、节点、规则，一键生成 Mihomo / Surge / Loon / MosDNS / OxiDNS 配置**
 
 [功能特性](#-功能特性) •
 [快速开始](#-快速开始) •
@@ -56,6 +56,7 @@
 - 一键生成 Surge 配置
 - 一键生成 Loon 配置，iOS 上可通过 `loon://import?sub=` 一键导入
 - 一键生成 MosDNS 配置
+- 一键生成 OxiDNS 完整配置包；独立设置分流、探测缓存、lazy cache、线程与特色插件，支持预览及 Agent 发布回滚（[使用说明](docs/OXIDNS.md)）
 - 实时预览 & 配置导入导出
 - 导入 Mihomo / Surge / Loon / Shadowrocket 配置文件为新的配置空间：节点、订阅、规则集并入共享资源（相同定义自动复用），策略组与规则按本项目结构转换
 - 多配置共享订阅、节点、聚合和规则仓库；资源引用、策略组、规则目标、拨号代理与生成参数分别保存
@@ -76,8 +77,9 @@
 - 一键生成安装脚本
 - 自动注册与心跳监控
 - 远程推送配置、重启、日志查看
-- 卡片按注册的服务类型显示 Mihomo、Surge 或 MosDNS；切换绑定配置不会改变服务类型标签
-- Mihomo、MosDNS 的「待推送」分别比较当前完整下发文件与上次成功推送的文件指纹，覆盖主配置、订阅节点、规则和自定义文件；修订号仅供诊断
+- 卡片按注册的服务类型显示 Mihomo、Surge、MosDNS 或 OxiDNS；切换绑定配置不会改变服务类型标签
+- Mihomo、MosDNS、OxiDNS 的「待推送」分别比较当前完整下发文件与上次成功推送的文件指纹，覆盖主配置、订阅节点、规则和自定义文件；修订号仅供诊断
+- OxiDNS 发布前执行原生配置校验，健康检查失败自动恢复旧配置；使用新版 Agent，安装目录要求见 [Agent 说明](docs/AGENT_OXIDNS.md)
 
 </td>
 </tr>

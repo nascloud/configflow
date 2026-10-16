@@ -369,6 +369,9 @@ class AgentManager:
             state = agent.get('deployments', {}).get(deployment_id)
             if state is None:
                 return {'success': False, 'message': 'Deployment not found', 'http_status': 404}
+            if state.get('manual_rollback') and not updates.get('manual_rollback'):
+                # An overlapping publication poll cannot undo a reserved rollback.
+                return state.copy()
             if state.get('status') in ('succeeded', 'failed', 'rolled_back') and updates.get('status', state['status']) != state['status']:
                 # An upload response or overlapping poll may arrive after a
                 # newer terminal result. Never regress a confirmed transaction.
@@ -380,7 +383,7 @@ class AgentManager:
             # Never let an upstream response replace task ownership or identity.
             for key in ('status', 'message', 'error', 'failed_stage', 'rollback_error', 'config_version',
                         'config_revision', 'success', 'sha256', 'submitted', 'previous_running', 'health',
-                        'http_status'):
+                        'http_status', 'manual_rollback'):
                 if key in updates:
                     state[key] = updates[key]
             state['updated_at'] = datetime.now().isoformat()
@@ -400,6 +403,12 @@ class AgentManager:
                         'config_version': agent['config_version'], 'deployment_id': deployment_id}
                 else:
                     agent.pop('applied_content', None)
+            if state.get('manual_rollback') and state.get('status') == 'rolled_back' and is_latest:
+                agent['config_version'] = state.get('config_version') or '0'
+                # The restored pre-publication files may predate ConfigFlow.
+                # Do not claim the current profile is installed after rollback.
+                for field in ('applied_content', 'config_revision', 'pushed_at'):
+                    agent.pop(field, None)
             if is_latest:
                 agent['latest_deployment'] = state.copy()
             return state.copy()
@@ -411,7 +420,7 @@ class AgentManager:
         headers.update(kwargs.pop('headers', {}))
         timeout = kwargs.pop('timeout', (5, 30))
         retry_busy = method == 'post' and (suffix == 'deployments' or
-                     (suffix.startswith('deployments/') and suffix.endswith('/activate')))
+                     (suffix.startswith('deployments/') and suffix.endswith(('/activate', '/rollback'))))
         deadline = time.monotonic() + 2
         for attempt in range(21):
             # Only this exact lock rejection proves no mutation was accepted.
@@ -451,7 +460,19 @@ class AgentManager:
                 'success': False, 'status': 'failed', 'message': 'Preparation interrupted before upload; current service unchanged'})
         try:
             result = self._deployment_request(agent, 'get', f'deployments/{deployment_id}')
+            if state.get('manual_rollback') and result.get('status') == 'succeeded' and not result.get('manual_rollback'):
+                if state.get('status') != 'unknown':
+                    return {**state, 'message': 'Rollback submission awaiting Agent confirmation', 'pending': True}
+                # A lost POST response is ambiguous. Reissuing the same guarded,
+                # idempotent rollback is safe; a publication status alone is not.
+                result = self._deployment_request(agent, 'post', f'deployments/{deployment_id}/rollback')
+                busy = result.get('http_status') == 409 and result.get('message') == 'another service operation is in progress'
+                if result.get('http_status') in (400, 404, 405, 409) and not busy:
+                    return self._cancel_manual_rollback(agent_id, deployment_id, result)
             if result.get('http_status') == 404:
+                if state.get('manual_rollback'):
+                    # A missing journal cannot prove whether the rollback ran.
+                    return {**state, 'message': 'Rollback journal unavailable; restore Agent records before retrying', 'pending': True}
                 return self.record_deployment(agent_id, deployment_id, {
                     'success': False, 'status': 'failed', 'message': 'Agent has no record of the uploaded deployment'})
             if result.get('http_status') or not isinstance(result.get('status'), str):
@@ -473,6 +494,67 @@ class AgentManager:
         except requests.RequestException:
             return self.record_deployment(agent_id, deployment_id, {
                 'success': True, 'status': 'unknown', 'message': 'Activation sent; awaiting Agent status'})
+
+    def rollback_deployment(self, agent_id, deployment_id):
+        """Reserve a rollback before network I/O so a new push cannot race it."""
+        def reserve(agents):
+            agent = next((item for item in agents if item['id'] == agent_id), None)
+            if agent is None:
+                return {'success': False, 'message': 'Agent not found', 'http_status': 404}
+            state = agent.get('deployments', {}).get(deployment_id)
+            if not state:
+                return {'success': False, 'message': 'Deployment not found', 'http_status': 404}
+            if _upgrade_busy(agent):
+                return {'success': False, 'message': 'Agent update is in progress', 'http_status': 409}
+            if (state.get('profile_id') != agent.get('profile_id', 'default')
+                    or state.get('service_type', agent.get('service_type')) != agent.get('service_type')
+                    or (agent.get('latest_deployment') or {}).get('deployment_id') != deployment_id):
+                return {'success': False, 'message': 'Only the latest deployment of this profile can be rolled back', 'http_status': 409}
+            if state.get('manual_rollback'):
+                return {**state, '_already_reserved': True}
+            if state.get('status') != 'succeeded':
+                return {'success': False, 'message': 'Only a successful deployment can be rolled back', 'http_status': 409}
+            state.update(status='rolling_back', manual_rollback=True, success=True, submitted=True)
+            state.pop('http_status', None)
+            state.pop('rollback_rejected', None)
+            state.pop('rollback_message', None)
+            agent['latest_deployment'] = state.copy()
+            return state.copy()
+
+        state = self._update_agents(reserve)
+        if state.get('http_status') or state.pop('_already_reserved', False):
+            return state
+        agent = self.get_agent_by_id(agent_id)
+        try:
+            result = self._deployment_request(agent, 'post', f'deployments/{deployment_id}/rollback')
+            if result.get('http_status') in (400, 404, 405, 409):
+                # Explicit rejection proves the Agent did not accept this action.
+                self._cancel_manual_rollback(agent_id, deployment_id, result)
+                return result
+            if result.get('http_status'):
+                return self.record_deployment(agent_id, deployment_id, {
+                    'success': True, 'status': 'unknown', 'manual_rollback': True,
+                    'message': 'Rollback outcome unknown; awaiting Agent status'})
+            return self.record_deployment(agent_id, deployment_id, result)
+        except requests.RequestException:
+            return self.record_deployment(agent_id, deployment_id, {
+                'success': True, 'status': 'unknown', 'manual_rollback': True,
+                'message': 'Rollback outcome unknown; awaiting Agent status'})
+
+    def _cancel_manual_rollback(self, agent_id, deployment_id, rejection):
+        """A definite preflight rejection preserves the successful publication."""
+        def cancel(agents):
+            current = next(item for item in agents if item['id'] == agent_id)
+            task = current['deployments'][deployment_id]
+            if task.get('status') in ('rolling_back', 'unknown') and task.get('manual_rollback'):
+                task.update(status='succeeded', success=True, rollback_rejected=True,
+                            rollback_message=rejection.get('message', 'Rollback was rejected by Agent'))
+                for field in ('manual_rollback', 'http_status', 'message'):
+                    task.pop(field, None)
+                if (current.get('latest_deployment') or {}).get('deployment_id') == deployment_id:
+                    current['latest_deployment'] = task.copy()
+            return task.copy()
+        return self._update_agents(cancel)
 
     def _remember_deployment_content(self, agent_id, bundle, base_url):
         """Persist trusted preparation metadata, never fields from an Agent response."""
@@ -568,7 +650,7 @@ class AgentManager:
         if not agent:
             return {'success': False, 'message': 'Agent not found'}
 
-        if agent.get('service_type', 'mihomo') in ('mihomo', 'mosdns'):
+        if agent.get('service_type', 'mihomo') in ('mihomo', 'mosdns', 'oxidns'):
             bundle = (extra_data or {}).get('deployment_bundle')
             if bundle is None:
                 return {'success': False, 'message': 'A complete deployment bundle is required', 'http_status': 409}

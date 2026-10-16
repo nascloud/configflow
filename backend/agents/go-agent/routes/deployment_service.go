@@ -24,7 +24,7 @@ var mihomoGeoAssets = []string{"Country.mmdb", "GeoIP.dat", "GeoSite.dat", "geoi
 var errServiceTransition = errors.New("service startup or shutdown is in progress")
 
 func validateServiceLifecycle(cfg *Config) error {
-	if cfg.ServiceType != "mihomo" && cfg.ServiceType != "mosdns" {
+	if cfg.ServiceType != "mihomo" && cfg.ServiceType != "mosdns" && cfg.ServiceType != "oxidns" {
 		return fmt.Errorf("unsupported service type")
 	}
 	switch cfg.ServiceManager {
@@ -132,6 +132,11 @@ func stopService(cfg *Config) error {
 	return nil
 }
 func startService(cfg *Config) error {
+	if cfg.ServiceType == "oxidns" {
+		if err := prepareOxiDNSRuntimeDirectories(cfg); err != nil {
+			return err
+		}
+	}
 	if _, e := serviceCommand(cfg, "start"); e != nil {
 		return fmt.Errorf("service start failed")
 	}
@@ -139,13 +144,16 @@ func startService(cfg *Config) error {
 }
 
 func validateStagedDeployment(cfg *Config, s *DeploymentState) error {
+	if err := ValidateOxiDNSServiceDirectory(cfg); err != nil {
+		return err
+	}
 	root := filepath.Join(deploymentPath(cfg, s.DeploymentID), "stage")
 	name := filepath.Join(root, s.Manifest.ConfigPath)
 	data, e := os.ReadFile(name)
 	if e != nil {
 		return e
 	}
-	if cfg.ServiceType == "mihomo" && os.Getenv("ENABLE_MOSDNS") == "true" {
+	if cfg.ServiceType == "mihomo" && (os.Getenv("ENABLE_MOSDNS") == "true" || os.Getenv("ENABLE_OXIDNS") == "true") {
 		modified, e := modifyMihomoConfig(string(data))
 		if e != nil {
 			return fmt.Errorf("invalid Mihomo configuration")
@@ -174,6 +182,9 @@ func validateStagedDeployment(cfg *Config, s *DeploymentState) error {
 			return e
 		}
 		return nil
+	}
+	if cfg.ServiceType == "oxidns" {
+		return validateOxiDNS(cfg, doc, root, name, s.Manifest)
 	}
 	if cfg.ServiceType != "mihomo" {
 		return fmt.Errorf("unsupported service type")
@@ -398,6 +409,14 @@ func deploymentProbe(cfg *Config) error {
 			secret, _ = doc["secret"].(string)
 		}
 	}
+	username, password := "", ""
+	if cfg.ServiceType == "oxidns" {
+		var err error
+		url, username, password, err = oxidnsHealthEndpoint(doc, url)
+		if err != nil {
+			return err
+		}
+	}
 	if url != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -407,6 +426,9 @@ func deploymentProbe(cfg *Config) error {
 		}
 		if secret != "" {
 			req.Header.Set("Authorization", "Bearer "+secret)
+		}
+		if username != "" {
+			req.SetBasicAuth(username, password)
 		}
 		client := http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(r *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
 		resp, e := client.Do(req)
@@ -419,7 +441,7 @@ func deploymentProbe(cfg *Config) error {
 			return fmt.Errorf("service HTTP health probe returned %d", resp.StatusCode)
 		}
 	}
-	if dnsAddress == "" && cfg.ServiceType == "mosdns" {
+	if dnsAddress == "" && (cfg.ServiceType == "mosdns" || cfg.ServiceType == "oxidns") {
 		if plugins, ok := doc["plugins"].([]interface{}); ok {
 			for _, value := range plugins {
 				p, _ := value.(map[string]interface{})
@@ -442,8 +464,8 @@ func deploymentProbe(cfg *Config) error {
 			return e
 		}
 	}
-	if cfg.ServiceType == "mosdns" && dnsAddress == "" {
-		return fmt.Errorf("configure health_dns_address for MosDNS DNS verification")
+	if (cfg.ServiceType == "mosdns" || cfg.ServiceType == "oxidns") && dnsAddress == "" {
+		return fmt.Errorf("configure health_dns_address for DNS verification")
 	}
 	if cfg.ServiceType == "mihomo" && url == "" && dnsAddress == "" {
 		// Without a controller, probe an enabled proxy listener. The process status

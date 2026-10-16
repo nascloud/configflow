@@ -48,7 +48,7 @@ proxy-groups:
 rules:
   - MATCH,PROXY
 EOFCONFIG
-        if [ "${ENABLE_MIHOMO:-false}" = "true" ] && [ "${ENABLE_MOSDNS:-false}" = "true" ]; then
+        if [ "${ENABLE_MIHOMO:-false}" = "true" ] && { [ "${ENABLE_MOSDNS:-false}" = "true" ] || [ "${ENABLE_OXIDNS:-false}" = "true" ]; }; then
             sed -i 's/listen: 0.0.0.0:53/listen: 0.0.0.0:1053/' "$MIHOMO_CONFIG"
         fi
         echo "Default mihomo config created at $MIHOMO_CONFIG"
@@ -100,6 +100,38 @@ plugins:
       listen: ":53"
 EOFCONFIG
         echo "Default mosdns config created at $MOSDNS_CONFIG"
+    fi
+}
+
+# The OxiDNS core owns state/, including learned rules and the recorder DB.
+create_default_oxidns_config() {
+    OXIDNS_CONFIG="${1:-/etc/oxidns/config.yaml}"
+    mkdir -p "$(dirname "$OXIDNS_CONFIG")/state"
+    if [ ! -f "$OXIDNS_CONFIG" ]; then
+        cat > "$OXIDNS_CONFIG" <<'EOFOXIDNS'
+runtime:
+  worker_threads: 2
+log:
+  level: info
+plugins:
+  - tag: forward_local
+    type: forward
+    args:
+      concurrent: 2
+      upstreams:
+        - addr: udp://223.5.5.5:53
+        - addr: udp://119.29.29.29:53
+  - tag: main_sequence
+    type: sequence
+    args:
+      - exec: $forward_local
+  - tag: server_udp
+    type: udp_server
+    args: {entry: main_sequence, listen: ':53'}
+  - tag: server_tcp
+    type: tcp_server
+    args: {entry: main_sequence, listen: ':53'}
+EOFOXIDNS
     fi
 }
 
@@ -230,6 +262,13 @@ if [ -n "$SERVICE_TYPE" ]; then
         configure_supervisor_core mosdns "${CONFIG_PATH:-/etc/mosdns/config.yaml}"
         set_supervisor_autostart /etc/supervisor/conf.d/agent-mosdns.conf true
         set_supervisor_autostart /etc/supervisor/conf.d/mosdns.conf true
+    elif [ "$SERVICE_TYPE" = "oxidns" ]; then
+        generate_agent_config "oxidns" "${AGENT_NAME:-oxidns-agent}" "${AGENT_PORT:-8082}" "${CONFIG_PATH:-/etc/oxidns/config.yaml}"
+        recover_service oxidns
+        create_default_oxidns_config "${CONFIG_PATH:-/etc/oxidns/config.yaml}"
+        configure_supervisor_core oxidns "${CONFIG_PATH:-/etc/oxidns/config.yaml}"
+        set_supervisor_autostart /etc/supervisor/conf.d/agent-oxidns.conf true
+        set_supervisor_autostart /etc/supervisor/conf.d/oxidns.conf true
     else
         echo "Unsupported SERVICE_TYPE: $SERVICE_TYPE" >&2
         exit 1
@@ -241,10 +280,24 @@ else
     # Generate both recovery configs before touching either persistent tree.
     generate_agent_config "mihomo" "${AGENT_MIHOMO_NAME:-mihomo-agent}" "${AGENT_MIHOMO_PORT:-8080}" "/etc/mihomo/config.yaml"
     generate_agent_config "mosdns" "${AGENT_MOSDNS_NAME:-mosdns-agent}" "${AGENT_MOSDNS_PORT:-8081}" "/etc/mosdns/config.yaml"
+    if [ "${ENABLE_OXIDNS:-false}" = "true" ] && [ "${ENABLE_MOSDNS:-false}" = "true" ]; then
+        echo "MosDNS and OxiDNS both default to DNS port 53; enable one per container." >&2
+        exit 1
+    fi
+    if [ "${ENABLE_OXIDNS:-false}" = "true" ]; then
+        generate_agent_config "oxidns" "${AGENT_OXIDNS_NAME:-oxidns-agent}" "${AGENT_OXIDNS_PORT:-8082}" "/etc/oxidns/config.yaml"
+        recover_service oxidns
+    fi
     recover_service mihomo
     recover_service mosdns
     create_default_mihomo_config
     create_default_mosdns_config
+    if [ "${ENABLE_OXIDNS:-false}" = "true" ]; then
+        create_default_oxidns_config
+        configure_supervisor_core oxidns /etc/oxidns/config.yaml
+    fi
+    set_supervisor_autostart /etc/supervisor/conf.d/agent-oxidns.conf "${ENABLE_OXIDNS:-false}"
+    set_supervisor_autostart /etc/supervisor/conf.d/oxidns.conf "${ENABLE_OXIDNS:-false}"
 
     # Mihomo
     if [ "${ENABLE_MIHOMO}" = "true" ]; then

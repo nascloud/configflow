@@ -12,7 +12,7 @@ import (
 // RemoveRecoveryInstallation removes only installer-owned boot dependencies.
 // It must run before uninstall removes the recovery binary or Agent config.
 func RemoveRecoveryInstallation(cfg *Config) error {
-	if cfg.ServiceType != "mihomo" && cfg.ServiceType != "mosdns" {
+	if cfg.ServiceType != "mihomo" && cfg.ServiceType != "mosdns" && cfg.ServiceType != "oxidns" {
 		return nil
 	}
 	unit := strings.TrimSuffix(cfg.ServiceUnit, ".service")

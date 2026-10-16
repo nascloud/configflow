@@ -1,19 +1,23 @@
 package routes
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"os/exec"
-	"strconv"
+	"gopkg.in/yaml.v3"
+	"io/ioutil"
 	"log"
 	"net"
-	"regexp"
+	"net/http"
 	"net/url"
-	"unicode/utf8"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
-	"io/ioutil"
+	"time"
+	"unicode/utf8"
 )
 
 // GetLogsHandler 获取指定服务的日志
@@ -31,20 +35,20 @@ func GetLogsHandler(cfg *Config) http.HandlerFunc {
 		if logPath := r.URL.Query().Get("log_path"); logPath != "" {
 			logs := readLogFile(logPath, lines)
 			JsonResponse(w, http.StatusOK, map[string]interface{}{
-				"success": true,
-				"logs":    escapeLogsForJSON(logs),
+				"success":      true,
+				"logs":         escapeLogsForJSON(logs),
 				"service_name": cfg.ServiceName,
 			})
 			return
 		}
 
 		// 未指定路径，使用自动检测
-		logs, errLogs := getLogData(cfg.ServiceType, cfg.ConfigPath, lines)
+		logs, errLogs := getLogData(cfg.ServiceType, cfg.ConfigPath, lines, cfg.ServiceUnit)
 
 		JsonResponse(w, http.StatusOK, map[string]interface{}{
-			"success": true,
-			"logs": logs,
-			"error_logs": errLogs,
+			"success":      true,
+			"logs":         logs,
+			"error_logs":   errLogs,
 			"service_name": cfg.ServiceName,
 		})
 	}
@@ -122,7 +126,9 @@ func PortBasedLogsHandler(cfg *Config) http.HandlerFunc {
 		configPath := cfg.ConfigPath
 		serviceName := cfg.ServiceName
 
-		if port == getEnvPort("AGENT_MIHOMO_PORT", 8080) {
+		if cfg.ServiceType == "oxidns" {
+			// The configured core wins over legacy port heuristics.
+		} else if port == getEnvPort("AGENT_MIHOMO_PORT", 8080) {
 			serviceType = "mihomo"
 			serviceName = "mihomo"
 			configPath = "/etc/mihomo/config.yaml"
@@ -144,20 +150,20 @@ func PortBasedLogsHandler(cfg *Config) http.HandlerFunc {
 		if logPath := r.URL.Query().Get("log_path"); logPath != "" {
 			logs := readLogFile(logPath, lines)
 			JsonResponse(w, http.StatusOK, map[string]interface{}{
-				"success": true,
-				"logs":    escapeLogsForJSON(logs),
+				"success":      true,
+				"logs":         escapeLogsForJSON(logs),
 				"service_name": serviceName,
 			})
 			return
 		}
 
 		// 未指定路径，使用自动检测
-		logs, errLogs := getLogData(serviceType, configPath, lines)
+		logs, errLogs := getLogData(serviceType, configPath, lines, cfg.ServiceUnit)
 
 		JsonResponse(w, http.StatusOK, map[string]interface{}{
-			"success": true,
-			"logs": logs,
-			"error_logs": errLogs,
+			"success":      true,
+			"logs":         logs,
+			"error_logs":   errLogs,
 			"service_name": serviceName,
 		})
 	}
@@ -168,18 +174,18 @@ func checkMosdnsStatus() (bool, string) {
 	cmd := exec.Command("supervisorctl", "-c", "/etc/supervisor/supervisord.conf", "status", "mosdns")
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
-	
+
 	// 即使命令返回错误，我们也检查输出内容
 	// 因为 supervisorctl 在服务处于 FATAL 状态时也会返回非零退出码
 	if strings.Contains(outputStr, "RUNNING") {
 		return true, ""
 	}
-	
+
 	// 如果服务不是 RUNNING 状态，返回错误信息
 	if err != nil {
 		return false, fmt.Sprintf("mosdns 服务未运行: %s", outputStr)
 	}
-	
+
 	return false, fmt.Sprintf("mosdns 服务未运行: %s", outputStr)
 }
 
@@ -197,7 +203,10 @@ func getConfigDir(configPath string) string {
 }
 
 // getLogData 获取指定服务的日志数据
-func getLogData(serviceType string, configPath string, lines int) (string, string) {
+func getLogData(serviceType string, configPath string, lines int, serviceUnits ...string) (string, string) {
+	if serviceType == "oxidns" {
+		return getOxiDNSLogs(configPath, lines, serviceUnits...)
+	}
 	var logFilePath, errFilePath string
 
 	// 统一的日志查找逻辑（适用于 mihomo 和 mosdns）
@@ -255,6 +264,44 @@ func getLogData(serviceType string, configPath string, lines int) (string, strin
 	return escapeLogsForJSON(logs), escapeLogsForJSON(errLogs)
 }
 
+// Read OxiDNS core logs rather than presenting the Agent's unrelated log.
+func getOxiDNSLogs(configPath string, lines int, serviceUnits ...string) (string, string) {
+	if lines > 10000 {
+		lines = 10000
+	}
+	if data, err := os.ReadFile(configPath); err == nil {
+		var doc struct {
+			Log struct {
+				File string `yaml:"file"`
+			} `yaml:"log"`
+		}
+		if yaml.Unmarshal(data, &doc) == nil && doc.Log.File != "" {
+			path := doc.Log.File
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(filepath.Dir(configPath), path)
+			}
+			if _, err := os.Stat(path); err == nil {
+				return readLogFile(path, lines), ""
+			}
+		}
+	}
+	for _, path := range []string{"/var/log/supervisor/oxidns.log", filepath.Join(filepath.Dir(configPath), "oxidns.log"), "/var/log/oxidns.log"} {
+		if _, err := os.Stat(path); err == nil {
+			return readLogFile(path, lines), ""
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	unit := "oxidns"
+	if len(serviceUnits) > 0 && serviceUnits[0] != "" {
+		unit = serviceUnits[0]
+	}
+	if data, err := exec.CommandContext(ctx, "journalctl", "-u", unit, "-n", strconv.Itoa(lines), "--no-pager", "-o", "cat").Output(); err == nil {
+		return string(data), ""
+	}
+	return "OxiDNS log file or system journal unavailable", ""
+}
+
 // findMosdnsStdLog 查找mosdns标准日志文件
 func findMosdnsStdLog(dir string) string {
 	// 优先查找 mosdns.log 文件
@@ -280,9 +327,9 @@ func findMosdnsStdLog(dir string) string {
 	for _, file := range files {
 		fileName := file.Name()
 		if !file.IsDir() &&
-		   strings.HasSuffix(fileName, ".log") &&
-		   !strings.Contains(fileName, ".err.log") &&
-		   !strings.Contains(fileName, ".backup.") {
+			strings.HasSuffix(fileName, ".log") &&
+			!strings.Contains(fileName, ".err.log") &&
+			!strings.Contains(fileName, ".backup.") {
 			return fmt.Sprintf("%s/%s", dir, fileName)
 		}
 	}
@@ -316,8 +363,8 @@ func findMosdnsErrLog(dir string) string {
 	for _, file := range files {
 		fileName := file.Name()
 		if !file.IsDir() &&
-		   strings.HasSuffix(fileName, ".err.log") &&
-		   !strings.Contains(fileName, ".backup.") {
+			strings.HasSuffix(fileName, ".err.log") &&
+			!strings.Contains(fileName, ".backup.") {
 			return fmt.Sprintf("%s/%s", dir, fileName)
 		}
 	}
@@ -342,10 +389,10 @@ func readLogFile(filePath string, lines int) string {
 func escapeLogsForJSON(logs string) string {
 	// 先尝试解码可能的URL编码内容
 	logs = tryDecodeURL(logs)
-	
+
 	// 确保日志内容是有效的UTF-8
 	logs = ensureValidUTF8(logs)
-	
+
 	// 不需要手动转义，json.Encode会自动处理
 	// 但我们需要确保日志中的换行符能被正确处理
 	return logs
@@ -355,7 +402,7 @@ func escapeLogsForJSON(logs string) string {
 func tryDecodeURL(logs string) string {
 	// 查找并解码可能的URL编码内容
 	re := regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
-	
+
 	// 只对可能的URL编码部分进行解码
 	decoded := re.ReplaceAllStringFunc(logs, func(s string) string {
 		decoded, err := url.QueryUnescape(s)
@@ -365,7 +412,7 @@ func tryDecodeURL(logs string) string {
 		}
 		return decoded
 	})
-	
+
 	return decoded
 }
 
@@ -375,7 +422,7 @@ func ensureValidUTF8(s string) string {
 	if utf8.ValidString(s) {
 		return s
 	}
-	
+
 	// 尝试修复无效的UTF-8序列
 	buf := make([]byte, 0, len(s))
 	for i := 0; i < len(s); {

@@ -8,7 +8,7 @@
           <FormField
             label="服务域名"
             html-for="server-domain"
-            hint="填写可访问本服务的地址，用于生成规则链接、MosDNS 规则转换地址、Agent 安装脚本和配置订阅链接。"
+            hint="填写可访问本服务的地址，用于生成规则链接、MosDNS / OxiDNS 规则转换地址、Agent 安装脚本和配置订阅链接。"
           >
             <div class="flex items-center gap-1.5">
               <Input

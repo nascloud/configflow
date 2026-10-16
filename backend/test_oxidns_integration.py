@@ -1,0 +1,204 @@
+"""OxiDNS product boundaries: profiles, archive delivery, auth and MCP."""
+import copy
+import io
+import json
+import zipfile
+
+import pytest
+import yaml
+from flask import Flask
+
+from backend.common import config as config_store
+from backend.common.config_repository import ProfileRepository, ProfileInUse
+from backend.common.oxidns_settings import get_default_oxidns_settings
+from backend.mcp_server import tools
+from backend.routes import register_blueprints
+
+
+@pytest.fixture
+def oxidns_app(tmp_path):
+    previous = config_store._repository
+    repository = ProfileRepository(tmp_path)
+    repository.create_profile({'id': 'office', 'name': 'Office'})
+    repository.save_system({'system_config': {'config_token': 'admin-token', 'server_domain': 'http://config.test'}})
+    repository.save_shared({'rule_library': [{
+        'id': 'lib', 'name': '国内规则 / 中文', 'source_type': 'content',
+        'behavior': 'domain', 'content': 'DOMAIN-SUFFIX,example.test\n', 'enabled': True,
+    }]})
+    repository.save_profile('office', {
+        'rule_configs': [{'id': 'rs', 'itemType': 'ruleset', 'library_rule_id': 'lib', 'policy': 'DIRECT'},
+                         {'id': 'r1', 'itemType': 'rule', 'rule_type': 'DOMAIN', 'value': 'one.test', 'policy': 'DIRECT'}],
+        'mosdns': {'direct_rules': ['r1'], 'direct_rulesets': ['rs']},
+        'oxidns': {'direct_rules': ['r1'], 'direct_rulesets': ['rs'], 'worker_threads': 3},
+    })
+    config_store.set_repository(repository)
+    app = Flask(__name__)
+    app.config['TESTING'] = True
+    register_blueprints(app)
+    yield app, repository
+    config_store.set_repository(previous)
+
+
+def test_defaults_and_legacy_profile_without_oxidns_are_compatible(tmp_path):
+    repository = ProfileRepository(tmp_path)
+    document = repository.export_all()
+    document['profiles']['default'].pop('oxidns')
+    repository.import_all(document)
+    reopened = ProfileRepository(tmp_path)
+    assert reopened.get_profile('default')['mosdns'] == document['profiles']['default']['mosdns']
+    defaults = get_default_oxidns_settings()
+    assert (defaults['worker_threads'], defaults['cache_lazy_ttl'], defaults['probe_cache_size']) == (2, 300, 2048)
+    assert defaults['cache_dump_enabled'] is False
+
+
+def test_settings_are_independent_and_clone_backup_restore_roundtrip(oxidns_app):
+    app, repository = oxidns_app
+    client = app.test_client()
+    before_mos = copy.deepcopy(repository.get_profile('office')['mosdns'])
+    settings = client.get('/api/oxidns/settings?profile=office').get_json()
+    assert settings['worker_threads'] == 3
+    settings.update(worker_threads=2, cache_lazy_ttl=400)
+    result = client.post('/api/oxidns/settings?profile=office', json=settings)
+    assert result.status_code == 200, result.get_json()
+    assert repository.get_profile('office')['mosdns'] == before_mos
+    assert client.get('/api/oxidns/settings').get_json()['cache_lazy_ttl'] == 300
+    repository.create_profile({'id': 'copy', 'name': 'Copy'}, clone_from='office')
+    assert repository.get_profile('copy')['oxidns'] == repository.get_profile('office')['oxidns']
+    backup = repository.export_all()
+    repository.save_profile('office', {'oxidns': {'worker_threads': 5}})
+    repository.import_all(backup)
+    assert repository.get_profile('office')['oxidns']['worker_threads'] == 2
+
+
+def test_preview_subscription_and_complete_zip_match_selected_profile(oxidns_app):
+    app, repository = oxidns_app
+    client = app.test_client()
+    preview = client.post('/api/profiles/office/generate/oxidns/preview', json={})
+    assert preview.status_code == 200, preview.get_json()
+    public = client.get('/api/config/office/oxidns?token=admin-token', headers={'X-ConfigFlow-Profile': 'missing'})
+    assert public.status_code == 200
+    assert yaml.safe_load(public.get_data()) == yaml.safe_load(preview.get_json()['content'])
+    assert yaml.safe_load(public.get_data())['runtime']['worker_threads'] == 3
+    download = client.post('/api/profiles/office/generate/oxidns', json={})
+    assert download.status_code == 200, download.get_data(as_text=True)[:100] if download.is_json else ''
+    archive = zipfile.ZipFile(io.BytesIO(download.data))
+    config_name = next(name for name in archive.namelist() if name.endswith('config.yaml'))
+    config = yaml.safe_load(archive.read(config_name))
+    providers = [plugin for plugin in config['plugins'] if plugin['type'] in ('domain_set', 'ip_set', 'hosts', 'adguard_rule')]
+    files = [path.removeprefix('./') for plugin in providers for path in plugin.get('args', {}).get('files', [])]
+    assert files, 'Selected shared and inline rules must be materialized'
+    assert set(files) <= set(archive.namelist())
+    assert b'example.test' in b'\n'.join(archive.read(path) for path in files)
+    assert repository.get_profile('default')['oxidns']['direct_rulesets'] == []
+
+
+def test_rule_deletion_atomically_cleans_both_targets(oxidns_app):
+    app, repository = oxidns_app
+    client = app.test_client()
+    for path in ('/api/rules/r1', '/api/rule-sets/rs'):
+        response = client.delete(path, headers={'X-ConfigFlow-Profile': 'office'})
+        assert response.status_code == 200, response.get_json()
+    profile = repository.get_profile('office')
+    for engine in ('mosdns', 'oxidns'):
+        assert profile[engine]['direct_rules'] == []
+        assert profile[engine]['direct_rulesets'] == []
+
+
+def test_invalid_rule_selection_cannot_be_persisted(oxidns_app):
+    _, repository = oxidns_app
+    with pytest.raises(ProfileInUse, match='OxiDNS'):
+        repository.save_profile('office', {'oxidns': {'direct_rulesets': ['missing']}})
+
+
+def test_desensitized_export_removes_nested_oxidns_credentials(oxidns_app):
+    _, repository = oxidns_app
+    settings = {'api': {'username': 'private-user', 'password': 'private-api-password'},
+                'ros_route': {'args': {'password': 'private-router-password'}},
+                'local_dns': '- addr: https://user:private-dns-password@dns.test/query',
+                'custom_config': 'password: private-yaml-password',
+                'adguard': {'urls': ['https://rules.test/list?token=private-feed-token']},
+                'rule_update': {'args': {'socks5': 'private-proxy-password'}}}
+    repository.save_profile('office', {'oxidns': settings})
+    full = repository.export_all()
+    redacted = repository.export_all(desensitize=True)
+    exported = json.dumps(redacted)
+    for secret in ('private-user', 'private-api-password', 'private-router-password',
+                   'private-dns-password', 'private-yaml-password', 'private-proxy-password', 'private-feed-token'):
+        assert secret not in exported
+    assert full['profiles']['office']['oxidns']['api']['password'] == 'private-api-password'
+
+
+def test_mcp_deep_merge_keeps_other_feature_parameters_and_generates_zip(oxidns_app):
+    app, repository = oxidns_app
+    repository.save_profile('office', {'oxidns': {'ip_selector': {'args': {'top_n': 2}}}})
+    with app.app_context():
+        result = tools.call_tool('update_oxidns_settings', {'profile_id': 'office', 'data': {
+            'worker_threads': 4, 'ip_selector': {'args': {'max_wait': 800}},
+        }})
+        assert result['success']
+        settings = tools.call_tool('get_oxidns_settings', {'profile_id': 'office'})
+        assert settings['ip_selector']['args']['top_n'] == 2
+        assert settings['ip_selector']['args']['max_wait'] == 800
+        generated = tools.call_tool('generate_config', {'profile_id': 'office', 'target': 'oxidns'})
+        assert generated['success'] and generated['saved'] is False
+    assert repository.get_profile('default')['oxidns']['worker_threads'] == 2
+
+
+def test_custom_config_is_profile_scoped_and_bad_request_rejected(oxidns_app):
+    app, repository = oxidns_app
+    client = app.test_client()
+    response = client.post('/api/custom-config/oxidns?profile=office', json={'config': 'network: {}\n'})
+    assert response.status_code == 200
+    assert client.get('/api/custom-config/oxidns?profile=office').get_json() == {'config': 'network: {}\n'}
+    assert client.get('/api/custom-config/oxidns').get_json() == {'config': ''}
+    assert client.post('/api/custom-config/oxidns', json={'config': []}).status_code == 400
+
+
+def test_public_subscription_rejects_missing_and_invalid_auth(oxidns_app):
+    app, _ = oxidns_app
+    client = app.test_client()
+    for suffix in ('', '?token=wrong'):
+        assert client.get('/api/config/office/oxidns' + suffix).status_code == 401
+    assert client.get('/api/config/office/oxidns?token=admin-token').status_code == 200
+
+
+def test_subscription_token_works_with_global_login_wall_enabled(oxidns_app, monkeypatch):
+    from backend.common import auth as auth_utils
+    from backend.routes.auth import setup_before_request
+
+    app, _ = oxidns_app
+    monkeypatch.setattr(auth_utils, 'ADMIN_USERNAME', 'test-admin')
+    monkeypatch.setattr(auth_utils, 'ADMIN_PASSWORD', 'test-password')
+    setup_before_request(app)
+    client = app.test_client()
+    for path in ('/api/config/oxidns', '/api/config/office/oxidns'):
+        assert client.get(path).status_code == 401
+        assert client.get(path + '?token=invalid').status_code == 401
+        assert client.get(path + '?token=admin-token').status_code == 200
+    assert client.get('/api/oxidns/settings?token=admin-token').status_code == 401
+
+
+def test_rule_update_preview_redacts_only_capability_urls_and_full_download_keeps_them(oxidns_app):
+    app, repository = oxidns_app
+    profile = repository.get_profile('office')
+    profile['oxidns']['rule_update'] = {'enabled': True}
+    repository.save_profile('office', profile)
+    config = repository.get_compat_config('office')
+    private_token = config['system_config']['rule_proxy_token']
+    client = app.test_client()
+    response = client.post('/api/profiles/office/generate/oxidns/preview', json={})
+    assert response.status_code == 200
+    preview = response.get_json()['content']
+    assert private_token not in preview
+    parsed = yaml.safe_load(preview)
+    assert parsed['runtime']['worker_threads'] == 3
+    downloader = next(plugin for plugin in parsed['plugins'] if plugin['tag'] == 'rules_download')
+    assert downloader['args']['downloads'][0]['url'] == '[REDACTED]'
+    with app.app_context():
+        mcp = tools.call_tool('preview_config', {'profile_id': 'office', 'target': 'oxidns'})
+    assert private_token not in mcp['content']
+    assert yaml.safe_load(mcp['content'])['runtime']['worker_threads'] == 3
+    full = client.post('/api/profiles/office/generate/oxidns', json={})
+    assert full.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(full.data)) as archive:
+        assert private_token in archive.read('config.yaml').decode()

@@ -30,6 +30,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # ==============================================================================
 FROM metacubex/mihomo:latest AS mihomo-bin
 FROM irinesistiana/mosdns:latest AS mosdns-bin
+FROM svenshi/oxidns:v1.6.1@sha256:78e322898a99900ed63e5aa0c6fe406210597ca5f2380ff2fd5ec8bec3a04381 AS oxidns-bin
 
 # ==============================================================================
 # Final: 统一镜像（Agent + Mihomo + MosDNS）
@@ -39,6 +40,9 @@ FROM alpine:latest
 COPY --from=builder /configflow-agent /usr/local/bin/configflow-agent
 COPY --from=mihomo-bin /mihomo /usr/local/bin/mihomo
 COPY --from=mosdns-bin /usr/bin/mosdns /usr/local/bin/mosdns
+COPY --from=oxidns-bin /usr/local/bin/oxidns /usr/local/bin/oxidns
+COPY --from=oxidns-bin /etc/oxidns/webui /usr/share/oxidns/webui
+COPY --from=oxidns-bin /usr/share/licenses/oxidns/LICENSE /usr/share/licenses/oxidns/LICENSE
 COPY backend/agents/go-agent/supervisord.conf /etc/supervisor/supervisord.conf
 COPY backend/agents/go-agent/supervisor/ /etc/supervisor/conf.d/
 COPY docker/docker-agent-entrypoint-service.sh /entrypoint.sh
@@ -50,13 +54,13 @@ RUN { sed -i 's/dl-cdn.alpinelinux.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apk/
       sed -i 's/mirrors.tuna.tsinghua.edu.cn/dl-cdn.alpinelinux.org/g' /etc/apk/repositories && apk update; } && \
     apk add --no-cache ca-certificates su-exec supervisor python3-dev py3-pip bash && \
     pip3 install --break-system-packages "setuptools<81" && \
-    mkdir -p /etc/mihomo /etc/mosdns /etc/supervisor/conf.d /var/log/supervisor /run && \
-    chmod +x /usr/local/bin/configflow-agent /usr/local/bin/mihomo /usr/local/bin/mosdns /entrypoint.sh && \
+    mkdir -p /etc/mihomo /etc/mosdns /etc/oxidns/state /etc/supervisor/conf.d /var/log/supervisor /run && \
+    chmod +x /usr/local/bin/configflow-agent /usr/local/bin/mihomo /usr/local/bin/mosdns /usr/local/bin/oxidns /entrypoint.sh && \
     chmod -R 755 /etc/mihomo && chmod -R 775 /etc/mosdns && chmod -R 777 /var/log/supervisor /run
 
 ENV SERVER_URL="" AGENT_IP="" HEARTBEAT_INTERVAL="30" TZ=Asia/Shanghai
 
-EXPOSE 8080 8081 53/tcp 53/udp 1053/tcp 1053/udp 7890 7891 7892 9090
+EXPOSE 8080 8081 8082 53/tcp 53/udp 1053/tcp 1053/udp 7890 7891 7892 9090 9199
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

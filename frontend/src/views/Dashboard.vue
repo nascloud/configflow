@@ -388,7 +388,8 @@ const flowColumns = computed<FlowColumn[]>(() => {
         { id: 'out:mihomo', title: 'Mihomo', meta: 'config.yaml', icon: FileCode2, to: '/generate' },
         { id: 'out:surge', title: 'Surge', meta: 'surge.conf', icon: FileCode2, to: '/generate' },
         { id: 'out:loon', title: 'Loon', meta: 'loon.conf', icon: FileCode2, to: '/generate' },
-        { id: 'out:mosdns', title: 'MosDNS', meta: 'config.yaml', icon: Waypoints, to: '/generate' }
+        { id: 'out:mosdns', title: 'MosDNS', meta: 'config.yaml', icon: Waypoints, to: '/generate' },
+        { id: 'out:oxidns', title: 'OxiDNS', meta: 'config.yaml', icon: Waypoints, to: '/generate' }
       ]
     },
     { key: 'agents', title: 'Agent', nodes: agentNodes }
@@ -413,12 +414,13 @@ const flowEdges = computed<FlowEdge[]>(() => {
     { from: 'rules', to: 'out:mihomo', weight: 1.2, tone: 'kraft' },
     { from: 'rules', to: 'out:surge', weight: 0.5, tone: 'kraft' },
     { from: 'rules', to: 'out:loon', weight: 0.4, tone: 'kraft' },
-    { from: 'rules', to: 'out:mosdns', weight: 0.6, tone: 'kraft' }
+    { from: 'rules', to: 'out:mosdns', weight: 0.6, tone: 'kraft' },
+    { from: 'rules', to: 'out:oxidns', weight: 0.6, tone: 'kraft' }
   )
   for (const node of agentCol.nodes) {
     if (node.id === 'agent:empty') continue
     const agent = boundAgents.value.find(a => `agent:${a.id}` === node.id)
-    const from = agent?.service_type === 'mosdns' ? 'out:mosdns' : agent?.service_type === 'surge' ? 'out:surge' : 'out:mihomo'
+    const from = agent?.service_type === 'oxidns' ? 'out:oxidns' : agent?.service_type === 'mosdns' ? 'out:mosdns' : agent?.service_type === 'surge' ? 'out:surge' : 'out:mihomo'
     const sp = agent ? speedOf(agent) : null
     const weight = sp?.reported ? weightOf((sp.up + sp.down) / 1024 / 64) : 0.8
     edges.push({ from, to: node.id, weight, tone: 'success', dead: !!agent && node.status !== 'online' })

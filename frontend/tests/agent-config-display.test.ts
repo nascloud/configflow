@@ -199,6 +199,7 @@ describe('deployment progress precedes the content comparison', () => {
     [{ status: 'preparing' }, '正在推送'],
     [{ status: 'ready' }, '已校验，待应用'],
     [{ status: 'checking' }, '正在推送'],
+    [{ status: 'rolling_back', manual_rollback: true }, '正在回滚'],
     [{ status: 'unknown' }, '同步状态待确认'],
     [{ status: 'rollback_failed' }, '同步状态待确认'],
     [{ status: 'succeeded', pending: true }, '同步状态待确认'],

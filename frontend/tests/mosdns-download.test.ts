@@ -36,33 +36,33 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function renderDownload() {
+async function renderDownload(targetKey = 'mosdns') {
   const wrapper = shallowMount(Generate)
   wrappers.push(wrapper)
   await flushPromises()
   const action = () => wrapper.getComponent(GenerateStudio).props('targets')
-    .find((target: any) => target.key === 'mosdns')!.actions
+    .find((target: any) => target.key === targetKey)!.actions
     .find((item: any) => item.label === '下载')!
   return action
 }
 
-describe('MosDNS ZIP download feedback', () => {
+describe.each([['mosdns', 'MosDNS'], ['oxidns', 'OxiDNS']] as const)('%s ZIP download feedback', (targetKey, title) => {
   it('uses a one-minute ZIP timeout without changing other downloads', async () => {
     const requests: InternalAxiosRequestConfig[] = []
     api.defaults.adapter = async config => {
       requests.push(config)
       return response(config)
     }
-    await generateApi.mosdns('download-profile')
+    await generateApi[targetKey]('download-profile')
     await generateApi.mihomo('download-profile')
     expect(requests[0]).toMatchObject({
-      url: '/profiles/download-profile/generate/mosdns', responseType: 'blob', timeout: 60000
+      url: `/profiles/download-profile/generate/${targetKey}`, responseType: 'blob', timeout: 60000
     })
     expect(requests[1].timeout).toBe(30000)
   })
 
   it('shows the JSON Blob error and restores the download action after failure', async () => {
-    const action = await renderDownload()
+    const action = await renderDownload(targetKey)
     let rejectDownload!: () => void
     api.defaults.adapter = config => new Promise((_resolve, reject) => {
       rejectDownload = () => reject({
@@ -79,18 +79,18 @@ describe('MosDNS ZIP download feedback', () => {
     rejectDownload()
     await downloading
     await flushPromises()
-    expect(notify.error).toHaveBeenCalledWith('生成 MosDNS 配置失败：规则「Example」下载失败，请检查规则源')
+    expect(notify.error).toHaveBeenCalledWith(`生成 ${title} 配置失败：规则「Example」下载失败，请检查规则源`)
     expect(action().loading).toBe(false)
     expect(scopedRequests.value).toBe(0)
     expect(notify.success).not.toHaveBeenCalled()
   })
 
   it.each(['ECONNABORTED', 'ETIMEDOUT'])('explains %s as a timeout and allows retry', async code => {
-    const action = await renderDownload()
+    const action = await renderDownload(targetKey)
     api.defaults.adapter = async config => { throw { config, code } }
     await action().run()
     await flushPromises()
-    expect(notify.error).toHaveBeenCalledWith('生成 MosDNS 配置超时，请稍后重试')
+    expect(notify.error).toHaveBeenCalledWith(`生成 ${title} 配置超时，请稍后重试`)
     expect(action().loading).toBe(false)
   })
 
@@ -99,13 +99,13 @@ describe('MosDNS ZIP download feedback', () => {
     ['application/json', '{invalid json'],
     ['application/json', JSON.stringify({ message: null })]
   ])('does not display unreadable %s gateway responses', async (type, body) => {
-    const action = await renderDownload()
+    const action = await renderDownload(targetKey)
     api.defaults.adapter = async config => {
       throw { config, response: { status: 502, data: new Blob([body], { type }) } }
     }
     await action().run()
     await flushPromises()
-    expect(notify.error).toHaveBeenCalledWith('生成 MosDNS 配置失败')
+    expect(notify.error).toHaveBeenCalledWith(`生成 ${title} 配置失败`)
     expect(action().loading).toBe(false)
   })
 })

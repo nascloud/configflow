@@ -74,7 +74,7 @@
               :title="agent.status === 'online' ? '在线' : '离线'"
             />
             <p class="font-display m-0 min-w-0 flex-1 truncate text-[19px] font-medium" :title="agent.name">{{ agent.name }}</p>
-            <Badge variant="outline" :class="cn('chip font-mono', agent.service_type === 'mosdns' && 'chip-sky')">{{ serviceTypeLabels[agent.service_type] || agent.service_type }}</Badge>
+            <Badge variant="outline" :class="cn('chip font-mono', ['mosdns', 'oxidns'].includes(agent.service_type) && 'chip-sky')">{{ serviceTypeLabels[agent.service_type] || agent.service_type }}</Badge>
             <span class="font-mono text-[11px] text-muted-foreground">{{ agent.version || '' }}</span>
           </header>
           <p class="mt-1 mb-0 truncate font-mono text-[11.5px] text-muted-foreground">
@@ -136,16 +136,16 @@
           >
             <p class="m-0 flex items-center gap-2 font-medium">
               <Loader2 v-if="deploymentBusy(agent.id)" class="size-3.5 animate-spin text-primary-accent" />
-              {{ deploymentLabels[deployments[agent.id].status] || deployments[agent.id].status }}
+              {{ deploymentStatusLabel(deployments[agent.id]) }}
             </p>
-            <p v-if="deployments[agent.id].not_recorded" class="mt-1 mb-0 text-muted-foreground">后端暂未记录此发布，正在继续查询。可使用原发布编号重新提交。</p>
+            <p v-if="deployments[agent.id].not_recorded && !deployments[agent.id].manual_rollback" class="mt-1 mb-0 text-muted-foreground">后端暂未记录此发布，正在继续查询。可使用原发布编号重新提交。</p>
             <p v-else-if="deployments[agent.id].query_error" class="mt-1 mb-0 text-muted-foreground">暂时无法确认结果，正在重新查询。</p>
-            <p v-if="deployments[agent.id].error || deployments[agent.id].rollback_error" class="mt-1 mb-0 break-words text-destructive-accent">
-              {{ deployments[agent.id].error }} {{ deployments[agent.id].rollback_error }}
+            <p v-if="deployments[agent.id].error || deployments[agent.id].rollback_error || deployments[agent.id].rollback_message" class="mt-1 mb-0 break-words text-destructive-accent">
+              {{ deployments[agent.id].error }} {{ deployments[agent.id].rollback_error }} {{ deployments[agent.id].rollback_message }}
             </p>
             <Button v-if="deployments[agent.id].status === 'ready'" variant="outline" size="sm" class="mt-2" @click="activateDeployment(agent.id)">应用并启动</Button>
             <Button v-if="deployments[agent.id].status === 'rollback_failed'" variant="outline" size="sm" class="mt-2" @click="refreshDeployment(agent.id)">查询恢复状态</Button>
-            <Button v-if="deployments[agent.id].not_recorded || deployments[agent.id].retrying" variant="outline" size="sm" class="mt-2" :disabled="deployments[agent.id].retrying" @click="retryDeployment(agent.id)">{{ deployments[agent.id].retrying ? '正在重新提交…' : '重试同一次发布' }}</Button>
+            <Button v-if="!deployments[agent.id].manual_rollback && (deployments[agent.id].not_recorded || deployments[agent.id].retrying)" variant="outline" size="sm" class="mt-2" :disabled="deployments[agent.id].retrying" @click="retryDeployment(agent.id)">{{ deployments[agent.id].retrying ? '正在重新提交…' : '重试同一次发布' }}</Button>
           </section>
 
           <section
@@ -213,6 +213,10 @@
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" class="glass-strong min-w-[160px]">
+                <DropdownMenuItem v-if="['mihomo', 'mosdns', 'oxidns'].includes(agent.service_type)" @select="deploymentHistoryAgentId = agent.id">
+                  <History class="size-4" />
+                  发布记录与回滚
+                </DropdownMenuItem>
                 <DropdownMenuItem @select="viewLogs(agent)">
                   <ScrollText class="size-4" />
                   日志
@@ -245,6 +249,7 @@
     </template>
 
     <DockerAgentUpdateDialog v-if="dockerUpdateAgent" :agent="dockerUpdateAgent" @close="dockerUpdateAgent = null" @refresh="loadAgents" />
+    <AgentDeploymentHistory v-if="deploymentHistoryAgent" :agent="deploymentHistoryAgent" :progress="deployments[deploymentHistoryAgent.id]" :busy="deploymentBusy(deploymentHistoryAgent.id)" :blocked="upgradeBusy(deploymentHistoryAgent.id) || pushingIds.has(deploymentHistoryAgent.id) || rollbackConfirming" @close="deploymentHistoryAgentId = null" @rollback="requestRollback(deploymentHistoryAgent, $event)" />
 
     <!-- ===== 生成安装脚本 ===== -->
     <Dialog v-model:open="scriptDialogVisible">
@@ -337,6 +342,19 @@
                   class="w-36 bg-background/50"
                 />
               </div>
+              <div
+                v-if="scriptForm.dockerMode === 'oxidns'"
+                class="flex items-center gap-2"
+              >
+                <span class="w-32 shrink-0 text-[12.5px] text-muted-foreground">OxiDNS Agent</span>
+                <Input
+                  v-model.number="scriptForm.oxidnsAgentPort"
+                  type="number"
+                  :min="1024"
+                  :max="65535"
+                  class="w-36 bg-background/50"
+                />
+              </div>
             </div>
           </FormField>
 
@@ -358,6 +376,11 @@
                 placeholder="/etc/mihomo/config.yaml"
               />
             </FormField>
+
+            <InfoNote v-if="scriptForm.type === 'oxidns'">
+              <p>OxiDNS 服务的 <code class="font-mono">-d</code> 工作目录必须与配置文件所在目录一致。例如配置填写 <code class="font-mono">/opt/oxidns/config.yaml</code>，服务使用 <code class="font-mono">-d /opt/oxidns</code>。</p>
+              <p>官方 Debian 默认的 <code class="font-mono">/etc</code> 配置与 <code class="font-mono">/var/lib</code> 工作目录分离布局暂不支持，安装器会在停止原 Agent 前拒绝安装。请先调整服务及规则资源布局，再填写实际配置路径。Docker 已自动保持目录一致。</p>
+            </InfoNote>
 
             <FormField
               label="重启命令（可选）"
@@ -388,10 +411,10 @@
                     </SelectContent>
                   </Select>
                 </FormField>
-                <FormField label="服务名称" html-for="agent-service-unit" hint="留空使用 mihomo 或 mosdns；可填写自定义 systemd 单元或 OpenRC 服务名。">
+                <FormField label="服务名称" html-for="agent-service-unit" hint="留空使用 mihomo、mosdns 或 oxidns；可填写自定义 systemd 单元或 OpenRC 服务名。">
                   <Input id="agent-service-unit" v-model="scriptForm.service_unit" class="bg-background/50 font-mono" :placeholder="scriptForm.type" />
                 </FormField>
-                <FormField label="内核程序路径" html-for="agent-service-binary" hint="用于配置检查，应指向正在运行的同一个 Mihomo / MosDNS 程序；留空按程序名查找。">
+                <FormField label="内核程序路径" html-for="agent-service-binary" hint="用于配置检查，应指向正在运行的同一个 Mihomo / MosDNS / OxiDNS 程序；留空按程序名查找。">
                   <Input id="agent-service-binary" v-model="scriptForm.service_binary" class="bg-background/50 font-mono" :placeholder="`/usr/local/bin/${scriptForm.type}`" />
                 </FormField>
                 <template v-if="scriptForm.service_manager === 'command' || scriptForm.restart_command.trim()">
@@ -662,6 +685,7 @@ import {
   Copy,
   Download,
   FileText,
+  History,
   Loader2,
   MoreHorizontal,
   RefreshCw,
@@ -717,7 +741,8 @@ import { agentApi } from '@/api'
 import api from '@/api'
 import type { Agent } from '@/types'
 import { useProfileStore } from '@/stores/profile'
-import { createDeploymentId, deploymentLabels, useAgentDeployments } from '@/composables/useAgentDeployments'
+import { createDeploymentId, deploymentStatusLabel, useAgentDeployments, type AgentDeployment } from '@/composables/useAgentDeployments'
+import AgentDeploymentHistory from '@/components/agents/AgentDeploymentHistory.vue'
 import { upgradeLabels, useAgentUpgrades } from '@/composables/useAgentUpgrades'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -729,7 +754,26 @@ import VChart from 'vue-echarts'
 use([LineChart, GridComponent, TooltipComponent, LegendComponent, TitleComponent, CanvasRenderer])
 
 const agents = ref<Agent[]>([])
-const { deployments, busy: deploymentBusy, track: trackDeployment, refresh: refreshDeployment, activate: activateDeployment, retryPublish: retryDeployment } = useAgentDeployments(() => { void loadAgents() })
+const { deployments, busy: deploymentBusy, track: trackDeployment, refresh: refreshDeployment, activate: activateDeployment, retryPublish: retryDeployment, rollback: rollbackDeployment } = useAgentDeployments(() => { void loadAgents() })
+const deploymentHistoryAgentId = ref<string | null>(null)
+const deploymentHistoryAgent = computed(() => agents.value.find(agent => agent.id === deploymentHistoryAgentId.value))
+const rollbackConfirming = ref(false)
+const requestRollback = async (agent: Agent, record: AgentDeployment) => {
+  if (rollbackConfirming.value || agent.status !== 'online' || deploymentBusy(agent.id) || upgradeBusy(agent.id) || pushingIds.value.has(agent.id)) return
+  if (agent.latest_deployment?.deployment_id !== record.deployment_id || record.status !== 'succeeded') return
+  rollbackConfirming.value = true
+  try {
+    const accepted = await confirm(`将 ${agent.name} 恢复到发布 ${record.deployment_id} 之前的配置和受管规则，并重启核心检查健康状态。state/ 运行数据保留。`, {
+      title: '回滚到发布前的配置？', confirmText: '回滚并重启', cancelText: '取消'
+    })
+    if (!accepted) return
+    const current = agents.value.find(item => item.id === agent.id)
+    if (!current || current.status !== 'online' || deploymentBusy(agent.id) || upgradeBusy(agent.id) || pushingIds.value.has(agent.id) || current.latest_deployment?.deployment_id !== record.deployment_id) return
+    await rollbackDeployment(agent.id, record.deployment_id)
+  } finally {
+    rollbackConfirming.value = false
+  }
+}
 const {
   upgrades, busy: upgradeBusy, querying: upgradeQuerying, track: trackUpgrade, query: queryAgentUpgrade, start: startUpgrade
 } = useAgentUpgrades(() => { void loadAgents() })
@@ -772,7 +816,7 @@ const logsPaneRef = ref<HTMLElement | null>(null)
 
 const createScriptForm = () => ({
   installType: 'shell',
-  dockerMode: 'mihomo', // mihomo, mosdns, aio
+  dockerMode: 'mihomo', // mihomo, mosdns, oxidns, aio
   name: '',
   type: 'mihomo',
   port: 8080,
@@ -791,20 +835,23 @@ const createScriptForm = () => ({
   networkMode: 'bridge',
   // Docker Agent 端口配置
   mihomoAgentPort: 8080,
-  mosdnsAgentPort: 8081
+  mosdnsAgentPort: 8081,
+  oxidnsAgentPort: 8082
 })
 const scriptForm = ref(createScriptForm())
 
 const serviceTypeLabels: Record<Agent['service_type'], string> = {
   mihomo: 'Mihomo',
   surge: 'Surge',
-  mosdns: 'MosDNS'
+  mosdns: 'MosDNS',
+  oxidns: 'OxiDNS'
 }
 
 // 服务类型选项
 const serviceTypeOptions = [
   { label: 'Mihomo', value: 'mihomo' },
-  { label: 'MosDNS', value: 'mosdns' }
+  { label: 'MosDNS', value: 'mosdns' },
+  { label: 'OxiDNS', value: 'oxidns' }
 ]
 
 // 网络模式选项
@@ -1344,19 +1391,21 @@ const INSTALL_TYPES = [
 const DOCKER_MODES = [
   { value: 'mihomo', label: 'Mihomo (Clash)' },
   { value: 'mosdns', label: 'MosDNS' },
+  { value: 'oxidns', label: 'OxiDNS' },
   { value: 'aio', label: 'All-in-One（三合一）' }
 ]
 
 const installTypeHint = computed(() =>
   scriptForm.value.installType === 'shell'
     ? '将 Agent 安装为目标机器上的系统服务。'
-    : '用 Docker 运行 Agent，无需另行安装 Mihomo / MosDNS。'
+    : '用 Docker 运行 Agent，无需另行安装 Mihomo / MosDNS / OxiDNS。'
 )
 
 const dockerModeHint = computed(
   () =>
     ({
       mihomo: '内置 Mihomo，一个容器运行 Agent + Mihomo。',
+      oxidns: '内置 OxiDNS，一个容器运行 Agent + OxiDNS。',
       mosdns: '内置 MosDNS，一个容器运行 Agent + MosDNS。',
       aio: '内置 Mihomo + MosDNS，一个容器同时运行三者。'
     })[scriptForm.value.dockerMode as string] ?? ''
@@ -1370,6 +1419,15 @@ const DOCKER_NOTES: Record<string, { title: string; lines: string[] }> = {
       'Agent 与 Mihomo 在同一容器运行，无需另外安装 Mihomo',
       '可自动获取和更新配置，也可在此页面重启服务',
       '代理端口：7890 (HTTP)、7891 (SOCKS5)、9090 (API)'
+    ]
+  },
+  oxidns: {
+    title: 'Docker OxiDNS Agent 使用说明',
+    lines: [
+      'Agent 与 OxiDNS 在同一容器运行',
+      '支持完整规则包发布、原生配置检查与失败回滚',
+      'DNS 端口：53 (TCP/UDP)；Agent 端口：8082',
+      '如果与 MosDNS 同机运行，请使用不同 DNS 监听端口或不同宿主机端口映射'
     ]
   },
   mosdns: {
@@ -1576,6 +1634,8 @@ const onDockerModeChange = () => {
   if (scriptForm.value.dockerMode === 'mihomo') {
     // mihomo 模式
     scriptForm.value.type = 'mihomo'
+  } else if (scriptForm.value.dockerMode === 'oxidns') {
+    scriptForm.value.type = 'oxidns'
   } else if (scriptForm.value.dockerMode === 'mosdns') {
     // mosdns 模式
     scriptForm.value.type = 'mosdns'
@@ -1597,6 +1657,12 @@ const onServiceTypeChange = () => {
     // 如果是 Docker 模式，更新默认服务容器名称
     if (scriptForm.value.installType === 'docker' && !scriptForm.value.serviceContainerName) {
       scriptForm.value.serviceContainerName = 'mihomo'
+    }
+  } else if (scriptForm.value.type === 'oxidns') {
+    scriptForm.value.config_path = '/etc/oxidns/config.yaml'
+    scriptForm.value.restart_command = ''
+    if (scriptForm.value.installType === 'docker' && !scriptForm.value.serviceContainerName) {
+      scriptForm.value.serviceContainerName = 'oxidns'
     }
   } else if (scriptForm.value.type === 'mosdns') {
     scriptForm.value.config_path = '/etc/mosdns/config.yaml'
@@ -1686,12 +1752,14 @@ const generateScript = async () => {
         agent_ip: scriptForm.value.agent_ip || '',
         network_mode: scriptForm.value.networkMode,
         enable_mihomo: scriptForm.value.dockerMode === 'mihomo' || scriptForm.value.dockerMode === 'aio',
+        enable_oxidns: scriptForm.value.dockerMode === 'oxidns',
+        oxidns_port: scriptForm.value.oxidnsAgentPort,
         enable_mosdns: scriptForm.value.dockerMode === 'mosdns' || scriptForm.value.dockerMode === 'aio',
         mihomo_port: scriptForm.value.mihomoAgentPort,
         mosdns_port: scriptForm.value.mosdnsAgentPort,
         // 根据模式设置数据目录
         data_dir: scriptForm.value.dockerMode === 'aio' ? './aio_data' :
-                  (scriptForm.value.dockerMode === 'mosdns' ? './mosdns_data' : './mihomo_data')
+                  (scriptForm.value.dockerMode === 'oxidns' ? './oxidns_data' : scriptForm.value.dockerMode === 'mosdns' ? './mosdns_data' : './mihomo_data')
       }
 
       // 使用统一的 Docker API
@@ -1843,7 +1911,7 @@ const pushingAll = ref(false)
 type PushOutcome = 'submitted' | 'done' | 'failed' | 'busy'
 
 /**
- * 推送：数据包沿拓扑通道送出；mihomo / mosdns 走事务发布，结果由 useAgentDeployments 跟踪并提示，
+ * 推送：数据包沿拓扑通道送出；mihomo / mosdns / oxidns 走事务发布，结果由 useAgentDeployments 跟踪并提示，
  * 这里只处理「提交」本身的成败。
  */
 const pushOne = async (agent: Agent, quiet = false): Promise<PushOutcome> => {
@@ -2008,7 +2076,12 @@ const logPathOptions = computed(() => {
   const mosdns = [
     { label: 'MosDNS 错误日志', value: '/etc/mosdns/mosdns.err.log' },
   ]
+  const oxidns = [
+    { label: 'OxiDNS 输出日志', value: '/var/log/supervisor/oxidns.log' },
+    { label: 'OxiDNS 错误日志', value: '/var/log/supervisor/oxidns.err.log' }
+  ]
   const type = currentAgent.value?.service_type
+  if (type === 'oxidns') return [...common, ...oxidns]
   if (type === 'mihomo') return [...common, ...mihomo]
   if (type === 'mosdns') return [...common, ...mosdns]
   return [...common, ...mihomo, ...mosdns]
@@ -2238,7 +2311,7 @@ const topoEdges = computed<FlowEdge[]>(() =>
     from: 'hub',
     to: `agent:${a.id}`,
     weight: 0.7,
-    tone: (a.service_type === 'mosdns' ? 'info' : 'success') as FlowTone,
+    tone: (['mosdns', 'oxidns'].includes(a.service_type) ? 'info' : 'success') as FlowTone,
     dead: a.status !== 'online'
   }))
 )

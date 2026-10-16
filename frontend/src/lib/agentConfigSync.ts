@@ -2,6 +2,7 @@ import type { AgentContentSync } from '@/types'
 
 interface DeploymentRecord {
   status: string
+  manual_rollback?: boolean
   profile_id?: string
   config_revision?: number
   config_version?: string
@@ -19,6 +20,7 @@ interface AgentConfigRecord {
 
 interface DeploymentProgress {
   status: string
+  manual_rollback?: boolean
   pending?: boolean
   query_error?: boolean
 }
@@ -45,7 +47,7 @@ export function getAgentConfigSync(agent: AgentConfigRecord, currentRevision: nu
   const task = progress || agent.latest_deployment
   if (progress?.pending || progress?.query_error || task?.status === 'unknown' || task?.status === 'rollback_failed') return unknown()
   if (task?.status === 'ready') return state('已校验，待应用', 'warning')
-  if (task && !['succeeded', 'failed', 'rolled_back'].includes(task.status)) return state('正在推送')
+  if (task && !['succeeded', 'failed', 'rolled_back'].includes(task.status)) return state(task.manual_rollback ? '正在回滚' : '正在推送')
 
   switch (agent.content_sync?.status) {
     case 'synced': return state('已同步', 'success')

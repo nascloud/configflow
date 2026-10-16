@@ -1,0 +1,20 @@
+services:
+  oxidns-agent:
+    image: thsrite/config-flow-agent:latest
+    container_name: configflow-agent-oxidns
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+      - "53:53/udp"
+      - "53:53/tcp"
+      # Enable API authentication and LAN listen in the OxiDNS template before exposing 9199.
+      # - "9199:9199"
+    volumes:
+      - ./agent:/opt/configflow-agent
+      - ./oxidns:/etc/oxidns
+    environment:
+      SERVER_URL: http://YOUR_CONFIGFLOW_SERVER:8000
+      SERVICE_TYPE: oxidns
+      AGENT_NAME: oxidns-agent
+      AGENT_PORT: "8082"
+      TZ: Asia/Shanghai

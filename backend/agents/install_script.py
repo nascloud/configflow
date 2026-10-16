@@ -29,6 +29,8 @@ def generate_lightweight_install_script(
     restart_command: str = None
 ) -> str:
     """生成轻量级 Shell Agent 安装脚本"""
+    if service_type == "oxidns":
+        raise ValueError("OxiDNS requires the Go Agent for native validation and transactional rollback")
     # 验证名称
     validate_agent_name(agent_name)
 
@@ -98,17 +100,23 @@ def generate_docker_agent_compose(
     enable_mihomo: bool = True,
     enable_mosdns: bool = False,
     mihomo_port: int = 8080,
-    mosdns_port: int = 8081
+    mosdns_port: int = 8081,
+    enable_oxidns: bool = False,
+    oxidns_port: int = 8082
 ) -> str:
     """生成统一的 Docker Compose 配置"""
     # 验证名称
     validate_agent_name(agent_name)
+    if enable_mosdns and enable_oxidns:
+        raise ValueError("MosDNS 与 OxiDNS 默认都监听 53 端口，请使用独立容器或只启用一个 DNS 核心")
 
     services_enabled = []
     if enable_mihomo:
         services_enabled.append("mihomo")
     if enable_mosdns:
         services_enabled.append("mosdns")
+    if enable_oxidns:
+        services_enabled.append("oxidns")
 
     service_suffix = "-".join(services_enabled) if services_enabled else "agent"
     container_name = f"{agent_name}-{service_suffix}"
@@ -118,7 +126,8 @@ def generate_docker_agent_compose(
         f"SERVER_URL={server_url}",
         "TZ=Asia/Shanghai",
         f"ENABLE_MIHOMO={'true' if enable_mihomo else 'false'}",
-        f"ENABLE_MOSDNS={'true' if enable_mosdns else 'false'}"
+        f"ENABLE_MOSDNS={'true' if enable_mosdns else 'false'}",
+        f"ENABLE_OXIDNS={'true' if enable_oxidns else 'false'}"
     ]
 
     if agent_ip:
@@ -136,12 +145,17 @@ def generate_docker_agent_compose(
             f"AGENT_MOSDNS_PORT={mosdns_port}"
         ])
 
+    if enable_oxidns:
+        environment.extend([f"AGENT_OXIDNS_NAME={agent_name}-oxidns", f"AGENT_OXIDNS_PORT={oxidns_port}"])
+
     # 卷映射
     volumes = [f"{data_dir}/agent:/opt/configflow-agent"]
     if enable_mihomo:
         volumes.append(f"{data_dir}/mihomo:/etc/mihomo")
     if enable_mosdns:
         volumes.append(f"{data_dir}/mosdns:/etc/mosdns")
+    if enable_oxidns:
+        volumes.append(f"{data_dir}/oxidns:/etc/oxidns")
 
     # 构建服务配置
     service_config = {
@@ -176,6 +190,10 @@ def generate_docker_agent_compose(
             if "53:53/udp" not in port_mappings:
                 port_mappings.append("53:53/udp")
         
+        if enable_oxidns:
+            port_mappings.extend([f"{oxidns_port}:{oxidns_port}", "53:53/tcp"])
+            if "53:53/udp" not in port_mappings:
+                port_mappings.append("53:53/udp")
         if port_mappings:
             service_config['ports'] = port_mappings
 
@@ -199,17 +217,23 @@ def generate_docker_agent_run(
     enable_mihomo: bool = True,
     enable_mosdns: bool = False,
     mihomo_port: int = 8080,
-    mosdns_port: int = 8081
+    mosdns_port: int = 8081,
+    enable_oxidns: bool = False,
+    oxidns_port: int = 8082
 ) -> str:
     """生成统一的 Docker Run 命令"""
     # 验证名称
     validate_agent_name(agent_name)
+    if enable_mosdns and enable_oxidns:
+        raise ValueError("MosDNS 与 OxiDNS 默认都监听 53 端口，请使用独立容器或只启用一个 DNS 核心")
 
     services = []
     if enable_mihomo:
         services.append("mihomo")
     if enable_mosdns:
         services.append("mosdns")
+    if enable_oxidns:
+        services.append("oxidns")
 
     service_suffix = "-".join(services) if services else "agent"
     container_name = f"{agent_name}-{service_suffix}"
@@ -223,6 +247,9 @@ def generate_docker_agent_run(
         service_desc = "MosDNS"
     else:
         service_desc = "Agent"
+
+    if enable_oxidns:
+        service_desc = "Mihomo + OxiDNS" if enable_mihomo else "OxiDNS"
 
     # 构建端口映射
     ports_args = ""
@@ -242,6 +269,10 @@ def generate_docker_agent_run(
             if not enable_mihomo:
                 ports.append("-p 53:53/udp")
                 
+        if enable_oxidns:
+            ports.extend([f"-p {oxidns_port}:{oxidns_port}", "-p 53:53/tcp"])
+            if "-p 53:53/udp" not in ports:
+                ports.append("-p 53:53/udp")
         if ports:
             ports_args = " ".join(ports) + " \\"
 
@@ -252,6 +283,8 @@ def generate_docker_agent_run(
         volumes.append(f"-v {data_dir}/mihomo:/etc/mihomo")
     if enable_mosdns:
         volumes.append(f"-v {data_dir}/mosdns:/etc/mosdns")
+    if enable_oxidns:
+        volumes.append(f"-v {data_dir}/oxidns:/etc/oxidns")
         
     if volumes:
         volumes_args = " ".join(volumes) + " \\"
@@ -284,6 +317,9 @@ docker run -d \\
         cmd += f"""
   -e AGENT_MOSDNS_NAME={agent_name}-mosdns \\
   -e AGENT_MOSDNS_PORT={mosdns_port} \\"""
+
+    if enable_oxidns:
+        cmd += f'\n  -e ENABLE_OXIDNS="true" -e AGENT_OXIDNS_NAME={agent_name}-oxidns -e AGENT_OXIDNS_PORT={oxidns_port} \\'
 
     if volumes_args:
         cmd += f"\n  {volumes_args}"

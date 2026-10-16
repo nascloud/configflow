@@ -8,6 +8,7 @@ from typing import Callable, Dict, Any, Optional
 from backend.common.utils import get_local_ip
 from backend.common.resource import get_backend_resource
 from backend.common.config_repository import ProfileRepository
+from backend.common.oxidns_settings import get_default_oxidns_settings
 from backend.utils.logger import get_logger
 
 # 获取当前模块的日志记录器
@@ -42,6 +43,7 @@ def get_default_config() -> Dict[str, Any]:
         'mihomo': {  # Mihomo 配置
             'custom_config': ''
         },
+        'oxidns': get_default_oxidns_settings(),
         'mosdns': {  # MosDNS 配置
             'direct_rulesets': [],
             'proxy_rulesets': [],
