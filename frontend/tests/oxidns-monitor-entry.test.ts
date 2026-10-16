@@ -2,11 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import OxiDNSMonitorEntry from '@/views/OxiDNSMonitorEntry.vue'
 import { agentApi } from '@/api'
+import { OXIDNS_DEVICE_STORAGE_KEY } from '@/composables/useOxiDNSDevices'
 
 const navigation = vi.hoisted(() => ({ replace: vi.fn(), push: vi.fn() }))
 vi.mock('vue-router', () => ({ useRouter: () => navigation }))
 vi.mock('@/api', () => ({ agentApi: { getAll: vi.fn() } }))
 const wrappers: VueWrapper[] = []
+function stubStorage() {
+  const values = new Map<string, string>()
+  vi.stubGlobal('localStorage', {
+    get length() { return values.size },
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, String(value)) },
+    removeItem: (key: string) => { values.delete(key) },
+    clear: () => { values.clear() },
+    key: (index: number) => Array.from(values.keys())[index] ?? null
+  } satisfies Storage)
+}
 const agent = (id: string, service_type = 'oxidns') => ({ id, name: 'Device ' + id, host: '192.0.2.13', status: 'online', service_type })
 const response = (data: unknown) => ({ data } as any)
 async function render() {
@@ -15,8 +27,8 @@ async function render() {
   await flushPromises()
   return wrapper
 }
-beforeEach(() => { vi.clearAllMocks(); navigation.replace.mockResolvedValue(undefined) })
-afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()) })
+beforeEach(() => { vi.clearAllMocks(); stubStorage(); navigation.replace.mockResolvedValue(undefined) })
+afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); vi.unstubAllGlobals() })
 
 describe('OxiDNS navigation entry', () => {
   it('opens the single OxiDNS Agent directly with an encoded ID', async () => {
@@ -24,15 +36,29 @@ describe('OxiDNS navigation entry', () => {
     await render()
     expect(navigation.replace).toHaveBeenCalledWith('/agents/a%2Fb/oxidns')
   })
-  it('offers a compact selection containing only OxiDNS Agents', async () => {
-    vi.mocked(agentApi.getAll).mockResolvedValue(response([agent('one'), agent('two'), agent('other', 'mosdns')]))
+  it('opens the first online OxiDNS Agent without an intermediate list', async () => {
+    vi.mocked(agentApi.getAll).mockResolvedValue(response([{ ...agent('offline'), status: 'offline' }, agent('other', 'mosdns'), agent('online')]))
     const wrapper = await render()
-    expect(navigation.replace).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('Device one')
-    expect(wrapper.text()).toContain('Device two')
-    expect(wrapper.text()).not.toContain('Device other')
-    await wrapper.get('button[aria-label="查看 Device two 的监控"]').trigger('click')
-    expect(navigation.push).toHaveBeenCalledWith('/agents/two/oxidns')
+    expect(navigation.replace).toHaveBeenCalledWith('/agents/online/oxidns')
+    expect(wrapper.find('table').exists()).toBe(false)
+  })
+  it('restores a still available last selection even when it is offline', async () => {
+    window.localStorage.setItem(OXIDNS_DEVICE_STORAGE_KEY, 'last')
+    vi.mocked(agentApi.getAll).mockResolvedValue(response([agent('online'), { ...agent('last'), status: 'offline' }]))
+    await render()
+    expect(navigation.replace).toHaveBeenCalledWith('/agents/last/oxidns')
+  })
+  it('ignores a removed last selection and falls back to the first device when all are offline', async () => {
+    window.localStorage.setItem(OXIDNS_DEVICE_STORAGE_KEY, 'removed')
+    vi.mocked(agentApi.getAll).mockResolvedValue(response([{ ...agent('first'), status: 'offline' }, { ...agent('second'), status: 'offline' }]))
+    await render()
+    expect(navigation.replace).toHaveBeenCalledWith('/agents/first/oxidns')
+  })
+  it('does not restore a saved Agent that no longer runs OxiDNS', async () => {
+    window.localStorage.setItem(OXIDNS_DEVICE_STORAGE_KEY, 'changed')
+    vi.mocked(agentApi.getAll).mockResolvedValue(response([agent('changed', 'mihomo'), agent('dns')]))
+    await render()
+    expect(navigation.replace).toHaveBeenCalledWith('/agents/dns/oxidns')
   })
   it('shows connection guidance only after a successful empty result', async () => {
     vi.mocked(agentApi.getAll).mockResolvedValue(response([agent('proxy', 'mihomo')]))
@@ -51,6 +77,13 @@ describe('OxiDNS navigation entry', () => {
     await wrapper.findAll('button').find(item => item.text() === '重试')!.trigger('click')
     await flushPromises()
     expect(navigation.replace).toHaveBeenCalledWith('/agents/recovered/oxidns')
+  })
+  it('continues when browser storage is unavailable', async () => {
+    const storage = vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => { throw new Error('blocked') })
+    vi.mocked(agentApi.getAll).mockResolvedValue(response([agent('available')]))
+    await render()
+    expect(navigation.replace).toHaveBeenCalledWith('/agents/available/oxidns')
+    storage.mockRestore()
   })
   it('ignores a late singleton response after leaving the page', async () => {
     let finish!: (value: any) => void

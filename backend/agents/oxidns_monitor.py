@@ -11,6 +11,8 @@ from .version import compare_versions
 from .oxidns_metrics import summarize_metrics
 
 MIN_AGENT_VERSION = '1.7.0-go'
+MIN_CLIENTS_AGENT_VERSION = '1.7.1-go'
+CLIENT_SAMPLE_LIMIT = 10000
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 MAX_INTEGER = 2 ** 53 - 1
 
@@ -63,18 +65,24 @@ class MonitorError(Exception):
         super().__init__(self.message)
 
 
-def _agent(manager, agent_id):
+def _upgrade_required(min_version):
+    feature = '客户端 IP 选择与筛选' if min_version == MIN_CLIENTS_AGENT_VERSION else 'DNS 监控'
+    return MonitorError('UPGRADE_REQUIRED', 409,
+                        f'请将此 Agent 升级到 {min_version} 或更新版本后使用{feature}。')
+
+
+def _agent(manager, agent_id, min_version=MIN_AGENT_VERSION):
     agent = manager.get_agent_by_id(agent_id)
     if not agent:
         raise MonitorError('AGENT_NOT_FOUND', 404, '未找到这台 Agent。')
     if agent.get('service_type') != 'oxidns':
         raise MonitorError('WRONG_SERVICE', 400, 'DNS 监控仅适用于 OxiDNS Agent。')
     try:
-        supported = compare_versions(agent.get('version', '0'), MIN_AGENT_VERSION) >= 0
+        supported = compare_versions(agent.get('version', '0'), min_version) >= 0
     except (ValueError, TypeError, AttributeError):
         supported = False
     if not supported:
-        raise MonitorError('UPGRADE_REQUIRED', 409)
+        raise _upgrade_required(min_version)
     return agent
 
 
@@ -95,7 +103,7 @@ def _base_url(agent):
     return f'http://{host}:{port}/api/oxidns/'
 
 
-def _request(agent, endpoint, params=None):
+def _request(agent, endpoint, params=None, *, min_version=MIN_AGENT_VERSION):
     # Endpoints are chosen by the functions below, never taken from a URL argument.
     url = _base_url(agent) + endpoint
     try:
@@ -118,7 +126,7 @@ def _request(agent, endpoint, params=None):
                     data = json.loads(b''.join(chunks))
                 except (ValueError, UnicodeError):
                     if response.status_code == 404:
-                        raise MonitorError('UPGRADE_REQUIRED', 409) from None
+                        raise _upgrade_required(min_version) from None
                     raise MonitorError('INVALID_RESPONSE') from None
                 if not isinstance(data, dict):
                     raise MonitorError('INVALID_RESPONSE')
@@ -129,6 +137,8 @@ def _request(agent, endpoint, params=None):
                     status = 404 if code == 'RECORD_NOT_FOUND' else 400 if code == 'INVALID_QUERY' else 409 if code in (
                         'UPGRADE_REQUIRED', 'API_NOT_CONFIGURED', 'RECORDER_NOT_CONFIGURED',
                         'TLS_UNSUPPORTED', 'CONFIG_UNSUPPORTED') else 502
+                    if code == 'UPGRADE_REQUIRED':
+                        raise _upgrade_required(min_version)
                     raise MonitorError(code, status)
                 return data
     except (requests.RequestException, KeyError, TypeError, ValueError):
@@ -199,6 +209,13 @@ def query_params(args, detail=False):
             raise MonitorError('INVALID_QUERY', 400)
         elif key in ('recorder', 'matcher_tag') and (len(value) > 256 or any(c in value for c in '/?#\\')):
             raise MonitorError('INVALID_QUERY', 400)
+        elif key == 'client_ip':
+            try:
+                if '%' in value:
+                    raise ValueError
+                value = str(ipaddress.ip_address(value))
+            except ValueError:
+                raise MonitorError('INVALID_QUERY', 400) from None
         elif key == 'qtype':
             if not re.fullmatch(r'[A-Za-z0-9_-]{1,32}', value):
                 raise MonitorError('INVALID_QUERY', 400)
@@ -237,8 +254,9 @@ def _record(value, detail=False):
 
 def queries(manager, agent_id, args):
     params = query_params(args)
-    agent = _agent(manager, agent_id)
-    data = _request(agent, 'queries', params)
+    min_version = MIN_CLIENTS_AGENT_VERSION if params.get('client_ip') else MIN_AGENT_VERSION
+    agent = _agent(manager, agent_id, min_version)
+    data = _request(agent, 'queries', params, min_version=min_version)
     records = data.get('records')
     cursor = data.get('next_cursor')
     if data.get('ok') is not True or not isinstance(records, list) or len(records) > 100:
@@ -258,3 +276,71 @@ def query(manager, agent_id, record_id, args):
     if data.get('ok') is not True:
         raise MonitorError('INVALID_RESPONSE')
     return {'success': True, 'recorder': params.get('recorder', ''), 'record': _record(data.get('record'), detail=True)}
+
+
+def client_params(args):
+    """Client choices are independent of the current record filters."""
+    allowed = {'recorder', 'since_ms', 'until_ms', 'search'}
+    result = {}
+    for key in args:
+        values = args.getlist(key)
+        if key not in allowed or len(values) != 1 or not isinstance(values[0], str):
+            raise MonitorError('INVALID_QUERY', 400)
+        value = values[0]
+        try:
+            encoded = value.encode('utf-8')
+        except UnicodeError:
+            raise MonitorError('INVALID_QUERY', 400) from None
+        if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
+            raise MonitorError('INVALID_QUERY', 400)
+        if key == 'search':
+            if len(encoded) > 64:
+                raise MonitorError('INVALID_QUERY', 400)
+        elif key == 'recorder':
+            if not _valid_recorder_tag(value):
+                raise MonitorError('INVALID_QUERY', 400)
+        elif not re.fullmatch(r'[0-9]{1,16}', value) or int(value) > MAX_INTEGER:
+            raise MonitorError('INVALID_QUERY', 400)
+        value = value.strip()
+        if value:
+            result[key] = value
+    if 'since_ms' in result and 'until_ms' in result and int(result['since_ms']) > int(result['until_ms']):
+        raise MonitorError('INVALID_QUERY', 400)
+    return result
+
+
+def _valid_recorder_tag(value):
+    return isinstance(value, str) and 0 < len(value) <= 64 and re.fullmatch(
+        r'[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?)*', value) is not None
+
+
+def clients(manager, agent_id, args):
+    params = client_params(args)
+    agent = _agent(manager, agent_id, MIN_CLIENTS_AGENT_VERSION)
+    data = _request(agent, 'clients', params, min_version=MIN_CLIENTS_AGENT_VERSION)
+    recorder, rows, sample = data.get('recorder'), data.get('rows'), data.get('sample_size')
+    if (data.get('ok') is not True or not _valid_recorder_tag(recorder)
+            or params.get('recorder', recorder) != recorder
+            or type(sample) is not int or not 0 <= sample <= CLIENT_SAMPLE_LIMIT
+            or not isinstance(rows, list) or len(rows) > CLIENT_SAMPLE_LIMIT):
+        raise MonitorError('INVALID_RESPONSE')
+    result, seen, total = [], set(), 0
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get('key'), str):
+            raise MonitorError('INVALID_RESPONSE')
+        ip, count = row['key'], row.get('count')
+        try:
+            if '%' in ip:
+                raise ValueError
+            ipaddress.ip_address(ip)
+        except ValueError:
+            raise MonitorError('INVALID_RESPONSE') from None
+        if ip in seen or type(count) is not int or not 0 < count <= sample:
+            raise MonitorError('INVALID_RESPONSE')
+        seen.add(ip)
+        total += count
+        result.append({'ip': ip, 'count': count})
+    if total != sample:
+        raise MonitorError('INVALID_RESPONSE')
+    return {'success': True, 'recorder': recorder, 'clients': result,
+            'sample_size': sample, 'sample_limited': sample == CLIENT_SAMPLE_LIMIT}

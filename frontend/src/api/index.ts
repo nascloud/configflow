@@ -261,6 +261,8 @@ export const agentApi = {
 
 // OxiDNS monitoring never sends core credentials or addresses from the browser.
 export const oxidnsMonitorApi = {
+  clients: (id: string, params: Record<string, string | number | undefined>, options: { signal?: AbortSignal } = {}) =>
+    api.get(`/agents/${encodeURIComponent(id)}/oxidns/clients`, { params, ...options }),
   overview: (id: string, options: { signal?: AbortSignal } = {}) =>
     api.get(`/agents/${encodeURIComponent(id)}/oxidns/overview`, options),
   queries: (id: string, params: Record<string, string | number | undefined>, options: { signal?: AbortSignal } = {}) =>

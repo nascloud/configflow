@@ -212,3 +212,127 @@ def test_rcode_filter_rejects_invalid_characters_before_network(monkeypatch, rco
         monitor.queries(Manager(), 'oxi', MultiDict({'rcode': rcode}))
     assert error.value.code == 'INVALID_QUERY' and error.value.status == 400
     assert not calls
+
+
+def clients_manager():
+    manager = Manager()
+    manager.agent['version'] = '1.7.1-go'
+    return manager
+
+
+CLIENTS = {'ok': True, 'recorder': 'recorder', 'sample_size': 3,
+           'rows': [{'key': '192.168.0.2', 'count': 2, 'share': 2 / 3},
+                    {'key': '2001:db8::2', 'count': 1, 'share': 1 / 3}],
+           'config': 'private configuration', 'token': 'core-private-token'}
+
+
+def test_clients_use_independent_search_and_return_only_safe_dto(monkeypatch):
+    calls = install_transport(monkeypatch, Response(CLIENTS))
+    result = monitor.clients(clients_manager(), 'oxi', MultiDict({
+        'recorder': 'recorder', 'since_ms': '100', 'until_ms': '200', 'search': '192.168.'}))
+    assert result == {'success': True, 'recorder': 'recorder', 'sample_size': 3, 'sample_limited': False,
+                      'clients': [{'ip': '192.168.0.2', 'count': 2}, {'ip': '2001:db8::2', 'count': 1}]}
+    url, kwargs, trust_env = calls[0]
+    assert url == 'http://127.0.0.1:8082/api/oxidns/clients'
+    assert kwargs['params'] == {'recorder': 'recorder', 'since_ms': '100', 'until_ms': '200', 'search': '192.168.'}
+    assert kwargs['headers']['Authorization'] == 'Bearer agent-private-token'
+    assert kwargs['allow_redirects'] is False and trust_env is False
+    assert not any(secret in json.dumps(result) for secret in ('agent-private-token', 'core-private-token', 'private configuration'))
+
+
+@pytest.mark.parametrize('sample,rows,limited', [
+    (0, [], False), (10000, [{'key': '192.0.2.1', 'count': 10000, 'share': 1}], True),
+])
+def test_clients_sample_boundary_and_resolved_recorder(monkeypatch, sample, rows, limited):
+    install_transport(monkeypatch, Response({'ok': True, 'recorder': 'auto-records', 'sample_size': sample, 'rows': rows}))
+    result = monitor.clients(clients_manager(), 'oxi', MultiDict())
+    assert result['sample_limited'] is limited and result['sample_size'] == sample
+    assert result['recorder'] == 'auto-records'
+
+
+@pytest.mark.parametrize('params', [
+    [('qname', 'example')], [('qtype', 'A')], [('client_ip', '192.0.2.1')], [('limit', '20')],
+    [('cursor', '100:1')], [('status', 'all')], [('search', 'a'), ('search', 'b')],
+    [('recorder', '../config')], [('recorder', 'a..b')], [('search', 'a\nb')],
+    [('search', '\x7f')], [('search', '\x85')], [('search', 'x' * 65)], [('search', '测' * 22)],
+    [('since_ms', '-1')], [('since_ms', '101'), ('until_ms', '100')], [('agent_id', 'another')],
+])
+def test_clients_reject_unrelated_filters_and_bad_search_before_network(monkeypatch, params):
+    calls = install_transport(monkeypatch, Response(CLIENTS))
+    with pytest.raises(monitor.MonitorError) as exc:
+        monitor.clients(clients_manager(), 'oxi', MultiDict(params))
+    assert exc.value.code == 'INVALID_QUERY' and exc.value.status == 400 and not calls
+
+
+def test_clients_accept_bounded_utf8_search(monkeypatch):
+    calls = install_transport(monkeypatch, Response(CLIENTS))
+    monitor.clients(clients_manager(), 'oxi', MultiDict({'search': '测试'}))
+    assert calls[0][1]['params'] == {'search': '测试'}
+
+
+@pytest.mark.parametrize('change', [
+    {'sample_size': True}, {'sample_size': -1}, {'sample_size': 10001}, {'sample_size': 10 ** 400},
+    {'recorder': 'other'}, {'recorder': '../secret'}, {'rows': None},
+    {'rows': [{'key': 'core-password', 'count': 3}]},
+    {'rows': [{'key': '192.0.2.1', 'count': True}]},
+    {'rows': [{'key': '192.0.2.1', 'count': 0}]},
+    {'rows': [{'key': '192.0.2.1', 'count': 4}]},
+    {'rows': [{'key': '192.0.2.1', 'count': 2}, {'key': '192.0.2.1', 'count': 1}]},
+    {'rows': [{'key': '192.0.2.1', 'count': 2}]},
+    {'rows': [{'key': '192.0.2.1', 'count': 1}] * 10001},
+])
+def test_clients_validate_core_response_without_leaking(monkeypatch, change):
+    install_transport(monkeypatch, Response({**CLIENTS, **change}))
+    with pytest.raises(monitor.MonitorError) as exc:
+        monitor.clients(clients_manager(), 'oxi', MultiDict({'recorder': 'recorder'}))
+    assert exc.value.code == 'INVALID_RESPONSE' and exc.value.status == 502
+    assert 'core-password' not in str(exc.value)
+
+
+def test_clients_and_exact_ip_require_new_agent_but_old_queries_keep_working(monkeypatch):
+    calls = install_transport(monkeypatch, Response({'ok': True, 'records': [], 'next_cursor': None}))
+    assert monitor.queries(Manager(), 'oxi', MultiDict())['records'] == []
+    calls.clear()
+    for operation, params in ((monitor.clients, {}), (monitor.queries, {'client_ip': '192.0.2.1'})):
+        with pytest.raises(monitor.MonitorError) as exc:
+            operation(Manager(), 'oxi', MultiDict(params))
+        assert exc.value.code == 'UPGRADE_REQUIRED' and '1.7.1-go' in str(exc.value)
+        assert not calls
+    monitor.queries(clients_manager(), 'oxi', MultiDict({'client_ip': '2001:0DB8:0:0:0:0:0:2'}))
+    assert calls[0][1]['params']['client_ip'] == '2001:db8::2'
+
+
+@pytest.mark.parametrize('ip', ['192.168.', '192.0.2.1:53', 'localhost', 'fe80::2%eth0'])
+def test_exact_client_filter_requires_a_complete_ip(monkeypatch, ip):
+    calls = install_transport(monkeypatch, Response({}))
+    with pytest.raises(monitor.MonitorError) as exc:
+        monitor.queries(clients_manager(), 'oxi', MultiDict({'client_ip': ip}))
+    assert exc.value.code == 'INVALID_QUERY' and not calls
+
+
+@pytest.mark.parametrize('data,raw', [(None, b'404 page not found'), ({'code': 'NOT_FOUND'}, None)])
+def test_missing_clients_endpoint_reports_correct_upgrade(monkeypatch, data, raw):
+    install_transport(monkeypatch, Response(data, 404, raw))
+    with pytest.raises(monitor.MonitorError) as exc:
+        monitor.clients(clients_manager(), 'oxi', MultiDict())
+    assert exc.value.code == 'UPGRADE_REQUIRED' and '1.7.1-go' in str(exc.value)
+
+
+def test_clients_route_auth_no_store_and_agent_isolation(authenticated_app, monkeypatch):
+    client, manager, _, admin, _ = authenticated_app
+    registered = manager.register_agent({**{k: v for k, v in AGENT.items() if k not in ('id', 'token')}, 'version': '1.7.1-go'})
+    aid = registered['id']
+    calls = install_transport(monkeypatch, Response(CLIENTS))
+    endpoint = f'/api/agents/{aid}/oxidns/clients'
+    assert client.get(endpoint).status_code == 401
+    assert client.get(endpoint, headers={'Authorization': 'Bearer ' + registered['token']}).status_code == 401
+    assert client.post(endpoint, headers=admin).status_code == 405
+    assert not calls
+    response = client.get(endpoint, headers=admin)
+    assert response.status_code == 200 and response.headers['Cache-Control'] == 'no-store'
+    assert registered['token'] not in response.get_data(as_text=True)
+    calls.clear()
+    assert client.get('/api/agents/missing/oxidns/clients', headers=admin).status_code == 404
+    response = client.get(endpoint + '?agent_id=elsewhere', headers=admin)
+    assert response.status_code == 400 and response.headers['Cache-Control'] == 'no-store'
+    assert not calls

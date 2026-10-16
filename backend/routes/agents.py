@@ -1272,6 +1272,12 @@ def get_oxidns_overview(agent_id):
     return _oxidns_monitor_response('overview', agent_id)
 
 
+@bp.route('/<agent_id>/oxidns/clients', methods=['GET'])
+@require_auth
+def get_oxidns_clients(agent_id):
+    return _oxidns_monitor_response('clients', agent_id, request.args)
+
+
 @bp.route('/<agent_id>/oxidns/queries', methods=['GET'])
 @require_auth
 def get_oxidns_queries(agent_id):

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -106,7 +107,7 @@ func TestOxiDNSMonitorSuccessAndReadOnly(t *testing.T) {
 	if !reflect.DeepEqual(overview.Capabilities, oxMonitorCapabilities{[]string{"records"}, []string{"cache"}}) {
 		t.Fatalf("wrong capabilities: %#v", overview.Capabilities)
 	}
-	query := url.Values{"recorder": {"records"}, "limit": {"25"}, "cursor": {"1720000000000:7"}, "since_ms": {"1"}, "until_ms": {"1720000000000"}, "qname": {" example.com "}, "qtype": {"a"}, "client_ip": {"192.168."}, "rcode": {" No Error "}, "status": {"has_response"}, "matcher_tag": {"local"}}
+	query := url.Values{"recorder": {"records"}, "limit": {"25"}, "cursor": {"1720000000000:7"}, "since_ms": {"1"}, "until_ms": {"1720000000000"}, "qname": {" example.com "}, "qtype": {"a"}, "rcode": {" No Error "}, "status": {"has_response"}, "matcher_tag": {"local"}}
 	response = oxMonitorTestRequest(cfg, http.MethodGet, "/api/oxidns/queries?"+query.Encode())
 	if response.Code != 200 || response.Body.String() != oxMonitorTestRecords {
 		t.Fatalf("list changed official response: %d %s", response.Code, response.Body.String())
@@ -140,7 +141,7 @@ func TestOxiDNSMonitorRejectsInvalidRequestsBeforeCore(t *testing.T) {
 	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); fmt.Fprint(w, oxMonitorTestRecords) }))
 	defer core.Close()
 	cfg := oxMonitorTestConfig(t, core.URL, "- {tag: records, type: query_recorder}\n")
-	for _, query := range []string{"limit=0", "limit=101", "limit=-1", "limit=1&limit=2", "unknown=value", "recorder=records&recorder=records", "recorder=../flush", "cursor=1", "cursor=1:2:3", "cursor=9223372036854775808:1", "since_ms=-1", "until_ms=abc", "since_ms=9&until_ms=1", "status=done", "qname=%00", "qname=%FF", "qname=%ZZ", "qname=a;limit=1", "qname=" + strings.Repeat("a", 513), "recorder=cache", "url=http://example.com", "qname=" + strings.Repeat("a", 8193)} {
+	for _, query := range []string{"limit=0", "limit=101", "limit=-1", "limit=1&limit=2", "unknown=value", "recorder=records&recorder=records", "recorder=../flush", "cursor=1", "cursor=1:2:3", "cursor=9223372036854775808:1", "since_ms=-1", "until_ms=abc", "since_ms=9&until_ms=1", "status=done", "client_ip=192.168.", "client_ip=not-an-ip", "qname=%00", "qname=%FF", "qname=%ZZ", "qname=a;limit=1", "qname=" + strings.Repeat("a", 513), "recorder=cache", "url=http://example.com", "qname=" + strings.Repeat("a", 8193)} {
 		t.Run(query[:min(len(query), 60)], func(t *testing.T) {
 			oxMonitorTestError(t, oxMonitorTestRequest(cfg, http.MethodGet, "/api/oxidns/queries?"+query), 400, "INVALID_QUERY")
 		})
@@ -407,5 +408,187 @@ func TestOxiDNSMonitorRcodeDisplayText(t *testing.T) {
 		if err == nil || err.code != "INVALID_QUERY" {
 			t.Errorf("accepted invalid rcode %q", value)
 		}
+	}
+}
+
+func TestOxiDNSMonitorClientsSeparateSearch(t *testing.T) {
+	var calls atomic.Int32
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		user, password, ok := r.BasicAuth()
+		if !ok || user != "monitor-user" || password != "core-secret" || r.Header.Get("Cookie") != "" || r.Method != "GET" {
+			t.Error("clients did not isolate authentication")
+		}
+		want := url.Values{"limit": {"10000"}, "client_ip": {"192.168."}, "since_ms": {"100"}, "until_ms": {"200"}}
+		if r.URL.Path != "/api/plugins/records/stats/top_clients" || !reflect.DeepEqual(r.URL.Query(), want) {
+			t.Errorf("wrong clients request: %s", r.URL.RequestURI())
+		}
+		fmt.Fprint(w, `{"ok":true,"sample_size":3,"rows":[{"key":"192.168.0.2","count":2,"share":0.6667},{"key":"192.168.0.20","count":1,"share":0.3333}]}`)
+	}))
+	defer core.Close()
+	cfg := oxMonitorTestConfig(t, core.URL, "- {tag: records, type: query_recorder}\n")
+	response := oxMonitorTestRequest(cfg, http.MethodGet, "/api/oxidns/clients?since_ms=100&until_ms=200&search=192.168.")
+	var body struct {
+		OK         bool   `json:"ok"`
+		Recorder   string `json:"recorder"`
+		SampleSize int    `json:"sample_size"`
+		Rows       []struct {
+			Key   string `json:"key"`
+			Count int    `json:"count"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != 200 || !body.OK || body.Recorder != "records" || body.SampleSize != 3 || len(body.Rows) != 2 {
+		t.Fatalf("invalid clients response: %d %s (%v)", response.Code, response.Body.String(), err)
+	}
+	if response.Header().Get("Cache-Control") != "no-store" || calls.Load() != 1 {
+		t.Fatal("missing no-store or unexpected core request count")
+	}
+	for _, query := range []string{"qname=example.com", "qtype=A", "client_ip=192.168.0.2", "limit=1", "cursor=100:1", "search=a&search=b", "recorder=../flush", "since_ms=201&until_ms=200", "search=%00", "search=%7F", "search=%C2%85", "search=%FF", "search=" + strings.Repeat("a", 65), "search=" + url.QueryEscape(strings.Repeat("测", 22))} {
+		oxMonitorTestError(t, oxMonitorTestRequest(cfg, http.MethodGet, "/api/oxidns/clients?"+query), 400, "INVALID_QUERY")
+	}
+	if calls.Load() != 1 {
+		t.Fatal("invalid client queries reached core")
+	}
+	for _, method := range []string{"POST", "DELETE", "PUT"} {
+		oxMonitorTestError(t, oxMonitorTestRequest(cfg, method, "/api/oxidns/clients"), 405, "METHOD_NOT_ALLOWED")
+	}
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, cfg)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/oxidns/clients", nil))
+	oxMonitorTestError(t, w, 401, "UNAUTHORIZED")
+	_, query, err := oxMonitorParseClients(url.Values{"search": {"测试"}}.Encode())
+	if err != nil || query.Get("client_ip") != "测试" {
+		t.Fatal("valid UTF8 client search rejected")
+	}
+}
+
+func TestOxiDNSMonitorClientsRejectsMalformedCoreResponses(t *testing.T) {
+	for _, body := range []string{
+		`{"ok":true,"sample_size":true,"rows":[]}`, `{"ok":true,"sample_size":10001,"rows":[]}`, `{"ok":true,"sample_size":0,"rows":null}`,
+		`{"ok":true,"sample_size":1,"rows":[{"key":"core-secret","count":1}]}`,
+		`{"ok":true,"sample_size":1,"rows":[{"key":"192.0.2.1","count":true}]}`,
+		`{"ok":true,"sample_size":1,"rows":[{"key":"192.0.2.1","count":2}]}`,
+		`{"ok":true,"sample_size":2,"rows":[{"key":"192.0.2.1","count":1},{"key":"192.0.2.1","count":1}]}`,
+		`{"ok":true,"sample_size":1,"rows":[]}`,
+	} {
+		core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
+		cfg := oxMonitorTestConfig(t, core.URL, "- {tag: records, type: query_recorder}\n")
+		oxMonitorTestError(t, oxMonitorTestRequest(cfg, "GET", "/api/oxidns/clients"), 502, "INVALID_RESPONSE")
+		core.Close()
+	}
+	if !oxMonitorValidJSON("/api/plugins/records/stats/top_clients", []byte(`{"ok":true,"sample_size":0,"rows":[]}`)) {
+		t.Fatal("empty client sample rejected")
+	}
+}
+
+func TestOxiDNSMonitorExactIPAcrossPages(t *testing.T) {
+	ips := []string{"192.168.0.20", "192.168.0.2", "192.168.0.200", "192.168.0.2", "192.168.0.20", "192.168.0.2"}
+	var limits []int
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("client_ip") != "192.168.0.2" || r.URL.Query().Get("qname") != "example" || r.URL.Query().Get("since_ms") != "100" {
+			t.Error("exact-IP scan lost other filters")
+		}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		limits = append(limits, limit)
+		start := 0
+		if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+			start, _ = strconv.Atoi(strings.Split(cursor, ":")[1])
+		}
+		end := min(start+limit, len(ips))
+		rows := []map[string]interface{}{}
+		for i := start; i < end; i++ {
+			rows = append(rows, map[string]interface{}{"id": 10 - i, "client_ip": ips[i]})
+		}
+		var next interface{}
+		if end < len(ips) {
+			next = fmt.Sprintf("100:%d", end)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "records": rows, "next_cursor": next})
+	}))
+	defer core.Close()
+	cfg := oxMonitorTestConfig(t, core.URL, "- {tag: records, type: query_recorder}\n")
+	query := url.Values{"client_ip": {"192.168.0.2"}, "limit": {"2"}, "qname": {"example"}, "since_ms": {"100"}}
+	allIDs := []int{}
+	for page := 0; page < 2; page++ {
+		response := oxMonitorTestRequest(cfg, "GET", "/api/oxidns/queries?"+query.Encode())
+		var result struct {
+			Records []struct {
+				ID       int    `json:"id"`
+				ClientIP string `json:"client_ip"`
+			} `json:"records"`
+			NextCursor *string `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != 200 {
+			t.Fatalf("exact IP failed: %d %s %v", response.Code, response.Body.String(), err)
+		}
+		for _, row := range result.Records {
+			if row.ClientIP != "192.168.0.2" {
+				t.Fatal("substring client leaked into exact selection")
+			}
+			allIDs = append(allIDs, row.ID)
+		}
+		if page == 0 {
+			if result.NextCursor == nil || *result.NextCursor != "100:4" {
+				t.Fatalf("wrong continuation: %#v", result.NextCursor)
+			}
+			query.Set("cursor", *result.NextCursor)
+		} else if result.NextCursor != nil {
+			t.Fatal("unexpected continuation after end")
+		}
+	}
+	if !reflect.DeepEqual(allIDs, []int{9, 7, 5}) || !reflect.DeepEqual(limits, []int{2, 1, 1, 2}) {
+		t.Fatalf("lost/duplicate records or incorrect page sizes: ids=%v limits=%v", allIDs, limits)
+	}
+}
+
+func TestOxiDNSMonitorExactIPSparseScanKeepsCursor(t *testing.T) {
+	var calls atomic.Int32
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		offset := 0
+		if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+			offset, _ = strconv.Atoi(strings.Split(cursor, ":")[1])
+		}
+		ip := "192.168.0.20"
+		var cursor interface{} = fmt.Sprintf("100:%d", offset+1)
+		if offset == oxMonitorExactIPPages {
+			ip = "192.168.0.2"
+			cursor = nil
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "records": []map[string]interface{}{{"id": 100 - offset, "client_ip": ip}}, "next_cursor": cursor})
+	}))
+	defer core.Close()
+	cfg := oxMonitorTestConfig(t, core.URL, "- {tag: records, type: query_recorder}\n")
+	response := oxMonitorTestRequest(cfg, "GET", "/api/oxidns/queries?client_ip=192.168.0.2&limit=1")
+	var result struct {
+		Records    []json.RawMessage `json:"records"`
+		NextCursor *string           `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != 200 || len(result.Records) != 0 || result.NextCursor == nil || calls.Load() != oxMonitorExactIPPages {
+		t.Fatalf("sparse scan lost cursor: %d %s %v", response.Code, response.Body.String(), err)
+	}
+	response = oxMonitorTestRequest(cfg, "GET", "/api/oxidns/queries?client_ip=192.168.0.2&limit=1&cursor="+url.QueryEscape(*result.NextCursor))
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || response.Code != 200 || len(result.Records) != 1 || result.NextCursor != nil {
+		t.Fatalf("sparse continuation failed: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestOxiDNSMonitorExactIPv6Normalization(t *testing.T) {
+	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("client_ip") != ":" {
+			t.Error("IPv6 prefilter may lose alternate address spellings")
+		}
+		fmt.Fprint(w, `{"ok":true,"records":[{"id":2,"client_ip":"2001:0db8:0000:0000:0000:0000:0000:0002"},{"id":1,"client_ip":"2001:db8::20"}],"next_cursor":null}`)
+	}))
+	defer core.Close()
+	cfg := oxMonitorTestConfig(t, core.URL, "- {tag: records, type: query_recorder}\n")
+	response := oxMonitorTestRequest(cfg, "GET", "/api/oxidns/queries?client_ip=2001:db8::2&limit=2")
+	var result struct {
+		Records []json.RawMessage `json:"records"`
+	}
+	_ = json.Unmarshal(response.Body.Bytes(), &result)
+	if response.Code != 200 || len(result.Records) != 1 || !strings.Contains(string(result.Records[0]), `"id":2`) {
+		t.Fatalf("IPv6 comparison failed: %d %s", response.Code, response.Body.String())
 	}
 }

@@ -53,6 +53,13 @@ export interface OxiDNSQueries {
   records: OxiDNSQuery[]
   next_cursor: string | null
 }
+export interface OxiDNSClients {
+  success: true
+  recorder: string
+  clients: Array<{ ip: string; count: number }>
+  sample_size: number
+  sample_limited: boolean
+}
 export interface OxiDNSQueryFilters {
   qname: string
   client_ip: string
