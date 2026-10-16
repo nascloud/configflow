@@ -1,22 +1,23 @@
 <template>
   <section aria-label="基础配置扩展" class="min-w-0 space-y-4">
     <div class="flex min-w-0 flex-wrap items-center justify-between gap-3">
-      <h3 class="text-sm font-semibold">基础配置扩展</h3>
-      <div class="flex gap-1" role="group" aria-label="基础配置编辑模式">
-        <Button type="button" :variant="mode === 'form' ? 'secondary' : 'ghost'" class="min-h-11" :aria-pressed="mode === 'form'" @click="switchMode('form')">逐项编辑</Button>
-        <Button type="button" :variant="mode === 'yaml' ? 'secondary' : 'ghost'" class="min-h-11" :aria-pressed="mode === 'yaml'" :disabled="mode === 'form' && Boolean(error)" @click="switchMode('yaml')">YAML</Button>
+      <div class="flex items-center gap-1">
+        <h3 class="text-sm font-semibold">基础配置扩展</h3>
+        <FieldHelp label="基础配置扩展" text="添加额外的全局参数和插件，参数可展开为对象或列表逐项填写。核心模板管理的字段以页面设置为准。切换 YAML 保留字段和值，逐项修改后会重新整理注释与排版；无效文本保留为草稿，修正后才能保存或切回逐项编辑。最终配置可通过预览和 Agent 检查确认。" />
       </div>
+      <OxidnsEditorModeToggle :model-value="mode" :options="[{ value: 'form', label: '逐项编辑' }, { value: 'yaml', label: 'YAML', disabled: mode === 'form' && Boolean(error) }]" label="基础配置编辑模式" @update:model-value="switchMode" />
     </div>
-    <p class="text-xs leading-relaxed text-muted-foreground">添加额外全局参数和插件；插件参数可展开为对象或列表逐项填写。核心模板管理的字段以页面设置为准，最终配置请通过预览和 Agent 检查确认。切换 YAML 会保留字段和值；逐项修改后注释和格式会重新生成。</p>
 
     <div v-if="mode === 'yaml'" class="space-y-2">
       <Textarea id="oxi-custom-config" :model-value="draft" :rows="12" aria-label="基础配置扩展 YAML" :aria-invalid="Boolean(error)" class="min-w-0 font-mono text-xs" placeholder="# 额外的 OxiDNS 全局参数或插件" @update:model-value="editYaml(String($event))" />
-      <p class="text-xs text-muted-foreground">无效文本会保留为草稿，修正后才能保存或切换为逐项编辑。</p>
     </div>
     <div v-else class="min-w-0 space-y-5">
       <div class="min-w-0 space-y-3">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <h4 class="text-sm font-medium">全局参数 <span class="text-muted-foreground num">{{ globals.length }}</span></h4>
+          <div class="flex items-center gap-1">
+            <h4 class="text-sm font-medium">全局参数 <span class="text-muted-foreground num">{{ globals.length }}</span></h4>
+            <FieldHelp label="全局参数" text="添加 OxiDNS 配置顶层的扩展字段。字段名需符合核心文档；对象可继续添加子字段，列表可添加条目。模板管理的核心字段应在对应设置页修改。" />
+          </div>
           <Button type="button" variant="outline" class="min-h-11" @click="appendConfigEntry(tree); commit()"><Plus class="size-3.5" />添加全局参数</Button>
         </div>
         <p v-if="!globals.length" class="text-xs text-muted-foreground">尚无额外全局参数。</p>
@@ -31,7 +32,10 @@
 
       <div class="min-w-0 space-y-3">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <h4 class="text-sm font-medium">自定义插件 <span class="text-muted-foreground num">{{ plugins?.value.items.length ?? 0 }}</span></h4>
+          <div class="flex items-center gap-1">
+            <h4 class="text-sm font-medium">自定义插件 <span class="text-muted-foreground num">{{ plugins?.value.items.length ?? 0 }}</span></h4>
+            <FieldHelp label="自定义插件" text="每个插件通常包含 tag（唯一标识）、type（插件类型）和 args（参数对象）。参数按插件文档填写；仅定义插件不会自动参与解析，可在自定义匹配中用 $tag 引用执行器。" />
+          </div>
           <Button type="button" variant="outline" class="min-h-11" :disabled="nonListPlugins" @click="addPlugin"><Plus class="size-3.5" />添加插件</Button>
         </div>
         <p v-if="nonListPlugins" class="text-xs text-warning-accent">现有 plugins 不是列表，已完整显示在全局参数中。请先修改其类型再添加插件。</p>
@@ -58,6 +62,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import OxidnsValueEditor from './OxidnsValueEditor.vue'
+import FieldHelp from '@/components/common/FieldHelp.vue'
+import OxidnsEditorModeToggle from './OxidnsEditorModeToggle.vue'
 import { appendConfigEntry, parseConfigDocument, serializeConfigDocument, valueToConfigNode } from '@/lib/oxidnsConfigEditor'
 
 const props = defineProps<{ modelValue: string }>()

@@ -188,6 +188,22 @@ def test_default_cache_dump_lives_in_unmanaged_state_directory():
     assert get_oxidns_custom_files({'oxidns': {'cache_dump_enabled': True}}) == []
 
 
+@pytest.mark.parametrize('lazy_ttl', [0, 1, 300])
+def test_lazy_cache_ttl_zero_disables_lazy_without_disabling_cache(lazy_ttl):
+    p = plugins({'cache_enabled': True, 'cache_lazy_ttl': lazy_ttl,
+                 'cache_size': 512, 'cache_dump_enabled': True})
+    cache = p['lazy_cache']['args']
+    assert cache['size'] == 512
+    assert cache['short_circuit'] is True
+    assert cache['dump_file'] == './state/cache.dump'
+    assert cache['dump_interval'] == get_default_oxidns_settings()['cache_dump_interval']
+    assert {'exec': '$lazy_cache'} in p['china_dns']['args']
+    if lazy_ttl == 0:
+        assert 'lazy_cache_ttl' not in cache
+    else:
+        assert cache['lazy_cache_ttl'] == lazy_ttl
+
+
 @pytest.mark.parametrize('content', [
     'router.test 192.0.2.10',
     'router.test 2001:db8::10',
