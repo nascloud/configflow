@@ -1,6 +1,13 @@
 <template>
   <header class="relative mb-6 flex flex-wrap items-end gap-4 max-md:mb-4">
+    <div v-if="$slots['title-extra']" class="flex min-w-0 flex-[1_1_240px] items-center gap-3">
+      <h1 class="font-display m-0 shrink-0 text-[34px] leading-[1.12] text-foreground max-md:text-[26px]">
+        {{ title }}
+      </h1>
+      <slot name="title-extra" />
+    </div>
     <h1
+      v-else
       class="font-display m-0 min-w-0 flex-[1_1_240px] text-[34px] leading-[1.12] text-foreground max-md:text-[26px]"
     >
       {{ title }}
