@@ -204,7 +204,7 @@
     </Dialog>
 
     <Dialog v-model:open="clientImport.visible">
-      <DialogContent class="max-w-[640px]">
+      <DialogContent :class="clientImport.expanded ? 'max-w-[min(1100px,calc(100vw-2rem))]' : 'max-w-[640px]'">
         <DialogHeader>
           <DialogTitle>导入客户端配置</DialogTitle>
           <DialogDescription>
@@ -244,10 +244,24 @@
           <div class="flex flex-col gap-1.5">
             <div class="flex items-center justify-between gap-2">
               <Label for="client-content">配置内容</Label>
-              <Button type="button" variant="ghost" size="sm" @click="clientFileInput?.click()">
-                <Upload class="size-3.5" />
-                选择文件
-              </Button>
+              <div class="flex items-center gap-1">
+                <Button type="button" variant="ghost" size="sm" @click="clientFileInput?.click()">
+                  <Upload class="size-3.5" />
+                  选择文件
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  :title="clientImport.expanded ? '收起编辑' : '展开编辑'"
+                  :aria-label="clientImport.expanded ? '收起编辑' : '展开编辑'"
+                  :aria-pressed="clientImport.expanded"
+                  @click="clientImport.expanded = !clientImport.expanded"
+                >
+                  <Minimize2 v-if="clientImport.expanded" class="size-3.5" />
+                  <Maximize2 v-else class="size-3.5" />
+                </Button>
+              </div>
               <input
                 ref="clientFileInput"
                 type="file"
@@ -258,7 +272,10 @@
             <Textarea
               id="client-content"
               v-model="clientImport.content"
-              class="h-48 resize-none overflow-auto bg-background/50 font-mono text-[12px] field-sizing-fixed max-sm:h-36"
+              :class="[
+                'resize-none overflow-auto bg-background/50 font-mono text-[12px] field-sizing-fixed',
+                clientImport.expanded ? 'h-[max(12rem,min(60dvh,calc(100dvh-24rem)))]' : 'h-48 max-sm:h-36'
+              ].join(' ')"
               :placeholder="clientImport.fileName ? '' : '粘贴配置内容，或选择配置文件'"
             />
             <p v-if="clientImport.fileName" class="m-0 text-[12px] text-muted-foreground">
@@ -305,7 +322,12 @@
           </div>
         </form>
 
-        <DialogFooter>
+        <!-- 展开编辑时按钮固定在弹窗底部，矮屏也不用滚到最下面 -->
+        <DialogFooter
+          :class="clientImport.expanded
+            ? 'sticky -bottom-6 -mx-6 -mb-6 border-t border-border/60 bg-card px-6 py-4 max-sm:-bottom-5 max-sm:-mx-5 max-sm:-mb-5 max-sm:px-5'
+            : ''"
+        >
           <Button variant="outline" @click="clientImport.visible = false">
             {{ clientImport.result?.committed ? '关闭' : '取消' }}
           </Button>
@@ -334,6 +356,8 @@ import {
   Download,
   FileInput,
   Loader2,
+  Maximize2,
+  Minimize2,
   Pencil,
   Plus,
   Trash2,
@@ -545,6 +569,7 @@ const clientFileInput = ref<HTMLInputElement>()
 const clientImport = reactive({
   visible: false,
   saving: false,
+  expanded: false,
   clientType: 'mihomo',
   name: '',
   id: '',
@@ -575,6 +600,7 @@ const openClientImport = async () => {
   Object.assign(clientImport, {
     visible: true,
     saving: false,
+    expanded: false,
     clientType: 'mihomo',
     name: '',
     id: '',
