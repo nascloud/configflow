@@ -3,9 +3,9 @@ import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { agentApi } from '@/api'
 import { notify } from '@/lib/feedback'
-import { useAgentDeployments } from '@/composables/useAgentDeployments'
+import { deploymentStatusLabel, useAgentDeployments } from '@/composables/useAgentDeployments'
 
-vi.mock('@/api', () => ({ agentApi: { getDeployment: vi.fn(), activateDeployment: vi.fn(), pushConfig: vi.fn() } }))
+vi.mock('@/api', () => ({ agentApi: { getDeployment: vi.fn(), activateDeployment: vi.fn(), rollbackDeployment: vi.fn(), pushConfig: vi.fn() } }))
 vi.mock('@/lib/feedback', () => ({ notify: { success: vi.fn(), error: vi.fn() } }))
 const wrappers: ReturnType<typeof mount>[] = []
 function render() {
@@ -18,6 +18,97 @@ beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks() })
 afterEach(() => { wrappers.splice(0).forEach(w => w.unmount()); vi.useRealTimers() })
 
 describe('Agent deployment lifecycle feedback', () => {
+  it('rolls back the current successful deployment and reports success only after restored service checks', async () => {
+    const { flow, onSuccess } = render()
+    flow.track('agent-1', { deployment_id: 'good-1', status: 'succeeded' }, false)
+    vi.mocked(agentApi.rollbackDeployment).mockResolvedValue({ data: { deployment_id: 'good-1', status: 'rolling_back', manual_rollback: true } } as any)
+    vi.mocked(agentApi.getDeployment).mockResolvedValue({ data: { deployment_id: 'good-1', status: 'rolled_back', manual_rollback: true } } as any)
+    await flow.rollback('agent-1', 'good-1')
+    expect(agentApi.rollbackDeployment).toHaveBeenCalledExactlyOnceWith('agent-1', 'good-1')
+    expect(flow.busy('agent-1')).toBe(true)
+    expect(notify.success).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(flow.busy('agent-1')).toBe(false)
+    expect(notify.success).toHaveBeenCalledWith('手动回滚成功，发布前配置已恢复并通过服务检查')
+    expect(notify.error).not.toHaveBeenCalled()
+    expect(onSuccess).toHaveBeenCalledOnce()
+  })
+
+  it('rejects old targets and duplicate clicks, and restores the prior state after an explicit conflict', async () => {
+    const { flow } = render()
+    flow.track('agent-1', { deployment_id: 'current', status: 'succeeded' }, false)
+    let reject!: (error: unknown) => void
+    vi.mocked(agentApi.rollbackDeployment).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+    await flow.rollback('agent-1', 'old')
+    expect(agentApi.rollbackDeployment).not.toHaveBeenCalled()
+    const operation = flow.rollback('agent-1', 'current')
+    await flow.rollback('agent-1', 'current')
+    expect(agentApi.rollbackDeployment).toHaveBeenCalledOnce()
+    reject({ response: { status: 409, data: { message: '备份已不存在' } } })
+    await operation
+    expect(flow.deployments['agent-1']).toEqual({ deployment_id: 'current', status: 'succeeded', query_error: false })
+    expect(flow.busy('agent-1')).toBe(false)
+    expect(notify.error).toHaveBeenCalledWith('无法手动回滚', '备份已不存在')
+  })
+
+  it('does not treat a stale successful publication as confirmation of a timed-out rollback', async () => {
+    const { flow } = render()
+    flow.track('agent-1', { deployment_id: 'current', status: 'succeeded' }, false)
+    vi.mocked(agentApi.rollbackDeployment).mockRejectedValueOnce(new Error('transport lost'))
+    vi.mocked(agentApi.getDeployment)
+      .mockResolvedValueOnce({ data: { deployment_id: 'current', status: 'succeeded' } } as any)
+      .mockResolvedValueOnce({ data: { deployment_id: 'current', status: 'rolled_back', manual_rollback: true } } as any)
+    await flow.rollback('agent-1', 'current')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(flow.deployments['agent-1']).toMatchObject({ status: 'unknown', manual_rollback: true })
+    expect(notify.success).not.toHaveBeenCalled()
+    await flow.retryPublish('agent-1')
+    expect(agentApi.pushConfig).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(flow.deployments['agent-1'].status).toBe('rolled_back')
+    expect(notify.success).toHaveBeenCalledOnce()
+  })
+
+  it('ends an uncertain rollback after an explicit server rejection without reporting publication success', async () => {
+    const { flow, onSuccess } = render()
+    flow.track('agent-1', { deployment_id: 'current', status: 'succeeded' }, false)
+    vi.mocked(agentApi.rollbackDeployment).mockRejectedValueOnce(new Error('transport lost'))
+    const rejection = { deployment_id: 'current', status: 'succeeded', rollback_rejected: true, rollback_message: '备份已不可用' }
+    vi.mocked(agentApi.getDeployment).mockResolvedValueOnce({ data: rejection } as any)
+    await flow.rollback('agent-1', 'current')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(flow.deployments['agent-1']).toMatchObject({ status: 'succeeded', manual_rollback: false, rollback_rejected: true, query_error: false })
+    expect(flow.busy('agent-1')).toBe(false)
+    expect(deploymentStatusLabel(flow.deployments['agent-1'])).toBe('手动回滚未执行')
+    expect(notify.error).toHaveBeenCalledExactlyOnceWith('无法手动回滚', '备份已不可用')
+    expect(notify.success).not.toHaveBeenCalled()
+    expect(onSuccess).toHaveBeenCalledOnce()
+    flow.track('agent-1', rejection)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(agentApi.getDeployment).toHaveBeenCalledOnce()
+    expect(notify.error).toHaveBeenCalledOnce()
+    vi.mocked(agentApi.rollbackDeployment).mockRejectedValueOnce(new Error('transport lost again'))
+    vi.mocked(agentApi.getDeployment).mockResolvedValueOnce({ data: rejection } as any)
+    await flow.rollback('agent-1', 'current')
+    expect(deploymentStatusLabel(flow.deployments['agent-1'])).toBe('手动回滚结果待确认')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(notify.error).toHaveBeenCalledTimes(2)
+    expect(onSuccess).toHaveBeenCalledTimes(2)
+    vi.mocked(agentApi.rollbackDeployment).mockResolvedValueOnce({ data: { deployment_id: 'current', status: 'rolling_back', manual_rollback: true } } as any)
+    await flow.rollback('agent-1', 'current')
+    expect(deploymentStatusLabel(flow.deployments['agent-1'])).toBe('正在恢复发布前配置')
+    expect(flow.deployments['agent-1'].rollback_rejected).toBeUndefined()
+  })
+
+  it('shows a persisted rejection without a false success toast when opening the Agent page', () => {
+    const { flow, onSuccess } = render()
+    flow.track('agent-1', { deployment_id: 'current', status: 'succeeded', rollback_rejected: true, rollback_message: '活动版本已变更' }, false)
+    expect(notify.success).not.toHaveBeenCalled()
+    expect(notify.error).not.toHaveBeenCalled()
+    expect(onSuccess).not.toHaveBeenCalled()
+    expect(flow.busy('agent-1')).toBe(false)
+  })
+
   it('does not claim success on receipt; waits for core health checks to pass', async () => {
     const { flow, onSuccess } = render()
     vi.mocked(agentApi.getDeployment)

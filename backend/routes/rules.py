@@ -102,6 +102,13 @@ def _mutate_rule(rule_id, item_type=None):
             raise NotFound('Rule not found')
         if request.method == 'DELETE':
             items.remove(original)
+            # Remove target selections in the same transaction as the rule.
+            # A later browser read/modify/write can fail or overwrite new edits.
+            for engine in ('mosdns', 'oxidns'):
+                settings = profile.get(engine, {})
+                for key in ('direct_rulesets', 'proxy_rulesets', 'direct_rules', 'proxy_rules'):
+                    if isinstance(settings.get(key), list):
+                        settings[key] = [value for value in settings[key] if value != rule_id]
             return
         updated = {**original, **payload, 'id': rule_id}
         if item_type:

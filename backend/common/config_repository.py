@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
+from backend.common.oxidns_settings import get_default_oxidns_settings
+
 
 class ProfileRepositoryError(Exception):
     """Base error for profile storage operations."""
@@ -132,6 +134,7 @@ def _default_profile_config() -> Dict[str, Any]:
         "rule_library": [],
         "proxy_groups": [],
         "mihomo": {"custom_config": ""},
+        "oxidns": get_default_oxidns_settings(),
         "mosdns": {
             "direct_rulesets": [],
             "proxy_rulesets": [],
@@ -159,7 +162,7 @@ def _default_profile_config() -> Dict[str, Any]:
 
 SHARED_FIELDS = ('subscriptions', 'nodes', 'subscription_aggregations', 'rule_library')
 RESOURCE_FIELDS = SHARED_FIELDS[:3]
-PROFILE_FIELDS = ('proxy_groups', 'rule_configs', 'mihomo', 'surge', 'mosdns', 'loon', 'domain_discovery')
+PROFILE_FIELDS = ('proxy_groups', 'rule_configs', 'mihomo', 'surge', 'mosdns', 'oxidns', 'loon', 'domain_discovery')
 BUILTIN_POLICIES = {'DIRECT', 'REJECT'}
 RULE_SOURCE_FIELDS = ('name', 'url', 'behavior', 'content', 'source_type', 'format')
 
@@ -313,7 +316,7 @@ class ProfileRepository:
 
     def _empty_profile(self, profile_id, name, description=''):
         defaults = self._legacy_defaults()
-        result = {key: copy.deepcopy(defaults.get(key, {} if key in ('mihomo', 'surge', 'mosdns', 'loon', 'domain_discovery') else []))
+        result = {key: copy.deepcopy(defaults.get(key, {} if key in ('mihomo', 'surge', 'mosdns', 'oxidns', 'loon', 'domain_discovery') else []))
                   for key in PROFILE_FIELDS}
         result.update(id=profile_id, name=name, description=description, _revision=0,
                       created_at=_now(), updated_at=_now())
@@ -880,6 +883,9 @@ class ProfileRepository:
                         node[key] = '[REDACTED]'
                 node['params'] = {}
             for profile in result['profiles'].values():
+                from backend.common.config_export import redact_oxidns_settings
+                if 'oxidns' in profile:
+                    profile['oxidns'] = redact_oxidns_settings(profile['oxidns'])
                 for engine in ('mihomo', 'surge', 'mosdns'):
                     profile[engine]['custom_config'] = ''
                 if isinstance(profile.get('loon'), dict):
@@ -1511,13 +1517,14 @@ class ProfileRepository:
             # Same as proxies_order: generators skip selections whose rule or
             # group no longer exists, so drop them instead of failing the upgrade.
             item_types = {rule.get('id'): rule.get('itemType') for rule in profile['rule_configs']}
-            mosdns = profile.get('mosdns')
-            if isinstance(mosdns, dict):
-                for key in ('direct_rulesets', 'proxy_rulesets', 'direct_rules', 'proxy_rules'):
-                    if isinstance(mosdns.get(key), list):
-                        expected = 'ruleset' if key.endswith('rulesets') else 'rule'
-                        mosdns[key] = [value for value in mosdns[key]
-                                       if isinstance(value, str) and item_types.get(value) == expected]
+            for engine in ('mosdns', 'oxidns'):
+                dns_settings = profile.get(engine)
+                if isinstance(dns_settings, dict):
+                    for key in ('direct_rulesets', 'proxy_rulesets', 'direct_rules', 'proxy_rules'):
+                        if isinstance(dns_settings.get(key), list):
+                            expected = 'ruleset' if key.endswith('rulesets') else 'rule'
+                            dns_settings[key] = [value for value in dns_settings[key]
+                                                 if isinstance(value, str) and item_types.get(value) == expected]
             surge = profile.get('surge')
             if isinstance(surge, dict) and isinstance(surge.get('smart_groups'), list):
                 surge['smart_groups'] = [setting for setting in surge['smart_groups']
@@ -1687,12 +1694,16 @@ class ProfileRepository:
         # 域名发现设置同样是后加字段，缺省为空对象
         if not isinstance(profile.get('domain_discovery', {}), dict):
             raise ProfileValidationError('domain_discovery 参数必须是对象')
-        mosdns = profile['mosdns']
-        for key in ('direct_rulesets', 'proxy_rulesets', 'direct_rules', 'proxy_rules'):
-            expected = 'ruleset' if key.endswith('rulesets') else 'rule'
-            for value in _id_list(mosdns.get(key, []), key):
-                if value not in rules or rules[value]['itemType'] != expected:
-                    raise ProfileInUse(f'MosDNS {key} 仍引用不存在的规则 {value}，请先取消选择')
+        # OxiDNS is additive: pre-existing schema-5 profiles may omit it.
+        if not isinstance(profile.get('oxidns', {}), dict):
+            raise ProfileValidationError('oxidns 参数必须是对象')
+        for engine, label in (('mosdns', 'MosDNS'), ('oxidns', 'OxiDNS')):
+            dns_settings = profile.get(engine, {})
+            for key in ('direct_rulesets', 'proxy_rulesets', 'direct_rules', 'proxy_rules'):
+                expected = 'ruleset' if key.endswith('rulesets') else 'rule'
+                for value in _id_list(dns_settings.get(key, []), key):
+                    if value not in rules or rules[value]['itemType'] != expected:
+                        raise ProfileInUse(f'{label} {key} 仍引用不存在的规则 {value}，请先取消选择')
         for setting in profile['surge'].get('smart_groups', []):
             if setting.get('group_id') not in groups:
                 raise ProfileInUse('Surge Smart 设置引用的策略组不存在')

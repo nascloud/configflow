@@ -9,6 +9,13 @@ export interface AgentDeployment {
   error?: string
   rollback_error?: string
   config_version?: string
+  config_revision?: number
+  profile_id?: string
+  created_at?: string
+  updated_at?: string
+  manual_rollback?: boolean
+  rollback_rejected?: boolean
+  rollback_message?: string
   query_error?: boolean
   pending?: boolean
   not_recorded?: boolean
@@ -26,6 +33,16 @@ export const deploymentLabels: Record<string, string> = {
 }
 
 const terminal = new Set(['succeeded', 'failed', 'rolled_back', 'rollback_failed'])
+
+export function deploymentStatusLabel(task: AgentDeployment) {
+  if (task.rollback_rejected) return '手动回滚未执行'
+  if (task.manual_rollback) {
+    if (task.status === 'rolled_back') return '手动回滚成功'
+    if (task.status === 'rolling_back') return '正在恢复发布前配置'
+    if (task.status === 'unknown') return '手动回滚结果待确认'
+  }
+  return deploymentLabels[task.status] || task.status
+}
 
 export function createDeploymentId() {
   // LAN HTTP installations do not expose crypto.randomUUID (secure-context only).
@@ -56,10 +73,28 @@ export function useAgentDeployments(onSuccess: () => void) {
   function track(agentId: string, task: AgentDeployment, announce = true) {
     if (disposed || !task.deployment_id) return
     const previous = deployments[agentId]
+    if (task.rollback_rejected && !(previous?.deployment_id === task.deployment_id && previous.manual_rollback && terminal.has(previous.status))) {
+      // The server has resolved an uncertain request as rejected; the original release remains active.
+      deployments[agentId] = { ...task, manual_rollback: false, query_error: false }
+      clearTimeout(timers.get(agentId))
+      const key = `${agentId}:${task.deployment_id}:rollback_rejected:${task.rollback_message || ''}`
+      if (announce && !announced.has(key)) {
+        notify.error('无法手动回滚', task.rollback_message || 'Agent 拒绝了回滚请求，原配置继续运行。')
+        onSuccess()
+      }
+      announced.add(key)
+      return
+    }
+    if (previous?.deployment_id === task.deployment_id && previous.manual_rollback && !task.manual_rollback) {
+      // A cached publication result cannot confirm a rollback request whose transport timed out.
+      if (!terminal.has(previous.status)) schedule(agentId, 2000)
+      return
+    }
     if (previous?.deployment_id === task.deployment_id && terminal.has(previous.status) && task.status !== previous.status) {
       // A failed rollback can recover after an Agent restart; completed releases cannot regress.
       const recovering = previous.status === 'rollback_failed' && ['recovery_pending', 'rolling_back', 'rolled_back'].includes(task.status)
-      if (!recovering) return
+      const manualRollback = previous.status === 'succeeded' && task.manual_rollback && ['rolling_back', 'rolled_back', 'rollback_failed', 'recovery_pending'].includes(task.status)
+      if (!recovering && !manualRollback) return
     }
     deployments[agentId] = { ...task, query_error: !!task.pending }
     clearTimeout(timers.get(agentId))
@@ -70,8 +105,8 @@ export function useAgentDeployments(onSuccess: () => void) {
     if (terminal.has(task.status)) {
       const key = `${agentId}:${task.deployment_id}:${task.status}`
       if (announce && !announced.has(key)) {
-        if (task.status === 'succeeded') {
-          notify.success('配置发布成功，服务检查已通过')
+        if (task.status === 'succeeded' || (task.manual_rollback && task.status === 'rolled_back')) {
+          notify.success(task.manual_rollback ? '手动回滚成功，发布前配置已恢复并通过服务检查' : '配置发布成功，服务检查已通过')
           onSuccess()
         } else {
           notify.error(deploymentLabels[task.status], task.error || task.message)
@@ -105,7 +140,7 @@ export function useAgentDeployments(onSuccess: () => void) {
 
   async function retryPublish(agentId: string) {
     const task = deployments[agentId]
-    if (!task?.not_recorded || task.retrying || disposed || terminal.has(task.status)) return
+    if (!task?.not_recorded || task.manual_rollback || task.retrying || disposed || terminal.has(task.status)) return
     clearTimeout(timers.get(agentId))
     deployments[agentId] = { ...task, retrying: true, not_recorded: false, query_error: false }
     try {
@@ -143,11 +178,35 @@ export function useAgentDeployments(onSuccess: () => void) {
     }
   }
 
+  async function rollback(agentId: string, deploymentId: string) {
+    const task = deployments[agentId]
+    if (!task || task.deployment_id !== deploymentId || task.status !== 'succeeded' || disposed) return
+    clearTimeout(timers.get(agentId))
+    const rejectedKeyPrefix = `${agentId}:${deploymentId}:rollback_rejected:`
+    for (const key of announced) if (key.startsWith(rejectedKeyPrefix)) announced.delete(key)
+    deployments[agentId] = { ...task, manual_rollback: true, rollback_rejected: false, rollback_message: undefined, status: 'rolling_back', query_error: false }
+    try {
+      const { data } = await agentApi.rollbackDeployment(agentId, deploymentId)
+      if (!disposed) track(agentId, { ...data, manual_rollback: true })
+    } catch (error: any) {
+      if (disposed) return
+      if (error.response?.data?.deployment_id && error.response?.data?.manual_rollback) {
+        track(agentId, error.response.data)
+      } else if (error.response && error.response.status >= 400 && error.response.status < 500) {
+        deployments[agentId] = task
+        notify.error('无法手动回滚', error.response.data?.message || '当前部署没有可用备份，或另一个操作正在进行。')
+      } else {
+        deployments[agentId] = { ...task, manual_rollback: true, rollback_rejected: false, rollback_message: undefined, status: 'unknown', query_error: true }
+        schedule(agentId, 0)
+      }
+    }
+  }
+
   onUnmounted(() => {
     disposed = true
     timers.forEach(clearTimeout)
     timers.clear()
   })
 
-  return { deployments, busy, track, refresh, activate, retryPublish }
+  return { deployments, busy, track, refresh, activate, retryPublish, rollback }
 }

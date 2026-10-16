@@ -17,7 +17,7 @@ declare module 'axios' {
   }
 }
 
-const scopedPath = /^\/(?:profiles\/[^/]+\/generate|proxy-groups(?:\/|$)|rules(?:\/|$)|rule-sets(?:\/|$)|rule-configs(?:\/|$)|custom-config(?:\/|$)|mosdns(?:\/|$)|stats(?:\/|$)|domain-discovery(?:\/|$))/
+const scopedPath = /^\/(?:profiles\/[^/]+\/generate|proxy-groups(?:\/|$)|rules(?:\/|$)|rule-sets(?:\/|$)|rule-configs(?:\/|$)|custom-config(?:\/|$)|(?:mosdns|oxidns)(?:\/|$)|stats(?:\/|$)|domain-discovery(?:\/|$))/
 const profileOptions = (profileId = getActiveProfileId()) => ({
   headers: { 'X-ConfigFlow-Profile': profileId }
 })
@@ -182,7 +182,15 @@ export const generateApi = {
   previewMihomo: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/mihomo/preview'), { base_url: getBaseUrl() }),
   previewSurge: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/surge/preview'), { base_url: getBaseUrl() }),
   previewLoon: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/loon/preview'), { base_url: getBaseUrl() }),
+  oxidns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/oxidns'), { base_url: getBaseUrl() }, { responseType: 'blob', timeout: 60000 }),
+  previewOxidns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/oxidns/preview'), { base_url: getBaseUrl() }),
   previewMosdns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/mosdns/preview'), { base_url: getBaseUrl() })
+}
+
+// OxiDNS 独立配置
+export const oxidnsApi = {
+  getSettings: (profileId?: string) => api.get('/oxidns/settings', profileOptions(profileId)),
+  saveSettings: (settings: unknown, profileId?: string) => api.post('/oxidns/settings', settings, profileOptions(profileId))
 }
 
 // 配置导入导出
@@ -230,6 +238,7 @@ export const agentApi = {
   }, { timeout: 120000 }),
   getDeployment: (id: string, deploymentId: string) => api.get(`/agents/${id}/deployments/${deploymentId}`),
   activateDeployment: (id: string, deploymentId: string) => api.post(`/agents/${id}/deployments/${deploymentId}/activate`),
+  rollbackDeployment: (id: string, deploymentId: string) => api.post(`/agents/${id}/deployments/${deploymentId}/rollback`, {}),
   uninstall: (id: string) => api.post(`/agents/${id}/uninstall`),
   generateScript: (params: {
     name: string; type: string; port?: number; agent_ip?: string; config_path?: string;

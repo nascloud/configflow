@@ -198,3 +198,49 @@ def preview_mosdns():
         return jsonify({'content': yaml_content})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@generate_bp.route('/oxidns', methods=['POST'])
+@require_auth
+def generate_oxidns():
+    """Download a complete OxiDNS configuration and all managed rule files."""
+    from backend.converters.oxidns import (generate_oxidns_config,
+        get_oxidns_ruleset_downloads, get_oxidns_custom_files)
+    from backend.common.oxidns_settings import OxidnsSettingsError
+    from backend.utils.oxidns_archive import build_oxidns_zip
+    try:
+        config = get_config()
+        data = request.get_json(silent=True) or {}
+        base_url = (data.get('base_url') or request.host_url).rstrip('/')
+        content = generate_oxidns_config(config, base_url=base_url)
+        archive = build_oxidns_zip(config, content,
+            get_oxidns_ruleset_downloads(config, base_url=base_url),
+            get_oxidns_custom_files(config), base_url=base_url)
+        return send_file(archive, as_attachment=True, download_name='oxidns-config.zip',
+                         mimetype='application/zip')
+    except (OxidnsSettingsError, ValueError) as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    except Exception as exc:
+        detail = safe_exception_details(exc)
+        logger.warning('OxiDNS ZIP generation failed: %s', detail)
+        return jsonify({'success': False, 'message': '生成 OxiDNS 配置失败：' + detail}), 500
+
+
+@generate_bp.route('/oxidns/preview', methods=['POST'])
+@require_auth
+def preview_oxidns():
+    from backend.converters.oxidns import generate_oxidns_config
+    try:
+        import yaml
+        from backend.common.config_export import sanitize_external_payload
+        data = request.get_json(silent=True) or {}
+        config = get_config()
+        content = generate_oxidns_config(config, base_url=data.get('base_url', ''))
+        # Native rule updates contain private conversion capabilities. Scrub the
+        # parsed YAML so one protected URL does not erase the entire preview.
+        document = sanitize_external_payload(yaml.safe_load(content), config.get('system_config'))
+        return jsonify({'content': yaml.safe_dump(document, allow_unicode=True, sort_keys=False)})
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({'success': False, 'message': safe_exception_details(exc)}), 500

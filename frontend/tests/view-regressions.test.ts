@@ -19,7 +19,7 @@ vi.mock('@/api', () => ({
   { id: 'agg-on', name: 'Synthetic enabled aggregation', enabled: true },
   { id: 'agg-off', name: 'Synthetic disabled aggregation', enabled: false }
  ] : path === '/subscriptions' ? [{ id: 'sub-one', name: 'Synthetic subscription' }] : [] })), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
- agentApi: { getAll: vi.fn(), update: vi.fn(), getUpgrade: vi.fn() },
+ agentApi: { getAll: vi.fn(), update: vi.fn(), getUpgrade: vi.fn(), rollbackDeployment: vi.fn(), getDeployment: vi.fn() },
  proxyGroupApi: { getAll: vi.fn(async () => ({ data: [
   { id: 'group-one', name: 'Synthetic strategy', type: 'select', enabled: true, manual_nodes: ['DIRECT'] }
  ] })), create: vi.fn(async () => ({})), update: vi.fn(async () => ({})) },
@@ -81,7 +81,36 @@ async function addSource(w: ReturnType<typeof mount>, label: string) {
  }[label])!
 }
 describe('real view regressions with synthetic API data', () => {
- it.each(['mihomo', 'mosdns'])('Docker %s update opens guidance without starting a binary upgrade', async service_type => {
+ it('requires a concrete confirmation before manually rolling back the latest successful OxiDNS deployment', async () => {
+  const latest = { deployment_id: 'current-release', status: 'succeeded' }
+  vi.mocked(agentApi.getAll).mockResolvedValue({ data: [{
+   id: 'oxi', name: 'Oxi rollback test', host: '192.0.2.30', port: 8082,
+   profile_id: 'default', status: 'online', service_type: 'oxidns', deployment_method: 'shell',
+   latest_deployment: latest, deployments: { current: latest }, version: '1.3.0-go', last_heartbeat: ''
+  }] } as any)
+  vi.mocked(agentApi.rollbackDeployment).mockResolvedValue({ data: { ...latest, status: 'rolling_back', manual_rollback: true } } as any)
+  const w = render(Agents)
+  render(ConfirmHost)
+  await flushPromises()
+  await w.get('button[aria-label="Oxi rollback test 的更多操作"]').trigger('keydown', { key: 'Enter' })
+  await flushPromises()
+  const historyMenu = [...document.querySelectorAll('[role="menuitem"]')].find(item => item.textContent?.trim() === '发布记录与回滚') as HTMLElement
+  expect(historyMenu).toBeDefined()
+  historyMenu.click()
+  await clickText('回滚到发布前')
+  expect(feedback.confirmState.open).toBe(true)
+  expect(feedback.confirmState.description).toContain('current-release')
+  expect(feedback.confirmState.description).toContain('state/ 运行数据保留')
+  expect(agentApi.rollbackDeployment).not.toHaveBeenCalled()
+  await clickText('取消')
+  expect(agentApi.rollbackDeployment).not.toHaveBeenCalled()
+  await clickText('回滚到发布前')
+  await clickText('回滚并重启')
+  expect(agentApi.rollbackDeployment).toHaveBeenCalledExactlyOnceWith('oxi', 'current-release')
+  expect(document.body.textContent).toContain('正在恢复发布前配置')
+ })
+
+ it.each(['mihomo', 'mosdns', 'oxidns'])('Docker %s update opens guidance without starting a binary upgrade', async service_type => {
   vi.mocked(agentApi.getAll).mockResolvedValue({ data: [{
    id: 'docker-agent', name: 'Synthetic Docker Agent', host: '192.0.2.10', port: 8080,
    profile_id: 'default', status: 'online', service_type, deployment_method: 'docker',
@@ -125,7 +154,8 @@ describe('real view regressions with synthetic API data', () => {
   const services = [
    { id: 'router', name: 'Primary router', service_type: 'mihomo' },
    { id: 'phone', name: 'Travel phone', service_type: 'surge' },
-   { id: 'dns', name: 'DNS server', service_type: 'mosdns' }
+   { id: 'dns', name: 'DNS server', service_type: 'mosdns' },
+   { id: 'oxi', name: 'Oxi server', service_type: 'oxidns' }
   ] satisfies Pick<Agent, 'id' | 'name' | 'service_type'>[]
   vi.mocked(agentApi.getAll).mockResolvedValue({
    data: services.map(service => ({
@@ -144,6 +174,7 @@ describe('real view regressions with synthetic API data', () => {
   expect(cardLabel('Primary router')).toBe('Mihomo')
   expect(cardLabel('Travel phone')).toBe('Surge')
   expect(cardLabel('DNS server')).toBe('MosDNS')
+  expect(cardLabel('Oxi server')).toBe('OxiDNS')
  })
 
  it('editing an existing group shows and saves a selected manual node', async () => {

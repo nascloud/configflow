@@ -198,3 +198,24 @@ def profile_preview_loon(profile_id):
 def profile_preview_mosdns(profile_id):
     from backend.routes.generate import preview_mosdns
     return preview_mosdns()
+
+
+@profiles_bp.route('/<profile_id>/generate/oxidns', methods=['POST'])
+@require_auth
+def profile_generate_oxidns(profile_id):
+    from backend.routes.generate import generate_oxidns
+    return generate_oxidns()
+
+
+@profiles_bp.route('/<profile_id>/generate/oxidns/preview', methods=['POST'])
+@require_auth
+def profile_preview_oxidns(profile_id):
+    from backend.routes.generate import preview_oxidns
+    return preview_oxidns()
+
+
+@profiles_bp.route('/<profile_id>/oxidns/settings', methods=['GET', 'POST'])
+@require_auth
+def profile_oxidns_settings(profile_id):
+    from backend.routes.oxidns import oxidns_settings
+    return oxidns_settings()

@@ -14,6 +14,31 @@ _STRING_CHECK_CACHE_SIZE = 4096
 _STRING_CHECK_CACHE_MAX_LENGTH = 1024
 
 
+def redact_oxidns_settings(settings: Any) -> Any:
+    """Redact credentials in optional, human-shareable OxiDNS backups.
+
+    Full administrator backups remain restorable. Upstream/native YAML strings
+    can contain embedded credentials, so omit those opaque fields completely.
+    """
+    opaque_fields = {'custom_config', 'local_dns', 'remote_dns', 'fallback_dns'}
+    credential_fields = {'password', 'username', 'token', 'secret', 'authorization',
+                         'private_key', 'private-key', 'key', 'socks5', 'proxy',
+                         'url', 'urls', 'headers', 'bootstrap_rules'}
+
+    def redact(value, depth=0):
+        if depth >= 64:
+            return _REDACTED
+        if isinstance(value, dict):
+            return {key: ('' if key in opaque_fields else
+                          _REDACTED if str(key).lower() in credential_fields and item else
+                          redact(item, depth + 1)) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item, depth + 1) for item in value]
+        return value
+
+    return redact(settings)
+
+
 def _repository_rule_proxy_tokens() -> Iterable[str]:
     """Read capability tokens from the authoritative repository, not a response."""
     from backend.common.config import get_repository

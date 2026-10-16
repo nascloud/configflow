@@ -51,7 +51,7 @@ func (c *Config) InferLifecycle() error {
 		return fmt.Errorf("Docker Agent requires an image update; container binary replacement is unsupported")
 	}
 	kind := c.String("service_type")
-	if kind != "mihomo" && kind != "mosdns" {
+	if kind != "mihomo" && kind != "mosdns" && kind != "oxidns" {
 		return fmt.Errorf("unsupported core service")
 	}
 	manager, unit := c.String("service_manager"), c.String("service_unit")

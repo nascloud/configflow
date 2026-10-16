@@ -14,6 +14,7 @@ config_bp = Blueprint('config', __name__, url_prefix='/api/config')
 custom_config_bp = Blueprint('custom_config', __name__, url_prefix='/api/custom-config')
 agents_bp = Blueprint('agents', __name__, url_prefix='/api/agents')
 mosdns_bp = Blueprint('mosdns', __name__, url_prefix='/api/mosdns')
+oxidns_bp = Blueprint('oxidns', __name__, url_prefix='/api/oxidns')
 settings_bp = Blueprint('settings', __name__, url_prefix='/api')
 logs_bp = Blueprint('logs', __name__, url_prefix='/api/logs')
 stats_bp = Blueprint('stats', __name__, url_prefix='/api/stats')
@@ -37,6 +38,7 @@ def register_blueprints(app):
     from backend.routes import config  # 包含 custom_config 路由
     from backend.routes import agents
     from backend.routes import mosdns
+    from backend.routes import oxidns
     from backend.routes import settings
     from backend.routes.logs import logs_bp  # 日志路由
     from backend.routes.stats import stats_bp  # 统计路由
@@ -57,6 +59,7 @@ def register_blueprints(app):
     app.register_blueprint(custom_config_bp)
     app.register_blueprint(agents_bp)
     app.register_blueprint(mosdns_bp)
+    app.register_blueprint(oxidns_bp)
     app.register_blueprint(settings_bp)
     app.register_blueprint(logs_bp)  # 注册日志路由
     app.register_blueprint(stats_bp)  # 注册统计路由

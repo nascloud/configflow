@@ -426,7 +426,7 @@ def test_profile_guard_observes_publication_started_before_transaction(env, monk
     manager.finish_deployment_preparation(agent['id'], 'raced-publish')
 
 
-@pytest.mark.parametrize('suffix', ['deployments', 'deployments/test/activate'])
+@pytest.mark.parametrize('suffix', ['deployments', 'deployments/test/activate', 'deployments/test/rollback'])
 def test_post_retries_only_exact_busy_with_identical_archive_and_identity(env, monkeypatch, suffix):
     _, manager, agent, _ = env
     calls = []
@@ -492,3 +492,141 @@ def test_profile_binding_route_reports_deployment_conflict_as_409(env, monkeypat
     assert 'unfinished deployment' in result.json['message']
     assert manager.get_agent_by_id(agent['id'])['profile_id'] == 'default'
     manager.finish_deployment_preparation(agent['id'], 'binding-request')
+
+
+def successful_deployment(manager, agent, deployment_id='manual-test'):
+    manager.begin_deployment(agent['id'], deployment_id)
+    manager.record_deployment(agent['id'], deployment_id, {
+        'status': 'succeeded', 'success': True, 'submitted': True,
+        'config_version': 'current', 'config_revision': 9})
+    manager.finish_deployment_preparation(agent['id'], deployment_id)
+    return deployment_id
+
+
+def test_manual_rollback_reserves_before_post_and_invalidates_applied_baseline(env, monkeypatch):
+    repository, manager, agent, _ = env
+    deployment_id = successful_deployment(manager, agent)
+    repository.update_system_transaction(lambda system: system['agents'][0].update(applied_content={'fingerprint': 'current'}))
+    def post(url, **kwargs):
+        assert url.endswith(f'/deployments/{deployment_id}/rollback')
+        reserved = manager.get_agent_by_id(agent['id'])['latest_deployment']
+        assert reserved['manual_rollback'] and reserved['status'] == 'rolling_back'
+        assert manager.begin_deployment(agent['id'], 'raced-publish')['http_status'] == 409
+        # An old publication poll must not mark the rollback complete.
+        assert manager.record_deployment(agent['id'], deployment_id, {'status': 'succeeded'})['status'] == 'rolling_back'
+        return response({'success': True, 'status': 'rolling_back', 'manual_rollback': True}, 202)
+    monkeypatch.setattr('backend.agents.manager.requests.post', post)
+    assert manager.rollback_deployment(agent['id'], deployment_id)['status'] == 'rolling_back'
+    monkeypatch.setattr('backend.agents.manager.requests.get', lambda *_a, **_k: response({
+        'success': True, 'status': 'rolled_back', 'manual_rollback': True, 'config_version': 'previous'}))
+    restarted = AgentManager(repository)
+    result = restarted.get_deployment(agent['id'], deployment_id)
+    assert result['success'] and result['manual_rollback'] and result['status'] == 'rolled_back'
+    current = restarted.get_agent_by_id(agent['id'])
+    assert current['config_version'] == 'previous'
+    assert not {'applied_content', 'pushed_at', 'config_revision'} & current.keys()
+    assert current['latest_deployment']['manual_rollback']
+    # Repeated rollback requests preserve the same completed result.
+    assert restarted.rollback_deployment(agent['id'], deployment_id) == result
+
+
+@pytest.mark.parametrize('rejection', [400, 404, 405, 409])
+def test_manual_rollback_definite_rejection_preserves_successful_publication(env, monkeypatch, rejection):
+    _, manager, agent, _ = env
+    deployment_id = successful_deployment(manager, agent)
+    monkeypatch.setattr('backend.agents.manager.requests.post', lambda *_a, **_k: response({
+        'message': 'active managed files changed since deployment; refusing rollback'}, rejection))
+    result = manager.rollback_deployment(agent['id'], deployment_id)
+    assert result['http_status'] == rejection
+    current = manager.get_agent_by_id(agent['id'])
+    assert current['config_version'] == 'current'
+    assert current['latest_deployment']['status'] == 'succeeded'
+    assert current['latest_deployment']['rollback_rejected']
+    assert not current['latest_deployment'].get('manual_rollback')
+    assert manager.begin_deployment(agent['id'], 'after-rejection')['success']
+    manager.finish_deployment_preparation(agent['id'], 'after-rejection')
+
+
+@pytest.mark.parametrize('retry_rejected', [False, True])
+def test_manual_rollback_transport_timeout_reconciles_same_identity(env, monkeypatch, retry_rejected):
+    _, manager, agent, _ = env
+    deployment_id = successful_deployment(manager, agent)
+    def timeout(*_a, **_k):
+        raise requests.Timeout('secret URL must not leak')
+    monkeypatch.setattr('backend.agents.manager.requests.post', timeout)
+    result = manager.rollback_deployment(agent['id'], deployment_id)
+    assert result['status'] == 'unknown' and result['manual_rollback']
+    assert 'secret' not in str(result)
+    monkeypatch.setattr('backend.agents.manager.requests.get', lambda *_a, **_k: response({
+        'success': True, 'status': 'succeeded'}))
+    calls = []
+    def retry(url, **kwargs):
+        calls.append(url)
+        if retry_rejected:
+            return response({'message': 'rollback backup checksum mismatch'}, 409)
+        return response({'success': True, 'status': 'rolled_back', 'manual_rollback': True, 'config_version': 'old'})
+    monkeypatch.setattr('backend.agents.manager.requests.post', retry)
+    result = manager.get_deployment(agent['id'], deployment_id)
+    assert calls == [f'http://agent.test:8080/api/deployments/{deployment_id}/rollback']
+    if retry_rejected:
+        assert result['status'] == 'succeeded' and result['rollback_rejected']
+        assert result['rollback_message'] == 'rollback backup checksum mismatch'
+        assert not result.get('manual_rollback')
+    else:
+        assert result['status'] == 'rolled_back' and result['manual_rollback']
+
+
+@pytest.mark.parametrize('change', ['profile', 'latest', 'upgrade', 'status'])
+def test_manual_rollback_ownership_and_operation_guards(env, monkeypatch, change):
+    repository, manager, agent, _ = env
+    deployment_id = successful_deployment(manager, agent)
+    repository.create_profile({'id': 'another-profile'})
+    def edit(system):
+        saved = system['agents'][0]
+        if change == 'profile':
+            saved['profile_id'] = 'another-profile'
+        elif change == 'latest':
+            saved['latest_deployment'] = {'deployment_id': 'another-deployment'}
+        elif change == 'upgrade':
+            saved['latest_upgrade'] = {'status': 'installing'}
+        else:
+            saved['deployments'][deployment_id]['status'] = 'failed'
+    repository.update_system_transaction(edit)
+    monkeypatch.setattr('backend.agents.manager.requests.post', lambda *_a, **_k: pytest.fail('guard must precede network'))
+    assert manager.rollback_deployment(agent['id'], deployment_id)['http_status'] == 409
+
+
+def test_manual_rollback_route_retains_flag_and_reports_completed_rollback_as_success(env, monkeypatch):
+    from flask import Flask
+    from backend.routes import register_blueprints
+    _, manager, agent, _ = env
+    deployment_id = successful_deployment(manager, agent)
+    monkeypatch.setattr('backend.routes.agents.get_agent_manager', lambda: manager)
+    monkeypatch.setattr('backend.agents.manager.requests.post', lambda *_a, **_k: response({
+        'success': True, 'status': 'rolled_back', 'manual_rollback': True, 'config_version': 'before'}))
+    app = Flask(__name__)
+    register_blueprints(app)
+    client = app.test_client()
+    path = f'/api/agents/{agent["id"]}/deployments/{deployment_id}'
+    result = client.post(path + '/rollback', json={})
+    assert result.status_code == 200 and result.json['success']
+    assert result.json['manual_rollback'] and result.json['status'] == 'rolled_back'
+    polled = client.get(path)
+    assert polled.status_code == 200 and polled.json['manual_rollback']
+
+
+def test_manual_rollback_busy_after_ambiguous_request_remains_pending(env, monkeypatch):
+    _, manager, agent, _ = env
+    deployment_id = successful_deployment(manager, agent)
+    def timeout(*_a, **_k):
+        raise requests.Timeout('ambiguous')
+    monkeypatch.setattr('backend.agents.manager.requests.post', timeout)
+    assert manager.rollback_deployment(agent['id'], deployment_id)['status'] == 'unknown'
+    monkeypatch.setattr('backend.agents.manager.requests.get', lambda *_a, **_k: response({'status': 'succeeded'}))
+    monkeypatch.setattr('backend.agents.manager.requests.post', lambda *_a, **_k: response({
+        'message': 'another service operation is in progress'}, 409))
+    monkeypatch.setattr('backend.agents.manager.time.sleep', lambda _: None)
+    monkeypatch.setattr('backend.agents.manager.time.monotonic', lambda: 0)
+    result = manager.get_deployment(agent['id'], deployment_id)
+    assert result['status'] == 'unknown' and result['manual_rollback'] and result['pending']
+    assert manager.begin_deployment(agent['id'], 'unsafe-next')['http_status'] == 409

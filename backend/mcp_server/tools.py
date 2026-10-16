@@ -787,7 +787,7 @@ def _preview_proxy_group_regex(args):
 
 # ================================================================ 配置生成
 
-_CONFIG_TARGETS = ['mihomo', 'surge', 'mosdns']
+_CONFIG_TARGETS = ['mihomo', 'surge', 'mosdns', 'oxidns']
 
 
 @tool(
@@ -816,7 +816,7 @@ def _preview_config(args):
 @tool(
     'generate_config',
     'Mihomo / Surge：生成配置并保存到服务端数据目录（config.yaml / config.conf）。'
-    'MosDNS：打包成含规则文件的 zip 供界面下载，不落盘（MosDNS 订阅链接本就实时生成，无需此步）。'
+    'MosDNS / OxiDNS：打包成含规则文件的 zip 供界面下载，不落盘；订阅链接实时生成。'
     '只返回结果摘要，需要查看配置内容请用 preview_config。',
     obj(
         {
@@ -841,12 +841,12 @@ def _generate_config(args):
         size = None
 
     # MosDNS 走的是内存打包下载，不写入数据目录；其订阅链接为实时生成
-    saved = target != 'mosdns'
+    saved = target not in ('mosdns', 'oxidns')
     message = (
         f'{target} 配置已生成并保存到数据目录，订阅链接即可取到新配置'
         if saved else
-        'MosDNS 规则包已打包（含规则文件，需在界面下载）；'
-        'MosDNS 订阅链接为实时生成，配置改动无需此步即已生效'
+        f'{target} 规则包已打包（含规则文件，需在界面下载）；'
+        '订阅链接为实时生成，配置改动无需此步即已生效'
     )
     return {
         'success': True,
@@ -1080,8 +1080,8 @@ _AGENT_INSTALL_ENDPOINTS = {
             'method': string('要获取的物料', list(_AGENT_INSTALL_ENDPOINTS)),
             'params': free_object(
                 '生成参数（作为 query 传给后端），如 server_url、name / agent_name、'
-                'type（mihomo / mosdns）、port、agent_ip、config_path、restart_command、'
-                'agent_type（go / shell）、data_dir、network_mode、enable_mihomo、enable_mosdns'
+                'type（mihomo / mosdns / oxidns）、port、agent_ip、config_path、restart_command、'
+                'agent_type（go / shell）、data_dir、network_mode、enable_mihomo、enable_mosdns、enable_oxidns'
             ),
         },
         ['method'],
@@ -1160,6 +1160,39 @@ def _update_mosdns_settings(args):
 def _convert_mosdns_rule(args):
     url = _require(args, 'url')
     return {'url': url, 'content': call_api('GET', '/api/mosdns/rule-proxy', query={'url': url})}
+
+
+# ================================================================ OxiDNS
+
+@tool(
+    'get_oxidns_settings',
+    '读取当前配置空间的 OxiDNS 参数：分流、上游、缓存、探测缓存、线程、API、日志和高级插件。',
+    obj({}),
+)
+def _get_oxidns_settings(args):
+    return call_api('GET', '/api/oxidns/settings')
+
+
+@tool(
+    'update_oxidns_settings',
+    '更新独立的 OxiDNS 参数。仅需提交修改字段，嵌套对象会合并，列表整体替换；不影响 MosDNS。'
+    '高级插件以 enabled 开关和 args 原生参数配置，生成后可通过 preview_config 检查。',
+    obj({'data': free_object('OxiDNS 参数，例如 worker_threads、cache_lazy_ttl、probe_cache_size、api 或 query_recorder')}, ['data']),
+)
+def _update_oxidns_settings(args):
+    from copy import deepcopy
+    data = _require(args, 'data')
+    if not isinstance(data, dict):
+        raise ApiError(400, 'data 必须是对象')
+    current = call_api('GET', '/api/oxidns/settings')
+
+    def merge(previous, changes):
+        result = deepcopy(previous) if isinstance(previous, dict) else {}
+        for key, value in changes.items():
+            result[key] = merge(result.get(key), value) if isinstance(value, dict) else deepcopy(value)
+        return result
+
+    return call_api('POST', '/api/oxidns/settings', body=merge(current, data))
 
 
 # ================================================================ 系统

@@ -60,6 +60,8 @@
       </DialogContent>
     </Dialog>
 
+    <OxidnsSettings v-model:open="oxidnsSettingsDialogVisible" :profile-id="profileId" />
+
     <!-- ===== MosDNS 设置 ===== -->
     <Dialog v-model:open="mosdnsSettingsDialogVisible">
       <DialogContent class="max-w-[760px] [overflow-wrap:anywhere]">
@@ -629,6 +631,7 @@
 
 <script setup lang="ts">
 import PageHeader from '@/components/common/PageHeader.vue'
+import OxidnsSettings from '@/components/generate/OxidnsSettings.vue'
 import GenerateStudio from '@/components/generate/GenerateStudio.vue'
 import { useProfileStore } from '@/stores/profile'
 import { ref, onMounted, computed, watch, nextTick } from 'vue'
@@ -952,6 +955,8 @@ const mihomoLoading = ref(false)
 const surgeLoading = ref(false)
 const loonLoading = ref(false)
 const mosdnsLoading = ref(false)
+const oxidnsLoading = ref(false)
+const oxidnsSettingsDialogVisible = ref(false)
 
 const mihomoPreviewLoading = ref(false)
 const surgePreviewLoading = ref(false)
@@ -1123,6 +1128,10 @@ const mosdnsUrl = computed(() => {
 const mihomoUrlDisplay = computed(() => mihomoUrl.value)
 const surgeUrlDisplay = computed(() => surgeUrl.value)
 const loonUrlDisplay = computed(() => loonUrl.value)
+const oxidnsUrl = computed(() => {
+  const url = `${baseUrl.value}/api/config/${encodeURIComponent(profileId)}/oxidns`
+  return configToken.value ? `${url}?token=${encodeURIComponent(configToken.value)}` : url
+})
 const mosdnsUrlDisplay = computed(() => mosdnsUrl.value)
 
 /* ---------- 新 UI 的派生数据 ---------- */
@@ -1182,6 +1191,18 @@ const targets = computed(() => [
       { label: '预览', icon: Eye, loading: mosdnsPreviewLoading.value, run: () => previewConfig('mosdns') },
       { label: '下载', icon: Download, primary: true, loading: mosdnsLoading.value, run: generateMosdns }
     ]
+  },
+  {
+    key: 'oxidns',
+    title: 'OxiDNS',
+    desc: '生成 OxiDNS 配置与完整规则包',
+    icon: Network,
+    url: oxidnsUrl.value,
+    urlDisplay: oxidnsUrl.value,
+    actions: [
+      { label: '设置', icon: Settings, run: () => { oxidnsSettingsDialogVisible.value = true } },
+      { label: '下载', icon: Download, primary: true, loading: oxidnsLoading.value, run: generateOxidns }
+    ]
   }
 ])
 
@@ -1189,7 +1210,7 @@ const targets = computed(() => [
 const studioTargets = computed(() =>
   targets.value.map(t => ({
     ...t,
-    key: t.key as 'mihomo' | 'surge' | 'loon' | 'mosdns',
+    key: t.key as 'mihomo' | 'surge' | 'loon' | 'mosdns' | 'oxidns',
     actions: t.actions.filter(action => action.label !== '预览')
   }))
 )
@@ -1407,6 +1428,43 @@ const generateMosdns = async () => {
     notify.error(message)
   } finally {
     mosdnsLoading.value = false
+  }
+}
+
+const generateOxidns = async () => {
+  try {
+    oxidnsLoading.value = true
+    const response = await generateApi.oxidns(profileId)
+
+    // 创建下载链接
+    const blob = new Blob([response.data], { type: 'application/zip' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'oxidns-config.zip'
+    link.click()
+    window.URL.revokeObjectURL(url)
+
+    notify.success('OxiDNS 配置已生成')
+  } catch (error: any) {
+    let message = '生成 OxiDNS 配置失败'
+    if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
+      message = '生成 OxiDNS 配置超时，请稍后重试'
+    } else {
+      try {
+        // 下载接口的 JSON 错误也会被 Axios 按 Blob 接收。
+        const data = error?.response?.data
+        const details = data instanceof Blob ? JSON.parse(await data.text()) : data
+        if (typeof details?.message === 'string' && details.message.trim()) {
+          message = `生成 OxiDNS 配置失败：${details.message.trim()}`
+        }
+      } catch {
+        // 网关可能返回 HTML 或无效 JSON，保留可读的通用错误提示。
+      }
+    }
+    notify.error(message)
+  } finally {
+    oxidnsLoading.value = false
   }
 }
 

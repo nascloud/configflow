@@ -1361,31 +1361,6 @@ const deleteRule = async (row: any) => {
   try {
     await ruleApi.delete(row.id, profileId)
 
-    // 同步更新 MosDNS 配置，移除对该规则的引用
-    try {
-      const { data: mosdnsConfig } = await api.get('/mosdns/rulesets', profileRequestConfig)
-
-      // 从 direct_rules 和 proxy_rules 中移除该规则 ID
-      const updatedDirectRules = mosdnsConfig.direct_rules.filter((id: string) => id !== row.id)
-      const updatedProxyRules = mosdnsConfig.proxy_rules.filter((id: string) => id !== row.id)
-
-      // 如果有变化，保存更新
-      if (updatedDirectRules.length !== mosdnsConfig.direct_rules.length ||
-          updatedProxyRules.length !== mosdnsConfig.proxy_rules.length) {
-        await api.post('/mosdns/rulesets', {
-          direct_rulesets: mosdnsConfig.direct_rulesets,
-          proxy_rulesets: mosdnsConfig.proxy_rulesets,
-          direct_rules: updatedDirectRules,
-          proxy_rules: updatedProxyRules
-        }, profileRequestConfig)
-        console.log('已同步更新 MosDNS 配置，移除了对规则的引用')
-      }
-    } catch (error) {
-      console.error('同步更新 MosDNS 配置失败:', error)
-      // 不阻断删除操作，只记录警告
-      notify.warning('规则已删除，但 MosDNS 配置同步失败，请手动检查')
-    }
-
     notify.success('删除成功')
     loadAllRules()
   } catch (error) {
@@ -1471,31 +1446,6 @@ const saveRuleSet = async () => {
 const deleteRuleSet = async (row: any) => {
   try {
     await ruleSetApi.delete(row.id, profileId)
-
-    // 同步更新 MosDNS 配置，移除对该规则集的引用
-    try {
-      const { data: mosdnsConfig } = await api.get('/mosdns/rulesets', profileRequestConfig)
-
-      // 从 direct_rulesets 和 proxy_rulesets 中移除该规则集 ID
-      const updatedDirectRulesets = mosdnsConfig.direct_rulesets.filter((id: string) => id !== row.id)
-      const updatedProxyRulesets = mosdnsConfig.proxy_rulesets.filter((id: string) => id !== row.id)
-
-      // 如果有变化，保存更新
-      if (updatedDirectRulesets.length !== mosdnsConfig.direct_rulesets.length ||
-          updatedProxyRulesets.length !== mosdnsConfig.proxy_rulesets.length) {
-        await api.post('/mosdns/rulesets', {
-          direct_rulesets: updatedDirectRulesets,
-          proxy_rulesets: updatedProxyRulesets,
-          direct_rules: mosdnsConfig.direct_rules,
-          proxy_rules: mosdnsConfig.proxy_rules
-        }, profileRequestConfig)
-        console.log('已同步更新 MosDNS 配置，移除了对规则集的引用')
-      }
-    } catch (error) {
-      console.error('同步更新 MosDNS 配置失败:', error)
-      // 不阻断删除操作，只记录警告
-      notify.warning('规则集已删除，但 MosDNS 配置同步失败，请手动检查')
-    }
 
     notify.success('删除成功')
     loadAllRules()

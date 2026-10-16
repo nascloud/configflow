@@ -97,7 +97,7 @@ export interface Agent {
   host: string
   port: number
   token: string
-  service_type: 'mihomo' | 'surge' | 'mosdns'
+  service_type: 'mihomo' | 'surge' | 'mosdns' | 'oxidns'
   deployment_method?: 'shell' | 'docker' | 'unknown'
   status: 'online' | 'offline'
   last_heartbeat: string
@@ -106,6 +106,7 @@ export interface Agent {
   config_revision?: number
   content_sync?: AgentContentSync
   latest_deployment?: import('@/composables/useAgentDeployments').AgentDeployment
+  deployments?: Record<string, import('@/composables/useAgentDeployments').AgentDeployment>
   enabled: boolean
   profile_id?: string
   has_update?: boolean

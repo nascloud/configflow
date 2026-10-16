@@ -19,6 +19,7 @@ func main() {
 	upgradeWorker := flag.String("upgrade-worker", "", "Run a durable Agent update outside the Agent service")
 	recoverOnly := flag.Bool("recover-only", false, "Restore interrupted deployments before managed services start; do not register or listen")
 	recoverAndExit := flag.Bool("recover-and-exit", false, "Recover interrupted deployments with service lifecycle, then exit without registration")
+	validateService := flag.Bool("validate-service", false, "Validate OxiDNS service working directory without registration or mutation")
 
 	// 解析命令行参数
 	flag.Parse()
@@ -40,7 +41,7 @@ func main() {
 		if envAgentDir := os.Getenv("AGENT_DIR"); envAgentDir != "" {
 			agentDirs = []string{envAgentDir}
 		}
-		configFiles := []string{"config-mihomo.json", "config-mosdns.json", "config.json"}
+		configFiles := []string{"config-mihomo.json", "config-mosdns.json", "config-oxidns.json", "config.json"}
 		for _, agentDir := range agentDirs {
 			for _, configFile := range configFiles {
 				fullPath := filepath.Join(agentDir, configFile)
@@ -59,7 +60,7 @@ func main() {
 	}
 
 	log.Printf("Using config file: %s", *configPath)
-	if !*recoverOnly && !*recoverAndExit && !*cleanupOnly {
+	if !*recoverOnly && !*recoverAndExit && !*cleanupOnly && !*validateService {
 		binary, err := os.Executable()
 		if err != nil {
 			log.Fatal(err)
@@ -75,6 +76,12 @@ func main() {
 		log.Fatalf("Fatal: Could not load configuration from %s: %v", *configPath, err)
 	}
 	log.Println("Configuration loaded successfully.")
+	if *validateService {
+		if err := routes.ValidateOxiDNSServiceDirectory(toRoutesConfig(cfg)); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *cleanupOnly {
 		if err := cleanupDisk(cfg); err != nil {
 			log.Fatalf("Disk cleanup: %v", err)

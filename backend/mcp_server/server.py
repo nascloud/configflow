@@ -73,9 +73,9 @@ def _handle_initialize(params: Dict[str, Any]) -> Dict[str, Any]:
         },
         'instructions': (
             'ConfigFlow 代理配置管理平台。可管理订阅、节点、规则、规则仓库、策略组、'
-            '订阅聚合、MosDNS 与远程 Agent，并生成 Mihomo / Surge / MosDNS 配置。'
-            '建议先调用 get_overview 了解当前状态；修改配置后需调用 generate_config '
-            '才会写入订阅链接对应的配置文件。'
+            '订阅聚合、MosDNS / OxiDNS 与远程 Agent，并生成 Mihomo / Surge / MosDNS / OxiDNS 配置。'
+            '建议先调用 get_overview 了解当前状态；Mihomo / Surge 修改后调用 generate_config '
+            '写入配置文件；MosDNS / OxiDNS 订阅实时生成，Agent 生效需显式推送。'
         ),
     }
 

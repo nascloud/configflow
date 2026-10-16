@@ -93,17 +93,18 @@ def test_any_profile_can_reference_shared_aggregation_sources_directly(compositi
 
 
 
-def test_mosdns_selection_protects_rule_deletion(compositions):
+def test_dns_selection_is_cleaned_atomically_when_rule_is_deleted(compositions):
     client, repository, headers = compositions
     before = repository.get_profile('default')
     response = client.post('/api/mosdns/rulesets', headers=headers, json={'direct_rulesets': ['set'], 'direct_rules': ['inline']})
     assert response.status_code == 200
-    snapshot = repository.export_all()
     for rule_id in ('set', 'inline'):
         response = client.delete('/api/rules/' + rule_id, headers=headers)
-        assert response.status_code == 409
-        assert 'MosDNS' in response.json['message']
-        assert repository.export_all() == snapshot
+        assert response.status_code == 200
+        current = repository.get_profile('other')
+        assert all(item['id'] != rule_id for item in current['rule_configs'])
+        assert rule_id not in current['mosdns']['direct_rulesets']
+        assert rule_id not in current['mosdns']['direct_rules']
     assert repository.get_profile('default') == before
 
 

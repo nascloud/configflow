@@ -38,6 +38,17 @@ remove_recovery_gate() {
     fi
 }
 
+# One native installer owns the legacy configflow-agent unit and shared binary.
+# Refuse a cross-core overwrite; Docker supports separate core/Agent instances.
+for other_config in "$AGENT_DIR"/config*.json; do
+    [ -f "$other_config" ] || continue
+    other_type=$(sed -n 's/.*"service_type"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_-]*\)".*/\1/p' "$other_config" | head -n 1)
+    if [ -n "$other_type" ] && [ "$other_type" != "{service_type}" ]; then
+        echo "本机已有 $other_type Agent。请先卸载原 Agent，或使用独立 Docker 实例，避免覆盖其服务与凭据。" >&2
+        exit 1
+    fi
+done
+
 echo "1) 安装或升级 Go Agent（包含事务发布与失败回滚）"
 echo "2) 卸载 Agent"
 echo "3) 取消"
@@ -100,17 +111,6 @@ fi
 chmod 755 "$BINARY_TMP"
 "$BINARY_TMP" -h >/dev/null 2>&1
 
-# Stop the previous Go or legacy Shell Agent before replacing its binary/config.
-if [ "$INIT_SYSTEM" = "systemd" ]; then
-    systemctl stop configflow-agent 2>/dev/null || true
-else
-    rc-service configflow-agent stop 2>/dev/null || true
-fi
-# Existing journals belong to the old config root, which may differ from the
-# newly requested config_path. Recover that root before losing its reference.
-if [ -f "$CONFIG_FILE" ]; then
-    "$BINARY_TMP" -config "$CONFIG_FILE" -recover-and-exit
-fi
 mkdir -p "$AGENT_DIR"
 chmod 700 "$AGENT_DIR"
 EXISTING_ID=""
@@ -136,6 +136,18 @@ else
     RESTART="rc-service $SERVICE_UNIT restart"
 fi
 sed -i "s/__CONFIGFLOW_INIT__/$INIT_SYSTEM/g; s/__CONFIGFLOW_RESTART__/$RESTART/g; s/__CONFIGFLOW_AGENT_ID__/$EXISTING_ID/g; s/__CONFIGFLOW_TOKEN__/$EXISTING_TOKEN/g" "$CONFIG_FILE.new"
+"$BINARY_TMP" -config "$CONFIG_FILE.new" -validate-service
+# Stop the previous Go or legacy Shell Agent before replacing its binary/config.
+if [ "$INIT_SYSTEM" = "systemd" ]; then
+    systemctl stop configflow-agent 2>/dev/null || true
+else
+    rc-service configflow-agent stop 2>/dev/null || true
+fi
+# Existing journals belong to the old config root, which may differ from the
+# newly requested config_path. Recover that root before losing its reference.
+if [ -f "$CONFIG_FILE" ]; then
+    "$BINARY_TMP" -config "$CONFIG_FILE" -recover-and-exit
+fi
 # Verify/restore with the new binary before committing the installation config.
 "$BINARY_TMP" -config "$CONFIG_FILE.new" -recover-and-exit
 mv "$BINARY_TMP" /usr/local/bin/configflow-agent
@@ -255,4 +267,4 @@ SERVICEEOF
     rc-service configflow-agent start
     rc-service configflow-agent status
 fi
-echo "Go Agent 安装成功；Mihomo/MosDNS 核心继续由原服务管理器管理。"
+echo "Go Agent 安装成功；Mihomo/MosDNS/OxiDNS 核心继续由原服务管理器管理。"

@@ -33,8 +33,8 @@ def generate_go_agent_install_script(
     Standard native installs detect systemd/OpenRC on the target. A custom
     restart command is not parsed to invent stop/start/status operations.
     """
-    if service_type not in ("mihomo", "mosdns"):
-        raise ValueError("Go Agent transactional deployment supports mihomo and mosdns")
+    if service_type not in ("mihomo", "mosdns", "oxidns"):
+        raise ValueError("Go Agent transactional deployment supports mihomo, mosdns and oxidns")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", agent_name):
         raise ValueError("Invalid agent name: use letters, numbers, hyphens or underscores")
     if not 1 <= int(agent_port) <= 65535:

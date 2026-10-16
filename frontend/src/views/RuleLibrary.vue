@@ -564,7 +564,7 @@
         <DialogHeader>
           <DialogTitle>GitHub 代理域名配置</DialogTitle>
           <DialogDescription>
-            配置后将在连通性测试、Mihomo 生成、MosDNS 转换时自动使用代理域名。
+            配置后将在连通性测试、Mihomo 生成、MosDNS / OxiDNS 转换时自动使用代理域名。
           </DialogDescription>
         </DialogHeader>
 

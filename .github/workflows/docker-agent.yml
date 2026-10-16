@@ -50,6 +50,8 @@ jobs:
             docker buildx imagetools inspect metacubex/mihomo:latest | awk '/Digest:/ {print $2; exit}'
             printf 'mosdns '
             docker buildx imagetools inspect irinesistiana/mosdns:latest | awk '/Digest:/ {print $2; exit}'
+            printf 'oxidns '
+            docker buildx imagetools inspect svenshi/oxidns:v1.6.1 | awk '/Digest:/ {print $2; exit}'
           } > /tmp/agent-upstream-digests.next
 
           if [ ! -f /tmp/agent-upstream-digests.txt ] || ! cmp -s /tmp/agent-upstream-digests.txt /tmp/agent-upstream-digests.next; then

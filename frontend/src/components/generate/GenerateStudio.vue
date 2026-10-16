@@ -142,7 +142,7 @@ import { notify } from '@/lib/feedback'
 import { cn } from '@/lib/utils'
 import { useLive } from '@/stores/live'
 
-type TargetKey = 'mihomo' | 'surge' | 'loon' | 'mosdns'
+type TargetKey = 'mihomo' | 'surge' | 'loon' | 'mosdns' | 'oxidns'
 
 export interface StudioTarget {
   key: TargetKey
@@ -164,7 +164,7 @@ const active = ref<TargetKey>('mihomo')
 const targetOptions = computed(() => props.targets.map(t => ({ value: t.key, label: t.title })))
 const current = computed(() => props.targets.find(t => t.key === active.value))
 
-const FILES: Record<TargetKey, string> = { mihomo: 'config.yaml', surge: 'surge.conf', loon: 'loon.conf', mosdns: 'mosdns.yaml' }
+const FILES: Record<TargetKey, string> = { mihomo: 'config.yaml', surge: 'surge.conf', loon: 'loon.conf', mosdns: 'mosdns.yaml', oxidns: 'oxidns.yaml' }
 const fileName = computed(() => FILES[active.value])
 
 /* ---------- 步骤（计数取真实数据） ---------- */
@@ -172,7 +172,7 @@ const counts = ref({ subscriptions: 0, nodes: 0, proxyGroups: 0, rules: 0, ruleS
 
 const steps = computed(() => {
   const c = counts.value
-  if (active.value === 'mosdns') {
+  if (active.value === 'mosdns' || active.value === 'oxidns') {
     return [
       { title: '收集资源', meta: `${c.ruleSets} 规则集 · ${c.rules} 条规则` },
       { title: '读取分流规则', meta: '直连 / 代理规则集' },
@@ -256,7 +256,8 @@ const generate = async () => {
     mihomo: generateApi.previewMihomo,
     surge: generateApi.previewSurge,
     loon: generateApi.previewLoon,
-    mosdns: generateApi.previewMosdns
+    mosdns: generateApi.previewMosdns,
+    oxidns: generateApi.previewOxidns
   }[target]
 
   const request = api()

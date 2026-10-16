@@ -18,6 +18,7 @@ from backend.converters.mihomo import generate_mihomo_config
 from backend.converters.surge import generate_surge_config
 from backend.converters.loon import generate_loon_config
 from backend.converters.mosdns import generate_mosdns_config
+from backend.converters.oxidns import generate_oxidns_config
 
 
 def _reject_invalid_config_auth(config_data):
@@ -175,6 +176,24 @@ def get_mosdns_config():
 @config_bp.route('/<profile_id>/mihomo', methods=['GET'])
 def get_profile_mihomo_config(profile_id):
     return get_mihomo_config()
+
+
+@config_bp.route('/oxidns', methods=['GET'])
+@config_bp.route('/<profile_id>/oxidns', methods=['GET'])
+def get_oxidns_config(profile_id=None):
+    """Profile-scoped live OxiDNS configuration with the usual subscription auth."""
+    config_data = get_config(resolve_profile_id(explicit=profile_id, fallback='default'))
+    auth_error = _reject_invalid_config_auth(config_data)
+    if auth_error:
+        return auth_error
+    scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
+    host = request.headers.get('X-Forwarded-Host', request.host)
+    try:
+        content = generate_oxidns_config(config_data, base_url=f'{scheme}://{host}')
+        return content, 200, {'Content-Type': 'text/plain; charset=utf-8',
+                             'Content-Disposition': 'inline'}
+    except ValueError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
 
 
 @config_bp.route('/<profile_id>/surge', methods=['GET'])
@@ -364,3 +383,26 @@ def handle_custom_mosdns_config():
             return jsonify({'success': True})
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@custom_config_bp.route('/oxidns', methods=['GET', 'POST'])
+@require_auth
+def handle_custom_oxidns_config():
+    """Keep the native extension YAML in the independent OxiDNS profile."""
+    from backend.common.config import update_config_transaction
+    from backend.common.oxidns_settings import normalize_oxidns_settings
+
+    if request.method == 'GET':
+        return jsonify({'config': get_config().get('oxidns', {}).get('custom_config', '')})
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('config'), str):
+        return jsonify({'success': False, 'message': 'config 必须是 YAML 文本'}), 400
+    try:
+        def update(config):
+            settings = dict(config.get('oxidns', {}))
+            settings['custom_config'] = data['config']
+            config['oxidns'] = normalize_oxidns_settings(settings)
+        update_config_transaction(update)
+    except ValueError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
+    return jsonify({'success': True})

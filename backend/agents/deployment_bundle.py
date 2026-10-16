@@ -64,7 +64,7 @@ def deployment_content_fingerprint(manifest):
     if (not isinstance(manifest, dict)
             or type(manifest.get('protocol_version')) is not int
             or manifest['protocol_version'] != 1
-            or manifest.get('service_type') not in ('mihomo', 'mosdns')):
+            or manifest.get('service_type') not in ('mihomo', 'mosdns', 'oxidns')):
         raise DeploymentPreparationError('Invalid deployment content manifest')
 
     def manifest_path(value):
@@ -167,7 +167,7 @@ def materialize_rule(url, config, base_url, *, depth=0, raw_mosdns=False):
     settings = {**config.get('system_config', {}),
                 'server_domain': config.get('system_config', {}).get('server_domain') or base_url}
     internal = not (parsed.scheme or parsed.netloc) or is_internal_rule_url(url, {'system_config': settings})
-    if internal and parsed.path.endswith('/mosdns/rule-proxy'):
+    if internal and parsed.path.endswith(('/mosdns/rule-proxy', '/oxidns/rule-proxy')):
         original = parse_qs(parsed.query).get('url', [''])[0]
         if not original:
             raise DeploymentPreparationError('Rule conversion callback has no source')
@@ -258,13 +258,15 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
     """Pack the exact generated graph and all its managed file references."""
     config = deepcopy(config)
     service = agent.get('service_type', 'mihomo')
-    if service not in ('mihomo', 'mosdns'):
+    if service not in ('mihomo', 'mosdns', 'oxidns'):
         raise DeploymentPreparationError('Unsupported transactional deployment service')
     main = yaml.safe_load(config_content)
     if not isinstance(main, dict):
         raise DeploymentPreparationError('Generated configuration must be a YAML mapping')
+    if service == 'oxidns' and main.get('include'):
+        raise DeploymentPreparationError('OxiDNS deployment must inline included plugin definitions')
     rule_types = {}
-    if service == 'mosdns':
+    if service in ('mosdns', 'oxidns'):
         for plugin in main.get('plugins', []):
             rule_type = plugin.get('type')
             if rule_type not in ('domain_set', 'ip_set'):
@@ -281,6 +283,8 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
 
     def add(path, value, role):
         path = relative_path(path)
+        if service == 'oxidns' and (path == 'state' or path.startswith('state/')):
+            raise DeploymentPreparationError('OxiDNS runtime state cannot be managed by a deployment')
         value = value.encode('utf-8') if isinstance(value, str) else value
         if not isinstance(value, bytes):
             raise DeploymentPreparationError('Missing deployment file content')
@@ -352,6 +356,18 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
                 if path not in files:
                     raise DeploymentPreparationError('MosDNS references an unbundled file: ' + path)
                 paths[index] = './' + path
+            if service == 'oxidns':
+                references = [args['file']] if args.get('file') else []
+                persistent = args.get('persistent') or {}
+                if isinstance(persistent, dict):
+                    persistent_paths = persistent.get('files', [])
+                    if not isinstance(persistent_paths, list):
+                        raise DeploymentPreparationError('OxiDNS persistent files must be a list')
+                    references.extend(persistent_paths)
+                for value in references:
+                    path = relative_path(value)
+                    if path not in files:
+                        raise DeploymentPreparationError('OxiDNS references an unbundled file: ' + path)
     config_bytes = yaml.safe_dump(main, allow_unicode=True, sort_keys=False).encode('utf-8')
     add('config.yaml', config_bytes, 'config')
     manifest = {

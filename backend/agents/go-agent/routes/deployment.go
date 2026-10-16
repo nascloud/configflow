@@ -72,6 +72,7 @@ type DeploymentState struct {
 	Backups          []deploymentBackup  `json:"backups,omitempty"`
 	BackupComplete   bool                `json:"backup_complete"`
 	PreviousManifest json.RawMessage     `json:"previous_manifest,omitempty"`
+	ManualRollback   bool                `json:"manual_rollback,omitempty"`
 }
 
 func deploymentRoot(cfg *Config) string {
@@ -151,7 +152,7 @@ func syncDirectory(name string) error {
 func saveDeployment(cfg *Config, s *DeploymentState, status string) error {
 	s.Status = status
 	s.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	s.Success = status != "failed" && status != "rolled_back" && status != "rollback_failed"
+	s.Success = (s.ManualRollback && status == "rolled_back") || (status != "failed" && status != "rolled_back" && status != "rollback_failed")
 	b, e := json.Marshal(s)
 	if e != nil {
 		return e
@@ -336,6 +337,10 @@ func DeploymentHandler(cfg *Config) http.HandlerFunc {
 			return
 		}
 		id := parts[0]
+		if len(parts) == 2 && parts[1] == "rollback" && r.Method == http.MethodPost {
+			manualRollbackHandler(cfg, id, w, r)
+			return
+		}
 		if len(parts) == 1 && r.Method == http.MethodGet {
 			s, e := loadDeployment(cfg, id)
 			if e != nil {
@@ -1012,6 +1017,11 @@ func rollbackDeployment(cfg *Config, s *DeploymentState, start bool) {
 		}
 	}
 	s.ConfigVersion = ""
+	if s.ManualRollback {
+		if digest, _, err := hashFile(cfg.ConfigPath); err == nil {
+			s.ConfigVersion = digest[:8]
+		}
+	}
 	s.RollbackError = ""
 	status := "rolled_back"
 	if !start && s.WasRunning {
