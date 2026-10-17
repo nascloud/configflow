@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path"
@@ -201,7 +202,7 @@ func deploymentBlocked(cfg *Config) error {
 		switch s.Status {
 		case "rollback_failed", "recovery_pending":
 			return fmt.Errorf("deployment %s requires rollback recovery", s.DeploymentID)
-		case "stopping", "backing_up", "replacing", "starting", "checking", "rolling_back":
+		case "stopping", "backing_up", "replacing", "reloading", "starting", "checking", "rolling_back":
 			return fmt.Errorf("deployment %s requires recovery", s.DeploymentID)
 		}
 	}
@@ -882,43 +883,73 @@ func activateDeployment(cfg *Config, s *DeploymentState) {
 		return
 	}
 	s.WasRunning = running
-	if e = saveDeployment(cfg, s, "stopping"); e != nil {
-		failBefore(e)
-		return
-	}
 	fail := func(e error) {
 		s.FailedStage = s.Status
 		s.Error = e.Error()
 		rollbackDeployment(cfg, s, true)
 		cleanupDeployments(cfg, s.DeploymentID)
 	}
-	if e = stopService(cfg); e != nil {
-		fail(e)
-		return
+	// Live files are untouched until replacement; while the service keeps
+	// running, earlier failures need no rollback.
+	reloader := prepareOxiDNSReload(cfg, s, running)
+	failUnchanged := fail
+	if reloader != nil {
+		failUnchanged = failBefore
+	} else {
+		if e = saveDeployment(cfg, s, "stopping"); e != nil {
+			failBefore(e)
+			return
+		}
+		if e = stopService(cfg); e != nil {
+			fail(e)
+			return
+		}
 	}
 	if e = saveDeployment(cfg, s, "backing_up"); e != nil {
-		fail(e)
+		failUnchanged(e)
 		return
 	}
 	if e = backupDeployment(cfg, s); e != nil {
-		fail(e)
+		failUnchanged(e)
 		return
 	}
 	if e = saveDeployment(cfg, s, "replacing"); e != nil {
-		fail(e)
+		failUnchanged(e)
 		return
 	}
 	if e = replaceDeployment(cfg, s); e != nil {
 		fail(e)
 		return
 	}
-	if e = saveDeployment(cfg, s, "starting"); e != nil {
-		fail(e)
-		return
+	if reloader != nil {
+		if e = saveDeployment(cfg, s, "reloading"); e != nil {
+			fail(e)
+			return
+		}
+		if e = reloader.reload(cfg); e != nil {
+			// The core keeps serving its previous plugins; apply the candidate
+			// the usual way so the health check and rollback still decide.
+			log.Printf("OxiDNS release %s: reload failed (%v), restarting", s.DeploymentID, e)
+			reloader = nil
+			if e = saveDeployment(cfg, s, "stopping"); e != nil {
+				fail(e)
+				return
+			}
+			if e = stopService(cfg); e != nil {
+				fail(e)
+				return
+			}
+		}
 	}
-	if e = startService(cfg); e != nil {
-		fail(e)
-		return
+	if reloader == nil {
+		if e = saveDeployment(cfg, s, "starting"); e != nil {
+			fail(e)
+			return
+		}
+		if e = startService(cfg); e != nil {
+			fail(e)
+			return
+		}
 	}
 	if e = saveDeployment(cfg, s, "checking"); e != nil {
 		fail(e)
@@ -1095,7 +1126,7 @@ func RecoverDeployments(cfg *Config, startService bool) error {
 					return e
 				}
 			}
-		case "stopping", "backing_up", "replacing", "starting", "checking", "rolling_back", "rollback_failed":
+		case "stopping", "backing_up", "replacing", "reloading", "starting", "checking", "rolling_back", "rollback_failed":
 			s.Error = "deployment interrupted before successful confirmation"
 			rollbackDeployment(cfg, s, startService)
 			if s.Status == "rollback_failed" {

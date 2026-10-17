@@ -1,10 +1,17 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.0-go"
+LATEST_AGENT_VERSION = "1.8.1-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.1-go": {
+        "date": "2026-10-17",
+        "features": [
+            "OxiDNS 推送优先热重载：运行中的核心可原地应用新配置时不再停止服务，DNS 中断从数秒降到约 0.6 秒",
+            "runtime / api / log 变化、重载被拒或运行版本不一致时自动退回重启，健康检查与回滚不变"
+        ]
+    },
     "1.8.0-go": {
         "date": "2026-10-17",
         "features": [
