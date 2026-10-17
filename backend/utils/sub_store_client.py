@@ -20,6 +20,7 @@ import requests
 import yaml
 
 from backend.utils.logger import get_logger
+from backend.utils.sub_store_runtime import runtime
 from backend.utils.proxy_utils import fix_proxy_fields
 from backend.utils.url_utils import safe_exception_details, safe_url_for_log
 
@@ -269,36 +270,35 @@ def _get_subscription_proxies_yaml(sub_id, url, target='ClashMeta'):
     # 使用带前缀和随机后缀的临时名称，避免和 Sub-Store 中已有订阅冲突，
     # 也避免并发请求同一订阅时临时订阅撞名导致 500
     temp_name = f"_cf_tmp_{sub_id}_{uuid.uuid4().hex[:8]}"
-    # 创建临时订阅
-    _create_subscription(base, temp_name, url, content=raw_text)
-
     sub_store_error = None
     try:
-        # 下载订阅（target 放在路径中，这是 Sub-Store 推荐的方式）
-        download_url = f'{base}/download/{quote(temp_name, safe="")}/{target}'
-        logger.info(f"Sub-Store 下载: {safe_url_for_log(download_url)}")
+        with runtime.use():
+            _create_subscription(base, temp_name, url, content=raw_text)
+            try:
+                # 下载订阅（target 放在路径中，这是 Sub-Store 推荐的方式）
+                download_url = f'{base}/download/{quote(temp_name, safe="")}/{target}'
+                logger.info(f"Sub-Store 下载: {safe_url_for_log(download_url)}")
 
-        resp = requests.get(download_url, params={'noFlow': 'true'}, timeout=30)
-        resp.raise_for_status()
+                resp = requests.get(download_url, params={'noFlow': 'true'}, timeout=30)
+                resp.raise_for_status()
 
-        text = resp.text
+                text = resp.text
 
-        # 验证响应是有效的 YAML 而非 HTML 页面
-        if not _is_yaml_response(text):
-            preview = text[:200].replace('\n', '\\n')
-            raise Exception(
-                f"Sub-Store 返回了非 YAML 内容（可能是 HTML 页面），"
-                f"请检查 Sub-Store URL 配置是否正确。响应预览: {preview}"
-            )
+                # 验证响应是有效的 YAML 而非 HTML 页面
+                if not _is_yaml_response(text):
+                    preview = text[:200].replace('\n', '\\n')
+                    raise Exception(
+                        f"Sub-Store 返回了非 YAML 内容（可能是 HTML 页面），"
+                        f"请检查 Sub-Store URL 配置是否正确。响应预览: {preview}"
+                    )
 
-        traffic = traffic or parse_userinfo(resp.headers.get('subscription-userinfo', ''))
-        return SubscriptionResult(text, 'sub_store', traffic)
+                traffic = traffic or parse_userinfo(resp.headers.get('subscription-userinfo', ''))
+                return SubscriptionResult(text, 'sub_store', traffic)
+            finally:
+                _delete_subscription(base, temp_name)
     except Exception as e:
         sub_store_error = e
         logger.warning("Sub-Store 获取订阅失败: %s", safe_exception_details(e))
-    finally:
-        # 用完即删，不在 Sub-Store 中残留订阅数据
-        _delete_subscription(base, temp_name)
 
     # Do not re-download a URL already attempted above, even on conversion failure.
     if direct_attempted:
@@ -335,35 +335,36 @@ def convert_proxy_string(proxy_string, target='ClashMeta'):
     # 创建临时订阅（需要一个名字才能调用 download）
     # 随机后缀避免并发节点转换时撞名导致 500
     temp_name = f"_cf_tmp_node_convert_{uuid.uuid4().hex[:8]}"
-    _create_subscription(base, temp_name, 'https://example.com')
-
     try:
-        # 通过 content 参数直接传入节点内容，覆盖订阅 URL
-        download_url = f'{base}/download/{quote(temp_name, safe="")}/{target}'
-        resp = requests.get(
-            download_url,
-            params={'content': proxy_string},
-            timeout=15
-        )
-        resp.raise_for_status()
+        with runtime.use():
+            _create_subscription(base, temp_name, 'https://example.com')
+            try:
+                # 通过 content 参数直接传入节点内容，覆盖订阅 URL
+                download_url = f'{base}/download/{quote(temp_name, safe="")}/{target}'
+                resp = requests.get(
+                    download_url,
+                    params={'content': proxy_string},
+                    timeout=15
+                )
+                resp.raise_for_status()
 
-        text = resp.text
+                text = resp.text
 
-        if not _is_yaml_response(text):
-            logger.warning("节点转换返回无效内容: proxy_type=%s input_length=%d", proxy_type, input_length)
-            return None
+                if not _is_yaml_response(text):
+                    logger.warning("节点转换返回无效内容: proxy_type=%s input_length=%d", proxy_type, input_length)
+                    return None
 
-        proxies = parse_proxies_from_yaml(text)
-        if proxies:
-            logger.info("节点转换成功: proxy_type=%s input_length=%d", proxy_type, input_length)
-            return proxies[0]
-        logger.warning("节点转换结果为空: proxy_type=%s input_length=%d", proxy_type, input_length)
-        return None
+                proxies = parse_proxies_from_yaml(text)
+                if proxies:
+                    logger.info("节点转换成功: proxy_type=%s input_length=%d", proxy_type, input_length)
+                    return proxies[0]
+                logger.warning("节点转换结果为空: proxy_type=%s input_length=%d", proxy_type, input_length)
+                return None
+            finally:
+                _delete_subscription(base, temp_name)
     except Exception:
         logger.warning("节点转换失败: proxy_type=%s input_length=%d", proxy_type, input_length)
         return None
-    finally:
-        _delete_subscription(base, temp_name)
 
 
 def parse_proxies_from_yaml(yaml_text):

@@ -378,3 +378,17 @@ def update_sub_store_dependency():
     from backend.utils.dependencies import start_sub_store_update
     ok, message = start_sub_store_update()
     return jsonify({'success': ok, 'message': message}), (202 if ok else 409)
+
+
+@settings_bp.route('/settings/dependencies/sub-store/mode', methods=['POST'])
+@require_auth
+def set_sub_store_mode():
+    from backend.utils.sub_store_runtime import RuntimeUnavailable, runtime
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or data.get('mode') not in ('on_demand', 'always'):
+        return jsonify({'success': False, 'message': '请选择按需启动或常驻运行'}), 400
+    try:
+        runtime.set_mode(data['mode'])
+        return jsonify({'success': True, 'mode': data['mode']})
+    except RuntimeUnavailable as exc:
+        return jsonify({'success': False, 'message': str(exc)}), 409

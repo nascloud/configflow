@@ -353,12 +353,21 @@ export interface DependencyUpdateState {
   finished_at: number
 }
 
+export interface DependencyLifecycle {
+  managed: boolean
+  mode: 'on_demand' | 'always' | 'external'
+  state: 'sleeping' | 'starting' | 'running' | 'updating' | 'failed'
+  idle_seconds: number
+  error: string
+}
+
 export interface DependencyStatus {
   key: string
   name: string
   description: string
   homepage: string
   running: boolean
+  lifecycle?: DependencyLifecycle
   current_version: string
   builtin_version: string
   online_updated: boolean
@@ -377,7 +386,9 @@ export const dependenciesApi = {
   list: (refresh = false) =>
     api.get<{ dependencies: DependencyStatus[] }>('/settings/dependencies', { params: refresh ? { refresh: 1 } : {} }),
   update: (key: string) =>
-    api.post<{ success: boolean; message: string }>(`/settings/dependencies/${key}/update`)
+    api.post<{ success: boolean; message: string }>(`/settings/dependencies/${key}/update`),
+  setSubStoreMode: (mode: 'on_demand' | 'always') =>
+    api.post<{ success: boolean; mode: 'on_demand' | 'always' }>('/settings/dependencies/sub-store/mode', { mode })
 }
 
 // 规则下载 HTTP 代理（与 GitHub 镜像域名前缀独立）

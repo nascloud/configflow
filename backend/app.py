@@ -118,6 +118,9 @@ def initialize_app():
 
     _app_initialized = True
 
+    from backend.utils.sub_store_runtime import runtime
+    runtime.start_monitor()
+
     try:
         # 初始化 Agent 管理器
         init_agent_manager()
