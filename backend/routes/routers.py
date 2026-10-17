@@ -136,9 +136,8 @@ def _inspect(config, router, driver):
         except RouterError:
             owned = []
         owned_mangle = {row['id'] for row in owned if row['path'] == MANGLE}
-        # The snapshot contains live counters. Match read_state's counter-free
-        # NAT evidence so normal traffic does not invalidate a release preview.
-        # Preserve matchers, order and route state used to prove the egress.
+        # Live counters do not change routing behavior. Keep all matchers,
+        # ordering and route state used to prove the egress in the fingerprint.
         state.nat_context.update(
             mangle=[{key: value for key, value in row.items() if key not in {'bytes', 'packets'}}
                     for row in state.ros_policy[MANGLE] if row.get('.id') not in owned_mangle],
@@ -301,6 +300,106 @@ def list_device_policy(router_id):
         return response
     except RouterError as error:
         return jsonify({'success': False, 'message': str(error)}), 502
+    finally:
+        driver.close()
+
+
+@routers_bp.route('/<router_id>/policy-settings', methods=['GET', 'PUT'])
+@require_auth
+def policy_settings(router_id):
+    from backend.common.agent_manager import get_agent_manager
+    from backend.common.config import get_default_profile_id, get_repository, update_config_transaction
+    from backend.common.profile_context import resolve_profile_id
+    from backend.common.oxidns_settings import OxidnsSettingsError
+    from backend.common.config_repository import ProfileRepositoryError
+    from backend.routers.policy_workspace import FIELDS, read_workspace, save_workspace
+
+    profile_id = resolve_profile_id()
+    router = find_router(get_config(profile_id), router_id)
+    if router is None:
+        return _not_found()
+    if router.get('type') != 'routeros':
+        return jsonify(success=False, message='策略路由设置仅支持 RouterOS'), 400
+    try:
+        if request.method == 'PUT':
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict) or set(body) != {'revision', 'router', 'policies', 'base_url'} or \
+                    not isinstance(body['router'], dict) or set(body['router']) != set(FIELDS) or \
+                    not isinstance(body['base_url'], str):
+                return jsonify(success=False, message='策略路由设置格式无效'), 400
+            with router_operation_lock(router):
+                update_config_transaction(lambda config: save_workspace(
+                    config, router_id, body, body['base_url']), profile_id)
+        config = get_config(profile_id)
+        router = find_router(config, router_id)
+        if router is None:
+            return _not_found()
+        workspace = read_workspace(config, router, profile_id,
+                                   get_repository().get_profile(profile_id)['name'],
+                                   get_agent_manager().get_all_agents(), get_default_profile_id())
+        response = jsonify(success=True, workspace=workspace)
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except RouterConflictError as error:
+        return jsonify(success=False, message=str(error)), 409
+    except (RouterValidationError, OxidnsSettingsError, ProfileRepositoryError) as error:
+        return jsonify(success=False, message=str(error)), 400
+
+
+@routers_bp.route('/<router_id>/policy-settings/preview', methods=['POST'])
+@require_auth
+def preview_policy_settings(router_id):
+    from backend.common.agent_manager import get_agent_manager
+    from backend.common.config import get_repository, get_default_profile_id
+    from backend.common.profile_context import resolve_profile_id
+    from backend.common.oxidns_device_policy import revision
+    from backend.common.config_export import sanitize_external_payload
+    from backend.common.oxidns_validation import require_valid_document
+    from backend.converters.oxidns import generate_oxidns_config
+    from backend.routers.policy_workspace import draft_revision
+    import yaml
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get('targets'), list) or \
+            any(not isinstance(value, str) for value in body['targets']) or \
+            len(set(body['targets'])) != len(body['targets']) or not isinstance(body.get('base_url', ''), str):
+        return jsonify(success=False, message='发布预览参数无效'), 400
+    profile_id = resolve_profile_id()
+    repository = get_repository()
+    config, config_revision = repository.get_publish_snapshot(profile_id)
+    router = find_router(config, router_id)
+    if router is None:
+        return _not_found()
+    if router.get('type') != 'routeros':
+        return jsonify(success=False, message='策略路由设置仅支持 RouterOS'), 400
+    if body.get('revision') != draft_revision(config, router):
+        return jsonify(success=False, message='配置已更新，请重新载入后预览。'), 409
+    manager = get_agent_manager()
+    peers = {a['id']: a for a in manager.get_all_agents() if a.get('service_type') == 'oxidns'
+             and (a.get('profile_id') or get_default_profile_id()) == profile_id}
+    if any(target not in peers for target in body['targets']):
+        return jsonify(success=False, message='OxiDNS 发布目标或绑定已变化，请重新载入。'), 409
+    driver = _driver(router)
+    try:
+        _, desired, state, report = _inspect(config, router, driver)
+        plan = build_plan(router, desired, state, report, report['return_routing'], driver)
+        content = ''
+        if body['targets']:
+            document = yaml.safe_load(generate_oxidns_config(config, base_url=body.get('base_url', '')))
+            require_valid_document(document)
+            content = yaml.safe_dump(sanitize_external_payload(document, config.get('system_config')), allow_unicode=True, sort_keys=False)
+        if repository.config_revision(profile_id) != config_revision:
+            return jsonify(success=False, message='生成预览期间配置已更新，请重新预览。'), 409
+        response = jsonify(success=True, preview={
+            'revision': body['revision'], 'profile_id': profile_id, 'config_revision': config_revision,
+            'oxidns_revision': revision(config.get('oxidns') or {}), 'router_plan': plan,
+            'dns_content': content, 'targets': [{'id': target, 'name': peers[target].get('name') or target,
+                'host': peers[target].get('host') or '', 'status': peers[target].get('status') or 'offline'}
+                for target in body['targets']]})
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except (RouterError, ValueError) as error:
+        return jsonify(success=False, message=str(error)), 400
     finally:
         driver.close()
 

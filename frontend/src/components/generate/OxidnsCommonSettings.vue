@@ -27,7 +27,7 @@
         <TabsContent force-mount value="upstreams" class="mt-0 space-y-4 data-[state=inactive]:hidden"><h3 class="text-sm font-semibold">DNS 上游</h3><OxidnsFields :settings="draft" :fields="upstreamFields" :disabled="disabled" :capabilities="capabilities" :navigation-disabled="navigationDisabled" @change="change" @error="setError" @navigate="navigate" /></TabsContent>
         <TabsContent force-mount value="cache" class="mt-0 space-y-4 data-[state=inactive]:hidden"><h3 class="text-sm font-semibold">缓存</h3><OxidnsFields :settings="draft" :fields="cacheFields" :disabled="disabled" :capabilities="capabilities" :navigation-disabled="navigationDisabled" @change="change" @error="setError" @navigate="navigate" /></TabsContent>
         <TabsContent force-mount value="features" class="mt-0 space-y-3 data-[state=inactive]:hidden">
-          <Collapsible v-for="feature in featureGroups" :key="feature.key" class="group rounded-lg border border-border bg-card">
+          <Collapsible v-for="feature in featureGroups" :key="feature.key" :default-open="feature.key === initialFeature" class="group rounded-lg border border-border bg-card">
             <div class="relative flex min-h-12 items-center justify-between gap-2 px-3 py-3 text-sm font-medium">
               <CollapsibleTrigger type="button" :aria-label="`${feature.title}设置`" :disabled="disabled" class="absolute inset-0 cursor-pointer rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-primary-accent disabled:opacity-50" />
               <span class="pointer-events-none flex min-w-0 flex-1 items-center gap-1"><span class="min-w-0">{{ feature.title }}</span><span class="pointer-events-auto relative z-10"><FieldHelp :label="feature.title" :text="feature.hint" /></span></span>
@@ -67,12 +67,12 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
-const props = withDefaults(defineProps<{ values: Record<string, any>; capabilities: Record<string, OxidnsFieldCapability>; rules: any[]; ruleSets: any[]; disabled?: boolean; navigationDisabled?: boolean }>(), { disabled: false, navigationDisabled: false })
+const props = withDefaults(defineProps<{ values: Record<string, any>; capabilities: Record<string, OxidnsFieldCapability>; rules: any[]; ruleSets: any[]; disabled?: boolean; navigationDisabled?: boolean; initialFeature?: string }>(), { disabled: false, navigationDisabled: false })
 const emit = defineEmits<{ change: [changes: Record<string, unknown>]; error: [message: string]; navigate: [target: string]; full: [] }>()
 const clone = <T,>(value: T): T => value === undefined ? value : JSON.parse(JSON.stringify(value))
 const draft = reactive<Record<string, any>>(clone(props.values))
 const errors = reactive<Record<string, string>>({})
-const tab = ref('core')
+const tab = ref(featureGroups.some(feature => feature.key === props.initialFeature) ? 'features' : 'core')
 const customReason = '当前配置使用自定义结构，请通过完整参数编辑，现有内容会保留。'
 const coreFields = sourceCoreFields.map(field => ({ ...field, hint: field.hint?.replace('已验证模板为 2', '已验证配置使用 2 个线程') }))
 const upstreamDescriptions: Record<string, string> = {
