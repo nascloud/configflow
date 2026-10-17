@@ -10,14 +10,19 @@ ConfigFlow 依赖 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 进行
 
 ### 快速开始
 
+镜像统一使用 `latest`，无需选择版本。先填写自己的管理员用户名、随机密码和随机密钥：
+
 ```bash
-docker run -d \
+CF_ADMIN_USER='replace-with-your-admin-user'
+CF_ADMIN_PASSWORD='replace-with-a-random-password'
+CF_JWT_SECRET='replace-with-at-least-32-random-chars'
+docker run --pull=always -d \
   --name config-flow \
   -p 80:80 \
-  -v $(pwd)/data:/data \
-  -e ADMIN_USERNAME=admin \
-  -e ADMIN_PASSWORD=admin123 \
-  -e JWT_SECRET_KEY=your-secret-key-please-change-in-production \
+  -v "$(pwd)/data:/data" \
+  -e ADMIN_USERNAME="$CF_ADMIN_USER" \
+  -e ADMIN_PASSWORD="$CF_ADMIN_PASSWORD" \
+  -e JWT_SECRET_KEY="$CF_JWT_SECRET" \
   thsrite/config-flow:latest
 ```
 
@@ -62,23 +67,39 @@ docker stop config-flow
 docker rm config-flow
 
 # 更新版本
+CF_ADMIN_USER='replace-with-your-admin-user'
+CF_ADMIN_PASSWORD='replace-with-a-random-password'
+CF_JWT_SECRET='replace-with-at-least-32-random-chars'
 docker stop config-flow
 docker rm config-flow
 docker pull thsrite/config-flow:latest
-docker run -d --name config-flow -p 80:80 -v $(pwd)/data:/data \
-  -e ADMIN_USERNAME=admin -e ADMIN_PASSWORD=admin123 -e JWT_SECRET_KEY=your-secret-key-please-change-in-production thsrite/config-flow:latest
+docker run -d --name config-flow -p 80:80 -v "$(pwd)/data:/data" \
+  -e ADMIN_USERNAME="$CF_ADMIN_USER" \
+  -e ADMIN_PASSWORD="$CF_ADMIN_PASSWORD" \
+  -e JWT_SECRET_KEY="$CF_JWT_SECRET" \
+  thsrite/config-flow:latest
 ```
 
 ### 自定义端口
 
 ```bash
+CF_ADMIN_USER='replace-with-your-admin-user'
+CF_ADMIN_PASSWORD='replace-with-a-random-password'
+CF_JWT_SECRET='replace-with-at-least-32-random-chars'
+
 # 8080 端口
-docker run -d --name config-flow -p 8080:80 -v $(pwd)/data:/data \
-  -e ADMIN_USERNAME=admin -e ADMIN_PASSWORD=admin123 -e JWT_SECRET_KEY=your-secret-key-please-change-in-production thsrite/config-flow:latest
+docker run --pull=always -d --name config-flow -p 8080:80 -v "$(pwd)/data:/data" \
+  -e ADMIN_USERNAME="$CF_ADMIN_USER" \
+  -e ADMIN_PASSWORD="$CF_ADMIN_PASSWORD" \
+  -e JWT_SECRET_KEY="$CF_JWT_SECRET" \
+  thsrite/config-flow:latest
 
 # 3000 端口
-docker run -d --name config-flow -p 3000:80 -v $(pwd)/data:/data \
-  -e ADMIN_USERNAME=admin -e ADMIN_PASSWORD=admin123 -e JWT_SECRET_KEY=your-secret-key-please-change-in-production thsrite/config-flow:latest
+docker run --pull=always -d --name config-flow -p 3000:80 -v "$(pwd)/data:/data" \
+  -e ADMIN_USERNAME="$CF_ADMIN_USER" \
+  -e ADMIN_PASSWORD="$CF_ADMIN_PASSWORD" \
+  -e JWT_SECRET_KEY="$CF_JWT_SECRET" \
+  thsrite/config-flow:latest
 ```
 
 ## Docker Compose 部署（推荐）
@@ -88,6 +109,8 @@ Docker Compose 适合长期维护和管理。
 ### 快速开始
 
 **1. 创建 docker-compose.yml**
+
+镜像默认使用 `latest`，只需填写管理员用户名、随机密码和随机密钥：
 
 ```yaml
 version: '3.8'
@@ -101,28 +124,29 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin123
-      - JWT_SECRET_KEY=your-secret-key-please-change-in-production
+      - ADMIN_USERNAME=replace-with-your-admin-user
+      - ADMIN_PASSWORD=replace-with-a-random-password
+      - JWT_SECRET_KEY=replace-with-at-least-32-random-chars
     restart: unless-stopped
 ```
 
 **2. 启动服务**
 
 ```bash
+docker-compose pull
 docker-compose up -d
 ```
 
 访问 `http://localhost` 即可使用。
 
-> 认证是可选的：不设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 即无需登录直接使用；设置后才开启登录，此时请把 `ADMIN_PASSWORD` 和 `JWT_SECRET_KEY` 替换为更安全的值。
+> 认证是可选的：不设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 即无需登录直接使用；设置后才开启登录，此时请使用随机管理员密码和至少 32 个随机字符的 `JWT_SECRET_KEY`。
 > 镜像已内置 [Sub-Store](https://github.com/sub-store-org/Sub-Store) 后端并自动使用，无需另外部署或配置地址；可在「系统设置 → 第三方依赖」检测并在线更新。
 > 从旧版升级：compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量已不再使用，可以删除。
 
 ### 配置说明
 
 - **version**: Docker Compose 文件格式版本
-- **image**: Docker 镜像，`latest` 为最新版本
+- **image**: 默认使用 `thsrite/config-flow:latest`；执行 `pull` 获取最新镜像，不会自动更新正在运行的容器
 - **ports**: 端口映射，格式为 `宿主机:容器`
 - **volumes**: 数据目录挂载，支持相对路径或绝对路径
 - **restart**: 重启策略
@@ -135,6 +159,7 @@ docker-compose up -d
 
 ```bash
 # 启动服务
+docker-compose pull
 docker-compose up -d
 
 # 查看状态
@@ -172,28 +197,9 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin123
-      - JWT_SECRET_KEY=your-secret-key-please-change-in-production
-    restart: unless-stopped
-```
-
-**指定版本：**
-```yaml
-version: '3.8'
-
-services:
-  config-flow:
-    image: thsrite/config-flow:v1.0.1  # 使用特定版本
-    container_name: config-flow
-    ports:
-      - "80:80"
-    volumes:
-      - ./data:/data
-    environment:
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin123
-      - JWT_SECRET_KEY=your-secret-key-please-change-in-production
+      - ADMIN_USERNAME=replace-with-your-admin-user
+      - ADMIN_PASSWORD=replace-with-a-random-password
+      - JWT_SECRET_KEY=replace-with-at-least-32-random-chars
     restart: unless-stopped
 ```
 
@@ -210,9 +216,9 @@ services:
     volumes:
       - /opt/config-flow/data:/data  # 绝对路径
     environment:
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin123
-      - JWT_SECRET_KEY=your-secret-key-please-change-in-production
+      - ADMIN_USERNAME=replace-with-your-admin-user
+      - ADMIN_PASSWORD=replace-with-a-random-password
+      - JWT_SECRET_KEY=replace-with-at-least-32-random-chars
     restart: unless-stopped
 ```
 
@@ -268,9 +274,15 @@ lsof -i :80
 
 **解决方案：**
 ```bash
+CF_ADMIN_USER='replace-with-your-admin-user'
+CF_ADMIN_PASSWORD='replace-with-a-random-password'
+CF_JWT_SECRET='replace-with-at-least-32-random-chars'
 # 修改映射端口
-docker run -d --name config-flow -p 8080:80 -v $(pwd)/data:/data \
-  -e ADMIN_USERNAME=admin -e ADMIN_PASSWORD=admin123 -e JWT_SECRET_KEY=your-secret-key-please-change-in-production thsrite/config-flow:latest
+docker run --pull=always -d --name config-flow -p 8080:80 -v "$(pwd)/data:/data" \
+  -e ADMIN_USERNAME="$CF_ADMIN_USER" \
+  -e ADMIN_PASSWORD="$CF_ADMIN_PASSWORD" \
+  -e JWT_SECRET_KEY="$CF_JWT_SECRET" \
+  thsrite/config-flow:latest
 ```
 
 **检查 Docker 服务：**

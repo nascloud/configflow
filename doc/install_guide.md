@@ -1,5 +1,7 @@
 # Config Flow 安装与入门指南
 
+> 本文适用于普通 Docker / Docker Compose 主机。如果要在 RouterOS 上运行代理和 DNS 服务，请阅读 [ConfigFlow + RouterOS 安装指南](../docs/CONFIGFLOW_AGENT_ROUTEROS_INSTALL.md)。
+
 ## 开始之前
 - 确认机器上已安装 Docker（Windows、macOS、Linux 均适用）。
 - 预留一个可访问的端口，例如 `80`，便于浏览器访问。
@@ -10,7 +12,7 @@
 ## 快速部署
 > 目标：把服务跑起来，确保能打开页面。
 
-在准备好的文件夹中创建 `docker-compose.yml`：
+在准备好的文件夹中创建 `docker-compose.yml`。镜像默认使用 `latest`，只需填写管理员用户名、随机密码和随机密钥：
 ```yaml
 version: '3.8'
 services:
@@ -21,13 +23,15 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin123
-      - JWT_SECRET_KEY=your-secret-key-please-change-in-production
+      - ADMIN_USERNAME=replace-with-your-admin-user
+      - ADMIN_PASSWORD=replace-with-a-random-password
+      - JWT_SECRET_KEY=replace-with-at-least-32-random-chars
     restart: unless-stopped
 ```
 
-执行 `docker-compose up -d` 启动服务。
+不要把固定示例密钥或真实密码直接复制到生产环境。设置管理员认证后，首次登录即应确认密码已由随机值生成；`JWT_SECRET_KEY` 后续变更会使现有登录会话失效。
+
+执行 `docker-compose pull && docker-compose up -d`，拉取最新镜像并启动服务。
 
 启动完成后：
 - 访问 `http://localhost`，出现登录页说明部署成功。
