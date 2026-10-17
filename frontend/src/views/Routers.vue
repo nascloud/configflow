@@ -70,6 +70,7 @@
                   <Button v-if="router.type === 'routeros'" size="sm" variant="outline" class="max-md:min-h-11" :disabled="routeBusy || applying || policyLocked" @click="openPolicyManager(router)">
                     策略路由
                   </Button>
+                  <Button v-if="router.type === 'routeros'" size="sm" variant="outline" class="max-md:min-h-11" :disabled="routeBusy || applying || policyLocked" @click="openRuleSync(router)">规则同步</Button>
                   <Button size="sm" :disabled="busyId === router.id || routeBusy || applying || policyLocked" @click="openReport(router)">
                     <Loader2 v-if="busyId === router.id && busyAction === 'report'" class="size-3.5 animate-spin" />
                     <GitCompare v-else class="size-3.5" />
@@ -139,6 +140,8 @@
 
     <PolicyRoutingPanel v-if="policyRouter" ref="policyPanel" :id="policyRouter.id" :key="policyRouter.id" :name="policyRouter.name" :profile="activeProfileId"
       @saved="load" @busy="policyLocked = $event" @close="policyRouter = null" />
+    <RouterRuleSync v-if="syncRouter" class="mt-4" :id="syncRouter.id" :name="syncRouter.name" :profile="activeProfileId"
+      :disabled="routeBusy || applying" @busy="policyLocked = $event" @preview="openReport(syncRouter)" />
 
     <Dialog :open="routeEditorVisible" @update:open="value => { if (!routeBusy) routeEditorVisible = value }">
       <DialogContent class="max-w-[480px] max-md:[&_[data-slot=button]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-w-11" :show-close-button="!routeBusy">
@@ -608,6 +611,7 @@ import SectionCard from '@/components/common/SectionCard.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
 import PolicyRoutingPanel from '@/components/routers/PolicyRoutingPanel.vue'
+import RouterRuleSync from '@/components/routers/RouterRuleSync.vue'
 import RouterOperationPreview from '@/components/routers/RouterOperationPreview.vue'
 import { agentApi, routerApi, ruleApi, type StaticRouteChange, type StaticRouteItem, type StaticRoutePlan, type StaticRouteValues } from '@/api'
 import { activeProfileId, getActiveProfileId } from '@/profileContext'
@@ -786,9 +790,10 @@ const errorMessage = (error: any, fallback: string) => error?.response?.data?.me
 // to the device/profile it started from, including time spent in confirmation.
 const routeRouter = ref<RouterItem | null>(null)
 const policyRouter = ref<RouterItem | null>(null)
+const syncRouter = ref<RouterItem | null>(null)
 const policyPanel = ref<InstanceType<typeof PolicyRoutingPanel> | null>(null)
 const policyLocked = ref(false)
-const canLeavePolicy = async () => await policyPanel.value?.canLeave() ?? true
+const canLeavePolicy = async () => !policyLocked.value && (await policyPanel.value?.canLeave() ?? true)
 if (inject(matchedRouteKey, undefined)?.value) onBeforeRouteLeave(canLeavePolicy)
 const openPolicyManager = async (router: RouterItem) => {
   if (routeBusy.value || applying.value || policyLocked.value || policyRouter.value?.id === router.id) return
@@ -796,6 +801,15 @@ const openPolicyManager = async (router: RouterItem) => {
   closeRouteManager()
   clearInspection()
   policyRouter.value = router
+  syncRouter.value = null
+}
+
+const openRuleSync = async (router: RouterItem) => {
+  if (routeBusy.value || applying.value || !await canLeavePolicy()) return
+  closeRouteManager()
+  clearInspection()
+  policyRouter.value = null
+  syncRouter.value = router
 }
 const routeRows = ref<StaticRouteItem[]>([])
 const routeLoading = ref(false)
@@ -849,6 +863,7 @@ const openRouteManager = async (router: RouterItem) => {
   if (routeBusy.value || applying.value) return
   if (!await canLeavePolicy()) return
   policyRouter.value = null
+  syncRouter.value = null
   clearInspection()
   closeRouteManager()
   routeRouter.value = router
@@ -950,6 +965,7 @@ const submitRoute = async () => {
 }
 const closePanels = () => {
   policyRouter.value = null
+  syncRouter.value = null
   closeRouteManager()
   clearInspection()
 }
@@ -1004,6 +1020,7 @@ const load = async (isCurrent = () => true) => {
 const openCreate = async () => {
   if (!await canLeavePolicy()) return
   policyRouter.value = null
+  syncRouter.value = null
   Object.assign(form, emptyForm())
   editingId.value = ''
   editingHasPassword.value = false
@@ -1013,6 +1030,7 @@ const openCreate = async () => {
 const openEdit = async (router: RouterItem) => {
   if (!await canLeavePolicy()) return
   policyRouter.value = null
+  syncRouter.value = null
   Object.assign(form, {
     name: router.name,
     type: router.type,
@@ -1084,6 +1102,7 @@ const remove = async (router: RouterItem) => {
     clearInspection(router.id)
     if (routeRouter.value?.id === router.id) closeRouteManager()
     if (policyRouter.value?.id === router.id) policyRouter.value = null
+    if (syncRouter.value?.id === router.id) syncRouter.value = null
     notify.success('已删除')
     await load()
   } catch (error) {
@@ -1112,6 +1131,7 @@ const openReport = async (router: RouterItem) => {
   if (routeBusy.value || applying.value) return
   if (!await canLeavePolicy()) return
   policyRouter.value = null
+  syncRouter.value = null
   closeRouteManager()
   clearInspection()
   reportRouter.value = router

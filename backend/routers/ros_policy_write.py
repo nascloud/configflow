@@ -115,7 +115,16 @@ def restore(driver, op):
     # Preserve the whole new bundle if another writer started using its lists
     # or private chain. Checking only the table would leave foreign rules broken.
     try:
-        check_references(deleting, live)
+        retained = op.get('retained') or []
+        if retained:
+            # Destination-only refreshes keep their own Mangle/table resources.
+            # Verify these exact owners before excluding their references.
+            present = owned_rows({'resources': retained}, live)
+            missing_allowed = {(step['path'], step['id']) for step in op['steps'] if step['action'] == 'restore'}
+            present_keys = {(item['path'], item['id']) for item in present}
+            if any((item['path'], item['id']) not in present_keys | missing_allowed for item in retained):
+                raise RouterError('保留的策略对象缺失，无法安全回滚')
+        check_references(deleting + retained, live)
         delete_safe = True
     except RouterError as error:
         failures.append(str(error))

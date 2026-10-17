@@ -113,7 +113,7 @@ def smart_sources(rows, gateway):
     return [str(network) for network in networks]
 
 
-def inspect_desired(config, router, desired):
+def inspect_desired(config, router, desired, content_loader=None):
     """Called only for selected policy rule sets or a previously deployed bundle."""
     from backend.common.oxidns_device_policy import read_policies, revision
     from backend.common.oxidns_settings import OxidnsSettingsError
@@ -123,7 +123,8 @@ def inspect_desired(config, router, desired):
               'owner': PREFIX + digest(router['id'])[:12], 'previous': router.get('ros_policy_state')}
     if not selected:
         return result
-    policy = compute_desired(config, desired.get('proxy_gateway'), selected)
+    policy = compute_desired(config, desired.get('proxy_gateway'), selected,
+                             **({'content_loader': content_loader} if content_loader else {}))
     result['cidrs'] = [entry for entry in policy['proxy_cidrs'] if entry['sources'] != ['fake-ip']]
     result['warnings'] = policy['warnings']
     # Missing/disabled rules must not silently withdraw an existing bundle.

@@ -254,6 +254,16 @@ export interface PolicyWorkspacePreview {
   router_plan: { fingerprint: string; empty: boolean; blockers: string[]; warnings: string[];
     stages: { key: string; title: string; enabled?: boolean; note?: string; ops: import('@/lib/routerOperationDetails').RouterPlanOperation[] }[] }
 }
+export interface RouterRuleSyncSettings { auto_rule_sync: boolean; rule_sync_interval: number }
+export interface RouterRuleSyncState {
+  enabled: boolean; status: string; message: string; ready: boolean
+  checked_at?: string | null; synced_at?: string | null; updated_at?: string | null
+  added: number; removed: number; log: { status: string; summary: string }[]
+  rules: { id: string; name: string; source_type: string; ip_count: number; domain_count: number;
+    ignored_count: number; invalid_count: number; version: string; synced_version: string }[]
+}
+interface RouterRuleSyncResponse { success: boolean; settings: RouterRuleSyncSettings; sync: RouterRuleSyncState }
+
 export const routerApi = {
   list: () => api.get('/routers'),
   create: (data: unknown) => api.post('/routers', data),
@@ -268,6 +278,11 @@ export const routerApi = {
     api.get(`/routers/${id}/routes`, { ...profileOptions(profileId), timeout: 60000 }),
   policy: (id: string, profileId = getActiveProfileId()) =>
     api.get(`/routers/${id}/policy`, { ...profileOptions(profileId), timeout: 60000 }),
+  ruleSync: (id: string, profileId: string) => api.get<RouterRuleSyncResponse>(`/routers/${id}/rule-sync`, profileOptions(profileId)),
+  saveRuleSync: (id: string, settings: RouterRuleSyncSettings, profileId: string) =>
+    api.put<RouterRuleSyncResponse>(`/routers/${id}/rule-sync`, settings, profileOptions(profileId)),
+  startRuleSync: (id: string, profileId: string) =>
+    api.post<RouterRuleSyncResponse>(`/routers/${id}/rule-sync`, null, profileOptions(profileId)),
   policySettings: (id: string, profileId: string) =>
     api.get<{ success: boolean; message?: string; workspace: PolicyWorkspace }>(`/routers/${id}/policy-settings`, profileOptions(profileId)),
   savePolicySettings: (id: string, draft: { revision: string; router: Pick<PolicyWorkspace['router'], 'ip_rule_sets' | 'ros_policy_rule_sets' | 'proxy_gateway_agent_id'>; policies: PolicyWorkspace['sources']['policies'] }, profileId: string) =>

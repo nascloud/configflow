@@ -26,6 +26,31 @@ from backend.routes import routers_bp
 DRIVERS = {'ikuai': IKuaiDriver, 'routeros': RouterOSDriver}
 
 
+def _manual_sync_lock(function):
+    from functools import wraps
+    @wraps(function)
+    def wrapped(router_id):
+        from backend.common.profile_context import resolve_profile_id
+        from backend.routers.rule_sync_store import job_lock
+        with job_lock(resolve_profile_id(), router_id, find_router(get_config(), router_id)) as acquired:
+            if not acquired:
+                return jsonify(success=False, message='此路由器正在发布或同步，请稍后重试'), 409
+            return function(router_id)
+    return wrapped
+
+
+def _capture_sync(config, router, driver, desired):
+    from backend.common.profile_context import resolve_profile_id
+    from backend.routers.rule_sync import capture_manual
+    try:
+        capture_manual(resolve_profile_id(), config, router, driver, desired)
+    except Exception:
+        # A runtime receipt I/O problem must not turn a successful manual release
+        # into a reported router failure. Automatic jobs still require a receipt.
+        from backend.utils.logger import get_logger
+        get_logger(__name__).exception('Could not record remote rule synchronization baseline')
+
+
 def _driver(router):
     return DRIVERS[router['type']](router['endpoint'], router['username'], router.get('password') or '',
                                    verify_tls=router.get('verify_tls') is not False)
@@ -114,12 +139,13 @@ def probe_router(router_id):
     return jsonify({'success': probe['ok'], 'probe': probe, 'message': probe.get('message', '')}), 200 if probe['ok'] else 502
 
 
-def _inspect(config, router, driver):
+def _inspect(config, router, driver, content_loader=None):
     """Desired state, router state, drift report and Agent return-routing state."""
     gateway_agent = _agent(router.get('proxy_gateway_agent_id'))
     policy_sets = set(router.get('ros_policy_rule_sets') or []) if router['type'] == 'routeros' else set()
     static_sets = static_rule_sets(router)
-    desired = dict(compute_desired(config, gateway_agent.get('host') if gateway_agent else None, static_sets))
+    desired = dict(compute_desired(config, gateway_agent.get('host') if gateway_agent else None, static_sets,
+                                   **({'content_loader': content_loader} if content_loader else {})))
     dns_id = router.get('dns_agent_id') or ''
     desired.update(dns_agent_settings(dns_id, _agent(dns_id) if dns_id else None))
     if router['type'] == 'routeros' and (policy_sets or router.get('ros_policy_state')):
@@ -127,7 +153,8 @@ def _inspect(config, router, driver):
     state = driver.read_state()
     if router['type'] == 'routeros' and (policy_sets or router.get('ros_policy_state')):
         from backend.routers.ros_policy import inspect_desired, snapshot, owned_rows, MANGLE, RULES, VRFS, ROUTES
-        desired['ros_policy'] = inspect_desired(config, router, desired)
+        desired['ros_policy'] = inspect_desired(config, router, desired,
+                                                **({'content_loader': content_loader} if content_loader else {}))
         state.ros_policy = snapshot(driver)
         # Only verified objects from our previous release may be disregarded
         # when assessing the upcoming path's NAT requirements.
@@ -200,6 +227,7 @@ def router_plan(router_id):
 
 @routers_bp.route('/<router_id>/apply', methods=['POST'])
 @require_auth
+@_manual_sync_lock
 def router_apply(router_id):
     """Run the previewed release. The plan is rebuilt and must match the preview's fingerprint."""
     config = get_config()
@@ -221,11 +249,13 @@ def router_apply(router_id):
                 return jsonify({'success': False, 'message': '路由器、Agent 或期望状态在预览后发生了变化，请重新预览',
                                 'plan': plan}), 409
             if plan['empty']:
+                _capture_sync(config, router, driver, desired)
                 return jsonify({'success': True, 'result': {'ok': True, 'log': [], 'rollback': []}, 'plan': plan})
             agent_client = None
             if router.get('manage_return_routing') is True:
                 from backend.common.agent_manager import get_agent_manager
                 agent_client = AgentReturnRouting(get_agent_manager(), gateway_agent)
+            published_config = config
             result = execute(plan, driver, agent_client)
             config = get_config()   # reload: the release may have taken a while
             items = routers_of(config)
@@ -239,6 +269,8 @@ def router_apply(router_id):
                     item['last_release'] = {'at': _now(), 'ok': result['ok'], 'fingerprint': plan['fingerprint'],
                                             'failed_stage': result.get('failed_stage', '')}
             _save_items(config, items)
+            if result['ok']:
+                _capture_sync(published_config, router, driver, desired)
     except RouterError as error:
         return jsonify({'success': False, 'message': str(error)}), 502
     finally:
@@ -412,6 +444,7 @@ def preview_device_route(router_id):
 
 @routers_bp.route('/<router_id>/routes/apply', methods=['POST'])
 @require_auth
+@_manual_sync_lock
 def apply_device_route(router_id):
     return _device_route_change(router_id, apply=True)
 
@@ -459,3 +492,50 @@ def _return_routing(agent):
     except (RuntimeError, requests.RequestException) as error:
         return {'status': 'unavailable', 'message': str(error) or error.__class__.__name__}
     return {'status': 'ok', **{key: value for key, value in body.items() if key != 'success'}}
+
+
+@routers_bp.route('/<router_id>/rule-sync', methods=['GET', 'PUT', 'POST'])
+@require_auth
+def router_rule_sync(router_id):
+    from backend.common.profile_context import resolve_profile_id
+    from backend.common.config import update_config_transaction
+    from backend.routers import rule_sync_store as sync_store
+    from backend.routers.rule_sync import start_job
+    profile_id = resolve_profile_id()
+    router = find_router(get_config(profile_id), router_id)
+    if router is None:
+        return _not_found()
+    if router.get('type') != 'routeros':
+        return jsonify(success=False, message='远程规则自动同步仅支持 RouterOS'), 400
+    try:
+        if request.method == 'PUT':
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict) or set(body) != {'auto_rule_sync', 'rule_sync_interval'}:
+                return jsonify(success=False, message='请提供同步开关和检查间隔'), 400
+            with router_operation_lock(router):
+                def mutate(config):
+                    current = find_router(config, router_id)
+                    if current is None:
+                        raise RouterValidationError('路由器已不存在')
+                    normalized = normalize(body, current)
+                    current.update(auto_rule_sync=normalized['auto_rule_sync'],
+                                   rule_sync_interval=normalized['rule_sync_interval'])
+                update_config_transaction(mutate, profile_id)
+            router = find_router(get_config(profile_id), router_id)
+        elif request.method == 'POST':
+            receipt = sync_store.read(profile_id, router_id)
+            if not router.get('auto_rule_sync') or not receipt.get('baseline'):
+                return jsonify(success=False, message='请开启自动同步，并先手动预览发布一次'), 409
+            if receipt.get('status') in ('paused', 'running', 'queued'):
+                return jsonify(success=False, message=receipt.get('message') or '同步尚未就绪'), 409
+            start_job(profile_id, router_id)
+        response = jsonify(success=True, settings={
+            'auto_rule_sync': router.get('auto_rule_sync') is True,
+            'rule_sync_interval': router.get('rule_sync_interval', 60)},
+            sync=sync_store.public(sync_store.read(profile_id, router_id), router.get('auto_rule_sync') is True))
+        response.headers['Cache-Control'] = 'no-store'
+        return response, 202 if request.method == 'POST' else 200
+    except RouterValidationError as error:
+        return jsonify(success=False, message=str(error)), 400
+    except RouterError as error:
+        return jsonify(success=False, message=str(error)), 409

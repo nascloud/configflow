@@ -152,6 +152,8 @@ if __name__ == '__main__':
     if LOG_LEVEL != 'DEBUG' or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
         from backend.utils.domain_discovery_service import start_auto_loop
         start_auto_loop(os.path.join(str(DATA_DIR), 'probes'))
+        from backend.routers.rule_sync import start_loop as start_rule_sync_loop
+        start_rule_sync_loop()
 
     from backend.http_server import run_http_server
     run_http_server(app, debug=(LOG_LEVEL == 'DEBUG'))

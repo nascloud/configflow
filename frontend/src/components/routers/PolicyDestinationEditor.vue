@@ -2,7 +2,7 @@
   <Dialog :open="true" @update:open="value => { if (!value) close() }">
     <DialogContent class="sm:max-w-2xl" :show-close-button="false">
       <DialogHeader><DialogTitle>编辑目的规则集</DialogTitle><DialogDescription>在原规则内容中新增、修改或删除 IP，再回到面板预览发布。</DialogDescription></DialogHeader>
-      <div class="min-w-0 space-y-4">
+      <div class="grid min-w-0 gap-4">
         <div class="space-y-2"><Label for="destination-edit-set">规则集</Label>
           <Select :model-value="selected || undefined" :disabled="saving" @update:model-value="value => choose(String(value))">
             <SelectTrigger id="destination-edit-set" class="min-h-11 w-full"><SelectValue placeholder="选择要编辑的规则集" /></SelectTrigger>
@@ -13,7 +13,13 @@
         <p v-if="selected && !selectedIds.includes(selected)" class="m-0 text-xs text-muted-foreground">此规则集当前未选为策略路由。编辑内容不会自动勾选；请到「规则集与网关」选择。</p>
         <LoadingRows v-if="loading" :rows="3" />
         <template v-else-if="data">
-          <p class="m-0 rounded-md bg-info-soft p-3 text-xs text-info-accent">这是共享规则内容，保存会影响所有引用它的配置空间（{{ data.usage_count }} 处引用），不会立即发布到设备。</p>
+          <div class="flex items-start gap-2 rounded-md bg-info-soft p-3 text-xs leading-relaxed text-info-accent">
+            <Info class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <div class="grid min-w-0 gap-1">
+              <p class="m-0 font-medium">共享规则内容 · {{ data.usage_count }} 处引用</p>
+              <p class="m-0">保存会影响所有引用它的配置空间。保存后仍需预览发布，才会下发到设备。</p>
+            </div>
+          </div>
           <template v-if="data.rule.source_type === 'content'">
             <div class="space-y-2"><Label for="destination-edit-content">规则内容 · {{ data.rule.behavior || '原格式' }}</Label><Textarea id="destination-edit-content" v-model="content" :disabled="saving" class="min-h-64 w-full font-mono text-xs" spellcheck="false" /></div>
             <p class="m-0 text-xs text-muted-foreground">保留原格式；删除原行即移除该条目。若其他规则集也包含同一 IP，发布后仍可能保留。</p>
@@ -32,7 +38,7 @@
 </template>
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { ExternalLink, Loader2 } from '@lucide/vue'
+import { ExternalLink, Info, Loader2 } from '@lucide/vue'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
