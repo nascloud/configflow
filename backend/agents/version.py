@@ -1,14 +1,20 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.9-go"
+LATEST_AGENT_VERSION = "1.8.10-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
-    "1.8.9-go": {
+    "1.8.10-go": {
         "date": "2026-10-17",
         "features": [
             "OxiDNS 查询列表通过核心现有实时推送缓存解析来源，减少逐条详情请求；历史记录与旧 Agent 保留兼容补查，无需修改核心"
+        ]
+    },
+    "1.8.9-go": {
+        "date": "2026-10-17",
+        "features": [
+            "回流生效时关闭 all 与 LAN 网卡的 send_redirects（避免旁路网关向客户端发 ICMP 重定向），记录原值并在撤销回流时恢复；跳过重放时也会重新确认"
         ]
     },
     "1.8.8-go": {

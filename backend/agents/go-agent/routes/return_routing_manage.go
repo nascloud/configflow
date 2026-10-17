@@ -69,6 +69,9 @@ type returnRoutingState struct {
 	// ownership from legacy names/comments or migrate unowned resources.
 	MigratedAt     string        `json:"migrated_at,omitempty"`
 	MigratedLegacy *legacyBackup `json:"migrated_legacy,omitempty"`
+	// send_redirects values ("all", LAN interface) before return routing
+	// disabled them; restored when it is removed.
+	SendRedirects map[string]string `json:"send_redirects,omitempty"`
 }
 
 // A versioned journal is the only evidence that a resource belongs to us.

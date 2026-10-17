@@ -649,6 +649,7 @@ func ApplyReturnRouting(cfg *Config, input ReturnRoutingSpec) (map[string]interf
 	state.Active = true
 	state.Ownership.Pending = false
 	state.AppliedAt = time.Now().Format(time.RFC3339)
+	disableSendRedirects(state, spec.LanInterface)
 	if err = saveReturnState(cfg, state); err != nil {
 		return nil, fmt.Errorf("回流状态保存失败，保留事务记录：%w", err)
 	}
@@ -690,6 +691,7 @@ func RemoveReturnRouting(cfg *Config, restoreLegacy bool) (map[string]interface{
 		return nil, err
 	}
 	state.Active, state.Ownership.Pending = false, false
+	restoreSendRedirects(state)
 	if err = saveReturnState(cfg, state); err != nil {
 		return nil, err
 	}
@@ -730,6 +732,7 @@ func reapplyReturnRouting(cfg *Config) {
 	if returnResourcesComplete(state) {
 		if spec, specErr := prepareSpec(cfg, state.Spec); specErr == nil && ownedMatchesSpec(spec, state.Ownership) {
 			log.Printf("return routing: owned resources complete and current, replay skipped")
+			ensureSendRedirects(cfg, spec.LanInterface)
 			return
 		}
 	}
