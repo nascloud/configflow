@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.3-go"
+LATEST_AGENT_VERSION = "1.8.4-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.4-go": {
+        "date": "2026-10-17",
+        "features": [
+            "看门狗扩展到 mihomo：控制接口（或 DNS 监听）连续 30 秒无响应时自动重启，规则与 OxiDNS 相同"
+        ]
+    },
     "1.8.3-go": {
         "date": "2026-10-17",
         "features": [

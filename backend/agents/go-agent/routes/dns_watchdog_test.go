@@ -3,8 +3,11 @@ package routes
 import (
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,6 +73,44 @@ func TestWatchdogDNSAddress(t *testing.T) {
 	}
 }
 
+func TestWatchdogTargetForMihomo(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{ServiceType: "mihomo", ConfigPath: filepath.Join(dir, "config.yaml")}
+	os.WriteFile(cfg.ConfigPath, []byte("external-controller: 0.0.0.0:9090\nsecret: s3cret\ndns:\n  enable: true\n  listen: 0.0.0.0:1053\n"), 0600)
+	target, err := watchdogTargetFor(cfg)
+	if err != nil || target.kind != "http" || target.address != "127.0.0.1:9090" || target.secret != "s3cret" {
+		t.Fatalf("target = %+v, %v", target, err)
+	}
+	if strings.Contains(target.String(), "s3cret") {
+		t.Fatal("target must not print its secret")
+	}
+	os.WriteFile(cfg.ConfigPath, []byte("dns:\n  enable: true\n  listen: 0.0.0.0:1053\n"), 0600)
+	if target, _ = watchdogTargetFor(cfg); target.kind != "dns" || target.address != "127.0.0.1:1053" {
+		t.Fatalf("without a controller mihomo falls back to its DNS listener: %+v", target)
+	}
+	os.WriteFile(cfg.ConfigPath, []byte("mode: rule\n"), 0600)
+	if _, err = watchdogTargetFor(cfg); err == nil {
+		t.Fatal("nothing to probe must be an error")
+	}
+}
+
+func TestControllerAnswersAcceptsAnyHTTPResponse(t *testing.T) {
+	var auth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	address := strings.TrimPrefix(server.URL, "http://")
+	if err := controllerAnswers(address, "s3cret"); err != nil || auth != "Bearer s3cret" {
+		t.Fatalf("401 must count as alive: %v auth=%q", err, auth)
+	}
+	server.Close()
+	if err := controllerAnswers(address, ""); err == nil {
+		t.Fatal("closed controller must fail")
+	}
+}
+
 type watchdogFakes struct {
 	now      time.Time
 	healthy  bool
@@ -78,12 +119,12 @@ type watchdogFakes struct {
 	restarts int
 }
 
-func newTestWatchdog(t *testing.T, f *watchdogFakes) *dnsWatchdog {
+func newTestWatchdog(t *testing.T, f *watchdogFakes) *serviceWatchdog {
 	t.Helper()
 	cfg := &Config{ServiceType: "oxidns", HealthDNSAddress: "127.0.0.1:53"}
 	w := newDNSWatchdog(cfg)
 	w.now = func() time.Time { return f.now }
-	w.probe = func(string) error {
+	w.probe = func(watchdogTarget) error {
 		if f.healthy {
 			return nil
 		}
