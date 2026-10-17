@@ -2,12 +2,16 @@
   <div class="min-w-0">
     <div class="flex flex-wrap items-center justify-between gap-2 px-5 pb-3 max-md:px-4">
       <span class="text-xs text-muted-foreground">{{ collectedAt ? `读取于 ${collectedAt}` : '' }}</span>
-      <Button variant="outline" class="min-h-11" :disabled="loading" @click="load"><RefreshCw class="size-4" />刷新对象</Button>
+      <div class="flex flex-wrap gap-2">
+        <Button variant="outline" class="min-h-11" :disabled="disabled || !sourcesEditable" @click="emit('add-source')"><Plus class="size-4" />新增来源</Button>
+        <Button variant="outline" class="min-h-11" :disabled="disabled" @click="emit('edit-destinations')">编辑目的规则集</Button>
+        <Button variant="outline" class="min-h-11" :disabled="loading || disabled" @click="load"><RefreshCw class="size-4" />刷新对象</Button>
+      </div>
     </div>
     <p v-if="error" role="alert" class="px-5 text-sm text-destructive-accent">{{ error }}</p>
     <LoadingRows v-if="loading" :rows="4" />
     <template v-else-if="data">
-        <p v-if="data.objects.length" class="m-0 px-5 pb-3 text-xs text-muted-foreground max-md:px-4">下表为已下发对象；保存的设置与设备可能存在差异，请通过「预览发布」核对并应用。</p>
+        <p class="m-0 px-5 pb-3 text-xs text-muted-foreground max-md:px-4">编辑会打开对应来源或规则集，修改后需保存并预览发布。下表仍显示设备上的已下发对象；不会直接修改 ROS 字段。</p>
         <template v-if="data.objects.length">
           <div class="flex flex-wrap gap-2 border-t border-border px-5 py-3 max-md:px-4" role="group" aria-label="策略对象类型">
             <Button v-for="group in groups" :key="group.key" size="sm" class="min-h-11" :variant="kind === group.key ? 'secondary' : 'ghost'" :aria-pressed="kind === group.key" @click="kind = group.key">
@@ -17,7 +21,7 @@
           <div class="px-5 pb-3 max-md:px-4"><Input v-model="search" class="min-h-11 max-w-md" aria-label="搜索策略对象" placeholder="搜索名称、地址或动作…" /></div>
           <div v-if="filtered.length" class="cf-table-wrap">
             <table class="cf-table min-w-[720px]">
-              <thead><tr><th>名称 / 链</th><th>地址 / 动作</th><th>状态</th><th>实际配置</th></tr></thead>
+              <thead><tr><th>名称 / 链</th><th>地址 / 动作</th><th>状态</th><th>实际配置</th><th class="text-right">操作</th></tr></thead>
               <tbody>
                 <tr v-for="item in pageRows" :key="item.kind + item.id">
                   <td class="font-mono text-xs">{{ item.fields.list || item.fields.name || item.fields.chain || item.fields['routing-table'] || '—' }}</td>
@@ -35,6 +39,7 @@
                       <dl class="m-0 space-y-1 pb-2 font-mono text-xs"><div v-for="(value, field) in item.fields" :key="field"><dt class="inline text-muted-foreground">{{ field }}: </dt><dd class="m-0 inline">{{ value }}</dd></div></dl>
                     </details>
                   </td>
+                  <td class="text-right"><Button variant="ghost" class="min-h-11" :disabled="disabled || (item.editor === 'source' && !sourcesEditable)" @click="emit('edit', item)"><Pencil class="size-4" />{{ item.editor === 'source' ? '编辑来源' : item.editor === 'destination' ? '编辑规则集' : '编辑设置' }}</Button></td>
                 </tr>
               </tbody>
             </table>
@@ -53,14 +58,15 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { ListFilter, Network, RefreshCw } from '@lucide/vue'
+import { ListFilter, Network, Pencil, Plus, RefreshCw } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
 import { routerApi, type PolicyRoutingObject, type PolicyRoutingView } from '@/api'
 
-const props = defineProps<{ id: string; profile: string }>()
+const props = withDefaults(defineProps<{ id: string; profile: string; disabled?: boolean; sourcesEditable?: boolean }>(), { sourcesEditable: true })
+const emit = defineEmits<{ 'add-source': []; 'edit-destinations': []; edit: [item: PolicyRoutingObject] }>()
 const data = ref<PolicyRoutingView | null>(null)
 const loading = ref(false)
 const error = ref('')

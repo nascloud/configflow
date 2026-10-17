@@ -224,6 +224,8 @@ export interface PolicyRoutingObject {
   kind: 'addresses' | 'mangle' | 'tables' | 'routes' | 'nat'
   status: 'matched' | 'changed' | 'missing'
   fields: Record<string, string | number | boolean>
+  editor?: 'source' | 'destination' | 'settings'
+  configured_address?: string
 }
 export interface PolicyRoutingView {
   objects: PolicyRoutingObject[]
@@ -235,7 +237,16 @@ export interface PolicyWorkspace {
   sources: { policies: import('@/types/oxidnsMonitor').OxiDNSDevicePolicy[]; editable: boolean; reason: string }
   source_agents: { id: string; name: string; host: string; status: string }[]
   gateways: { id: string; name: string; host: string }[]
-  rule_sets: { id: string; name: string; policy: string }[]
+  rule_sets: { id: string; name: string; policy: string; library_rule_id?: string }[]
+}
+export interface RuleContentDraft {
+  success: boolean; revision: string; usage_count: number
+  rule: { id: string; name: string; source_type: string; behavior: string; content: string; url: string }
+}
+export const ruleContentApi = {
+  read: (id: string) => api.get<RuleContentDraft>(`/rule-library/${encodeURIComponent(id)}/draft-content`),
+  save: (id: string, revision: string, content: string) =>
+    api.put<{ success: boolean; revision: string }>(`/rule-library/${encodeURIComponent(id)}/draft-content`, { revision, content })
 }
 export interface PolicyWorkspacePreview {
   revision: string; profile_id: string; config_revision: number; oxidns_revision: string

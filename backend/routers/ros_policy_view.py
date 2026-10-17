@@ -15,6 +15,15 @@ PUBLIC_FIELDS = {
 
 def read_policy_objects(driver, manifest):
     resources = (manifest or {}).get('resources', [])
+    # Resolve editor roles from the saved references, never from a live name
+    # (which may have been edited externally) or a version-specific prefix.
+    roles = {}
+    for entry in resources:
+        row = entry.get('config', {})
+        if entry['path'] == MANGLE and row.get('chain') == 'prerouting' and row.get('action') == 'jump':
+            for field, role in (('src-address-list', 'source'), ('dst-address-list', 'destination')):
+                if row.get(field):
+                    roles[row[field]] = role
     # No manifest means nothing has been claimed. Names/comments alone are never
     # proof of ownership, including objects from another configuration space.
     live = {path: {row['.id']: row for row in driver._list(path)}
@@ -30,6 +39,9 @@ def read_policy_objects(driver, manifest):
         # UI without changing the raw ownership baseline or other field values.
         if entry['path'] == TABLES:
             shown = comparable_values(TABLES, shown)
+        expected = entry['config']
+        editor = roles.get(expected.get('list'), 'settings') if entry['path'] == ADDRESSES else 'settings'
         result.append({'id': entry['id'], 'kind': KINDS[entry['path']], 'status': status,
+                       'editor': editor, 'configured_address': expected.get('address', ''),
                        'fields': {key: value for key, value in shown.items() if key in PUBLIC_FIELDS}})
     return result

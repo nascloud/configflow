@@ -3,6 +3,8 @@
 提供规则仓库（Rule Library）的 CRUD 操作和相关功能
 """
 import os
+import hashlib
+import json
 from flask import request, jsonify
 from flask import Blueprint
 from backend.common.auth import require_auth
@@ -18,6 +20,56 @@ logger = get_logger(__name__)
 
 # 创建规则库蓝图
 rule_library_bp = Blueprint('rule_library', __name__, url_prefix='/api/rule-library')
+
+
+def _content_revision(rule):
+    return hashlib.sha256(json.dumps(rule, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+@rule_library_bp.route('/<rule_id>/draft-content', methods=['GET', 'PUT'])
+@require_auth
+def edit_rule_library_content(rule_id):
+    """Edit a single shared content source, without touching profile choices or ROS."""
+    from werkzeug.exceptions import Conflict, NotFound
+    from backend.common.config_repository import ProfileValidationError
+
+    def find(shared):
+        rule = next((item for item in shared.get('rule_library', []) if item.get('id') == rule_id), None)
+        if rule is None:
+            raise NotFound('规则集已不存在，请重新载入。')
+        return rule
+
+    if request.method == 'GET':
+        try:
+            rule = find(get_shared_config())
+        except NotFound as error:
+            return jsonify({'success': False, 'message': error.description}), 404
+        return jsonify({'success': True, 'revision': _content_revision(rule),
+                        'rule': {key: rule.get(key, '') for key in
+                                 ('id', 'name', 'source_type', 'behavior', 'content', 'url')},
+                        'usage_count': len(get_repository().get_resource_usage('rule_library', rule_id))}), 200, {'Cache-Control': 'no-store'}
+
+    body = request.get_json()
+    if (not isinstance(body, dict) or set(body) != {'revision', 'content'}
+            or not isinstance(body['revision'], str) or not isinstance(body['content'], str)):
+        raise ProfileValidationError('请提交规则内容及读取时的版本。')
+    updated = {}
+
+    def mutate(shared):
+        rule = find(shared)
+        if body['revision'] != _content_revision(rule):
+            raise Conflict('规则集已在其他页面更新，请重新读取后再编辑。')
+        if rule.get('source_type') != 'content':
+            raise ProfileValidationError('订阅规则由订阅源更新，请使用内容型规则集添加手动 IP。')
+        rule['content'] = body['content']
+        updated.update(rule)
+
+    try:
+        update_shared_config_transaction(mutate)
+    except (NotFound, Conflict) as error:
+        return jsonify({'success': False, 'message': error.description}), error.code
+    save_rule_to_local(updated)
+    return jsonify({'success': True, 'revision': _content_revision(updated)})
 
 
 @rule_library_bp.route('', methods=['GET', 'POST'])
