@@ -26,15 +26,18 @@
     <fieldset :disabled="!state.editable || saving || publishing || loading" class="m-0 min-w-0 border-0 p-0">
       <div class="mb-4 grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
         <div class="min-w-0">
-          <p class="mb-1.5 mt-0 text-xs text-muted-foreground">从查询记录选择</p>
+          <p class="mb-2 mt-0 flex min-h-6 items-center text-xs text-muted-foreground">从查询记录选择</p>
           <OxiDNSClientSelect :model-value="''" :agent-id="agentId" :recorder="recorder" range="all" :allow-all="false" placeholder="选择已有客户端…" @update:model-value="add" />
           <p v-if="!recorder" class="mb-0 mt-1.5 text-xs text-muted-foreground">暂无可读取的查询记录，可手动添加 IP 或网段。</p>
         </div>
         <div class="min-w-0">
-          <label for="policy-client-ip" class="mb-1.5 block text-xs text-muted-foreground">手动添加 IP / 网段</label>
+          <div class="mb-2 flex min-h-6 items-center gap-1">
+            <label for="policy-client-ip" class="text-xs text-muted-foreground">手动添加 IP / 网段</label>
+            <FieldHelp label="手动添加 IP / 网段" :text="clientRangeHelp" />
+          </div>
           <Input id="policy-client-ip" v-model="newIP" class="min-h-11 font-mono" placeholder="192.168.50.0/24 或 IPv6" aria-describedby="policy-range-help" @keydown.enter.prevent="add(newIP)" />
         </div>
-        <Button variant="outline" class="min-h-11 md:mt-6" :disabled="!newIP.trim() || rows.length >= 512" @click="add(newIP)"><Plus class="size-4" />添加策略</Button>
+        <Button variant="outline" class="min-h-11 md:mt-8" :disabled="!newIP.trim() || rows.length >= 512" @click="add(newIP)"><Plus class="size-4" />添加策略</Button>
       </div>
       <p id="policy-range-help" class="mb-4 mt-0 text-xs leading-relaxed text-muted-foreground">支持单个 IPv4 / IPv6 和 CIDR 网段，网段地址会自动规范化。规则重叠时，单个 IP 优先，其次是范围更小的网段，与添加顺序无关。</p>
       <div v-if="rows.length" class="cf-table-wrap">
@@ -80,6 +83,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import SectionCard from '@/components/common/SectionCard.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import FieldHelp from '@/components/common/FieldHelp.vue'
 import OxiDNSClientSelect from './OxiDNSClientSelect.vue'
 import { agentApi, oxidnsDevicePolicyApi } from '@/api'
 import { confirm, notify } from '@/lib/feedback'
@@ -88,6 +92,12 @@ import { createDeploymentId, deploymentStatusLabel, useAgentDeployments } from '
 import type { OxiDNSDevicePolicies, OxiDNSDevicePolicy } from '@/types/oxidnsMonitor'
 
 const props = defineProps<{ agentId: string; recorder: string }>()
+const clientRangeHelp = [
+  '为指定设备或网段设置 DNS 解析策略，未出现在查询记录中的设备也可手动添加。',
+  '支持单个 IPv4 / IPv6 和 CIDR 网段，例如 192.168.50.50、192.168.50.0/24。重叠时单个 IP 优先，其次为更小的网段。',
+  '添加后选择智能分流（沿用现有规则）或直连（使用本地 DNS 上游），保存草稿并发布到当前设备后生效。',
+  '设备需使用 OxiDNS，且 OxiDNS 能识别真实客户端 IP；填写地址不会自动修改设备 DNS。',
+].join('\n\n')
 const emit = defineEmits<{ published: [] }>()
 const state = ref<OxiDNSDevicePolicies | null>(null)
 const rows = ref<OxiDNSDevicePolicy[]>([])
