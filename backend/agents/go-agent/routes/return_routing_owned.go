@@ -669,6 +669,16 @@ func reapplyReturnRouting(cfg *Config) {
 	if state == nil {
 		return
 	}
+	if state.Ownership == nil {
+		// State from Agent 1.8.2-1.8.4: migrate only if the host holds exactly
+		// what that version created; the migrated resources are already live.
+		if err = migrateLegacyReturnState(cfg, state); err != nil {
+			log.Printf("return routing: preserved legacy resources, migration refused: %v", err)
+		} else {
+			log.Printf("return routing: migrated legacy state to owned resources")
+		}
+		return
+	}
 	if !validReturnOwner(state) || state.Legacy != nil || state.Ownership.Pending {
 		log.Printf("return routing: preserved existing resources; ownership is missing or incomplete")
 		return

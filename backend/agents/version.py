@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.5-go"
+LATEST_AGENT_VERSION = "1.8.6-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.6-go": {
+        "date": "2026-10-17",
+        "features": [
+            "回流状态迁移：1.8.2–1.8.4 写入的旧状态在 Agent 启动时逐项核对现有资源，与旧版创建内容完全一致才原地迁移为带归属记录的资源（路由并存切换、策略规则紧接替换、nft 原子替换），否则保持不动"
+        ]
+    },
     "1.8.5-go": {
         "date": "2026-10-17",
         "features": [
