@@ -4,7 +4,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from backend.routers.base import RouterError, RouterRollbackError, RouterState, is_managed
+from backend.routers.base import (
+    RouterError, RouterRollbackError, RouterState, is_managed, policy_route, policy_route_ok,
+)
 from backend.routers.dhcp_dns import checked_dns_target, verify_dns
 from backend.routers.plan import (
     RETURN_ALLOCATION_FIELDS, RETURN_SAFETY_VERSION, return_allocation, return_safety_blockers,
@@ -118,9 +120,14 @@ def _verify(stage: str, checks: Dict[str, Any], driver, agent: AgentReturnRoutin
             if not any(route.dst == check['cidr'] and route.enabled and route.gateway == check['gateway']
                        and is_managed(route.comment) for route in state.routes):
                 raise ReleaseError(f'回读校验失败：{check["cidr"]} 没有受管路由指向 {check["gateway"]}')
+        for check in checks.get('policy_routes') or []:
+            rule = policy_route(state, check['comment'])
+            if rule is None or not policy_route_ok(rule, check['gateway']) or set(rule.dst) != set(check['dst']):
+                raise ReleaseError(f'回读校验失败：策略路由「{check["comment"]}」没有按计划排除 {check["gateway"]} '
+                                   f'并转发到 {check["gateway"]}')
         remaining = {route.id for route in state.routes} & set(checks['removed_routes'])
         if remaining:
-            raise ReleaseError('回读校验失败：应删除的受管路由仍然存在')
+            raise ReleaseError('回读校验失败：应删除的路由仍然存在')
     elif stage == 'nat_bypass':
         uncovered = [cidr for cidr in checks['nat_bypass'] if not _covered(cidr, state)]
         if uncovered:

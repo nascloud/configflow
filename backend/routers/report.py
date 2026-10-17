@@ -12,7 +12,9 @@ Managed objects that are no longer desired are reported as ``extra``.
 import ipaddress
 from typing import Any, Dict, Iterable, List
 
-from backend.routers.base import RouterState, is_managed
+from backend.routers.base import (
+    POLICY_AUTO_COMMENT, POLICY_MANUAL_COMMENT, RouterState, as_dict, is_managed, policy_route, policy_route_ok,
+)
 from backend.routers.dhcp_dns import build_dns_report
 from backend.routers.routeros_nat import assess_nat
 
@@ -35,7 +37,52 @@ def _networks(values: Iterable[str]) -> List[ipaddress.IPv4Network]:
     return result
 
 
+def _policy_route_items(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
+    """Proxy CIDRs routed by a policy rule that excludes the gateway as a source.
+
+    Every enabled static route to the gateway is loop-prone: it is migrated into
+    a policy rule and then deleted, including hand-made ones (kept in their own
+    add-only rule, ``cf-mihomo-manual``).
+    """
+    gateway = desired.get('proxy_gateway') or ''
+    desired_cidrs = {entry['cidr'] for entry in desired['proxy_cidrs']}
+    auto = policy_route(state, POLICY_AUTO_COMMENT)
+    covered = _networks(auto.dst) if auto and policy_route_ok(auto, gateway) else []
+    items = []
+    for entry in desired['proxy_cidrs']:
+        target = ipaddress.IPv4Network(entry['cidr'])
+        matches = [route for route in state.routes if route.dst == entry['cidr']]
+        bad = [route for route in matches if not (route.enabled and gateway and route.gateway == gateway)]
+        if bad:
+            route = bad[0]
+            reason = '已停用' if not route.enabled else f'下一跳为 {route.gateway}'
+            status, detail = 'conflict', f'同网段路由{reason}，期望下一跳 {gateway or "未知"}'
+        elif matches:
+            status, detail = 'adoptable', '静态路由会让 mihomo 自身的流量回环，将迁移为排除 mihomo 的策略路由'
+        elif any(target.subnet_of(network) for network in covered):
+            status, detail = 'synced', ''
+        else:
+            status, detail = 'missing', ''
+        items.append({'cidr': entry['cidr'], 'sources': entry['sources'], 'status': status, 'detail': detail,
+                      'route_ids': [route.id for route in matches]})
+    extra = [{'cidr': route.dst, 'gateway': route.gateway, 'route_id': route.id, 'comment': route.comment}
+             for route in state.routes if is_managed(route.comment) and route.dst not in desired_cidrs]
+    if auto:
+        extra += [{'cidr': cidr, 'gateway': auto.gateway, 'route_id': f'policy:{auto.id}', 'comment': auto.comment}
+                  for cidr in auto.dst if cidr not in desired_cidrs]
+    unmanaged_other = [{'cidr': route.dst, 'gateway': route.gateway, 'comment': route.comment, 'enabled': route.enabled,
+                        'migrate': route.enabled}
+                       for route in state.routes
+                       if gateway and route.gateway == gateway and not is_managed(route.comment)
+                       and route.dst not in desired_cidrs]
+    manual = policy_route(state, POLICY_MANUAL_COMMENT)
+    return {'items': items, 'extra': extra, 'unmanaged_other': unmanaged_other, 'mode': 'policy',
+            'policy': {'auto': as_dict(auto) if auto else None, 'manual': as_dict(manual) if manual else None}}
+
+
 def _route_items(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
+    if state.policy_routes is not None:
+        return _policy_route_items(desired, state)
     gateway = desired.get('proxy_gateway') or ''
     desired_cidrs = {entry['cidr'] for entry in desired['proxy_cidrs']}
     items = []
@@ -100,6 +147,7 @@ def build_report(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
         summary[dns['status']] = summary.get(dns['status'], 0) + 1
     in_sync = all(item['status'] in {'synced', 'not_required'}
                   for item in routes['items'] + nat['items']) and not routes['extra']
+    in_sync = in_sync and not any(item.get('migrate') for item in routes['unmanaged_other'])
     in_sync = in_sync and dns['status'] in {'disabled', 'synced'}
     return {'desired': desired, 'routes': routes, 'nat_bypass': nat, 'dhcp_dns': dns,
             'summary': summary, 'in_sync': in_sync}

@@ -43,6 +43,25 @@ class RouteEntry:
 
 
 @dataclass
+class PolicyRouteEntry:
+    """A source-aware forwarding rule (iKuai 端口分流 with a next-hop gateway).
+
+    Static routes match destinations only, so the gateway's own traffic to a
+    proxy CIDR would be routed straight back to it. A policy route can exclude
+    the gateway as a source and avoid that loop.
+    """
+    id: str
+    dst: List[str]
+    gateway: str        # next hop; empty when the rule targets a WAN line
+    enabled: bool
+    comment: str = ''
+    src: List[str] = field(default_factory=list)
+    src_invert: bool = False
+    dst_invert: bool = False
+    protocol: str = ''
+
+
+@dataclass
 class NatBypassEntry:
     """A rule that exempts traffic from source NAT (iKuai 'filter', RouterOS srcnat accept)."""
     id: str
@@ -82,6 +101,9 @@ class RouterState:
     # an empty rules list explicitly means there are no source-NAT rules.
     nat_context: Optional[Dict[str, Any]] = None
     dhcp_dns: Optional[DhcpDnsState] = None
+    # None: the vendor routes proxy CIDRs with static routes. A list (possibly
+    # empty) means proxy CIDRs are routed by policy rules excluding the gateway.
+    policy_routes: Optional[List[PolicyRouteEntry]] = None
 
 
 class RouterDriver:
@@ -123,6 +145,23 @@ def managed_comment(comment: Optional[str]) -> str:
     """
     text = (comment or '').strip()
     return text if is_managed(text) else (f'{MANAGED_PREFIX}-{text}' if text else MANAGED_PREFIX)
+
+
+# Policy routes for the proxy gateway: derived CIDRs are fully managed; CIDRs
+# migrated from hand-made static routes are only ever added, never removed.
+POLICY_AUTO_COMMENT = f'{MANAGED_PREFIX}-mihomo'
+POLICY_MANUAL_COMMENT = f'{MANAGED_PREFIX}-mihomo-manual'
+
+
+def policy_route_ok(entry: 'PolicyRouteEntry', gateway: str) -> bool:
+    """Enabled, any protocol, every source except the gateway, next hop the gateway."""
+    return (entry.enabled and bool(gateway) and entry.gateway == gateway and entry.src == [gateway]
+            and entry.src_invert and not entry.dst_invert and entry.protocol == 'any')
+
+
+def policy_route(state: 'RouterState', comment: str) -> Optional['PolicyRouteEntry']:
+    """The first policy route carrying ``comment``; duplicates are left alone."""
+    return next((entry for entry in state.policy_routes or [] if entry.comment == comment), None)
 
 
 def as_dict(value: Any) -> Any:

@@ -18,7 +18,10 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from backend.routers.base import RouterState, as_dict, is_managed, managed_comment
+from backend.routers.base import (
+    POLICY_AUTO_COMMENT, POLICY_MANUAL_COMMENT, RouterState, as_dict, is_managed, managed_comment, policy_route,
+    policy_route_ok,
+)
 from backend.routers.dhcp_dns import build_dns_report
 from backend.routers.report import _networks
 
@@ -120,6 +123,68 @@ def _route_ops(report: Dict[str, Any], state: RouterState, gateway: str, warning
         ops.append({'kind': 'route_delete', 'id': extra['route_id'], 'cidr': extra['cidr'],
                     'summary': f'删除不再需要的受管路由 {extra["cidr"]} → {extra["gateway"]}'})
     return ops, skipped
+
+
+def _policy_op(rule, gateway: str, dst: List[str], comment: str):
+    scope = f'除 {gateway} 自身外的设备访问 {", ".join(dst)} → {gateway}'
+    if rule is None:
+        return {'kind': 'policy_route_add', 'gateway': gateway, 'dst': dst, 'comment': comment,
+                'summary': f'新增策略路由「{comment}」：{scope}'}
+    if policy_route_ok(rule, gateway) and set(rule.dst) == set(dst):
+        return None
+    return {'kind': 'policy_route_update', 'id': rule.id, 'gateway': gateway, 'dst': dst, 'comment': comment,
+            'summary': f'更新策略路由「{comment}」：{scope}'}
+
+
+def _policy_route_ops(report: Dict[str, Any], state: RouterState, gateway: str, warnings: List[str]):
+    """Route proxy CIDRs by policy rules excluding the gateway, then drop the static routes.
+
+    The rules are written first; static routes take precedence over them, so
+    traffic keeps flowing to the gateway until each static route is deleted.
+    """
+    ops, skipped = [], set()
+    for item in report['routes']['items']:
+        if item['status'] == 'conflict':
+            skipped.add(item['cidr'])
+            warnings.append(f'{item["cidr"]}：{item["detail"]}。本次跳过该网段（路由、NAT、回流都不处理），请先手动处理')
+    target = [item['cidr'] for item in report['routes']['items'] if item['cidr'] not in skipped]
+    covered = _networks(target)
+    auto = policy_route(state, POLICY_AUTO_COMMENT)
+    checks = []
+    if target:
+        op = _policy_op(auto, gateway, target, POLICY_AUTO_COMMENT)
+        ops.extend([op] if op else [])
+        checks.append({'comment': POLICY_AUTO_COMMENT, 'gateway': gateway, 'dst': target})
+    elif auto is not None:
+        ops.append({'kind': 'policy_route_delete', 'id': auto.id,
+                    'summary': f'删除不再需要的策略路由「{POLICY_AUTO_COMMENT}」'})
+
+    def inside(cidr):
+        return any(network.subnet_of(outer) for network in _networks([cidr]) for outer in covered)
+
+    # Hand-made routes keep routing to the gateway, minus the loop. Subnets of a
+    # derived CIDR need no rule of their own.
+    migrate = [item['cidr'] for item in report['routes']['unmanaged_other'] if item.get('migrate') and not inside(item['cidr'])]
+    manual = policy_route(state, POLICY_MANUAL_COMMENT)
+    if migrate:
+        current = list(manual.dst) if manual else []
+        dst = current + [cidr for cidr in migrate if cidr not in current]
+        op = _policy_op(manual, gateway, dst, POLICY_MANUAL_COMMENT)
+        ops.extend([op] if op else [])
+        checks.append({'comment': POLICY_MANUAL_COMMENT, 'gateway': gateway, 'dst': dst})
+
+    for route in state.routes:
+        if route.enabled and route.gateway == gateway and (route.dst in migrate or inside(route.dst)):
+            ops.append({'kind': 'route_delete', 'id': route.id, 'cidr': route.dst,
+                        'summary': f'删除静态路由 {route.dst} → {gateway}（{route.comment or "无备注"}），'
+                                   '改由策略路由转发，避免 mihomo 自身流量回环'})
+    deleting = {op['id'] for op in ops if op['kind'] == 'route_delete'}
+    for extra in report['routes']['extra']:
+        if extra['route_id'].startswith('policy:') or extra['route_id'] in deleting:
+            continue
+        ops.append({'kind': 'route_delete', 'id': extra['route_id'], 'cidr': extra['cidr'],
+                    'summary': f'删除不再需要的受管路由 {extra["cidr"]} → {extra["gateway"]}'})
+    return ops, skipped, checks
 
 
 def _nat_ops(report: Dict[str, Any], state: RouterState, gateway: str, skipped: set, vendor: str = ''):
@@ -228,7 +293,11 @@ def build_plan(router: Dict[str, Any], desired: Dict[str, Any], state: RouterSta
         return {'stages': [], 'blockers': blockers, 'warnings': warnings, 'script': '', 'fingerprint': '',
                 'empty': True}
 
-    route_ops, skipped = _route_ops(report, state, gateway, warnings)
+    policy = state.policy_routes is not None
+    if policy:
+        route_ops, skipped, policy_checks = _policy_route_ops(report, state, gateway, warnings)
+    else:
+        route_ops, skipped = _route_ops(report, state, gateway, warnings)
     manage_dns = bool(router.get('dns_agent_id'))
     dns = build_dns_report({**desired, 'dns_agent_id': router.get('dns_agent_id') or ''}, state.dhcp_dns)
     dns_ops = []
@@ -265,7 +334,10 @@ def build_plan(router: Dict[str, Any], desired: Dict[str, Any], state: RouterSta
          'enabled': manage_return,
          'note': ('已启用自动配置回流；自动选择安全可用的编号和标记，不接管已有手工规则。' if manage_return
                   else '未启用自动配置回流：本次跳过，已有回流规则保留，不新增、修改或删除。')},
-        {'key': 'routes', 'title': STAGE_TITLES['routes'], 'manual': manual, 'ops': route_ops},
+        {'key': 'routes', 'title': STAGE_TITLES['routes'], 'manual': manual, 'ops': route_ops,
+         **({'note': '代理网段使用排除 mihomo 自身的端口分流转发：静态路由只看目的地址，'
+                     '会把 mihomo 自己的直连流量送回 mihomo 形成回环。先写入分流规则，再删除静态路由。'}
+            if policy else {})},
         {'key': 'nat_bypass', 'title': STAGE_TITLES['nat_bypass'], 'manual': manual, 'ops': nat_ops},
         {'key': 'dhcp_dns', 'title': STAGE_TITLES['dhcp_dns'], 'manual': manual, 'ops': dns_ops,
          'enabled': manage_dns,
@@ -273,12 +345,14 @@ def build_plan(router: Dict[str, Any], desired: Dict[str, Any], state: RouterSta
                   if manage_dns else '未选择 DHCP DNS 服务器：本次保留现有 DNS 配置。')},
     ]
     checks = {
-        'routes': [{'cidr': cidr, 'gateway': gateway} for cidr in proxy_cidrs],
+        'routes': [] if policy else [{'cidr': cidr, 'gateway': gateway} for cidr in proxy_cidrs],
         'removed_routes': [op['id'] for op in route_ops if op['kind'] == 'route_delete'],
         'nat_bypass': [item['cidr'] for item in nat_items if item['status'] not in {'not_required', 'unknown'}],
         'nat_not_required': [{'cidr': item['cidr'], 'gateway': gateway}
                              for item in nat_items if item['status'] == 'not_required'],
     }
+    if policy:
+        checks['policy_routes'] = policy_checks
     if manage_return:
         checks['return_routing'] = dict(spec)
     if manage_dns and dns['status'] in {'synced', 'pending'}:

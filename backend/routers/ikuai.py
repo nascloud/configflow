@@ -14,7 +14,7 @@ from urllib.parse import unquote
 import requests
 
 from backend.routers.base import (
-    DhcpDnsEntry, DhcpDnsState, NatBypassEntry, RouteEntry, RouterDriver, RouterError,
+    DhcpDnsEntry, DhcpDnsState, NatBypassEntry, PolicyRouteEntry, RouteEntry, RouterDriver, RouterError,
     RouterInfo, RouterRollbackError, RouterState,
 )
 from backend.routers.dhcp_dns import checked_dns_target
@@ -28,6 +28,15 @@ _ENCODE = [('"', '%22'), ('`', '%60'), ('$', '%24'), ('&', '%26'), (';', '%3B'),
 ROUTE_FIELDS = ('id', 'enabled', 'tagname', 'ip_type', 'interface', 'dst_addr', 'gateway', 'netmask', 'prio', 'comment')
 NAT_FIELDS = ('id', 'enabled', 'tagname', 'comment', 'action', 'protocol', 'iinterface', 'ointerface',
               'src_addr', 'dst_addr', 'src_port', 'dst_port', 'nat_addr', 'nat_port', 'src_addr_inv', 'dst_addr_inv')
+# 端口分流 (stream_ipport) as submitted by the 4.0.308 web UI form
+# (static/js/index-BkqBAzZn.js): type 1 = next-hop gateway, 0 = WAN line.
+POLICY_FIELDS = ('id', 'enabled', 'tagname', 'interface', 'src_addr', 'dst_addr', 'iface_band', 'comment', 'time',
+                 'prio', 'mode', 'type', 'nexthop', 'area_code', 'src_port', 'dst_port', 'protocol', 'dst_type',
+                 'src_addr_inv', 'dst_addr_inv')
+POLICY_NEXTHOP = 1
+# The form's default schedule: every day, all day.
+POLICY_ALWAYS = {'custom': [{'type': 'weekly', 'weekdays': '1234567', 'start_time': '00:00', 'end_time': '23:59'}],
+                 'object': []}
 
 # Verified against the original vendor UI AND backend/schema in official firmware
 # 4.0.120-beta Build202603191336 (downloaded, extracted, never executed):
@@ -150,7 +159,8 @@ class IKuaiDriver(RouterDriver):
         if not version.startswith('4.'):
             raise RouterError(f'只支持 iKuai 4.x，当前版本 {version or "未知"}')
         capabilities = []
-        for func, capability in (('static_rt', 'routes'), ('nat_rule', 'nat_bypass'), ('route_object', 'address_sets')):
+        for func, capability in (('static_rt', 'routes'), ('nat_rule', 'nat_bypass'), ('route_object', 'address_sets'),
+                                 ('stream_ipport', 'policy_routes')):
             try:
                 self._list(func)
                 capabilities.append(capability)
@@ -180,6 +190,19 @@ class IKuaiDriver(RouterDriver):
                 id=str(row.get('id', '')), dst=_addresses(row.get('dst_addr'), state.address_sets),
                 src=_addresses(row.get('src_addr'), state.address_sets),
                 enabled=row.get('enabled') == 'yes', comment=unquote(str(row.get('comment') or ''))))
+        # Static routes are destination-only: the gateway's own (DIRECT) traffic
+        # to a proxy CIDR would bounce between router and gateway forever. Proxy
+        # CIDRs are therefore routed by 端口分流 rules that exclude the gateway.
+        state.policy_routes = []
+        for row in self._list('stream_ipport'):
+            row = decode_value(row)
+            state.policy_routes.append(PolicyRouteEntry(
+                id=str(row.get('id', '')), dst=_addresses(row.get('dst_addr'), state.address_sets),
+                gateway=str(row.get('nexthop') or '') if row.get('type') == POLICY_NEXTHOP else '',
+                enabled=row.get('enabled') == 'yes', comment=str(row.get('comment') or ''),
+                src=_addresses(row.get('src_addr'), state.address_sets),
+                src_invert=row.get('src_addr_inv') == 1, dst_invert=row.get('dst_addr_inv') == 1,
+                protocol=str(row.get('protocol') or '')))
         return state
 
     def _dhcp_list(self, func: str, prefix: str = '') -> List[Dict[str, Any]]:
@@ -375,6 +398,50 @@ class IKuaiDriver(RouterDriver):
         payload.update(changes)
         return payload
 
+    def _policy_payload(self, row: Dict[str, Any], **changes) -> Dict[str, Any]:
+        """A complete 端口分流 form: omitted fields would reset the rule's other settings."""
+        payload = {key: row.get(key) for key in POLICY_FIELDS if key in row}
+        for key in ('src_addr', 'dst_addr', 'src_port', 'dst_port', 'time'):
+            payload[key] = _address_field(payload.get(key))
+        payload.update(changes)
+        return payload
+
+    def _new_policy(self, gateway: str, dst: List[str], comment: str) -> Dict[str, Any]:
+        return self._policy_payload({}, **self._policy_target(gateway, dst, comment), tagname=_tagname('pr', comment),
+                                    interface='', iface_band=0, time=POLICY_ALWAYS, prio=31, mode=0,
+                                    area_code='', dst_type=0)
+
+    @staticmethod
+    def _policy_target(gateway: str, dst: List[str], comment: str) -> Dict[str, Any]:
+        """The fields that make a rule route ``dst`` to the gateway for every source but itself."""
+        return {'enabled': 'yes', 'type': POLICY_NEXTHOP, 'nexthop': gateway, 'protocol': 'any',
+                'src_addr': {'custom': [gateway], 'object': []}, 'src_addr_inv': 1,
+                'dst_addr': {'custom': list(dst), 'object': []}, 'dst_addr_inv': 0, 'comment': comment}
+
+    def _add_policy(self, payload: Dict[str, Any]) -> str:
+        self._write('stream_ipport', 'add', payload)
+        return self._find_id('stream_ipport', lambda row: row.get('tagname') == payload['tagname']
+                             and row.get('comment') == payload['comment'])
+
+    def _apply_policy(self, op: Dict[str, Any]) -> Dict[str, Any]:
+        kind = op['kind']
+        if kind == 'policy_route_add':
+            rule_id = self._add_policy(self._new_policy(op['gateway'], op['dst'], op['comment']))
+            return {'kind': 'policy_route_delete', 'id': rule_id}
+        if kind == 'policy_route_readd':
+            payload = self._policy_payload(op['record'])
+            payload.pop('id', None)
+            return {'kind': 'policy_route_delete', 'id': self._add_policy(payload)}
+        if kind == 'policy_route_delete':
+            row = self._row('stream_ipport', op['id'])
+            self._write('stream_ipport', 'del', {'id': row['id']})
+            return {'kind': 'policy_route_readd', 'record': row}
+        row = self._row('stream_ipport', op['id'] if kind == 'policy_route_update' else op['record']['id'])
+        payload = (self._policy_payload(row, **self._policy_target(op['gateway'], op['dst'], op['comment']))
+                   if kind == 'policy_route_update' else self._policy_payload(op['record']))
+        self._write('stream_ipport', 'edit', payload)
+        return {'kind': 'policy_route_restore', 'record': row}
+
     def _add_route(self, cidr: str, gateway: str, comment: str) -> str:
         network = ipaddress.IPv4Network(cidr)
         self._write('static_rt', 'add', {
@@ -389,6 +456,9 @@ class IKuaiDriver(RouterDriver):
         kind = op['kind']
         if kind in ('dhcp_dns_update', 'dhcp_dns_restore'):
             return self._dhcp_apply(op)
+        if kind in ('policy_route_add', 'policy_route_update', 'policy_route_restore',
+                    'policy_route_delete', 'policy_route_readd'):
+            return self._apply_policy(op)
         if kind == 'route_add':
             route_id = self._add_route(op['cidr'], op['gateway'], op['comment'])
             return {'kind': 'route_delete', 'id': route_id}

@@ -13,10 +13,11 @@ GATEWAY = '10.0.0.4'
 
 
 class StatefulIKuai:
-    """Minimal iKuai 4.x: show/add/edit/del on static_rt and nat_rule, strings stored encoded."""
+    """Minimal iKuai 4.x: show/add/edit/del on static_rt, nat_rule and stream_ipport, strings stored encoded."""
 
-    def __init__(self, routes, nats, fail=None):
-        self.rows = {'static_rt': copy.deepcopy(routes), 'nat_rule': copy.deepcopy(nats), 'route_object': []}
+    def __init__(self, routes, nats, fail=None, policies=None):
+        self.rows = {'static_rt': copy.deepcopy(routes), 'nat_rule': copy.deepcopy(nats), 'route_object': [],
+                     'stream_ipport': copy.deepcopy(policies or [])}
         self.writes = []
         self.fail = fail
         self.next_id = 100
@@ -148,10 +149,18 @@ def test_plan_for_home_setup_adopts_and_fills_gaps():
                                 'safety_version': 1}
     assert agent_op['previous'] is None
 
-    routes = [(op['kind'], op.get('cidr'), op.get('comment')) for op in stages['routes']]
-    assert routes == [('route_add', '91.108.0.0/16', 'cf-Telegram'),
-                      ('route_add', '149.154.160.0/20', 'cf-Telegram'),
-                      ('route_comment', '198.18.0.0/16', 'cf-fake ip')]
+    # Static routes match destinations only and would bounce the gateway's own
+    # traffic back to it: rules excluding the gateway first, then the routes go.
+    routes = [(op['kind'], op.get('dst') or op.get('cidr'), op.get('comment')) for op in stages['routes']]
+    assert routes == [('policy_route_add', ['91.108.0.0/16', '149.154.160.0/20', '198.18.0.0/16'], 'cf-mihomo'),
+                      ('policy_route_add', ['1.1.1.1/32'], 'cf-mihomo-manual'),
+                      ('route_delete', '198.18.0.0/16', None),
+                      ('route_delete', '91.108.4.0/22', None),   # inside 91.108.0.0/16: no rule of its own
+                      ('route_delete', '1.1.1.1/32', None)]
+    assert plan['checks']['routes'] == []
+    assert plan['checks']['policy_routes'] == [
+        {'comment': 'cf-mihomo', 'gateway': GATEWAY, 'dst': ['91.108.0.0/16', '149.154.160.0/20', '198.18.0.0/16']},
+        {'comment': 'cf-mihomo-manual', 'gateway': GATEWAY, 'dst': ['1.1.1.1/32']}]
     [nat] = stages['nat_bypass']
     assert (nat['kind'], nat['id'], nat['comment'], nat['add_dst']) == \
         ('nat_update', '1', 'cf-mihomo', ['91.108.0.0/16', '149.154.160.0/20'])
@@ -162,8 +171,9 @@ def test_plan_skips_conflicts_and_blocks_without_agent():
     routes = HOME_ROUTES + [{'id': 9, 'dst_addr': '149.154.160.0', 'netmask': '255.255.240.0', 'gateway': '10.0.0.9',
                              'enabled': 'yes', 'comment': 'other'}]
     plan = _plan(_driver(StatefulIKuai(routes, HOME_NATS)))
-    cidrs = [op.get('cidr') for stage in plan['stages'] for op in stage['ops']]
+    cidrs = [cidr for stage in plan['stages'] for op in stage['ops'] for cidr in op.get('dst') or [op.get('cidr')]]
     assert '149.154.160.0/20' not in cidrs
+    assert '9' not in [op.get('id') for op in plan['stages'][1]['ops']]       # other gateways are left alone
     assert '149.154.160.0/20' not in plan['stages'][0]['ops'][0]['spec']['proxy_dst']
     assert any('149.154.160.0/20' in warning and '跳过' in warning for warning in plan['warnings'])
 
@@ -182,14 +192,19 @@ def test_execute_applies_in_order_and_verifies():
     assert [entry['status'] for entry in result['log'] if entry['status'] == 'verified'] == ['verified'] * 3
     assert agent.calls[0][0] == 'apply'
 
-    add = next(param for func, action, param in session.writes if (func, action) == ('static_rt', 'add'))
-    assert add == {'enabled': 'yes', 'tagname': add['tagname'], 'ip_type': '4', 'interface': 'auto',
-                   'dst_addr': '91.108.0.0', 'gateway': GATEWAY, 'netmask': '255.255.0.0', 'prio': 1,
-                   'comment': 'cf-Telegram'}
-    assert add['tagname'].startswith('cf_rt_') and len(add['tagname']) <= 15
-    edit = next(param for func, action, param in session.writes if (func, action) == ('static_rt', 'edit'))
-    assert edit['id'] == 1 and edit['comment'] == 'cf-fake%20ip'
-    assert edit['tagname'] == 'RT_1' and edit['enabled'] == 'yes'      # unchanged fields are sent back
+    add = next(param for func, action, param in session.writes if (func, action) == ('stream_ipport', 'add'))
+    # The 4.0.308 web UI form: every source except the gateway, next hop the gateway.
+    assert add == {'enabled': 'yes', 'tagname': add['tagname'], 'interface': '', 'iface_band': 0,
+                   'src_addr': {'custom': [GATEWAY], 'object': []}, 'src_addr_inv': 1,
+                   'dst_addr': {'custom': ['91.108.0.0/16', '149.154.160.0/20', '198.18.0.0/16'], 'object': []},
+                   'dst_addr_inv': 0, 'type': 1, 'nexthop': GATEWAY, 'protocol': 'any', 'comment': 'cf-mihomo',
+                   'time': {'custom': [{'type': 'weekly', 'weekdays': '1234567', 'start_time': '00:00',
+                                        'end_time': '23:59'}], 'object': []},
+                   'prio': 31, 'mode': 0, 'area_code': '', 'dst_type': 0,
+                   'src_port': {'custom': [], 'object': []}, 'dst_port': {'custom': [], 'object': []}}
+    assert add['tagname'].startswith('cf_pr_') and len(add['tagname']) <= 15
+    assert session.rows['static_rt'] == []                  # every loop-prone route is gone
+    assert {row['comment'] for row in session.rows['stream_ipport']} == {'cf-mihomo', 'cf-mihomo-manual'}
     nat = next(param for func, action, param in session.writes if func == 'nat_rule')
     assert nat['dst_addr'] == {'custom': ['198.18.0.0/16', '91.108.4.0/22', '185.76.151.0/24',
                                           '91.108.0.0/16', '149.154.160.0/20'], 'object': []}
@@ -208,10 +223,11 @@ def test_execute_failure_rolls_back_in_reverse():
     result = execute(_plan(driver), driver, agent)
     assert not result['ok'] and result['failed_stage'] == 'nat_bypass'
     assert all(entry['status'] == 'ok' for entry in result['rollback'])
-    assert [entry['stage'] for entry in result['rollback']] == ['routes'] * 3 + ['return_routing']
+    assert [entry['stage'] for entry in result['rollback']] == ['routes'] * 5 + ['return_routing']
     assert agent.calls[-1] == ('remove', False)          # remove only this release's owned rules
     routes = {(row['dst_addr'], row['comment']) for row in session.rows['static_rt']}
     assert routes == {(row['dst_addr'], row['comment']) for row in HOME_ROUTES}
+    assert session.rows['stream_ipport'] == []
 
 
 def test_execute_stops_before_router_when_agent_fails():
@@ -220,6 +236,84 @@ def test_execute_stops_before_router_when_agent_fails():
     result = execute(_plan(driver), driver, FakeAgent(SAFE_RETURN_STATUS, fail_apply=True))
     assert not result['ok'] and result['failed_stage'] == 'return_routing'
     assert session.writes == [] and result['rollback'] == []
+
+
+def _policy(rule_id, comment, dst, **changes):
+    row = {'id': rule_id, 'enabled': 'yes', 'tagname': f'cf_pr_{rule_id}', 'comment': comment, 'type': 1,
+           'nexthop': GATEWAY, 'protocol': 'any', 'interface': '', 'mode': 0, 'prio': 31, 'iface_band': 0,
+           'area_code': '', 'dst_type': 0, 'src_addr_inv': 1, 'dst_addr_inv': 0,
+           'src_addr': {'custom': [GATEWAY], 'object': {}}, 'dst_addr': {'custom': list(dst), 'object': {}},
+           'src_port': {'custom': {}, 'object': {}}, 'dst_port': {'custom': {}, 'object': {}},
+           'time': {'custom': [{'type': 'weekly', 'weekdays': '1234567', 'start_time': '00:00', 'end_time': '23:59'}],
+                    'object': {}}}
+    row.update(changes)
+    return row
+
+
+MIGRATED = [_policy(1, 'cf-mihomo', ['91.108.0.0/16', '149.154.160.0/20', '198.18.0.0/16']),
+            _policy(2, 'cf-mihomo-manual', ['1.1.1.1/32'])]
+
+
+def test_migrated_policy_routes_are_in_sync():
+    session = StatefulIKuai([], HOME_NATS, policies=MIGRATED)
+    driver = _driver(session)
+    state = driver.read_state()
+    report = build_report(DESIRED, state)
+    assert {item['status'] for item in report['routes']['items']} == {'synced'}
+    assert report['routes']['extra'] == [] and report['routes']['mode'] == 'policy'
+    plan = _plan(driver)
+    assert plan['stages'][1]['ops'] == []
+
+
+def test_policy_routes_drop_stale_cidrs_but_keep_manual_ones():
+    policies = [_policy(1, 'cf-mihomo', ['91.108.0.0/16', '149.154.160.0/20', '198.18.0.0/16', '203.0.113.0/24']),
+                _policy(2, 'cf-mihomo-manual', ['1.1.1.1/32', '8.8.8.8/32'])]
+    routes = [{'id': 7, 'dst_addr': '9.9.9.9', 'netmask': '255.255.255.255', 'gateway': GATEWAY, 'enabled': 'yes',
+               'comment': 'DNS', 'tagname': 'RT_7', 'ip_type': '4', 'interface': 'auto', 'prio': 1},
+              {'id': 8, 'dst_addr': '9.9.9.10', 'netmask': '255.255.255.255', 'gateway': GATEWAY, 'enabled': 'no',
+               'comment': 'off', 'tagname': 'RT_8', 'ip_type': '4', 'interface': 'auto', 'prio': 1}]
+    session = StatefulIKuai(routes, HOME_NATS, policies=policies)
+    driver = _driver(session)
+    plan = _plan(driver)
+    ops = [(op['kind'], op.get('dst') or op.get('cidr')) for op in plan['stages'][1]['ops']]
+    # The derived rule loses 203.0.113.0/24; the add-only manual rule gains 9.9.9.9;
+    # a disabled static route carries no traffic and is left alone.
+    assert ops == [('policy_route_update', ['91.108.0.0/16', '149.154.160.0/20', '198.18.0.0/16']),
+                   ('policy_route_update', ['1.1.1.1/32', '8.8.8.8/32', '9.9.9.9/32']),
+                   ('route_delete', '9.9.9.9/32')]
+    result = execute(plan, driver, FakeAgent(SAFE_RETURN_STATUS))
+    assert result['ok'], result
+    edit = next(param for func, action, param in session.writes if (func, action) == ('stream_ipport', 'edit'))
+    assert edit['tagname'] == 'cf_pr_1' and edit['prio'] == 31        # unrelated form fields are kept
+    assert [row['id'] for row in session.rows['static_rt']] == [8]
+
+
+def test_policy_route_that_includes_the_gateway_is_repaired():
+    policies = [_policy(1, 'cf-mihomo', ['91.108.0.0/16', '149.154.160.0/20', '198.18.0.0/16'], src_addr_inv=0)]
+    driver = _driver(StatefulIKuai([], HOME_NATS, policies=policies))
+    [op] = _plan(driver)['stages'][1]['ops']
+    assert op['kind'] == 'policy_route_update' and op['id'] == '1'
+
+
+def test_policy_route_verification_rejects_a_router_that_ignores_the_exclusion():
+    session = StatefulIKuai(HOME_ROUTES, HOME_NATS)
+    driver = _driver(session)
+    plan = _plan(driver)
+    original = session.post
+
+    def post(url, json=None, **kwargs):
+        if json and json.get('func_name') == 'stream_ipport' and json.get('action') == 'add':
+            json = copy.deepcopy(json)
+            json['param']['src_addr_inv'] = 0
+        return original(url, json=json, **kwargs)
+
+    session.post = post
+    result = execute(plan, driver, FakeAgent(SAFE_RETURN_STATUS))
+    assert not result['ok'] and result['failed_stage'] == 'routes'
+    assert '策略路由' in result['log'][-1]['summary']
+    routes = {(row['dst_addr'], row['comment']) for row in session.rows['static_rt']}
+    assert routes == {(row['dst_addr'], row['comment']) for row in HOME_ROUTES}
+    assert session.rows['stream_ipport'] == []
 
 
 class FakeROS(RouterOSDriver):

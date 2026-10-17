@@ -127,6 +127,10 @@ class FakeIKuaiSession:
                           'src_addr': {'custom': ['192.168.1.5-192.168.1.255'], 'object': {}},
                           'dst_addr': {'custom': {}, 'object': [{'gp_name': 'proxy_cidr'}]}},
                          {'id': 2, 'action': 'dnat', 'enabled': 'no', 'comment': 'dns'}],
+            'stream_ipport': [{'id': 3, 'enabled': 'yes', 'tagname': 'cf_pr_x', 'comment': 'cf-mihomo', 'type': 1,
+                               'nexthop': '192.168.1.4', 'protocol': 'any', 'src_addr_inv': 1, 'dst_addr_inv': 0,
+                               'src_addr': {'custom': ['192.168.1.4'], 'object': {}},
+                               'dst_addr': {'custom': {}, 'object': [{'gp_name': 'proxy_cidr'}]}}],
         }
         if func == 'sysstat':
             return FakeResponse({'code': 0, 'results': {'verinfo': {'version': self.version, 'verstring': 'x64'}}})
@@ -138,7 +142,8 @@ def test_ikuai_driver_login_probe_and_state(monkeypatch):
     session = FakeIKuaiSession()
     driver.session = session
     info = driver.probe()
-    assert info.version == '4.0.308' and set(info.capabilities) == {'routes', 'nat_bypass', 'address_sets'}
+    assert info.version == '4.0.308' and set(info.capabilities) == {'routes', 'nat_bypass', 'address_sets',
+                                                                     'policy_routes'}
     login = session.calls[0][1]
     assert login == {'username': 'admin', 'passwd': hashlib.md5(b'pw').hexdigest(),
                      'pass': base64.b64encode(b'salt_11pw').decode()}
@@ -146,6 +151,9 @@ def test_ikuai_driver_login_probe_and_state(monkeypatch):
     assert state.routes[0].dst == '198.18.0.0/16' and state.routes[0].enabled
     assert len(state.nat_bypass) == 1
     assert state.nat_bypass[0].dst == ['198.18.0.0/16', '91.108.4.0/22']
+    [rule] = state.policy_routes
+    assert (rule.dst, rule.gateway, rule.src, rule.src_invert, rule.protocol) == \
+        (['198.18.0.0/16', '91.108.4.0/22'], '192.168.1.4', ['192.168.1.4'], True, 'any')
 
 
 def test_ikuai_driver_rejects_3x():
