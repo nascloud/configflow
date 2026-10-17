@@ -222,12 +222,14 @@
                 rel="noopener noreferrer"
                 class="text-[13px] font-semibold text-foreground hover:underline"
               >{{ dep.name }}</a>
-              <StatusDot :tone="dep.running ? 'success' : 'danger'" :label="dep.running ? '运行中' : '无法连接'" />
+              <StatusDot v-if="dep.key !== 'sub-store'" :tone="dep.running ? 'success' : 'danger'" :label="dep.running ? '运行中' : '无法连接'" />
             </div>
             <p class="mt-1 mb-0 text-[12px] text-muted-foreground">
               {{ dep.description }}<template v-if="dep.runtime"> · Node.js {{ dep.runtime }}</template>
             </p>
           </div>
+
+          <SubStoreRuntime v-if="dep.key === 'sub-store'" :dependency="dep" class="min-w-0 flex-[1_1_16rem]" @changed="loadDependencies()" />
 
           <dl class="m-0 grid grid-cols-[auto_auto] gap-x-3 gap-y-1 text-[12px]">
             <dt class="text-muted-foreground">当前版本</dt>
@@ -375,6 +377,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
 import FormField from '@/components/common/FormField.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
+import SubStoreRuntime from '@/components/settings/SubStoreRuntime.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -409,6 +412,7 @@ const subscriptionAggregationEnabled = ref(false)
 const dependencies = ref<DependencyStatus[]>([])
 const checkingDependencies = ref(false)
 const updatingKey = ref('')
+let dependenciesDisposed = false
 let dependencyPollTimer: ReturnType<typeof setTimeout> | undefined
 
 const formatDate = (value: string) => {
@@ -426,18 +430,20 @@ const loadDependencies = async (refresh = false) => {
       if (failed) notify.error(failed.check_error)
       else notify.success(dependencies.value.some(dep => dep.has_update) ? '发现新版本' : '所有依赖均为最新版本')
     }
-    if (dependencies.value.some(dep => dep.update.state === 'running')) scheduleDependencyPoll()
   } catch {
     notify.error('加载第三方依赖失败')
   } finally {
     checkingDependencies.value = false
+    scheduleDependencyPoll()
   }
 }
 
-// 更新在后台执行，轮询直到不再是 running，再提示结果
+// 仅此页面可见时刷新；检测状态不会唤醒 Sub-Store 或推迟休眠。
 const scheduleDependencyPoll = () => {
+  if (dependenciesDisposed) return
   clearTimeout(dependencyPollTimer)
   dependencyPollTimer = setTimeout(async () => {
+    if (document.hidden) { scheduleDependencyPoll(); return }
     try {
       const response = await dependenciesApi.list()
       dependencies.value = response.data.dependencies || []
@@ -454,7 +460,8 @@ const scheduleDependencyPoll = () => {
       else if (target.update.state === 'failed') notify.error(target.update.message)
     }
     updatingKey.value = ''
-  }, 2000)
+    scheduleDependencyPoll()
+  }, dependencies.value.some(dep => dep.update.state === 'running') ? 2000 : 15000)
 }
 
 const updateDependency = async (dep: DependencyStatus) => {
@@ -474,7 +481,7 @@ const updateDependency = async (dep: DependencyStatus) => {
   }
 }
 
-onBeforeUnmount(() => clearTimeout(dependencyPollTimer))
+onBeforeUnmount(() => { dependenciesDisposed = true; clearTimeout(dependencyPollTimer) })
 
 const serverDomain = ref(window.location.origin)
 const configToken = ref('')

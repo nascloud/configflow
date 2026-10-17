@@ -19,6 +19,10 @@ def dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(deps, 'sub_store_runtime_dir', lambda: str(runtime))
     monkeypatch.delenv('SUB_STORE_URL', raising=False)
     monkeypatch.setattr('backend.common.config.get_system_config', lambda: {'system_config': {}})
+    from backend.utils.sub_store_runtime import SubStoreRuntime
+    manager = SubStoreRuntime(tmp_path / 'locks')
+    monkeypatch.setattr(manager, '_ready', lambda: True)
+    monkeypatch.setattr(deps, 'runtime', manager)
     deps._update_state.update(state='idle', message='', target_version='', finished_at=0.0)
     return builtin, runtime
 
@@ -148,3 +152,22 @@ def test_update_rejects_checksum_mismatch(dirs, monkeypatch):
     assert state['state'] == 'failed' and 'SHA256' in state['message']
     assert not (runtime / deps.SUB_STORE_ASSET).exists()
     assert restarts == []
+
+
+def test_update_restores_previous_bundle_when_restart_raises(dirs, monkeypatch):
+    _, runtime = dirs
+    _write_runtime(runtime, '2.40.5')
+    content = b'new bundle'
+    _patch_io(monkeypatch, content, ['2.40.5'])
+    attempts = []
+    def restart():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError('restart failed')
+    monkeypatch.setattr(deps, '_restart_sub_store', restart)
+    deps._update_lock.acquire()
+    deps._run_update(_release(content))
+    assert len(attempts) == 2
+    assert '已回滚' in deps.get_update_state()['message']
+    assert (runtime / deps.SUB_STORE_ASSET).read_text() == 'runtime'
+    assert (runtime / 'VERSION').read_text().strip() == '2.40.5'

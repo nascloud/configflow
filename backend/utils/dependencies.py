@@ -17,6 +17,7 @@ import time
 import requests
 
 from backend.utils.logger import get_logger
+from backend.utils.sub_store_runtime import runtime
 from backend.utils.url_utils import safe_exception_details
 
 logger = get_logger(__name__)
@@ -175,7 +176,7 @@ def get_sub_store_status(force_check=False):
     from backend.utils.sub_store_client import _get_base_url
 
     builtin = is_builtin_available()
-    running_version = fetch_running_version(_get_base_url())
+    running_version = fetch_running_version(_get_base_url(), timeout=1 if builtin else 5)
     bundle_dir, bundle_version = active_bundle() if builtin else ('', '')
     current = running_version or bundle_version
     latest, latest_error = fetch_latest_release(force=force_check)
@@ -187,6 +188,7 @@ def get_sub_store_status(force_check=False):
         'description': '订阅解析与节点格式转换',
         'homepage': f'https://github.com/{SUB_STORE_REPO}',
         'running': bool(running_version),
+        'lifecycle': runtime.status(bool(running_version)),
         'current_version': current,
         'builtin_version': _read_version_file(SUB_STORE_BUILTIN_DIR) if builtin else '',
         'online_updated': bool(bundle_dir) and bundle_dir != SUB_STORE_BUILTIN_DIR,
@@ -251,12 +253,26 @@ def _set_state(state, message='', **extra):
 
 
 def _run_update(release):
+    try:
+        with runtime.maintenance():
+            _install_release(release)
+    except Exception as exc:
+        logger.warning('Sub-Store 更新等待失败: %s', safe_exception_details(exc))
+        _set_state('failed', 'Sub-Store 正忙或服务不可用，请稍后重试')
+    finally:
+        _update_lock.release()
+
+
+def _install_release(release):
     runtime_dir = sub_store_runtime_dir()
     bundle = os.path.join(runtime_dir, SUB_STORE_ASSET)
     version_file = os.path.join(runtime_dir, 'VERSION')
     tmp_bundle = os.path.join(runtime_dir, 'sub-store.download.js')  # node --check 需要 .js 后缀
     backup_dir = runtime_dir + '.bak'
     target = release['version']
+    replaced = False
+    had_previous = False
+    previous_version = active_bundle()[1]
     try:
         os.makedirs(runtime_dir, exist_ok=True)
         _set_state('running', f'正在下载 Sub-Store {target}…')
@@ -269,6 +285,7 @@ def _run_update(release):
             shutil.copytree(runtime_dir, backup_dir, ignore=shutil.ignore_patterns('*.download.js'))
 
         os.replace(tmp_bundle, bundle)
+        replaced = True
         with open(version_file, 'w', encoding='utf-8') as f:
             f.write(target + '\n')
 
@@ -281,14 +298,7 @@ def _run_update(release):
             _set_state('success', f'Sub-Store 已更新到 {target}')
             return
 
-        # 新版本没起来：回滚到更新前的状态
-        logger.warning('Sub-Store %s 启动后未就绪（当前 %s），回滚', target, running or '无响应')
-        shutil.rmtree(runtime_dir, ignore_errors=True)
-        if had_previous:
-            os.replace(backup_dir, runtime_dir)
-        _restart_sub_store()
-        restored = _wait_for_version('', timeout=30)
-        _set_state('failed', f'Sub-Store {target} 启动失败，已回滚到 {restored or "原版本"}')
+        raise DependencyUpdateError(f'Sub-Store {target} 启动后未就绪')
     except Exception as e:
         logger.warning('Sub-Store 在线更新失败: %s', safe_exception_details(e))
         try:
@@ -296,9 +306,20 @@ def _run_update(release):
         except OSError:
             pass
         detail = str(e) if isinstance(e, DependencyUpdateError) else safe_exception_details(e)
+        if replaced:
+            try:
+                shutil.rmtree(runtime_dir)
+                if had_previous:
+                    os.replace(backup_dir, runtime_dir)
+                _restart_sub_store()
+                restored = _wait_for_version(previous_version, timeout=30)
+                if not restored or (previous_version and parse_version(restored) != parse_version(previous_version)):
+                    raise DependencyUpdateError('原版本仍未就绪')
+                detail += f'；已回滚到 {restored}'
+            except Exception as rollback_error:
+                logger.warning('Sub-Store 回滚失败: %s', safe_exception_details(rollback_error))
+                detail += '；回滚未完成，请检查容器日志'
         _set_state('failed', f'更新失败：{detail}')
-    finally:
-        _update_lock.release()
 
 
 def start_sub_store_update():
