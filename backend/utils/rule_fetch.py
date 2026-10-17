@@ -58,8 +58,7 @@ def rule_fetch_settings(config_data=None):
     return config_data.get('system_config', {})
 
 
-def is_internal_rule_url(url: str, config_data=None) -> bool:
-    """Keep requests to ConfigFlow itself away from the download proxy."""
+def _internal_rule_base(url: str, config_data=None):
     settings = rule_fetch_settings(config_data)
     parsed = urlsplit(url)
     from flask import has_request_context, request
@@ -74,8 +73,13 @@ def is_internal_rule_url(url: str, config_data=None) -> bool:
             continue
         prefix = origin.path.rstrip('/') + '/api/'
         if parsed.path.startswith(prefix):
-            return True
-    return False
+            return origin
+    return None
+
+
+def is_internal_rule_url(url: str, config_data=None) -> bool:
+    """Keep requests to ConfigFlow itself away from the download proxy."""
+    return _internal_rule_base(url, config_data) is not None
 
 
 def get_rule_fetch_proxy(config_data=None) -> str:
@@ -144,7 +148,14 @@ def request_rule(url: str, *, method='get', config_data=None, max_redirects=3, *
         internal = is_internal_rule_url(current, config_data)
         options = rule_request_options(current, config_data)
         proxy = options.get('proxies', {}).get(parsed.scheme, '')
-        if urlsplit(proxy).scheme == 'https':
+        response = None
+        if internal:
+            from backend.utils.local_http import request_local
+            base = _internal_rule_base(current, config_data)
+            response = request_local(current, method=method, prefix=base.path.rstrip('/'), **kwargs)
+        if response is not None:
+            pass
+        elif urlsplit(proxy).scheme == 'https':
             response = _request_with_https_proxy(current, method, options, kwargs)
         elif kwargs.get('stream'):
             with _RuleSession() as session:

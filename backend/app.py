@@ -150,4 +150,5 @@ if __name__ == '__main__':
         from backend.utils.domain_discovery_service import start_auto_loop
         start_auto_loop(os.path.join(str(DATA_DIR), 'probes'))
 
-    app.run(host='0.0.0.0', port=5001, debug=(LOG_LEVEL == 'DEBUG'))
+    from backend.http_server import run_http_server
+    run_http_server(app, debug=(LOG_LEVEL == 'DEBUG'))
