@@ -97,6 +97,15 @@ def test_last_good_is_scoped_to_the_profile(tmp_path, monkeypatch):
     assert _serve(app, _slow("proxies: [alpha]", gate), profile="alpha")[1] == "proxies: [alpha]"
 
 
+def test_aggregation_falls_back_to_committed_artifact_before_first_serve(tmp_path, monkeypatch):
+    repository, app = _setup(tmp_path, monkeypatch)
+    repository.write_profile_text("alpha", "providers/agg-1.yaml", "proxies: [committed]")
+    gate = threading.Event()
+    status, body, marker = _serve(app, _slow("proxies: [new]", gate))
+    gate.set()
+    assert (status, body, marker) == (200, "proxies: [committed]", "last-good")
+
+
 def test_failed_render_is_not_stored_as_last_good(tmp_path, monkeypatch):
     repository, app = _setup(tmp_path, monkeypatch)
     status, _, _ = _serve(app, lambda: (jsonify({"success": False}), 400))

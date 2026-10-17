@@ -25,7 +25,8 @@ from backend.utils.logger import get_logger
 logger = get_logger(__name__)
 
 RESPONSE_SECONDS = 12
-_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='provider-render')
+# Mihomo refreshes every provider at once; none should queue behind another.
+_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='provider-render')
 _flights = {}
 _flights_lock = threading.Lock()
 
@@ -36,10 +37,15 @@ def _last_good_path(kind, item_id):
 
 def _read_last_good(profile_id, kind, item_id):
     from backend.common.config import get_repository
-    try:
-        return get_repository().profile_path(profile_id, _last_good_path(kind, item_id)).read_text(encoding='utf-8')
-    except OSError:
-        return None
+    # Before anything was served (new install, upgrade), an aggregation still
+    # has the validated artifact its last bundle commit wrote.
+    paths = [_last_good_path(kind, item_id)] + ([f'providers/{item_id}.yaml'] if kind == 'aggregation' else [])
+    for relative in paths:
+        try:
+            return get_repository().profile_path(profile_id, relative).read_text(encoding='utf-8')
+        except OSError:
+            continue
+    return None
 
 
 def _copy(response):
