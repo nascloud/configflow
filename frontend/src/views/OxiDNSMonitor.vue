@@ -68,7 +68,7 @@
           <SectionCard v-if="overview && !overview.recorders.length">
             <EmptyState :icon="Search" title="尚未启用查询记录" description="在此 Agent 绑定的配置空间中，进入「配置生成 → OxiDNS → 设置」启用查询记录，保存后推送到此 Agent。" />
           </SectionCard>
-          <OxiDNSQueryTable v-else-if="overview" :agent-id="agentId" :recorders="overview.recorders" :recorder="recorder" :filters="filters" :data="queries"
+          <OxiDNSQueryTable v-else-if="overview" :agent-id="agentId" :instance-id="overview.core.instance_id" :recorders="overview.recorders" :recorder="recorder" :filters="filters" :data="queries"
             :loading="queriesLoading" :error="queriesError" :page="page" :has-next="hasNext"
             @filter="applyFilters" @recorder="selectRecorder" @next="nextPage" @previous="previousPage" @retry="loadQueries(true)" @detail="selectedRecord = $event" />
         </TabsContent>
