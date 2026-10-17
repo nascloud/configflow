@@ -15,7 +15,7 @@ from pathlib import Path
 
 # 导入公共模块
 from backend.common.auth import validate_required_env_vars
-from backend.common.config import load_config, DATA_DIR
+from backend.common.config import load_config, reset_config_context, DATA_DIR
 from backend.common.agent_manager import init_agent_manager
 
 # 导入版本信息
@@ -90,8 +90,11 @@ else:
 # 验证环境变量
 validate_required_env_vars()
 
-# 加载配置
-load_config()
+# 初始化持久配置；启动线程无需保留请求级配置视图。
+try:
+    load_config()
+finally:
+    reset_config_context()
 
 # 注册所有蓝图
 register_blueprints(app)

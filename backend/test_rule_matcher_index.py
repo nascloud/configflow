@@ -357,3 +357,139 @@ def test_streamed_lines_preserve_splitlines_and_original_match(separator, traili
 @pytest.mark.parametrize('content', ['', 'one', '\r\r\n', 'one\r\ntwo\n\rthree\vfour\u2028'])
 def test_streamed_empty_and_mixed_newlines_match_splitlines(content):
     assert list(rule_matcher._iter_rule_lines(content)) == content.splitlines()
+
+
+@pytest.mark.parametrize('comment', ['中文', '😀', '\ud800', '\udfff', '\ud800\udc00', '\x00'])
+def test_compact_sources_preserve_unicode_and_malformed_comment_text(comment):
+    lines = [f'  DOMAIN-SUFFIX,item{i}.example # {comment}  ' for i in range(300)]
+    content = '\n'.join(lines)
+    configs = [_ruleset()]
+    matcher = RuleConfigMatcher(configs, [], lambda *_: content)
+    for query in ('item0.example', 'sub.item149.example', 'item299.example', 'absent.test'):
+        assert matcher.match(query) == _linear_match(configs, {'set': content}, query)
+    index = next(iter(matcher._indexes.values()))
+    assert isinstance(index._source_lines, rule_matcher._PackedSourceLines)
+    assert list(index._source_lines) == [line.strip() for line in lines]
+
+
+def test_plain_domain_sources_keep_one_shared_string_per_lookup_key():
+    lines = [f'plain{i}.example' for i in range(2_000)]
+    index = rule_matcher._RuleIndex(('DOMAIN', line, line) for line in lines)
+    assert isinstance(index._source_lines, list)
+    assert list(index._exact) == lines
+    for key, line, original in zip(index._exact, index._source_lines, lines):
+        assert key is line is original
+    assert index.match_domain('plain1999.example') == lines[-1]
+
+
+def test_mostly_shared_sources_fall_back_without_copying_shared_strings():
+    lines = [f'plain{i}.example' for i in range(500)]
+    entries = [('DOMAIN', line, line) for line in lines]
+    entries.insert(200, ('DOMAIN-SUFFIX', 'suffix.example', 'DOMAIN-SUFFIX,suffix.example'))
+    index = rule_matcher._RuleIndex(entries)
+    assert isinstance(index._source_lines, list)
+    assert index._source_lines == [line for _, _, line in entries]
+    for key, position in index._exact.items():
+        assert index._source_lines[position] is key
+    assert index.match_domain('sub.suffix.example') == 'DOMAIN-SUFFIX,suffix.example'
+
+
+def test_mixed_compact_sources_keep_order_shared_keys_patterns_and_first_duplicate():
+    lines = ['early.example', 'DOMAIN-SUFFIX,early.example # ignored later duplicate type',
+             'REGEXP,^regex[0-9]+\\.example$ # original',
+             'DOMAIN-KEYWORD,keyword # earlier pattern',
+             'DOMAIN,keyword.example # later exact', 'middle.example']
+    lines += [f'DOMAIN-SUFFIX,item{i}.example # unique source' for i in range(300)]
+    lines += ['DOMAIN-SUFFIX,item0.example # later duplicate', 'last.example']
+    content = '\n'.join(lines)
+    configs = [_ruleset()]
+    matcher = RuleConfigMatcher(configs, [], lambda *_: content)
+    for query in ('early.example', 'sub.early.example', 'regex42.example',
+                  'keyword.example', 'middle.example', 'item0.example', 'last.example'):
+        assert matcher.match(query) == _linear_match(configs, {'set': content}, query)
+    index = next(iter(matcher._indexes.values()))
+    assert isinstance(index._source_lines, rule_matcher._PackedSourceLines)
+    assert list(index._source_lines) == lines[:-2] + lines[-1:]
+    for key, position in index._exact.items():
+        if key in ('early.example', 'middle.example', 'last.example'):
+            assert index._source_lines[position] is key
+
+
+def test_single_huge_source_and_wide_unicode_can_keep_cheaper_strings():
+    huge = 'DOMAIN,huge.example # ' + '😀' * (64 * 1024 + 1)
+    index = rule_matcher._RuleIndex([('DOMAIN', 'huge.example', huge)])
+    assert isinstance(index._source_lines, list)
+    assert index.match_domain('huge.example') is huge
+
+    wide = 'DOMAIN,wide.example # ' + '中' * 10_000
+    index = rule_matcher._RuleIndex([('DOMAIN', 'wide.example', wide)])
+    assert isinstance(index._source_lines, list)
+    assert index.match_domain('wide.example') is wide
+
+
+@pytest.mark.parametrize('comment', ['a' * 512, '中' * 256])
+def test_larger_source_strings_are_shared_across_repeated_matches(comment):
+    line = 'DOMAIN-SUFFIX,shared.example # ' + comment
+    assert rule_matcher.getsizeof(line) > rule_matcher._MAX_PACKED_LINE_BYTES
+    # The wide Unicode source is short in characters but still exceeds the
+    # byte budget, so character-count thresholds would miss this case.
+    if comment.startswith('中'):
+        assert len(line) < rule_matcher._MAX_PACKED_LINE_BYTES
+    entries = [('DOMAIN-SUFFIX', f'item{i}.example', f'DOMAIN-SUFFIX,item{i}.example')
+               for i in range(300)]
+    entries.insert(120, ('DOMAIN-SUFFIX', 'shared.example', line))
+    index = rule_matcher._RuleIndex(entries)
+    assert isinstance(index._source_lines, rule_matcher._PackedSourceLines)
+    assert index.match_domain('one.shared.example') is line
+    assert index.match_domain('two.shared.example') is line
+
+
+def test_compact_mixed_sources_keep_a_huge_line_without_encoding_it():
+    huge = 'DOMAIN,huge.example # ' + '\ud800' * (64 * 1024 + 1)
+    entries = [('DOMAIN-SUFFIX', f'item{i}.example', f'DOMAIN-SUFFIX,item{i}.example')
+               for i in range(300)]
+    entries.insert(120, ('DOMAIN', 'huge.example', huge))
+    index = rule_matcher._RuleIndex(entries)
+    assert isinstance(index._source_lines, rule_matcher._PackedSourceLines)
+    assert index.match_domain('huge.example') is huge
+    assert list(index._source_lines) == [line for _, _, line in entries]
+
+
+def test_large_source_offsets_widen_without_truncating_unicode_or_order(monkeypatch):
+    # Exercise the exact overflow branch without allocating a 4 GiB fixture.
+    monkeypatch.setattr(rule_matcher, '_SOURCE_OFFSET_MAX', 63)
+    monkeypatch.setattr(rule_matcher, '_SOURCE_ORDER_MAX', 2)
+    lines = [f'DOMAIN,item{i}.example # 中文 😀 \ud800' for i in range(30)]
+    builder = rule_matcher._SourceLinesBuilder()
+    for line in lines:
+        builder.append(line)
+    assert builder._offsets.typecode == 'Q'
+    assert builder._order.typecode == 'q'
+    packed = builder.finish()
+    assert isinstance(packed, rule_matcher._PackedSourceLines)
+    assert list(packed) == lines
+    assert packed[-1] == lines[-1]
+    for position in (len(lines), -len(lines) - 1):
+        with pytest.raises(IndexError):
+            packed[position]
+
+
+def test_large_shared_reference_positions_widen_without_losing_identity(monkeypatch):
+    monkeypatch.setattr(rule_matcher, '_SOURCE_ORDER_MAX', 1)
+    builder = rule_matcher._SourceLinesBuilder()
+    lines = [f'plain{i}.example' for i in range(5)]
+    for line in lines:
+        builder.append(line, shared=True)
+    assert builder._order.typecode == 'q'
+    result = builder.finish()
+    assert isinstance(result, list)
+    assert all(actual is original for actual, original in zip(result, lines))
+
+
+def test_empty_or_invalid_only_sources_do_not_retain_empty_packing_buffers():
+    for entries in ([], [('REGEX', '[invalid', 'REGEX,[invalid')],
+                    [('IP-CIDR', 'bad network', 'IP-CIDR,bad network')]):
+        index = rule_matcher._RuleIndex(entries)
+        assert index._source_lines == []
+        assert isinstance(index._source_lines, list)
+        assert index.match_domain('example.com') is None

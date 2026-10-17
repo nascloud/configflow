@@ -97,10 +97,8 @@ def contains_internal_rule_proxy_token(value: str) -> bool:
     return _contains_encoded_secret(value, secrets)
 
 
-def sanitize_external_payload(
-    payload: Any, system_config: Optional[Dict[str, Any]] = None
-) -> Any:
-    """Remove the repository's internal token from arbitrary external payloads."""
+def _external_payload_secrets(system_config=None):
+    """Read the current redaction context; never cache credentials globally."""
     secrets = set(_repository_rule_proxy_tokens())
     secrets.update(_repository_agent_tokens())
     if isinstance(system_config, dict):
@@ -109,7 +107,18 @@ def sanitize_external_payload(
             for field in SENSITIVE_SYSTEM_CONFIG_FIELDS
             if isinstance(system_config.get(field), str) and system_config[field]
         )
-    secrets = {secret for secret in secrets if isinstance(secret, str) and secret}
+    return frozenset(secret for secret in secrets if isinstance(secret, str) and secret)
+
+
+def sanitize_external_payload(
+    payload: Any, system_config: Optional[Dict[str, Any]] = None
+) -> Any:
+    """Remove the repository's internal token from arbitrary external payloads."""
+    return _sanitize_with_secrets(payload, _external_payload_secrets(system_config))
+
+
+def _sanitize_with_secrets(payload, secrets, *, sort_dict_keys=False):
+    """Sanitize with one request-local credential snapshot."""
 
     # Repeated keys and rule metadata dominate large responses. Scope the cache
     # to this call so token changes cannot reuse earlier decisions, and bound
@@ -154,7 +163,10 @@ def sanitize_external_payload(
             container_id = id(value)
             active_container_ids.add(container_id)
             stack.append(("leave", container_id))
-            for key, item_value in reversed(tuple(value.items())):
+            # A direct JSON response must visit keys in the same order as its
+            # former encode/decode pass, including collisions after redaction.
+            items = sorted(value.items()) if sort_dict_keys else tuple(value.items())
+            for key, item_value in reversed(items):
                 if key in SENSITIVE_SYSTEM_CONFIG_FIELDS:
                     continue
                 item = [None, None]

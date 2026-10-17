@@ -4,6 +4,9 @@
 """
 import re
 import ipaddress
+from array import array
+from struct import calcsize
+from sys import getsizeof
 from threading import RLock
 from typing import Any, Callable, Dict, Hashable, Optional, Tuple
 
@@ -238,6 +241,105 @@ def _iter_rule_lines(content):
         yield content[start:]
 
 
+_SOURCE_OFFSET_MAX = (1 << (array('I').itemsize * 8)) - 1
+_SOURCE_ORDER_MAX = (1 << (array('i').itemsize * 8 - 1)) - 1
+_MAX_PACKED_LINE_BYTES = 512
+
+
+class _PackedSourceLines:
+    """Original rule text, decoded only for a successful match.
+
+    Offsets address packed lines. Mixed sources additionally map source order
+    to packed offsets or to strings already shared with a lookup key. Neither
+    representation changes rule positions or normalizes the displayed text.
+    """
+
+    __slots__ = ('_blob', '_offsets', '_order', '_references')
+
+    def __init__(self, blob, offsets, order, references):
+        self._blob = blob
+        self._offsets = offsets
+        self._order = order
+        self._references = references
+
+    def __len__(self):
+        return len(self._order) if self._order is not None else len(self._offsets) - 1
+
+    def __getitem__(self, position):
+        if position < 0:
+            position += len(self)
+            if position < 0:
+                raise IndexError(position)
+        if self._order is not None:
+            position = self._order[position]
+            if position < 0:
+                return self._references[-position - 1]
+        start, end = self._offsets[position], self._offsets[position + 1]
+        # surrogatepass preserves even lone surrogates in malformed source
+        # comments, just as retaining the original Python string did.
+        return self._blob[start:end].decode('utf-8', errors='surrogatepass')
+
+
+class _SourceLinesBuilder:
+    """Stream independent source strings into a compact, bounded-width buffer."""
+
+    __slots__ = ('_blob', '_offsets', '_order', '_references',
+                 '_owned_bytes', '_owned_reference_bytes')
+
+    def __init__(self):
+        self._blob = bytearray()
+        self._offsets = array('I', [0])
+        self._order = array('i')
+        self._references = []
+        self._owned_bytes = 0
+        self._owned_reference_bytes = 0
+
+    def __len__(self):
+        return len(self._order)
+
+    def append(self, line, *, shared=False):
+        owned_bytes = 0 if shared else getsizeof(line)
+        self._owned_bytes += owned_bytes
+        if shared or owned_bytes > _MAX_PACKED_LINE_BYTES:
+            # Sharing a plain domain with its lookup key is already cheaper
+            # than another byte copy. Retain larger strings too: repeated
+            # matching hosts can share them instead of caching decoded copies.
+            self._references.append(line)
+            self._owned_reference_bytes += owned_bytes
+            position = -len(self._references)
+        else:
+            encoded = line.encode('utf-8', errors='surrogatepass')
+            end = len(self._blob) + len(encoded)
+            if end > _SOURCE_OFFSET_MAX and self._offsets.typecode == 'I':
+                # Large sources must not truncate offsets or stop matching
+                # at 4 GiB; pay for wider offsets only when they are needed.
+                self._offsets = array('Q', self._offsets)
+            position = len(self._offsets) - 1
+            self._blob.extend(encoded)
+            self._offsets.append(end)
+        if not -_SOURCE_ORDER_MAX - 1 <= position <= _SOURCE_ORDER_MAX and self._order.typecode == 'i':
+            self._order = array('q', self._order)
+        self._order.append(position)
+
+    def finish(self):
+        if len(self._offsets) == 1:
+            # Includes empty indexes and plain-domain-only sources. Return
+            # the original list and string identities, with no extra buffers.
+            return self._references
+        order = self._order if self._references else None
+        references = self._references if self._references else None
+        lines = _PackedSourceLines(self._blob, self._offsets, order, references)
+        compact_bytes = getsizeof(lines) + getsizeof(self._blob) + getsizeof(self._offsets)
+        if references is not None:
+            compact_bytes += getsizeof(order) + getsizeof(references) + self._owned_reference_bytes
+        # A list may reserve more than this lower bound. Compare conservatively
+        # so small, mostly shared, or unusually wide Unicode sources can keep
+        # their cheaper list representation. Shared keys are excluded on both
+        # sides because the lookup dictionaries already own those strings.
+        list_bytes = getsizeof([]) + calcsize('P') * len(self) + self._owned_bytes
+        return lines if compact_bytes < list_bytes else list(lines)
+
+
 class _RuleIndex:
     """Index common rule types while retaining the first matching source line.
 
@@ -254,7 +356,7 @@ class _RuleIndex:
         self._domain_patterns = []
         self._ips = {}
         self._networks = {4: {}, 6: {}}
-        self._source_lines = []
+        self._source_lines = _SourceLinesBuilder()
         domain_indexes = {
             'DOMAIN': self._exact,
             'DOMAIN-SUFFIX': self._suffix,
@@ -263,6 +365,7 @@ class _RuleIndex:
         }
         for rule_type, value, line in entries:
             target = None
+            shared_line = False
             if rule_type in domain_indexes:
                 target = domain_indexes[rule_type]
                 key = value.lower()
@@ -270,6 +373,7 @@ class _RuleIndex:
                 # the lookup key and the original displayed source line.
                 if key == line:
                     key = line
+                    shared_line = True
             elif rule_type == 'DOMAIN-KEYWORD':
                 self._domain_patterns.append((len(self._source_lines), value.lower(), None))
                 self._source_lines.append(line)
@@ -296,7 +400,8 @@ class _RuleIndex:
                 key = int(network.network_address)
             if target is not None and key not in target:
                 target[key] = len(self._source_lines)
-                self._source_lines.append(line)
+                self._source_lines.append(line, shared=shared_line)
+        self._source_lines = self._source_lines.finish()
 
     @staticmethod
     def _earlier(current, candidate):

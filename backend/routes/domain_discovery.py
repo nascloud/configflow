@@ -4,6 +4,7 @@ from flask import Blueprint, jsonify, request
 
 from backend.common.auth import require_auth
 from backend.common.profile_context import resolve_profile_id
+from backend.common.json_response import jsonify_external
 from backend.utils import domain_discovery_service as service
 from backend.utils.domain_discovery import VIEWS
 
@@ -57,7 +58,7 @@ def list_domains():
         view=view if view in VIEWS else 'uncovered',
         agent_id=request.args.get('agent_id') or None,
     )
-    return jsonify({'success': True, **result})
+    return jsonify_external({'success': True, **result})
 
 
 @domain_discovery_bp.route('/agents', methods=['GET'])

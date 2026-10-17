@@ -1,6 +1,7 @@
 """日志管理路由"""
 import os
 import re
+from collections import deque
 from flask import jsonify, request
 from pathlib import Path
 from datetime import datetime
@@ -69,14 +70,18 @@ def get_logs():
                 'message': f'日志文件不存在: {log_path}'
             })
 
-        # 读取日志文件
+        # Count the complete file, retaining only the requested tail. Nonpositive
+        # limits intentionally keep the existing full-log response behavior.
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-            all_lines = f.readlines()
-
-        total_lines = len(all_lines)
-
-        # 获取最后N行
-        log_lines = all_lines[-lines:] if lines > 0 else all_lines
+            if lines > 0:
+                log_lines = deque(maxlen=lines)
+                total_lines = 0
+                for line in f:
+                    total_lines += 1
+                    log_lines.append(line)
+            else:
+                log_lines = f.readlines()
+                total_lines = len(log_lines)
 
         # 过滤日志
         filtered_logs = []

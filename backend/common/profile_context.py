@@ -92,11 +92,13 @@ def install_profile_context(app) -> None:
     def _sanitize_external_json(response):
         """Scrub ordinary JSON responses without touching internal return objects."""
         from backend.common.config_export import sanitize_external_payload
+        from backend.common.json_response import consume_sanitized_response
 
         endpoint = request.endpoint or ""
         if (
             response.is_json
             and not response.direct_passthrough
+            and not consume_sanitized_response(response)
         ):
             try:
                 payload = response.get_json(silent=True)

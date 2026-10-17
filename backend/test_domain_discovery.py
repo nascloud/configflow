@@ -463,3 +463,63 @@ def test_report_with_login_enabled_rejects_unknown_agent(secured_env):
     client, _, _, agent = secured_env
     response = client.post("/api/agents/unknown/traffic-report", headers=_auth(agent), json=_report())
     assert response.status_code == 401
+
+
+def test_selected_agent_loads_only_its_traffic_but_keeps_all_status_and_latest_probe(env, monkeypatch):
+    from backend.utils.domain_probe import get_probe_store
+
+    client, _, manager, first = env
+    second = manager.register_agent({'name': 'other', 'host': '127.0.0.2', 'service_type': 'mihomo'})
+    for agent, hostname in ((first, 'gw.example.net'), (second, 'other.example.net')):
+        client.put(f"/api/agents/{agent['id']}/domain-discovery", json={'enabled': True})
+        client.post(f"/api/agents/{agent['id']}/traffic-report", headers=_auth(agent),
+                    json=_report(_item('shared.example.com'), _item(hostname)))
+    older = (datetime.now() - timedelta(hours=1)).isoformat(timespec='seconds')
+    newer = datetime.now().isoformat(timespec='seconds')
+    probes = get_probe_store()
+    probes.save(first['id'], {'shared.example.com': {
+        'host': 'shared.example.com', 'checked_at': older, 'verdict': 'both_ok', 'target': 'direct', 'confidence': 60}})
+    probes.save(second['id'], {'shared.example.com': {
+        'host': 'shared.example.com', 'checked_at': newer, 'verdict': 'needs_proxy', 'target': 'proxy', 'confidence': 99}})
+
+    store = traffic_store.get_traffic_store()
+    store.load_status(second['id'])
+    loaded = []
+    original_load = TrafficStore.load
+
+    def selected_load(self, agent_id, *args, **kwargs):
+        loaded.append(agent_id)
+        assert agent_id == first['id'], 'Unselected Agent history must not be loaded'
+        return original_load(self, agent_id, *args, **kwargs)
+
+    monkeypatch.setattr(TrafficStore, 'load', selected_load)
+    body = client.get(f"/api/domain-discovery/domains?view=all&agent_id={first['id']}").get_json()
+    assert body['success']
+    assert loaded == [first['id']]
+    assert {entry['id']: entry['status'] for entry in body['agents']} == {
+        first['id']: 'running', second['id']: 'running'}
+    hosts = {host['host']: host for item in body['items'] for host in item['hosts']}
+    assert set(hosts) == {'shared.example.com', 'gw.example.net'}
+    assert hosts['shared.example.com']['probe']['verdict'] == 'needs_proxy'
+    assert hosts['shared.example.com']['probe']['checked_at'] == newer
+    assert body['sniff_coverage'] == 1
+
+    loaded.clear()
+    unknown = client.get('/api/domain-discovery/domains?view=all&agent_id=missing').get_json()
+    assert unknown['success'] and unknown['items'] == []
+    assert unknown['sniff_coverage'] is None and len(unknown['agents']) == 2
+    assert loaded == []
+
+
+def test_agent_status_endpoint_reuses_status_without_decoding_full_history(env, monkeypatch):
+    client, _, _, agent = env
+    client.put(f"/api/agents/{agent['id']}/domain-discovery", json={'enabled': True})
+    client.post(f"/api/agents/{agent['id']}/traffic-report", headers=_auth(agent),
+                json=_report(_item('www.example.com')))
+    first = client.get('/api/domain-discovery/agents').get_json()
+
+    def fail_read(*args, **kwargs):
+        raise AssertionError('unchanged status must not decode the traffic history again')
+
+    monkeypatch.setattr(TrafficStore, '_read_json', fail_read)
+    assert client.get('/api/domain-discovery/agents').get_json() == first
