@@ -5,6 +5,7 @@ entries does not repeatedly download the entire list. Compensation checks the
 exact last-written configuration before touching a resource.
 """
 import copy
+import time
 from urllib.parse import quote
 
 from backend.routers.base import RouterError, RouterRollbackError
@@ -28,7 +29,7 @@ def _read(driver, path, row_id):
 
 def _guard(driver, item):
     row = _read(driver, item['path'], item['id'])
-    if row is None or config_row(row) != item['config']:
+    if row is None or config_row(row) != config_row(item['config']):
         raise RouterError('策略路由对象在操作期间发生变化，保留现场：' + item['path'] + '/' + item['id'])
     return row
 
@@ -210,6 +211,17 @@ def verify(driver, check):
         if owned or owned_rows(check.get('previous'), live):
             raise RouterError('策略路由撤销后仍有受管对象')
         return
+    # ROS may briefly report invalid=true while installing a new firewall chain.
+    # Wait only for this runtime transition; config changes still fail every read.
+    keys = {(entry['path'], entry['id']) for entry in owned}
+    for _ in range(8):
+        if not any((path, row.get('.id')) in keys
+                   and str(row.get('invalid', '')).lower() in ('true', 'yes', '1')
+                   for path, rows in live.items() for row in rows):
+            break
+        time.sleep(0.25)
+        live = snapshot(driver)
+        owned = owned_rows(manifest, live)
     if not manifest or manifest.get('spec') != check['spec'] or len(owned) != len(manifest['resources']):
         raise RouterError('策略路由回读校验失败：来源、目的或转发资源不完整')
     check_references(owned, live)

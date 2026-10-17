@@ -25,9 +25,10 @@ SETTINGS = '/routing/settings'
 PATHS = (ADDRESSES, TABLES, MANGLE, ROUTES, NAT, RULES, FILTER, RAW, VRFS)
 PREFIX = 'cf-ros-policy-'
 NAMING_VERSION = 1
+POLICY_VERSION = 2
 RUNTIME = {'.id', 'bytes', 'packets', 'active', 'inactive', 'immediate-gw', 'used',
            'creation-time', 'belongs-to', 'hw-offloaded', 'debug.fwp-ptr', 'actual-interface',
-           'uptime', 'last-updated'}
+           'uptime', 'last-updated', 'invalid'}
 
 
 def enabled(row):
@@ -155,7 +156,7 @@ def owned_rows(previous, live):
         if len(matches) > 1:
             raise RouterError('策略路由对象 ID 不唯一，停止发布')
         if matches:
-            if config_row(matches[0]) != entry['config']:
+            if config_row(matches[0]) != config_row(entry['config']):
                 raise RouterError('策略路由受管对象被外部修改，保留现场，请先核对：' + entry['path'] + '/' + entry['id'])
             owned.append(entry)
     return owned
@@ -215,6 +216,8 @@ def bundle_health(manifest, live):
         row = indexed[entry['path']].get(entry['id'])
         if row is None:
             continue
+        if str(row.get('invalid', '')).lower() in ('true', 'yes', '1'):
+            raise RouterError('受管策略对象尚未生效：' + entry['path'] + '/' + entry['id'])
         if entry['path'] == ROUTES and str(row.get('active', '')).lower() not in ('true', 'yes'):
             raise RouterError('独立路由表的下一跳未生效，请检查 Mihomo 网关和直连路由')
         spec = (manifest or {}).get('spec') or {}
@@ -292,7 +295,7 @@ def build(desired, state):
 
     gateway = desired.get('proxy_gateway') or ''
     spec = {'sources': request['sources'], 'destinations': [item['cidr'] for item in request['cidrs']],
-            'gateway': gateway, 'naming_version': NAMING_VERSION}
+            'gateway': gateway, 'naming_version': NAMING_VERSION, 'policy_version': POLICY_VERSION}
     if request['selected'] and not spec['destinations']:
         result['blockers'].append('选中的策略路由规则集没有可用的真实 IPv4 网段')
     # NAT assessment ignores only manifest-verified Mangle objects. Other
@@ -363,8 +366,11 @@ def build(desired, state):
         add(MANGLE, chain=name, action='return', **{'src-address-list': names['bypass'], 'comment': comment, 'disabled': 'false'})
         add(MANGLE, chain=name, action='mark-routing', **{'new-routing-mark': name, 'passthrough': 'false', 'comment': comment, 'disabled': 'false'})
         # Activating this last rule is the only step that starts using the bundle.
+        # Unmarked packets do not necessarily match routing-mark=main on ROS v7.
+        # Conflicting prerouting markers/jumps and non-main VRFs are rejected
+        # above, so no routing-mark matcher is needed to preserve other policies.
         add(MANGLE, chain='prerouting', action='jump', **{'src-address-list': names['src'],
-            'dst-address-list': names['dst'], 'dst-address-type': '!local', 'routing-mark': 'main',
+            'dst-address-list': names['dst'], 'dst-address-type': '!local',
             'jump-target': name, 'comment': comment, 'disabled': 'false'})
     summary = (f'发布来源策略：{len(spec["sources"])} 个来源范围、{len(spec["destinations"])} 个目的网段 → {gateway}'
                if bundle else '撤销本功能的来源策略，恢复所选网段的静态路由流程')
