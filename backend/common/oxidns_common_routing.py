@@ -316,17 +316,23 @@ def _sync_updates(document, settings, config, old_groups, new_groups, base_url):
     reload = plugins.get('rules_reload')
     if download is None and reload is None:
         return
-    if download is None or reload is None or download.get('type') != 'download' or reload.get('type') != 'reload_provider' or \
+    parked = settings.get('_common_disabled', {})
+    parked_reload = parked.get('rules_reload') if isinstance(parked, dict) else None
+    reload_parked = reload is None and isinstance(parked_reload, dict) and \
+        parked_reload.get('tag') == 'rules_reload' and parked_reload.get('type') == 'reload_provider' and \
+        isinstance(parked_reload.get('args'), list)
+    if download is None or download.get('type') != 'download' or \
             not isinstance(download.get('args'), dict) or not isinstance(download['args'].get('downloads'), list) or \
-            not isinstance(reload.get('args'), list):
+            (not reload_parked and (reload is None or reload.get('type') != 'reload_provider' or not isinstance(reload.get('args'), list))):
         raise OxidnsSettingsError('规则定时更新包含自定义结构，请先在完整参数中调整下载与重载任务。')
     old_tags = {group['tag'] for entries in old_groups.values() for group in entries}
     new_tags = [group['tag'] for entries in new_groups.values() for group in entries]
     references = [f'${tag}' for tag in new_tags]
     # Old providers retained for another caller also remain reloadable.
-    references.extend(value for value in reload['args'] if value not in references and
+    references.extend(value for value in (reload['args'] if reload else []) if value not in references and
                       (not isinstance(value, str) or value.removeprefix('$') not in old_tags or value.removeprefix('$') in plugins))
-    reload['args'] = references
+    if reload is not None:
+        reload['args'] = references
     records = _catalog(config)[0]
     known_paths = {_rule_path(record['item'], part).removeprefix('./')
                    for record in records.values() if record['suffix'] == 'rulesets'
@@ -422,7 +428,7 @@ def apply_routing(document, settings, config, changes, base_url=''):
                     set(group['provider']) - {'tag', 'type', 'args'} or
                     document.get('include') or
                     _references({key: value for key, value in document.items() if key != 'plugins'}, group['tag']) or
-                    _references(current['custom'], group['tag']) or
+                    _references(values['custom_matches'], group['tag']) or
                     any(_references(plugin, group['tag']) for plugin in result['plugins']
                         if plugin.get('tag') not in ('sequence_main', 'rules_reload', group['tag']))}
         occupied = set(_plugins(result))

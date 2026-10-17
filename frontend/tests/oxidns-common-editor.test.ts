@@ -87,7 +87,10 @@ describe('one OxiDNS configuration across common, complete and YAML views', () =
     const addForward = wrapper.findAll('button').find(button => button.attributes('aria-label')?.startsWith('常用设置 添加') && button.text().includes('forward'))!
     await addForward.trigger('click')
     expect(lastModel(wrapper).plugins).toEqual([{ tag: 'forward', type: 'forward', args: {} }])
-    expect(lastError(wrapper)).toContain('upstreams')
+    // A serializable draft is editable before the server validates required parameters.
+    expect(lastError(wrapper)).toBe('')
+    await click(wrapper, 'YAML')
+    expect(load((wrapper.get('[aria-label="OxiDNS 完整配置 YAML"]').element as HTMLTextAreaElement).value)).toEqual(lastModel(wrapper))
   })
 
   it('retains incomplete numbers across common/full views and returns to the exact unfinished input', async () => {
@@ -109,10 +112,12 @@ describe('one OxiDNS configuration across common, complete and YAML views', () =
     expect(yamlButton().attributes('disabled')).toBeUndefined()
   })
 
-  it('shares required validation, locates missing fields from common settings and accepts optional empty args', async () => {
+  it('keeps incomplete serializable drafts editable and locates a server-reported missing field', async () => {
     const wrapper = render({ plugins: [{ tag: 'http', type: 'http_server', args: {} }, { tag: 'reverse', type: 'reverse_lookup', args: {} }] })
-    expect(lastError(wrapper)).toContain('args.listen')
-    await click(wrapper, '补全必填参数')
+    expect(lastError(wrapper)).toBe('')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    wrapper.vm.locateIssue(['plugins', 0, 'args', 'listen'])
+    await flushPromises()
     expect(wrapper.find('[aria-label="OxiDNS 常用设置"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('必填 · 待填写')
     expect(wrapper.getComponent(OxidnsSchemaValueEditor).props('label')).toBe('插件 1.args')

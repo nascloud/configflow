@@ -181,6 +181,39 @@ describe('OxiDNS current common settings', () => {
     expect(lastChange(wrapper)).toEqual({listen: '127.0.0.1:5454'})
   })
 
+  it.each(['ros_route', 'ros_address_list'])('restores %s TLS fields when rapid off/on returns the unchanged server projection', async feature => {
+    const tls = { server_name: 'router.example.test', ca: 'certs/router-ca.pem', insecure: false }
+    const original = {...values(), [feature]: {enabled: true, args: {address: '192.0.2.1:8729', tls}}}
+    const wrapper = await render({values: original})
+    const toggle = () => document.getElementById(`oxi-${feature}.args.tls`) as HTMLButtonElement
+    toggle().click(); await flushPromises()
+    expect(lastChange(wrapper)).toEqual({[`${feature}.args.tls`]: null})
+    toggle().click(); await flushPromises()
+    expect(lastChange(wrapper)).toEqual({[`${feature}.args.tls`]: {}})
+    // Both clicks can share one patch. Its response still contains the original TLS values.
+    await wrapper.setProps({values: structuredClone(original)})
+    expect((document.getElementById(`oxi-${feature}.args.tls.server_name`) as HTMLInputElement).value).toBe(tls.server_name)
+    expect((document.getElementById(`oxi-${feature}.args.tls.ca`) as HTMLInputElement).value).toBe(tls.ca)
+    expect(document.getElementById(`oxi-${feature}.args.tls.insecure`)?.getAttribute('aria-checked')).toBe('false')
+    expect(original).toMatchObject({[feature]: {args: {tls}}})
+  })
+
+  it('reconciles normalized values even when the projection is unchanged and preserves unfinished input', async () => {
+    const original = values()
+    const wrapper = await render({values: original})
+    await input('oxi-worker_threads', '6')
+    await input('oxi-listen', '127.0.0.1:5454')
+    await wrapper.setProps({values: structuredClone(original)})
+    expect((document.getElementById('oxi-worker_threads') as HTMLInputElement).value).toBe('8')
+    expect((document.getElementById('oxi-listen') as HTMLInputElement).value).toBe(original.listen)
+    await input('oxi-worker_threads', '')
+    await input('oxi-listen', '127.0.0.1:5555')
+    await wrapper.setProps({values: structuredClone(original)})
+    expect((document.getElementById('oxi-worker_threads') as HTMLInputElement).value).toBe('')
+    expect((document.getElementById('oxi-listen') as HTMLInputElement).value).toBe(original.listen)
+    expect(wrapper.emitted('error')?.at(-1)?.[0]).toContain('请填写整数')
+  })
+
   it('sends TLS removal as JSON-safe null and provides full native access', async () => {
     const wrapper = await render()
     const fields = wrapper.findAllComponents(OxidnsFields).find(field => field.props('fields').some((item: any) => item.path === 'ros_route.args.tls'))!

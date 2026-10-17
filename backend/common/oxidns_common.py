@@ -83,6 +83,8 @@ def _put(obj, path, value):
     for key in path[:-1]:
         child = obj.get(key, _MISSING)
         if child is _MISSING or child is None:
+            if value is None:
+                return
             obj[key] = {}
         elif not isinstance(child, dict):
             raise OxidnsSettingsError('此参数包含自定义值类型，请在完整参数中编辑')
@@ -180,9 +182,20 @@ class _Context:
         plugin = self.plugin(tag)
         return ({} if plugin.get('args') is None else plugin['args']) if plugin else {}
 
+    def stored_args(self, tag):
+        plugin = self.plugin(tag) or self.parked.get(tag)
+        if isinstance(plugin, dict) and plugin.get('tag') == tag and plugin.get('type') == _TAG_TYPES.get(tag, 'sequence'):
+            return plugin.get('args') or {}
+        return self.args(tag)
+
     def ensure(self, tag, args=None, kind=None):
         kind = kind or _TAG_TYPES.get(tag, 'sequence')
         plugin = self.plugin(tag)
+        parked = self.parked.get(tag)
+        if plugin is None and isinstance(parked, dict) and parked.get('tag') == tag and parked.get('type') == kind:
+            plugin = deepcopy(parked)
+            self.doc.setdefault('plugins', []).append(plugin)
+            self.by_tag[tag] = plugin
         if plugin is None:
             plugin = {'tag': tag, 'type': kind, 'args': deepcopy({} if args is None else args)}
             self.doc.setdefault('plugins', []).append(plugin)
@@ -199,6 +212,20 @@ class _Context:
 
     def park(self, name, value):
         self.settings.setdefault('_common_disabled', {})[name] = deepcopy(value)
+        self.parked = self.settings['_common_disabled']
+
+    def park_plugin(self, tag):
+        plugin = self.plugin(tag)
+        if plugin is not None:
+            self.park(tag, plugin)
+            self.doc['plugins'].remove(plugin)
+            self.by_tag.pop(tag)
+
+    def resource_paths(self):
+        document = self.doc
+        if document.get('include'):
+            document = native_document({**self.settings, 'native_config': yaml.safe_dump(document, allow_unicode=True, sort_keys=False)}, validate_arguments=False)
+        return {relative_resource(path) for path in resource_references(document)}
 
     def call_state(self, tag, chains):
         capability = self.allowed(tag)
@@ -234,24 +261,46 @@ class _Context:
     def toggle_call(self, tag, chains, enabled, default_args):
         if enabled:
             self.ensure(tag, default_args)
+        saved = self.parked.get('feature_calls', {})
+        saved = deepcopy(saved) if isinstance(saved, dict) else {}
         for chain in chains:
             items = self.sequence(chain)
             expected = {'exec': f'${tag}'}
+            position = saved.get(chain, {})
+            position = position if isinstance(position, dict) else {}
+            original, disabled = position.get('items', []), position.get('disabled', [])
+            original = original if isinstance(original, list) else []
+            disabled = disabled if isinstance(disabled, list) else []
             if enabled and expected not in items:
-                if chain == 'sequence_main':
+                if tag in disabled and expected in original:
+                    following = original[original.index(expected) + 1:]
+                    index = next((items.index(item) for item in following if item in items), len(items))
+                elif chain == 'sequence_main':
                     index = next((i for i, item in enumerate(items) if item.get('exec') not in ('metrics_collector metrics', '$query_recorder')), len(items))
                 elif tag == 'lazy_cache':
                     index = next((i for i, item in enumerate(items) if item.get('exec') == '$forward_local'), 0)
                 else:
                     index = 0
                 items.insert(index, expected)
+                if tag in disabled:
+                    disabled.remove(tag)
+                if not disabled:
+                    saved.pop(chain, None)
             elif not enabled:
+                if expected in items:
+                    if not disabled:
+                        position = {'items': deepcopy(items), 'disabled': []}
+                        saved[chain] = position
+                    if tag not in position['disabled']:
+                        position['disabled'].append(tag)
                 items[:] = [item for item in items if item != expected]
+        if saved or 'feature_calls' in self.parked:
+            self.park('feature_calls', saved)
 
 
 def _direct_read(ctx, values, capabilities):
     for field, (tag, path) in _DIRECT.items():
-        holder = ctx.doc if tag is None else ctx.args(tag)
+        holder = ctx.doc if tag is None else ctx.stored_args(tag)
         cap = _cap(target='.'.join(path)) if tag is None else ctx.allowed(tag)
         value = _get(holder, path)
         if not _safe_parent(holder, path):
@@ -296,13 +345,17 @@ def _api_holder(ctx, restore=False):
     api = ctx.doc.get('api', {})
     if not isinstance(api, dict):
         return api, False
-    return api.get('http', ctx.parked.get('api_http', {}) if restore else {}), 'http' in api and api['http'] is not None
+    current = api.get('http')
+    return (current if current is not None else ctx.parked.get('api_http', {}) if restore else {}), current is not None
 
 
 def _dynamic_state(ctx):
     items = ctx.sequence('sequence_main')
     if items is None or ctx.doc.get('include'):
         return False, None, _cap(False, '当前没有可识别的主处理链，请在完整参数中编辑', 'dynamic_domains')
+    if any(plugin.get('type') == 'learn_domain' and plugin.get('tag') != 'learn_classified_domain'
+           and _get(plugin, ('args', 'provider')) == 'dynamic_domains' for plugin in ctx.plugins):
+        return True, None, _cap(False, '动态域名集还被自定义学习器引用，请在完整参数中调整', 'dynamic_domains')
     matches = [item for item in items if isinstance(item, dict) and any('$dynamic_domains' in str(match) for match in _matches(item))]
     references = sum(_tag_mentions(plugin.get('args'), 'dynamic_domains') for plugin in ctx.plugins)
     if references != len(matches):
@@ -354,7 +407,7 @@ def _read(document, settings, config):
     capabilities = {}
     _direct_read(ctx, values, capabilities)
     for feature in ('ros_address_list', 'ros_route'):
-        if _get(ctx.args(feature), ('tls',)) in (_MISSING, None):
+        if _get(ctx.stored_args(feature), ('tls',)) in (_MISSING, None):
             values[feature]['args']['tls'] = None
     for name in ('local', 'remote', 'fallback'):
         tag = f'forward_{name}'
@@ -370,7 +423,13 @@ def _read(document, settings, config):
     capabilities['listen'] = ctx.allowed('server_udp')
     values['tcp_enabled'] = tcp is not None
     capabilities['tcp_enabled'] = ctx.allowed('server_tcp')
-    if tcp and (not isinstance(udp, dict) or not isinstance(tcp.get('args'), dict) or tcp['args'].get('listen') != values['listen'] or tcp['args'].get('entry') != udp.get('entry')):
+    parked_tcp = ctx.parked.get('server_tcp', {})
+    restorable_tcp = (isinstance(parked_tcp, dict) and parked_tcp.get('type') == 'tcp_server'
+                      and isinstance(parked_tcp.get('args'), dict) and parked_tcp['args'].get('listen') and parked_tcp['args'].get('entry'))
+    if tcp is None and not restorable_tcp and (not ctx.plugin('server_udp') or not ctx.allowed('server_udp')['editable'] or
+                                             not isinstance(udp, dict) or not udp.get('listen') or not udp.get('entry')):
+        capabilities['tcp_enabled'] = _cap(False, '缺少可复用的 UDP 监听地址和处理入口，请在监听服务中配置 TCP', 'server_tcp')
+    if tcp and ctx.plugin('server_udp') and (not isinstance(udp, dict) or not isinstance(tcp.get('args'), dict) or tcp['args'].get('listen') != values['listen'] or tcp['args'].get('entry') != udp.get('entry')):
         capabilities['listen'] = capabilities['tcp_enabled'] = _cap(False, 'UDP 与 TCP 使用独立配置，请在完整参数或监听服务中分别编辑', 'server_tcp')
     for field in ('prefer_ipv4', 'metrics_enabled', 'block_qtypes'):
         values[field], capabilities[field], _ = _main_control(ctx, field)
@@ -379,7 +438,7 @@ def _read(document, settings, config):
         enabled, cap = ctx.call_state(tag, chains)
         _put(values, field.split('.'), enabled)
         capabilities[field] = cap
-    cache = ctx.args('lazy_cache')
+    cache = ctx.stored_args('lazy_cache')
     values['cache_dump_enabled'] = bool(isinstance(cache, dict) and cache.get('dump_file'))
     capabilities['cache_dump_enabled'] = ctx.allowed('lazy_cache')
     remote = ctx.sequence('remote_dns')
@@ -411,7 +470,7 @@ def _read(document, settings, config):
         learning_cap = _cap(False, '学习器引用了其他域名集，请在完整参数中编辑', 'learn_classified_domain')
     values['dynamic_domain_set']['learn'] = learning
     capabilities['dynamic_domain_set.learn'] = learning_cap
-    if sum(_reference_count(plugin.get('args'), 'learn_classified_domain') for plugin in ctx.plugins) and not learning_cap['editable']:
+    if cap['editable'] and sum(_reference_count(plugin.get('args'), 'learn_classified_domain') for plugin in ctx.plugins) and not learning_cap['editable']:
         capabilities['dynamic_domain_set.enabled'] = capabilities['dynamic_domain_set.route'] = learning_cap
     job, cap = _cron_job(ctx)
     values['rule_update']['enabled'] = job is not None
@@ -498,7 +557,18 @@ def _patch_direct(ctx, field, value):
     holder = ctx.doc if tag is None else ctx.ensure(tag, _default_args(tag))['args']
     if field == 'cache_lazy_ttl' and value == 0:
         value = None
+    if field in ('log.file', 'rule_update.args.outbound', 'rule_update.args.socks5') and value == '':
+        value = None
+    if field == 'log.max_files' and value is not None and _get(holder, ('log', 'rotation', 'type')) in (_MISSING, None):
+        _put(holder, ('log', 'rotation', 'type'), 'never')
     _put(holder, path, value)
+    if field == 'log.rotation' and value is None:
+        rotation = _get(holder, ('log', 'rotation'))
+        if isinstance(rotation, dict):
+            if rotation:
+                rotation['type'] = 'never'
+            else:
+                holder['log'].pop('rotation')
 
 
 def _patch_api(ctx, field, value):
@@ -518,14 +588,59 @@ def _patch_api(ctx, field, value):
         ctx.settings.setdefault('_common_disabled', {}).setdefault('api_http', deepcopy(current))
         holder = ctx.settings['_common_disabled']['api_http']
     path = _API[field]
+    if path[0] in ('auth', 'webui') and value not in ('', None) and path[0] not in holder:
+        saved = ctx.parked.get('api_' + path[0])
+        if isinstance(saved, dict):
+            holder[path[0]] = deepcopy(saved)
     _put(holder, path, None if value == '' and field not in ('api.listen',) else value)
     if path[0] == 'auth' and isinstance(holder.get('auth'), dict):
         if holder['auth']:
             holder['auth'].setdefault('type', 'basic')
-        if set(holder['auth']) <= {'type'}:
+        if not holder['auth'].get('username') and not holder['auth'].get('password'):
+            ctx.park('api_auth', holder['auth'])
             holder.pop('auth')
     if path[0] == 'webui' and holder.get('webui', {}).get('root'):
         holder['webui'].setdefault('index', 'index.html')
+    elif path[0] == 'webui' and isinstance(holder.get('webui'), dict):
+        ctx.park('api_webui', holder.pop('webui'))
+
+
+def _patch_cache_dump(ctx, changes):
+    if not any(field in changes for field in ('cache_dump_enabled', 'cache_dump_file', 'cache_dump_interval')):
+        return
+    args = ctx.ensure('lazy_cache', _default_args('lazy_cache'))['args']
+    enabled = changes.get('cache_dump_enabled', bool(args.get('dump_file')))
+    if args.get('dump_file'):
+        ctx.park('cache_dump_file', args['dump_file'])
+    if 'cache_dump_file' in changes:
+        ctx.park('cache_dump_file', changes['cache_dump_file'])
+    if enabled:
+        path = changes.get('cache_dump_file', args.get('dump_file') or ctx.parked.get('cache_dump_file') or _DEFAULTS['cache_dump_file'])
+        _put(args, ('dump_file',), path or None)
+        args.setdefault('dump_interval', _DEFAULTS['cache_dump_interval'])
+    else:
+        args.pop('dump_file', None)
+    if 'cache_dump_interval' in changes:
+        _put(args, ('dump_interval',), changes['cache_dump_interval'])
+
+
+def _patch_tls(ctx, changes):
+    for feature in ('ros_address_list', 'ros_route'):
+        field = f'{feature}.args.tls'
+        if not any(key == field or key.startswith(field + '.') for key in changes):
+            continue
+        args = ctx.ensure(feature, _default_args(feature))['args']
+        current = args.get('tls')
+        enabled = isinstance(changes[field], dict) if field in changes else isinstance(current, dict)
+        saved = current if isinstance(current, dict) else ctx.parked.get(field, {})
+        value = deepcopy(saved) if isinstance(saved, dict) else {}
+        if isinstance(changes.get(field), dict):
+            value.update(deepcopy(changes[field]))
+        for key, item in changes.items():
+            if key.startswith(field + '.'):
+                _put(value, key[len(field) + 1:].split('.'), item)
+        ctx.park(field, value)
+        _put(args, ('tls',), value if enabled else None)
 
 
 def _patch_main(ctx, field, value):
@@ -547,12 +662,16 @@ def _patch_main(ctx, field, value):
 
 def _patch_dynamic(ctx, changes):
     enabled, route, _ = _dynamic_state(ctx)
+    parked = ctx.parked.get('dynamic_domain_set_state', {})
+    parked = parked if isinstance(parked, dict) else {}
     next_enabled = changes.get('dynamic_domain_set.enabled', enabled)
-    next_route = changes.get('dynamic_domain_set.route', route or 'direct')
+    next_route = changes.get('dynamic_domain_set.route', route or parked.get('route', 'direct'))
     if next_route not in ('direct', 'proxy'):
         raise OxidnsSettingsError('动态域名路由必须为 direct 或 proxy')
     old_chains = [name for name in ('direct_ip', 'ip_requery_proxy') if {'exec': '$learn_classified_domain'} in (ctx.sequence(name) or [])]
-    learn = changes.get('dynamic_domain_set.learn', bool(old_chains))
+    learn = changes.get('dynamic_domain_set.learn', bool(old_chains) if enabled else parked.get('learn', False))
+    if any(field in changes for field in ('dynamic_domain_set.enabled', 'dynamic_domain_set.route', 'dynamic_domain_set.learn')):
+        ctx.park('dynamic_domain_set_state', {'route': next_route, 'learn': learn})
     if next_enabled:
         ctx.ensure('dynamic_domains', _default_args('dynamic_domains'))
     if any(field in changes for field in ('dynamic_domain_set.enabled', 'dynamic_domain_set.route')):
@@ -574,7 +693,35 @@ def _patch_dynamic(ctx, changes):
             chain.insert(max(0, len(chain) - 1), {'exec': '$learn_classified_domain'})
 
 
+def _park_disabled_features(ctx, changes):
+    controls = [('cache_', 'lazy_cache', ('china_dns',)), ('probe_cache_', 'local_probe_cache', ('local_probe',)),
+                *((name + '.', name, ('sequence_main',) if name == 'query_recorder' else _WRAPPERS) for name in _FEATURES)]
+    for prefix, tag, chains in controls:
+        if any(field.startswith(prefix) for field in changes):
+            enabled, cap = ctx.call_state(tag, chains)
+            if not enabled and cap['editable']:
+                ctx.park_plugin(tag)
+    if any(field.startswith('dynamic_domain_set.') for field in changes):
+        _, _, cap = _dynamic_state(ctx)
+        if not cap['editable']:
+            return
+        if not any(_tag_mentions(plugin.get('args'), 'learn_classified_domain') for plugin in ctx.plugins):
+            ctx.park_plugin('learn_classified_domain')
+        enabled, _, cap = _dynamic_state(ctx)
+        if not enabled and cap['editable']:
+            ctx.park_plugin('dynamic_domains')
+
+
 def _patch_rule_update(ctx, changes, config, base_url):
+    from backend.common.oxidns_common_updates import prepare_rule_update
+    prepare_rule_update(ctx, changes, config, base_url)
+    if ctx.plugin('rules_cron') is None and (changes.get('rule_update.enabled') is True or 'rule_update.args.timezone' in changes):
+        parked = ctx.parked.get('rules_cron')
+        if (isinstance(parked, dict) and parked.get('tag') == 'rules_cron' and parked.get('type') == 'cron'
+                and isinstance(parked.get('args'), dict) and parked['args'].get('jobs') == []):
+            restored = deepcopy(parked)
+            ctx.doc.setdefault('plugins', []).append(restored)
+            ctx.by_tag['rules_cron'] = restored
     job, _ = _cron_job(ctx)
     if changes.get('rule_update.enabled') is True and job is None:
         source = deepcopy(config)
@@ -608,6 +755,13 @@ def _patch_rule_update(ctx, changes, config, base_url):
             holder['schedule'] = changes['rule_update.args.schedule']
     if 'rule_update.args.timezone' in changes:
         _put(ctx.ensure('rules_cron', {'jobs': []})['args'], ('timezone',), changes['rule_update.args.timezone'])
+    # OxiDNS requires at least one cron job. Keep disabled settings outside the
+    # runnable document, but leave any unrelated jobs and their plugin intact.
+    cron = ctx.plugin('rules_cron')
+    if cron and cron.get('type') == 'cron' and isinstance(cron.get('args'), dict) and cron['args'].get('jobs') == []:
+        ctx.park('rules_cron', cron)
+        ctx.doc['plugins'].remove(cron)
+        ctx.by_tag.pop('rules_cron')
 
 
 def _patch_resources(ctx, changes, config, base_url):
@@ -631,7 +785,7 @@ def _patch_resources(ctx, changes, config, base_url):
                     main.pop(index)
             if ctx.plugin('custom_hosts'):
                 ctx.args('custom_hosts')['files'] = []
-        referenced = {relative_resource(path) for path in resource_references(ctx.doc)}
+        referenced = ctx.resource_paths()
         ctx.settings['custom_hosts'] = previous_content if not content.strip() and 'rules/custom_hosts.txt' in referenced else content
     if not any(field.startswith('adguard.') for field in changes):
         return
@@ -651,7 +805,7 @@ def _patch_resources(ctx, changes, config, base_url):
         # A separate manually wired provider may still consume an old source.
         # Keep its source bytes/URL metadata while the common card reflects only
         # the files attached to adguard_rules.
-        referenced = {relative_resource(path) for path in resource_references(ctx.doc)}
+        referenced = ctx.resource_paths()
         for previous_url in old_resource.get('urls', []):
             if isinstance(previous_url, str) and f'rules/{_tag("adguard", previous_url)}.txt' in referenced and previous_url not in resource['urls']:
                 resource['urls'].append(previous_url)
@@ -728,7 +882,12 @@ def apply_common_settings(settings, changes, config, base_url=''):
     _patch_resources(ctx, changes, config, base_url)
     if any(field.startswith('rule_update.') for field in changes):
         _patch_rule_update(ctx, changes, config, base_url)
+    _patch_cache_dump(ctx, changes)
+    _patch_tls(ctx, changes)
     for field, value in changes.items():
+        if field in ('cache_dump_enabled', 'cache_dump_file', 'cache_dump_interval') or any(
+                field == f'{name}.args.tls' or field.startswith(f'{name}.args.tls.') for name in ('ros_address_list', 'ros_route')):
+            continue
         if field in _DIRECT:
             _patch_direct(ctx, field, value)
         elif field in _API:
@@ -762,13 +921,6 @@ def apply_common_settings(settings, changes, config, base_url=''):
                 ctx.park('server_tcp', ctx.plugin('server_tcp'))
                 ctx.doc['plugins'].remove(ctx.plugin('server_tcp'))
                 ctx.by_tag.pop('server_tcp')
-        elif field == 'cache_dump_enabled':
-            args = ctx.ensure('lazy_cache', _default_args('lazy_cache'))['args']
-            if value:
-                args.setdefault('dump_file', ctx.parked.get('cache_dump_file', _DEFAULTS['cache_dump_file']))
-                args.setdefault('dump_interval', _DEFAULTS['cache_dump_interval'])
-            elif 'dump_file' in args:
-                ctx.park('cache_dump_file', args.pop('dump_file'))
         elif field == 'remote_ttl':
             items = ctx.sequence('remote_dns')
             index = next((i for i, item in enumerate(items) if str(item.get('exec', '')).startswith('ttl ')), None)
@@ -779,6 +931,9 @@ def apply_common_settings(settings, changes, config, base_url=''):
                     items.pop(index)
             elif value:
                 items.append({'exec': f'ttl {value}'})
+    _park_disabled_features(ctx, changes)
+    from backend.common.oxidns_common_updates import finish_rule_updates
+    finish_rule_updates(ctx, changes, config, base_url)
     if not _same(document, before):
         current['native_config'] = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
     normalize_oxidns_settings(current, validate_native_arguments=False)
