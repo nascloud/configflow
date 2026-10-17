@@ -45,7 +45,7 @@ export interface OxiDNSQuery {
   rcode: string | number | null
   answer_count: number
   answers_json: OxiDNSAnswer[]
-  steps?: Array<{ event_index: number; sequence_tag: string; node_index: number; kind: string; tag: string; outcome: string }>
+  steps?: Array<{ event_index: number; sequence_tag: string; node_index: number | null; kind: string; tag: string | null; outcome: string }>
 }
 export interface OxiDNSQueries {
   success: true
@@ -104,6 +104,7 @@ export const formatDNSCode = (value: string | number | null) => {
   return dnsCodeLabels.get(normalized) || original
 }
 export const formatQueryTime = (value: number) => Number.isFinite(value) ? new Date(value).toLocaleString() : '—'
+export { querySourceLabel } from '@/lib/oxidnsQuerySource'
 export interface OxiDNSDevicePolicy {
   ip: string
   name: string

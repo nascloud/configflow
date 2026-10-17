@@ -35,7 +35,7 @@
     <EmptyState v-else-if="!data && error" title="查询记录读取失败" description="请检查核心连接后重试。" />
     <EmptyState v-else-if="data && !data.records.length" :icon="Search" :title="hasNext ? '这一页暂无匹配的查询记录' : '没有匹配的查询记录'" :description="hasNext ? '还有更早的记录，可点击下一页继续查找。' : '可以调整时间范围或筛选条件。查询记录由核心记录器提供。'" />
     <DataTableShell v-else-if="data" :footer="'本页 ' + data.records.length + ' 条 · 第 ' + page + ' 页'">
-      <TableHeader><TableRow><TableHead>时间</TableHead><TableHead>查询</TableHead><TableHead>客户端</TableHead><TableHead>结果</TableHead><TableHead class="text-right">耗时</TableHead><TableHead class="text-right">详情</TableHead></TableRow></TableHeader>
+      <TableHeader><TableRow><TableHead>时间</TableHead><TableHead>查询</TableHead><TableHead>客户端</TableHead><TableHead>结果</TableHead><TableHead>解析来源</TableHead><TableHead class="text-right">耗时</TableHead><TableHead class="text-right">详情</TableHead></TableRow></TableHeader>
       <TableBody>
         <TableRow v-for="record in data.records" :key="record.id">
           <TableCell class="num text-xs">{{ formatQueryTime(record.created_at_ms) }}</TableCell>
@@ -51,11 +51,16 @@
               {{ record.error ? '处理错误' : record.has_response ? formatDNSCode(record.rcode) : '无应答' }}
             </span>
           </TableCell>
+          <TableCell class="text-xs" title="根据执行轨迹显示转发组或缓存">
+            <Button v-if="sourceOf(record).failed" variant="ghost" class="min-h-11 text-warning-accent" :aria-label="'重试读取查询 ' + record.id + ' 的解析来源'" @click="retrySource(record)">读取失败 · 重试</Button>
+            <span v-else class="chip">{{ sourceOf(record).label }}</span>
+          </TableCell>
           <TableCell class="num text-right">{{ formatMonitorNumber(record.elapsed_ms, 2) }}<span v-if="monitorNumber(record.elapsed_ms)"> ms</span></TableCell>
           <TableCell class="text-right"><Button variant="ghost" class="min-h-11" :aria-label="'查看查询 ' + record.id + ' 详情'" @click="emit('detail', record)">查看</Button></TableCell>
         </TableRow>
       </TableBody>
     </DataTableShell>
+    <p v-if="data?.records.length" class="m-0 text-xs leading-relaxed text-muted-foreground">解析来源根据执行轨迹归纳，显示转发组或缓存；详情保留完整路径。</p>
     <div v-if="data || page > 1" class="flex flex-wrap items-center justify-between gap-3">
       <p class="m-0 text-xs text-muted-foreground">{{ page > 1 ? '浏览历史页时暂停记录自动刷新，保留当前页。' : '记录按时间倒序排列，每页最多 50 条。' }}</p>
       <div class="flex items-center gap-2">
@@ -73,13 +78,14 @@ import DataTableShell from '@/components/common/DataTableShell.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
 import OxiDNSClientSelect from '@/components/agents/OxiDNSClientSelect.vue'
+import { useOxiDNSQuerySources } from '@/composables/useOxiDNSQuerySources'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatDNSType, formatDNSCode, formatMonitorNumber, formatQueryTime, monitorNumber, type OxiDNSQueries, type OxiDNSQuery, type OxiDNSQueryFilters } from '@/types/oxidnsMonitor'
 const props = defineProps<{
-  agentId: string; recorders: string[]; recorder: string; filters: OxiDNSQueryFilters; data: OxiDNSQueries | null
+  agentId: string; recorders: string[]; recorder: string; instanceId?: string | null; filters: OxiDNSQueryFilters; data: OxiDNSQueries | null
   loading: boolean; error: string; page: number; hasNext: boolean
 }>()
 const emit = defineEmits<{
@@ -87,6 +93,7 @@ const emit = defineEmits<{
   next: []; previous: []; retry: []
 }>()
 const draft = reactive({ ...props.filters })
+const { sourceOf, retry: retrySource } = useOxiDNSQuerySources(props)
 function selectFilter<K extends 'range' | 'status'>(key: K, value: OxiDNSQueryFilters[K]) {
   if (draft[key] === value) return
   draft[key] = value

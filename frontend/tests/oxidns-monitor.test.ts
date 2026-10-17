@@ -3,7 +3,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h, ref } from 'vue'
 import { oxidnsMonitorApi } from '@/api'
 import { useOxiDNSMonitor } from '@/composables/useOxiDNSMonitor'
-import { emptyQueryFilters, formatDNSCode, type OxiDNSOverview } from '@/types/oxidnsMonitor'
+import { emptyQueryFilters, formatDNSCode, querySourceLabel, type OxiDNSOverview } from '@/types/oxidnsMonitor'
 import OxiDNSQueryTable from '@/components/agents/OxiDNSQueryTable.vue'
 import OxiDNSQueryDetail from '@/components/agents/OxiDNSQueryDetail.vue'
 import OxiDNSMetric from '@/components/agents/OxiDNSMetric.vue'
@@ -179,17 +179,21 @@ describe('OxiDNS monitor display', () => {
     expect(wrapper.text()).toContain('—')
     expect(wrapper.text()).not.toContain('0')
   })
-  it('shows zero elapsed time and never labels a normal answer as a cache hit', () => {
+  it('shows zero elapsed time and never labels a normal answer as a cache hit', async () => {
     const wrapper = mount(OxiDNSQueryTable, { props: {
       agentId: 'one', recorders: ['queries'], recorder: 'queries', filters: emptyQueryFilters(), data: records(),
       loading: false, error: '', page: 1, hasNext: false
     } })
     wrappers.push(wrapper)
+    await flushPromises()
     expect(wrapper.text()).toContain('0 ms')
     expect(wrapper.text()).toContain('NOERROR')
+    expect(wrapper.text()).toContain('解析来源')
+    expect(wrapper.text()).toContain('未记录')
     expect(wrapper.text()).not.toContain('缓存命中')
     expect(wrapper.text()).not.toContain('命中规则')
     expect(wrapper.text()).toContain('本页 1 条')
+    expect(oxidnsMonitorApi.query).toHaveBeenCalledTimes(1)
   })
   it('renders actual answer content and only actual recorded steps in query details', async () => {
     vi.mocked(oxidnsMonitorApi.query).mockResolvedValue(response({ success: true, recorder: 'queries', record: {
@@ -202,6 +206,42 @@ describe('OxiDNS monitor display', () => {
     expect(document.body.textContent).toContain('allow_list')
     expect(document.body.textContent).toContain('matched')
     expect(oxidnsMonitorApi.query).toHaveBeenCalledWith('one', 12, 'queries', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+  })
+  it('shows entered plugins as a path without claiming an upstream, cache hit or local answer', async () => {
+    const step = (event_index: number, tag: string, outcome: string, kind = 'executor') => ({
+      event_index, sequence_tag: 'main', node_index: null, kind, tag, outcome
+    })
+    vi.mocked(oxidnsMonitorApi.query).mockResolvedValue(response({ success: true, recorder: 'queries', record: {
+      ...queryRecord, steps: [
+        step(0, 'allow_list', 'not_matched', 'matcher'), step(1, 'cache', 'entered'),
+        step(2, 'hosts', 'entered'), step(3, 'hosts', 'next'),
+        step(4, 'forward_remote', 'entered'), step(5, 'forward_remote', 'next'),
+        step(6, 'cache', 'stop')
+      ]
+    } }))
+    const wrapper = mount(OxiDNSQueryDetail, { attachTo: document.body, props: { agentId: 'one', recorder: 'queries', recordId: 12 } })
+    wrappers.push(wrapper)
+    await flushPromises()
+    const source = document.querySelector('section[aria-label="解析来源"]')!
+    expect(source.querySelector('.chip')?.textContent).toBe('远程 DNS')
+    expect(source.textContent).not.toContain('192.0.2.1') // The answer IP is not the DNS server.
+    expect(source.textContent).not.toContain('缓存命中')
+    expect(Array.from(source.querySelectorAll('li'), row => row.textContent?.replace('→', '').trim()))
+      .toEqual(['cache', 'hosts', 'forward_remote'])
+    expect(source.textContent).not.toContain('allow_list')
+  })
+  it.each(['NOERROR', 'NXDOMAIN', 'REFUSED', 'SERVFAIL'])('does not infer a source from response code %s', rcode => {
+    expect(querySourceLabel({ ...queryRecord, rcode })).toBe('未记录')
+    expect(querySourceLabel({ ...queryRecord, rcode, has_response: false })).toBe('无应答')
+  })
+  it('explains missing source information when the core recorded no plugin entries', async () => {
+    const wrapper = mount(OxiDNSQueryDetail, { attachTo: document.body, props: { agentId: 'one', recorder: 'queries', recordId: 12 } })
+    wrappers.push(wrapper)
+    await flushPromises()
+    const source = document.querySelector('section[aria-label="解析来源"]')!
+    expect(source.querySelector('.chip')?.textContent).toBe('未记录')
+    expect(source.textContent).toContain('没有记录插件进入路径')
+    expect(source.querySelector('ol')).toBeNull()
   })
   it('highlights the dedicated OxiDNS navigation entry in overview scope', () => {
     expect(navigationPath('/agents/oxi-13/oxidns')).toBe('/oxidns')
