@@ -50,6 +50,35 @@ describe('routers view', () => {
     expect(scopeOfPath('/routers')).toBe('profile')
   })
 
+  it.each(['ikuai', 'routeros'])('shows account setup guidance only for RouterOS when editing %s', async (type) => {
+    vi.mocked(routerApi.list).mockResolvedValue({ data: { success: true, routers: [{ ...ROUTER, type }] } } as any)
+    vi.mocked(agentApi.getAll).mockResolvedValue({ data: [] } as any)
+    vi.mocked(ruleApi.getAll).mockResolvedValue({ data: [] } as any)
+    const wrapper = mount(Routers, { attachTo: document.body })
+    wrappers.push(wrapper)
+    await flushPromises()
+    await wrapper.find('button[aria-label="编辑"]').trigger('click')
+    await flushPromises()
+
+    const guide = document.querySelector<HTMLDetailsElement>('details')
+    expect(Boolean(guide)).toBe(type === 'routeros')
+    if (!guide) return
+    guide.querySelector('summary')!.click()
+    expect(guide.open).toBe(true)
+    for (const text of ['如何设置 RouterOS 账号权限', 'System → Users', 'read、write、api、rest-api',
+      '当前填写的账号：admin', '不代表已验证写入权限']) {
+      expect(guide.textContent).toContain(text)
+    }
+    const username = document.querySelector<HTMLInputElement>('#router-username')!
+    username.value = 'cf-agent'
+    username.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(guide.textContent).toContain('当前填写的账号：cf-agent')
+    expect(guide.textContent).not.toContain('当前填写的账号：admin')
+    expect(routerApi.update).not.toHaveBeenCalled()
+    expect(routerApi.apply).not.toHaveBeenCalled()
+  })
+
   it('lists routers without passwords and renders the drift report', async () => {
     vi.mocked(routerApi.list).mockResolvedValue({ data: { success: true, routers: [ROUTER] } } as any)
     vi.mocked(agentApi.getAll).mockResolvedValue({ data: [{ id: 'a1', name: 'mihomo', host: '192.0.2.4', service_type: 'mihomo' }] } as any)

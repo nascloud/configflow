@@ -301,11 +301,11 @@
     </Dialog>
 
     <Dialog v-model:open="dialogVisible">
-      <DialogContent class="max-w-[480px]">
+      <DialogContent class="max-h-[90dvh] max-w-[480px] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{{ editingId ? '编辑路由器' : '添加路由器' }}</DialogTitle>
           <DialogDescription>
-            ConfigFlow 通过路由器的管理接口读取配置，iKuai 发布时也通过它写入（需要管理员账号）。RouterOS 支持 HTTPS（www-ssl）和 HTTP（www，需 7.9+），用户需有 rest-api、read 权限，变更以脚本形式交给你导入。
+            ConfigFlow 通过路由器的管理接口读取配置，iKuai 发布时也通过它写入（需要管理员账号）。RouterOS 支持 HTTPS（www-ssl）和 HTTP（www，需 7.9+），账号权限可按下方说明设置，变更以脚本形式交给你导入。
           </DialogDescription>
         </DialogHeader>
 
@@ -350,6 +350,22 @@
               />
             </div>
           </div>
+          <details v-if="form.type === 'routeros'" class="rounded-md border border-border text-[12px]">
+            <summary class="min-h-11 cursor-pointer rounded-md px-3 py-3 font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accent">
+              如何设置 RouterOS 账号权限
+            </summary>
+            <div class="px-3 pb-3 leading-relaxed text-muted-foreground">
+              <ol class="m-0 list-decimal space-y-2 pl-5">
+                <li>使用管理员账号登录 WinBox，打开 System → Users。</li>
+                <li>在 Groups 中新建专用用户组（例如 configflow），勾选 read、write、api、rest-api；已有专用组可补齐这些权限。</li>
+                <li>在 Users 中新建或选择供 ConfigFlow 使用的账号，将 Group 设为该专用组，再把账号和密码填写到此处。</li>
+              </ol>
+              <p v-if="form.username" class="mt-2 mb-0 break-all">当前填写的账号：{{ form.username }}。请检查这个账号所属的组。</p>
+              <p class="mt-2 mb-0">read 用于读取配置，write 用于修改配置，api 和 rest-api 用于接口访问。</p>
+              <p class="mt-2 mb-0">保存后先测试连接，再重新生成发布预览。连接成功只表示能读取配置，不代表已验证写入权限。</p>
+              <a href="https://manual.mikrotik.com/docs/developer-guides/rest-api/#create-a-rest-user" target="_blank" rel="noopener noreferrer" class="mt-2 inline-flex min-h-11 items-center rounded-sm text-primary-accent underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accent">查看 RouterOS 官方账号设置说明</a>
+            </div>
+          </details>
           <label class="flex items-center gap-2 text-[13px]">
             <Switch :model-value="form.verify_tls" @update:model-value="value => (form.verify_tls = Boolean(value))" />
             校验 HTTPS 证书

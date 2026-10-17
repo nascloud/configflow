@@ -14,6 +14,11 @@ from backend.routers.base import (
 )
 
 TIMEOUT = 10
+PERMISSION_HELP = (
+    '请用管理员登录 WinBox，在 System → Users 找到 ConfigFlow 使用的账号并确认 Group；'
+    '在 Groups 中为该账号的专用用户组启用 read、write、api、rest-api，重点检查 write。'
+    '保存后重新生成发布预览；连接测试成功不代表已有写入权限。'
+)
 
 
 class RouterOSDriver(RouterDriver):
@@ -35,11 +40,23 @@ class RouterOSDriver(RouterDriver):
         except requests.RequestException as error:
             raise RouterError(f'无法连接 RouterOS：{error.__class__.__name__}') from None
         if response.status_code == 401:
-            raise RouterError('RouterOS 认证失败，请检查用户名、密码以及用户组的 rest-api 权限')
+            raise RouterError('RouterOS 认证失败，请核对 ConfigFlow 中的用户名、密码和账号允许的来源地址；'
+                              '在 WinBox → System → Users / Groups 检查用户组的 api、rest-api 权限')
+        if response.status_code == 403:
+            raise RouterError('RouterOS 拒绝访问，请先确认所用 HTTP/HTTPS 服务允许 REST API。' + PERMISSION_HELP)
         if response.status_code == 404:
             raise RouterError('RouterOS 未提供 REST API（HTTPS 需要 7.1+ 并启用 www-ssl；HTTP 需要 7.9+ 并启用 www）')
         if response.status_code != 200:
-            raise RouterError(f'RouterOS 返回 HTTP {response.status_code}')
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            detail = ': '.join(str(body[key]) for key in ('message', 'detail') if body.get(key)) if isinstance(body, dict) else ''
+            message = (f'RouterOS GET {path} 返回 HTTP {response.status_code}'
+                       + (f'（{detail}）' if detail else ''))
+            if re.search(r'\bnot enough permissions\b', detail, re.IGNORECASE):
+                message = f'RouterOS 账号权限不足。{PERMISSION_HELP} 原始错误：{message}'
+            raise RouterError(message)
         try:
             return response.json()
         except ValueError:

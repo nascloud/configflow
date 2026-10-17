@@ -176,6 +176,7 @@ ConfigFlow 已有 Agent 心跳。mihomo Agent 离线时：
 
 - 凭据加密存储，界面与导出中脱敏；日志中不打印 API 请求体。
 - RouterOS 建议建专用用户组，只授予 `api, rest-api, read, write` 中需要的权限，并启用 HTTPS（`www-ssl`）或 API-SSL；默认校验证书，自签证书需导入 CA。REST 也支持 HTTP（RouterOS 7.9+，启用 `www`）。
+- 添加或编辑 RouterOS 时可展开账号权限说明，按 WinBox 的 System → Users / Groups 设置专用账号和用户组。REST 权限不足时提供设置步骤，并保留原始错误以便排查；连接测试成功只证明读取请求可用，不等于已验证写入权限。
 - iKuai 没有细粒度权限，只能使用管理员账号，需在界面上明确提示风险。
 - 安全护栏，下发前强制检查：不管理默认路由、WAN 口相关对象和路由器管理访问规则；不允许把路由器自身或管理网段放进劫持、代理范围，防止把自己锁在外面。
 
