@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.12-go"
+LATEST_AGENT_VERSION = "1.8.13-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.13-go": {
+        "date": "2026-10-17",
+        "features": [
+            "看门狗探测期间不再占用服务操作锁，只在真正重启服务时加锁；修复与 10 分钟一次的磁盘清理同时触发、导致清理一直被推迟的问题"
+        ]
+    },
     "1.8.12-go": {
         "date": "2026-10-17",
         "features": [

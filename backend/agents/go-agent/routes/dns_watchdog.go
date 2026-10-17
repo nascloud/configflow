@@ -89,13 +89,15 @@ func (w *serviceWatchdog) tick() string {
 	if now.Before(w.pausedUntil) {
 		return "grace"
 	}
+	// Only check that no deployment, restart or upgrade owns the service; the
+	// lock is not held while probing, or the periodic disk cleanup (same
+	// lock, same start time) would collide with every tick that lines up.
 	release, err := w.lock(w.cfg)
 	if err != nil {
-		// A deployment, restart or upgrade owns the service right now.
 		w.consecutive = 0
 		return "busy"
 	}
-	defer release()
+	release()
 	if running, err := w.running(w.cfg); err != nil || !running {
 		// Crashes are the service manager's job; a stopped service stays stopped.
 		w.consecutive = 0
@@ -131,6 +133,12 @@ func (w *serviceWatchdog) tick() string {
 		}
 		return "budget-exhausted"
 	}
+	release, err = w.lock(w.cfg)
+	if err != nil {
+		w.consecutive = 0
+		return "busy"
+	}
+	defer release()
 	log.Printf("Watchdog: %s is running but not answering, restarting %s", target, w.cfg.ServiceType)
 	w.restarts = append(w.restarts, now)
 	w.consecutive = 0

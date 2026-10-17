@@ -112,6 +112,7 @@ func TestControllerAnswersAcceptsAnyHTTPResponse(t *testing.T) {
 }
 
 type watchdogFakes struct {
+	held     bool // service lock currently taken by the watchdog
 	now      time.Time
 	healthy  bool
 	running  bool
@@ -125,6 +126,9 @@ func newTestWatchdog(t *testing.T, f *watchdogFakes) *serviceWatchdog {
 	w := newDNSWatchdog(cfg)
 	w.now = func() time.Time { return f.now }
 	w.probe = func(watchdogTarget) error {
+		if f.held {
+			t.Error("the service lock must not be held while probing")
+		}
 		if f.healthy {
 			return nil
 		}
@@ -132,12 +136,19 @@ func newTestWatchdog(t *testing.T, f *watchdogFakes) *serviceWatchdog {
 	}
 	w.running = func(*Config) (bool, error) { return f.running, nil }
 	w.lock = func(*Config) (func(), error) {
-		if f.busy {
+		if f.busy || f.held {
 			return nil, errDeploymentBusy
 		}
-		return func() {}, nil
+		f.held = true
+		return func() { f.held = false }, nil
 	}
-	w.restart = func(*Config) ([]byte, error) { f.restarts++; return nil, nil }
+	w.restart = func(*Config) ([]byte, error) {
+		if !f.held {
+			t.Error("restarting must hold the service lock")
+		}
+		f.restarts++
+		return nil, nil
+	}
 	return w
 }
 
