@@ -1,6 +1,7 @@
 # 快速开始
 
-- [安装与入门指南](install_guide.md)
+- [ConfigFlow + RouterOS 安装指南](../docs/CONFIGFLOW_AGENT_ROUTEROS_INSTALL.md) - 5 步完成 NAS 管理端与 RouterOS 代理、DNS 服务安装
+- [通用安装与入门指南](install_guide.md) - 普通 Docker/NAS 快速开始，不适用于 RouterOS Container
 
 ---
 
@@ -176,9 +177,9 @@ ConfigFlow 帮助您管理共享订阅、节点、聚合与规则库，为多份
 
 ### 1. 部署系统
 
-推荐使用 Docker Compose 部署（包含 Sub-Store 服务）：
+推荐使用 Docker Compose 部署（镜像已内置 Sub-Store 后端）：
 
-创建 `docker-compose.yml`：
+创建 `docker-compose.yml`。镜像默认使用 `latest`，只需将账号、密码和密钥占位符替换为自己的值：
 ```yaml
 version: '3.8'
 services:
@@ -189,13 +190,13 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin123
-      - JWT_SECRET_KEY=your-secret-key-please-change-in-production
+      - ADMIN_USERNAME=replace-with-your-admin-user
+      - ADMIN_PASSWORD=replace-with-a-random-password
+      - JWT_SECRET_KEY=replace-with-at-least-32-random-chars
     restart: unless-stopped
 ```
 
-启动：`docker-compose up -d`，访问 `http://localhost` 即可使用。
+启动：`docker-compose pull && docker-compose up -d`，访问 `http://localhost` 即可使用。
 
 > 认证是可选的：不设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 即无需登录直接使用；设置后才开启登录，此时请把 `ADMIN_PASSWORD` 和 `JWT_SECRET_KEY` 替换为更安全的值。
 > Sub-Store 用于订阅解析和节点格式转换，也可在「系统设置」页面配置已有的 Sub-Store 地址。
@@ -261,7 +262,8 @@ services:
 - [MCP 服务](module/mcp.md) - 通过 MCP 用 AI 客户端操作平台
 
 ### 部署文档
-- [部署指南](module/deployment.md) - Docker 和 Docker Compose 部署
+- [ConfigFlow + RouterOS 安装指南](../docs/CONFIGFLOW_AGENT_ROUTEROS_INSTALL.md) - NAS 运行 ConfigFlow，RouterOS 运行 Mihomo 和 OxiDNS
+- [通用部署指南](module/deployment.md) - 普通 Docker / Docker Compose；不要直接用于 RouterOS Container
 ---
 
 ## 常见问题
