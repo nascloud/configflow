@@ -5,7 +5,7 @@
 import re
 import ipaddress
 from threading import RLock
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Hashable, Optional, Tuple
 
 from backend.utils.logger import get_logger
 from backend.utils.url_utils import safe_exception_details
@@ -225,11 +225,25 @@ def match_query(query: str, rule_type: str, rule_value: str) -> bool:
     return False
 
 
+_LINE_END = re.compile(r'\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]')
+
+
+def _iter_rule_lines(content):
+    """Yield splitlines-compatible text without allocating every line at once."""
+    start = 0
+    for ending in _LINE_END.finditer(content):
+        yield content[start:ending.start()]
+        start = ending.end()
+    if start < len(content):
+        yield content[start:]
+
+
 class _RuleIndex:
     """Index common rule types while retaining the first matching source line.
 
-    Entries in every index carry their original position. A more specific suffix
-    must never overtake an earlier broad suffix, keyword or regular expression.
+    Each dictionary stores an integer into one source-line array rather than a
+    separate (position, line) tuple. Retained entries stay in source order, so
+    skipping duplicates and unsupported rules cannot change the earliest match.
     """
 
     def __init__(self, entries):
@@ -240,41 +254,53 @@ class _RuleIndex:
         self._domain_patterns = []
         self._ips = {}
         self._networks = {4: {}, 6: {}}
+        self._source_lines = []
         domain_indexes = {
             'DOMAIN': self._exact,
             'DOMAIN-SUFFIX': self._suffix,
             'SUBDOMAIN-ONLY': self._subdomain,
             'DIRECT-SUBDOMAIN': self._direct_subdomain,
         }
-        for position, (rule_type, value, line) in enumerate(entries):
-            candidate = (position, line)
+        for rule_type, value, line in entries:
+            target = None
             if rule_type in domain_indexes:
-                domain_indexes[rule_type].setdefault(value.lower(), candidate)
+                target = domain_indexes[rule_type]
+                key = value.lower()
+                # Plain lowercase domain lists need only one string for both
+                # the lookup key and the original displayed source line.
+                if key == line:
+                    key = line
             elif rule_type == 'DOMAIN-KEYWORD':
-                self._domain_patterns.append((position, line, value.lower(), None))
+                self._domain_patterns.append((len(self._source_lines), value.lower(), None))
+                self._source_lines.append(line)
             elif rule_type in ('REGEX', 'REGEXP'):
                 try:
                     # match_domain has always lowercased both pattern and query.
                     pattern = re.compile(value.lower())
                 except re.error:
                     continue
-                self._domain_patterns.append((position, line, None, pattern))
+                self._domain_patterns.append((len(self._source_lines), None, pattern))
+                self._source_lines.append(line)
             elif rule_type == 'IP':
                 try:
-                    self._ips.setdefault(ipaddress.ip_address(value), candidate)
+                    key = ipaddress.ip_address(value)
                 except (ValueError, TypeError):
                     continue
+                target = self._ips
             elif rule_type in ('IP-CIDR', 'IP-CIDR6'):
                 try:
                     network = ipaddress.ip_network(value, strict=False)
                 except (ValueError, TypeError):
                     continue
-                networks = self._networks[network.version].setdefault(network.prefixlen, {})
-                networks.setdefault(int(network.network_address), candidate)
+                target = self._networks[network.version].setdefault(network.prefixlen, {})
+                key = int(network.network_address)
+            if target is not None and key not in target:
+                target[key] = len(self._source_lines)
+                self._source_lines.append(line)
 
     @staticmethod
     def _earlier(current, candidate):
-        if candidate is not None and (current is None or candidate[0] < current[0]):
+        if candidate is not None and (current is None or candidate < current):
             return candidate
         return current
 
@@ -293,13 +319,13 @@ class _RuleIndex:
         _, separator, parent = domain.partition('.')
         if separator:
             best = self._earlier(best, self._direct_subdomain.get(parent))
-        for position, line, keyword, pattern in self._domain_patterns:
-            if best is not None and position >= best[0]:
+        for position, keyword, pattern in self._domain_patterns:
+            if best is not None and position >= best:
                 break
             if (keyword is not None and keyword in domain) or (pattern is not None and pattern.search(domain)):
-                best = (position, line)
+                best = position
                 break
-        return best[1] if best is not None else None
+        return self._source_lines[best] if best is not None else None
 
     def match_ip(self, ip) -> Optional[str]:
         best = self._ips.get(ip)
@@ -310,7 +336,7 @@ class _RuleIndex:
             host_bits = bits - prefix
             network = (address >> host_bits) << host_bits
             best = self._earlier(best, networks.get(network))
-        return best[1] if best is not None else None
+        return self._source_lines[best] if best is not None else None
 
 
 class RuleConfigMatcher:
@@ -320,18 +346,43 @@ class RuleConfigMatcher:
     同一实例后续查询无需逐条扫描常见规则，也不会重复解析查询的类型。
     """
 
-    def __init__(self, rule_configs, rule_library, load_content: Callable[[dict, Optional[dict]], str]):
+    def __init__(self, rule_configs, rule_library, load_content: Callable[[dict, Optional[dict]], str],
+                 *, index_key: Optional[Callable[[dict, Optional[dict]], Optional[Hashable]]] = None):
         # 序号按全部规则计（含禁用的），与规则列表上显示的行号一致
         self._items = [(index, item) for index, item in enumerate(rule_configs, start=1)
                        if item.get('enabled', True) and item.get('library_enabled', True)]
         self._library = {item.get('id'): item for item in rule_library if item.get('id')}
         self._load_content = load_content
+        # Reuse is opt-in: a custom loader may depend on the individual rule
+        # item even when several items reference the same library entry.
+        self._index_key = index_key
         self._indexes = {}
         self._index_lock = RLock()
 
+    def _ruleset_key(self, index, rule_item, library_rule):
+        source = self._index_key(rule_item, library_rule) if self._index_key is not None else None
+        return ('source', source) if source is not None else ('item', index)
+
+    def invalidate_rulesets(self, predicate: Callable[[dict, Optional[dict]], bool]) -> int:
+        """Discard selected source indexes, including all references sharing one.
+
+        Callers own retry policy and any cached host results. Unselected indexes
+        remain intact; no source is loaded until the next matching request.
+        """
+        with self._index_lock:
+            keys = set()
+            for index, item in self._items:
+                if item.get('itemType', 'rule') != 'ruleset':
+                    continue
+                library = self._library.get(item.get('library_rule_id', ''))
+                if predicate(item, library):
+                    keys.add(self._ruleset_key(index, item, library))
+            return sum(self._indexes.pop(key, None) is not None for key in keys)
+
     def _ruleset_index(self, index: int, rule_item: dict, library_rule: Optional[dict]) -> _RuleIndex:
         with self._index_lock:
-            if index not in self._indexes:
+            key = self._ruleset_key(index, rule_item, library_rule)
+            if key not in self._indexes:
                 try:
                     content = self._load_content(rule_item, library_rule) or ''
                 except Exception as error:
@@ -341,7 +392,7 @@ class RuleConfigMatcher:
                     logger.warning('Skipping ruleset "%s": unable to fetch content', rule_item.get('name', '规则集'))
 
                 def entries():
-                    for line in content.splitlines():
+                    for line in _iter_rule_lines(content):
                         try:
                             parsed = parse_rule_line(line)
                         except Exception:
@@ -350,8 +401,8 @@ class RuleConfigMatcher:
                             yield parsed[0], parsed[1], line.strip()
 
                 # Publish only the complete immutable index to concurrent readers.
-                self._indexes[index] = _RuleIndex(entries())
-            return self._indexes[index]
+                self._indexes[key] = _RuleIndex(entries())
+            return self._indexes[key]
 
     def match(self, query: str) -> Optional[Dict[str, Any]]:
         try:
