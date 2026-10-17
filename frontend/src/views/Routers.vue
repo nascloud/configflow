@@ -10,8 +10,8 @@
     </PageHeader>
 
     <p class="mt-0 mb-4 text-[12.5px] leading-relaxed text-muted-foreground">
-      读取主路由的代理路由、NAT 免转换配置，与当前配置空间计算出的期望状态对比。选择 OxiDNS Agent 后可下发 DHCP DNS；自动配置回流默认关闭，开启后才读取和管理 mihomo 主机的回流规则。
-      生成报告不会修改任何设备；「预览发布」列出全部变更，确认后按已启用阶段的顺序写入，失败时按相反顺序尝试撤销，并展示回滚结果。
+      在这里查看和调整主路由的分流设置。「差异报告」只检查，不会修改设备。
+      点「预览发布」查看具体改动，确认后再应用；如果发布失败，会尝试撤销本次改动，并显示结果。
     </p>
 
     <LoadingRows v-if="loading && !routers.length" :rows="3" />
