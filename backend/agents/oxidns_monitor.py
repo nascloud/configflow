@@ -256,7 +256,7 @@ def _record(value, detail=False):
     source = value.get('resolution_source')
     if isinstance(source, str) and source in {
             'local', 'remote', 'fallback', 'cache', 'hosts', 'blocked', 'rejected',
-            'unknown', 'unrecorded', 'error', 'no_response'}:
+            'unknown', 'unrecorded', 'error', 'no_response', 'ipv4_preferred'}:
         record['resolution_source'] = source
     return record
 

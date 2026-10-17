@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.11-go"
+LATEST_AGENT_VERSION = "1.8.12-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.12-go": {
+        "date": "2026-10-17",
+        "features": [
+            "修复 OxiDNS 的 AAAA 查询被 IPv4 优先策略抑制时来源显示为未识别；列表与详情显示“IPv4 优先（抑制 AAAA）”"
+        ]
+    },
     "1.8.11-go": {
         "date": "2026-10-17",
         "features": [

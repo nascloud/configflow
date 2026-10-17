@@ -51,7 +51,7 @@
               {{ record.error ? '处理错误' : record.has_response ? formatDNSCode(record.rcode) : '无应答' }}
             </span>
           </TableCell>
-          <TableCell class="text-xs" title="根据执行轨迹显示转发组或缓存">
+          <TableCell class="text-xs" title="根据执行轨迹显示转发组、缓存或本地策略">
             <Button v-if="sourceOf(record).failed" variant="ghost" class="min-h-11 text-warning-accent" :aria-label="'重试读取查询 ' + record.id + ' 的解析来源'" @click="retrySource(record)">读取失败 · 重试</Button>
             <span v-else class="chip">{{ sourceOf(record).label }}</span>
           </TableCell>
@@ -60,7 +60,7 @@
         </TableRow>
       </TableBody>
     </DataTableShell>
-    <p v-if="data?.records.length" class="m-0 text-xs leading-relaxed text-muted-foreground">解析来源根据执行轨迹归纳，显示转发组或缓存；详情保留完整路径。</p>
+    <p v-if="data?.records.length" class="m-0 text-xs leading-relaxed text-muted-foreground">解析来源根据执行轨迹归纳，显示转发组、缓存或本地策略；详情保留完整路径。</p>
     <div v-if="data || page > 1" class="flex flex-wrap items-center justify-between gap-3">
       <p class="m-0 text-xs text-muted-foreground">{{ page > 1 ? '浏览历史页时暂停记录自动刷新，保留当前页。' : '记录按时间倒序排列，每页最多 50 条。' }}</p>
       <div class="flex items-center gap-2">
