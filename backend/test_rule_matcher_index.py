@@ -222,3 +222,138 @@ def test_failed_ruleset_load_is_cached_and_later_rules_can_match():
     assert matcher.match("example.com")["rule_id"] == "fallback"
     assert matcher.match("example.com")["rule_id"] == "fallback"
     loader.assert_called_once()
+
+
+def _library_key(_item, library):
+    return library['id'] if library else None
+
+
+def test_compact_index_keeps_first_source_line_across_duplicate_and_ignored_rules():
+    lines = [
+        'DOMAIN-REGEX,ignored', 'IP,bad', 'REGEX,[invalid',
+        '  full:Example.com  ', 'DOMAIN,example.com',
+        'IP-CIDR,192.0.2.9/24,no-resolve', 'IP-CIDR,192.0.2.0/24',
+        'IP,192.0.2.1', 'IP,192.0.2.1',
+        'DOMAIN-KEYWORD,example', 'REGEX,example',
+    ]
+    contents = {'set': '\n'.join(lines)}
+    configs = [_ruleset()]
+    matcher = RuleConfigMatcher(configs, [], lambda *_: contents['set'])
+    for query in ('example.com', 'www.example.com', '192.0.2.1', '192.0.2.250', 'absent.test'):
+        assert matcher.match(query) == _linear_match(configs, contents, query)
+
+
+def test_shared_library_does_not_reuse_item_dependent_loader_by_default():
+    library = {'id': 'shared', 'name': 'same-name'}
+    configs = [_ruleset('first', library_rule_id='shared'), _ruleset('second', library_rule_id='shared')]
+    contents = {'first': 'first.example', 'second': 'second.example'}
+    loader = Mock(side_effect=lambda item, _: contents[item['id']])
+    matcher = RuleConfigMatcher(configs, [library], loader)
+    assert matcher.match('second.example') == _linear_match(configs, contents, 'second.example')
+    assert matcher.match('first.example') == _linear_match(configs, contents, 'first.example')
+    assert loader.call_count == 2
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+def test_opt_in_reuse_preserves_per_reference_policy_order_and_metadata(reverse):
+    library = {'id': 'shared', 'name': 'shared-source'}
+    configs = [
+        _ruleset('first', name='first display', library_rule_id='shared', policy='DIRECT', behavior='domain'),
+        _ruleset('second', name='second display', library_rule_id='shared', policy='PROXY', behavior='classical'),
+    ]
+    if reverse:
+        configs.reverse()
+    contents = {item['id']: '+.example.com\nIP-CIDR,192.0.2.0/24' for item in configs}
+    loader = Mock(return_value=contents['first'])
+    matcher = RuleConfigMatcher(configs, [library], loader, index_key=_library_key)
+    # A miss visits both references, but must load their shared source only once.
+    assert matcher.match('absent.test') is None
+    for query in ('example.com', 'sub.example.com', '192.0.2.99'):
+        assert matcher.match(query) == _linear_match(configs, contents, query)
+    loader.assert_called_once_with(configs[0], library)
+
+
+def test_reuse_is_scoped_to_matcher_and_source_identity_not_display_name():
+    configs = [_ruleset('one', library_rule_id='one'), _ruleset('two', library_rule_id='two')]
+    libraries = [{'id': 'one', 'name': 'same'}, {'id': 'two', 'name': 'same'}]
+    contents = {'one': 'one.example', 'two': 'two.example'}
+    loader = Mock(side_effect=lambda _, library: contents[library['id']])
+    first = RuleConfigMatcher(configs, libraries, loader, index_key=_library_key)
+    assert first.match('two.example')['rule_id'] == 'two'
+    assert loader.call_count == 2
+    # A different repository/snapshot with the same IDs must build its own index.
+    second_loader = Mock(return_value='new.example')
+    second = RuleConfigMatcher(configs, libraries, second_loader, index_key=_library_key)
+    assert second.match('new.example')['rule_id'] == 'one'
+    assert first.match('new.example') is None
+    second_loader.assert_called_once()
+
+
+def test_none_reuse_key_falls_back_to_individual_item_without_key_collision():
+    configs = [_ruleset('one'), _ruleset('two'), _ruleset('three')]
+    contents = {'one': 'one.example', 'two': 'two.example', 'three': 'three.example'}
+    loader = Mock(side_effect=lambda item, _: contents[item['id']])
+    matcher = RuleConfigMatcher(configs, [], loader,
+                                index_key=lambda item, _: 1 if item['id'] == 'three' else None)
+    for query in ('one.example', 'two.example', 'three.example'):
+        assert matcher.match(query) == _linear_match(configs, contents, query)
+    assert loader.call_count == 3
+
+
+def test_invalidating_shared_failed_source_retries_all_references_but_keeps_healthy_index():
+    libraries = [{'id': 'failed', 'name': 'failed'}, {'id': 'healthy', 'name': 'healthy'}]
+    configs = [_ruleset('failed-first', library_rule_id='failed'),
+               _ruleset('healthy', library_rule_id='healthy'),
+               _ruleset('failed-second', library_rule_id='failed')]
+    unavailable = [True]
+
+    def load(_item, library):
+        if library['id'] == 'healthy':
+            return 'healthy.example'
+        if unavailable[0]:
+            raise OSError('temporary source read failure')
+        return 'recovered.example'
+
+    loader = Mock(side_effect=load)
+    matcher = RuleConfigMatcher(configs, libraries, loader, index_key=_library_key)
+    assert matcher.match('absent.test') is None
+    assert loader.call_count == 2
+    unavailable[0] = False
+    # Selecting just the later reference still invalidates the one shared source.
+    assert matcher.invalidate_rulesets(lambda item, _: item['id'] == 'failed-second') == 1
+    assert matcher.match('recovered.example')['rule_id'] == 'failed-first'
+    assert matcher.match('healthy.example')['rule_id'] == 'healthy'
+    assert loader.call_count == 3
+    assert matcher.invalidate_rulesets(lambda *_: False) == 0
+
+
+def test_invalidation_without_reuse_only_reloads_selected_item():
+    configs = [_ruleset('one'), _ruleset('two')]
+    contents = {'one': 'one.example', 'two': 'two.example'}
+    loader = Mock(side_effect=lambda item, _: contents[item['id']])
+    matcher = RuleConfigMatcher(configs, [], loader)
+    assert matcher.match('absent.test') is None
+    contents['one'] = 'changed.example'
+    assert matcher.invalidate_rulesets(lambda item, _: item['id'] == 'one') == 1
+    assert matcher.match('two.example')['rule_id'] == 'two'
+    assert matcher.match('changed.example')['rule_id'] == 'one'
+    assert matcher.match('one.example') is None
+    assert loader.call_count == 3
+
+
+@pytest.mark.parametrize('separator', ['\n', '\r', '\r\n', '\v', '\f', '\x1c', '\x1d', '\x1e', '\x85', '\u2028', '\u2029'])
+@pytest.mark.parametrize('trailing', [False, True])
+def test_streamed_lines_preserve_splitlines_and_original_match(separator, trailing):
+    content = separator.join(['', '  full:Example.com  ', '# comment', '+.second.example', ''])
+    if trailing:
+        content += separator
+    assert list(rule_matcher._iter_rule_lines(content)) == content.splitlines()
+    configs = [_ruleset()]
+    matcher = RuleConfigMatcher(configs, [], lambda *_: content)
+    for query in ('example.com', 'sub.second.example', 'absent.test'):
+        assert matcher.match(query) == _linear_match(configs, {'set': content}, query)
+
+
+@pytest.mark.parametrize('content', ['', 'one', '\r\r\n', 'one\r\ntwo\n\rthree\vfour\u2028'])
+def test_streamed_empty_and_mixed_newlines_match_splitlines(content):
+    assert list(rule_matcher._iter_rule_lines(content)) == content.splitlines()
