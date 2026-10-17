@@ -319,8 +319,12 @@ export const oxidnsDevicePolicyApi = {
 export const oxidnsMonitorApi = {
   clients: (id: string, params: Record<string, string | number | undefined>, options: { signal?: AbortSignal } = {}) =>
     api.get(`/agents/${encodeURIComponent(id)}/oxidns/clients`, { params, ...options }),
-  overview: (id: string, options: { signal?: AbortSignal } = {}) =>
-    api.get(`/agents/${encodeURIComponent(id)}/oxidns/overview`, options),
+  overview: (id: string, options: { signal?: AbortSignal; recorder?: string } = {}) => {
+    const { recorder, ...requestOptions } = options
+    return api.get(`/agents/${encodeURIComponent(id)}/oxidns/overview`, { ...requestOptions, params: recorder ? { recorder } : undefined })
+  },
+  resetStatistics: (id: string, recorder?: string, options: { signal?: AbortSignal } = {}) =>
+    api.post(`/agents/${encodeURIComponent(id)}/oxidns/dashboard/reset`, recorder ? { recorder } : {}, options),
   queries: (id: string, params: Record<string, string | number | undefined>, options: { signal?: AbortSignal } = {}) =>
     api.get(`/agents/${encodeURIComponent(id)}/oxidns/queries`, { params, ...options }),
   query: (id: string, recordId: string | number, recorder: string, options: { signal?: AbortSignal } = {}) =>

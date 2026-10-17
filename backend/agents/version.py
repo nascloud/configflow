@@ -1,10 +1,17 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.13-go"
+LATEST_AGENT_VERSION = "1.8.14-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.14-go": {
+        "date": "2026-10-17",
+        "features": [
+            "DNS 监控增加客户端、请求域名、标准广告拦截域名排行，以及具体上游请求次数和平均耗时",
+            "支持重置当前设备的面板统计起点；不清查询历史或 DNS 缓存，不重启核心"
+        ]
+    },
     "1.8.13-go": {
         "date": "2026-10-17",
         "features": [

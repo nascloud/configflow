@@ -61,6 +61,7 @@ func oxMonitorTestError(t *testing.T, response *httptest.ResponseRecorder, statu
 }
 
 func TestOxiDNSMonitorSuccessAndReadOnly(t *testing.T) {
+	var cfg *Config
 	var calls []string
 	var callsMu sync.Mutex
 	core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +75,8 @@ func TestOxiDNSMonitorSuccessAndReadOnly(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/health":
 			fmt.Fprint(w, oxMonitorTestHealth)
+		case "/api/reload/status":
+			oxRankingTestRuntime(t, w, cfg)
 		case "/api/metrics":
 			fmt.Fprint(w, "# TYPE oxidns_queries_total counter\noxidns_queries_total 42\n")
 		case "/api/plugins/records/records":
@@ -86,7 +89,7 @@ func TestOxiDNSMonitorSuccessAndReadOnly(t *testing.T) {
 		}
 	}))
 	defer core.Close()
-	cfg := oxMonitorTestConfig(t, core.URL, "- {tag: records, type: query_recorder}\n- {tag: cache, type: cache}\n")
+	cfg = oxMonitorTestConfig(t, core.URL, "- {tag: records, type: query_recorder}\n- {tag: cache, type: cache}\n")
 	before, _ := os.ReadFile(cfg.ConfigPath)
 	statePath := filepath.Join(filepath.Dir(cfg.ConfigPath), "queries.db")
 	if err := os.WriteFile(statePath, []byte("existing-recorder-database"), 0600); err != nil {
@@ -268,16 +271,21 @@ func TestOxiDNSMonitorBoundsAndSafeUpstreamErrors(t *testing.T) {
 		{"large-metrics", "/api/oxidns/overview", strings.Repeat("x", oxMonitorMetricsLimit+1), "INVALID_RESPONSE", 200, 502},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			var cfg *Config
 			core := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/api/health" {
 					fmt.Fprint(w, oxMonitorTestHealth)
+					return
+				}
+				if r.URL.Path == "/api/reload/status" {
+					oxRankingTestRuntime(t, w, cfg)
 					return
 				}
 				w.WriteHeader(test.status)
 				fmt.Fprint(w, test.body)
 			}))
 			defer core.Close()
-			cfg := oxMonitorTestConfig(t, core.URL, "- {tag: records, type: query_recorder}\n")
+			cfg = oxMonitorTestConfig(t, core.URL, "- {tag: records, type: query_recorder}\n")
 			oxMonitorTestError(t, oxMonitorTestRequest(cfg, http.MethodGet, test.path), test.want, test.code)
 		})
 	}

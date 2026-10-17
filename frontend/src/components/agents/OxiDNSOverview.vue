@@ -1,15 +1,74 @@
 <template>
-  <div class="space-y-4">
+  <div class="min-w-0 space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 px-4 py-3">
+      <div class="min-w-0 text-xs leading-relaxed text-muted-foreground">
+        <p class="m-0 text-[13px] text-foreground">{{ statisticsLabel }}</p>
+        <p class="mb-0 mt-1">{{ statisticsNote }}</p>
+        <p v-if="overview.statistics?.partial" class="mb-0 mt-1 text-warning-accent">部分指标缺少基线或插件已重新计数，本轮统计可能不完整；无法确认的值显示「—」。</p>
+      </div>
+      <Button variant="outline" class="min-h-11 shrink-0" :disabled="!overview.statistics || resetting" @click="$emit('reset')">
+        <Loader2 v-if="resetting" class="size-4 animate-spin" /><RotateCcw v-else class="size-4" />{{ resetting ? '正在重置…' : '重置统计' }}
+      </Button>
+    </div>
     <div class="grid grid-cols-2 gap-3.5 xl:grid-cols-3">
-      <OxiDNSMetric label="DNS 请求" :value="overview.metrics.requests_total" hint="自核心启动以来" />
+      <OxiDNSMetric label="DNS 请求" :value="overview.metrics.requests_total" :hint="periodLabel" />
       <OxiDNSMetric label="近期请求速率" :value="qps" unit="次/秒" :precision="2" :hint="qps === null ? '等待两次有效采样' : '最近两次采样之间的平均值'" />
-      <OxiDNSMetric label="平均响应时间" :value="overview.metrics.avg_latency_ms" unit="ms" :precision="2" hint="自核心启动以来" />
+      <OxiDNSMetric label="平均响应时间" :value="overview.metrics.avg_latency_ms" unit="ms" :precision="2" :hint="periodLabel" />
       <OxiDNSMetric label="缓存命中率" :value="cacheRate" unit="%" :precision="1" :hint="selectedCache === '__all__' ? '全部缓存 · 命中数 / 查找次数' : selectedTag + ' · 命中数 / 查找次数'" />
-      <OxiDNSMetric label="失败请求" :value="overview.metrics.failed_total" hint="自核心启动以来" />
+      <OxiDNSMetric label="失败请求" :value="overview.metrics.failed_total" :hint="periodLabel" />
       <OxiDNSMetric label="处理中" :value="overview.metrics.inflight" hint="本次采样时正在处理的请求" />
     </div>
 
-    <SectionCard title="缓存统计" description="自核心启动以来。命中包含新鲜与过期缓存，命中率按缓存查找次数计算，与 DNS 请求总数的口径不同。" :padded="false">
+
+    <section class="min-w-0 space-y-3" aria-label="DNS 请求排行">
+      <header class="flex flex-col items-start justify-between gap-3 px-1 sm:flex-row">
+        <div class="min-w-0 flex-1">
+          <h2 class="m-0 text-sm font-semibold">请求排行</h2>
+          <p class="mb-0 mt-1 text-xs leading-relaxed text-muted-foreground">{{ rankingsDescription }}</p>
+          <p v-if="rankings" class="mb-0 mt-1 text-xs leading-relaxed text-muted-foreground">
+            客户端样本 {{ formatMonitorNumber(rankings.clients.sample_size) }} 条 · 域名样本 {{ formatMonitorNumber(rankings.domains.sample_size) }} 条<span v-if="rankings.blocked.available"> · 拦截样本 {{ formatMonitorNumber(rankings.blocked.sample_size) }} 条</span>。
+            <span v-if="rankings.clients.at_limit || rankings.domains.at_limit || rankings.blocked.at_limit" class="text-warning-accent">已达到样本上限，排行不代表本轮所有请求。</span>
+          </p>
+        </div>
+        <Select v-if="overview.recorders.length > 1" :model-value="recorder" :disabled="resetting" @update:model-value="$emit('recorder', String($event))">
+          <SelectTrigger class="min-h-11 w-[180px] max-w-full" aria-label="排行记录器"><SelectValue placeholder="选择记录器" /></SelectTrigger>
+          <SelectContent><SelectItem v-for="tag in overview.recorders" :key="tag" :value="tag">{{ tag }}</SelectItem></SelectContent>
+        </Select>
+      </header>
+      <SectionCard v-if="!rankings" :padded="false">
+        <EmptyState title="暂无法统计请求排行" :description="rankingsUnavailableReason" />
+      </SectionCard>
+      <div v-else class="grid min-w-0 grid-cols-1 items-start gap-4 lg:grid-cols-3">
+        <OxiDNSRankingTable title="客户端排行" name-label="客户端" :entries="rankings.clients.rows.map(row => ({ name: row.key, count: row.count }))"
+          empty-title="暂无客户端请求" empty-description="当前统计范围内还没有客户端查询记录。" />
+        <OxiDNSRankingTable title="请求域名排行" name-label="域名" :entries="rankings.domains.rows.map(row => ({ name: row.key, count: row.count }))"
+          empty-title="暂无请求域名" empty-description="当前统计范围内还没有域名查询记录。" />
+        <OxiDNSRankingTable v-if="rankings.blocked.available" title="被拦截域名排行" name-label="域名" :entries="rankings.blocked.rows.map(row => ({ name: row.key, count: row.count }))"
+          empty-title="暂无已识别的拦截域名" empty-description="仅统计明确命中拦截规则的查询，不将普通 NXDOMAIN 或 IPv4 优先的空应答计为拦截。" />
+        <SectionCard v-else class="min-w-0" title="被拦截域名排行" :padded="false">
+          <EmptyState title="暂无法识别拦截查询" :description="rankings.blocked.reason || '当前配置没有可识别的拦截规则，不能仅凭应答结果判断。'" />
+        </SectionCard>
+      </div>
+    </section>
+
+    <SectionCard class="min-w-0" title="上游服务器排行" :description="periodLabel + '，按请求尝试次数排列 · 前 10 项。竞速或重试可能为一次 DNS 查询产生多次上游请求；平均响应时间包含成功和失败的已完成尝试。'" :padded="false">
+      <EmptyState v-if="!upstreams.length" title="暂无上游请求统计" description="尚无上游请求，或当前核心未返回具体上游服务器的指标。" />
+      <div v-else class="cf-table-wrap max-w-full" tabindex="0" role="region" aria-label="上游服务器排行">
+        <table class="cf-table">
+          <thead><tr><th class="min-w-40">上游服务器</th><th class="text-right">请求尝试</th><th class="text-right">失败</th><th class="text-right">平均响应时间</th></tr></thead>
+          <tbody>
+            <tr v-for="upstream in upstreams" :key="upstream.id || upstream.tag + ':' + upstream.upstream">
+              <td><span class="block break-all font-mono text-xs">{{ upstream.address || upstream.upstream }}</span><span class="mt-1 block break-all text-xs text-muted-foreground">{{ upstream.tag }}<template v-if="upstream.address && upstream.address !== upstream.upstream"> · {{ upstream.upstream }}</template></span></td>
+              <td class="num whitespace-nowrap text-right">{{ formatMonitorNumber(upstream.requests) }}</td>
+              <td class="num whitespace-nowrap text-right">{{ formatMonitorNumber(upstream.failed) }}</td>
+              <td class="num whitespace-nowrap text-right">{{ formatMonitorNumber(upstream.avg_latency_ms, 2) }}<span v-if="monitorNumber(upstream.avg_latency_ms)"> ms</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </SectionCard>
+
+    <SectionCard title="缓存统计" :description="periodLabel + '。命中包含新鲜与过期缓存，命中率按缓存查找次数计算；条目数为当前值。'" :padded="false">
       <template v-if="overview.caches.length > 1" #actions>
         <Select v-model="selectedCache">
           <SelectTrigger class="min-h-11 w-[180px]" aria-label="选择缓存实例"><SelectValue /></SelectTrigger>
@@ -38,7 +97,7 @@
       </div>
     </SectionCard>
 
-    <SectionCard title="监听服务统计" description="各 DNS 监听服务自核心启动以来的统计。" :padded="false">
+    <SectionCard title="监听服务统计" :description="'各 DNS 监听服务' + periodLabel + '的统计；处理中为当前值。'" :padded="false">
       <EmptyState v-if="!overview.servers.length" title="暂无监听服务统计" description="核心尚未返回监听服务指标。" />
       <div v-else class="cf-table-wrap" tabindex="0" role="region" aria-label="DNS 监听服务统计">
         <table class="cf-table w-full">
@@ -60,12 +119,35 @@
 </template>
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { Loader2, RotateCcw } from '@lucide/vue'
+import { Button } from '@/components/ui/button'
 import SectionCard from '@/components/common/SectionCard.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import OxiDNSMetric from './OxiDNSMetric.vue'
-import { formatMonitorNumber, monitorNumber, type OxiDNSOverview } from '@/types/oxidnsMonitor'
-const props = defineProps<{ overview: OxiDNSOverview; qps: number | null }>()
+import OxiDNSRankingTable from './OxiDNSRankingTable.vue'
+import { formatMonitorNumber, formatQueryTime, monitorNumber, type OxiDNSOverview, type OxiDNSRankings } from '@/types/oxidnsMonitor'
+const props = defineProps<{ overview: OxiDNSOverview; qps: number | null; recorder?: string; resetting?: boolean }>()
+defineEmits<{ reset: []; recorder: [value: string] }>()
+const periodLabel = computed(() => props.overview.statistics ? '自本轮统计开始以来' : '自核心启动以来')
+const statisticsLabel = computed(() => props.overview.statistics
+  ? '本轮统计开始于 ' + formatQueryTime(props.overview.statistics.started_at_ms)
+  : '当前 Agent 不支持面板统计重置')
+const resetReasons: Record<string, string> = {
+  initial: '首次查看时开始统计', manual: '已手动重置统计', core_changed: '核心重启或重载后已重新统计',
+  configuration_changed: '配置变化后已重新统计', target_changed: '监控目标变化后已重新统计', counters_changed: '插件重新计数后已重新统计'
+}
+const statisticsNote = computed(() => props.overview.statistics
+  ? (resetReasons[props.overview.statistics.reason] || '本轮统计') + '。重置仅影响此设备的面板统计；缓存条目、处理中数量及查询记录保持原样。'
+  : '现有指标仍按核心启动以来展示。重置统计需要 Agent 1.8.14-go 或更新版本。')
+const rankings = computed<OxiDNSRankings | null>(() => props.overview.rankings && 'success' in props.overview.rankings && props.overview.rankings.success === true ? props.overview.rankings : null)
+const rankingsDescription = computed(() => rankings.value
+  ? '从本轮起点起，在记录器「' + rankings.value.recorder + '」保留的记录中，分别取最近 ' + formatMonitorNumber(rankings.value.sample_limit) + ' 条统计前 10 项；这是记录样本排行，不是全量累计。域名按问题名计数，一条查询可包含多个问题。' + (monitorNumber(rankings.value.retention_days) ? '核心保留期 ' + formatMonitorNumber(rankings.value.retention_days) + ' 天。' : '')
+  : '排行依据核心保留的查询记录计算。')
+const rankingsUnavailableReason = computed(() => props.overview.rankings && 'reason' in props.overview.rankings
+  ? props.overview.rankings.reason : '当前 Agent 未返回排行数据，请确认已启用查询记录并升级 Agent。')
+const upstreams = computed(() => [...(props.overview.upstreams || [])]
+  .sort((left, right) => (right.requests ?? -1) - (left.requests ?? -1) || left.tag.localeCompare(right.tag) || left.upstream.localeCompare(right.upstream)).slice(0, 10))
 const selectedCache = ref('__all__')
 const selectedTag = computed(() => selectedCache.value.startsWith('cache:') ? selectedCache.value.slice(6) : '')
 watch(() => props.overview.caches, caches => {

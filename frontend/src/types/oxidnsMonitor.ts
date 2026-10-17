@@ -12,12 +12,40 @@ export interface OxiDNSCache {
   hit_rate: MonitorNumber
 }
 
+export interface OxiDNSRanking {
+  sample_size: number
+  rows: Array<{ key: string; count: number; share: number }>
+  at_limit: boolean
+}
+export interface OxiDNSRankings {
+  success: true
+  recorder: string
+  collected_at_ms: number
+  source_revision: string
+  instance_id: string
+  retention_days: MonitorNumber
+  sample_limit: number
+  clients: OxiDNSRanking
+  domains: OxiDNSRanking
+  blocked: OxiDNSRanking & { available: boolean; reason: string; matcher_tag?: string }
+}
 export interface OxiDNSOverview {
   success: true
   agent: { id: string; name: string; host: string; profile_id?: string; version: string; status: string }
   collected_at: string
   core: { version: string | null; status: string; uptime_ms: MonitorNumber; instance_id: string | null }
   recorders: string[]
+  statistics?: {
+    generation: string
+    started_at_ms: number
+    reason: 'initial' | 'manual' | 'core_changed' | 'configuration_changed' | 'target_changed' | 'counters_changed'
+    partial: boolean
+  } | null
+  rankings?: OxiDNSRankings | { available: false; reason: string }
+  upstreams?: Array<{
+    id?: string; tag: string; upstream: string; address?: string
+    requests: MonitorNumber; failed: MonitorNumber; avg_latency_ms: MonitorNumber
+  }>
   metrics: {
     requests_total: MonitorNumber
     failed_total: MonitorNumber

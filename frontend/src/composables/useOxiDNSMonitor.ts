@@ -12,6 +12,8 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
   const overview = ref<OxiDNSOverview | null>(null)
   const overviewLoading = ref(false)
   const overviewError = ref('')
+  const resettingStatistics = ref(false)
+  const resetError = ref('')
   const qps = ref<number | null>(null)
   const queries = ref<OxiDNSQueries | null>(null)
   const queriesLoading = ref(false)
@@ -23,6 +25,8 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
   const page = computed(() => cursors.value.length)
   const hasNext = computed(() => Boolean(queries.value?.next_cursor))
   let overviewController: AbortController | undefined
+  let resetController: AbortController | undefined
+  let overviewRequest = 0
   let queryController: AbortController | undefined
   let epoch = 0
   let disposed = false
@@ -64,32 +68,60 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
       if (requestEpoch === queryEpoch) queriesLoading.value = false
     }
   }
-  async function loadOverview() {
-    if (disposed || overviewLoading.value) return
+  function applyOverview(next: OxiDNSOverview, clearQps = false) {
+    const prior = overview.value
+    const seconds = prior ? (Date.parse(next.collected_at) - Date.parse(prior.collected_at)) / 1000 : 0
+    const currentCount = next.metrics.requests_total
+    const priorCount = prior?.metrics.requests_total
+    qps.value = !clearQps && prior && next.core.instance_id && prior.core.instance_id === next.core.instance_id
+      && prior.statistics?.generation === next.statistics?.generation
+      && monitorNumber(currentCount) && monitorNumber(priorCount) && currentCount >= priorCount && seconds > 0
+      ? (currentCount - priorCount) / seconds : null
+    overview.value = next
+    if (!next.recorders.includes(recorder.value)) {
+      recorder.value = next.recorders[0] || ''
+      resetQueries()
+    }
+  }
+  async function loadOverview(force = false) {
+    if (disposed || resettingStatistics.value || (overviewLoading.value && !force)) return
+    overviewController?.abort()
     const controller = overviewController = new AbortController()
     const requestEpoch = epoch
+    const requestNumber = ++overviewRequest
     overviewLoading.value = true
     overviewError.value = ''
     try {
-      const { data } = await oxidnsMonitorApi.overview(agentId.value, { signal: controller.signal })
-      if (controller.signal.aborted || requestEpoch !== epoch) return
-      const next = checked(data) as OxiDNSOverview
-      const prior = overview.value
-      const seconds = prior ? (Date.parse(next.collected_at) - Date.parse(prior.collected_at)) / 1000 : 0
-      const currentCount = next.metrics.requests_total
-      const priorCount = prior?.metrics.requests_total
-      qps.value = prior && next.core.instance_id && prior.core.instance_id === next.core.instance_id
-        && monitorNumber(currentCount) && monitorNumber(priorCount) && currentCount >= priorCount && seconds > 0
-        ? (currentCount - priorCount) / seconds : null
-      overview.value = next
-      if (!next.recorders.includes(recorder.value)) {
-        recorder.value = next.recorders[0] || ''
-        resetQueries()
-      }
+      const { data } = await oxidnsMonitorApi.overview(agentId.value, { signal: controller.signal, recorder: recorder.value || undefined })
+      if (controller.signal.aborted || requestEpoch !== epoch || requestNumber !== overviewRequest) return
+      applyOverview(checked(data) as OxiDNSOverview)
     } catch (error) {
-      if (!controller.signal.aborted && requestEpoch === epoch) overviewError.value = messageOf(error)
+      if (!controller.signal.aborted && requestEpoch === epoch && requestNumber === overviewRequest) overviewError.value = messageOf(error)
     } finally {
-      if (requestEpoch === epoch) overviewLoading.value = false
+      if (requestEpoch === epoch && requestNumber === overviewRequest) overviewLoading.value = false
+    }
+  }
+  async function resetStatistics(): Promise<boolean> {
+    if (disposed || resettingStatistics.value || !overview.value?.statistics) return false
+    overviewController?.abort()
+    overviewRequest++
+    overviewLoading.value = false
+    const controller = resetController = new AbortController()
+    const requestEpoch = epoch
+    const requestAgent = agentId.value
+    resettingStatistics.value = true
+    resetError.value = ''
+    try {
+      const { data } = await oxidnsMonitorApi.resetStatistics(requestAgent, recorder.value || undefined, { signal: controller.signal })
+      if (controller.signal.aborted || requestEpoch !== epoch || requestAgent !== agentId.value) return false
+      applyOverview(checked(data) as OxiDNSOverview, true)
+      overviewError.value = ''
+      return true
+    } catch (error) {
+      if (!controller.signal.aborted && requestEpoch === epoch) resetError.value = messageOf(error)
+      return false
+    } finally {
+      if (requestEpoch === epoch) resettingStatistics.value = false
     }
   }
   function resetQueries() {
@@ -103,9 +135,10 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
     if (tab.value === 'queries' && recorder.value) void loadQueries()
   }
   function selectRecorder(value: string) {
-    if (value === recorder.value) return
+    if (value === recorder.value || resettingStatistics.value || !overview.value?.recorders.includes(value)) return
     recorder.value = value
     resetQueries()
+    void loadOverview(true)
   }
   function applyFilters(value: OxiDNSQueryFilters) {
     filters.value = { ...value }
@@ -144,6 +177,10 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
   watch(agentId, () => {
     epoch++
     overviewController?.abort()
+    resetController?.abort()
+    overviewRequest++
+    resettingStatistics.value = false
+    resetError.value = ''
     queryController?.abort()
     queryEpoch++
     overviewLoading.value = false
@@ -165,10 +202,11 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
     epoch++
     queryEpoch++
     overviewController?.abort()
+    resetController?.abort()
     queryController?.abort()
     if (timer) clearInterval(timer)
     document.removeEventListener('visibilitychange', onVisible)
   })
-  return { overview, overviewLoading, overviewError, qps, queries, queriesLoading, queriesError, recorder,
+  return { overview, overviewLoading, overviewError, resettingStatistics, resetError, resetStatistics, qps, queries, queriesLoading, queriesError, recorder,
     filters, page, hasNext, autoRefresh, refresh, loadQueries, selectRecorder, applyFilters, nextPage, previousPage }
 }

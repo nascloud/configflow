@@ -8,6 +8,7 @@ import (
 func RegisterRoutes(mux *http.ServeMux, cfg *Config) {
 	monitor := oxidnsMonitorAuth(cfg, OxiDNSMonitorHandler(cfg))
 	mux.HandleFunc("/api/oxidns/overview", monitor)
+	mux.HandleFunc("/api/oxidns/rankings", monitor)
 	mux.HandleFunc("/api/oxidns/clients", monitor)
 	mux.HandleFunc("/api/oxidns/queries", monitor)
 	mux.HandleFunc("/api/oxidns/queries/", monitor)

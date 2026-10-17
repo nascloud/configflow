@@ -63,7 +63,8 @@
             </EmptyState>
           </SectionCard>
         </template>
-        <TabsContent value="overview"><OxiDNSOverviewPanel v-if="overview" :overview="overview" :qps="qps" /></TabsContent>
+        <TabsContent value="overview"><OxiDNSOverviewPanel v-if="overview" :overview="overview" :qps="qps" :recorder="recorder" :resetting="resettingStatistics"
+          @reset="confirmResetStatistics" @recorder="selectRecorder" /></TabsContent>
         <TabsContent value="queries">
           <SectionCard v-if="overview && !overview.recorders.length">
             <EmptyState :icon="Search" title="尚未启用查询记录" description="在此 Agent 绑定的配置空间中，进入「配置生成 → OxiDNS → 设置」启用查询记录，保存后推送到此 Agent。" />
@@ -79,7 +80,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { RefreshCw, Search, Server, TriangleAlert } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
@@ -98,6 +99,7 @@ import OxiDNSDevicePolicies from '@/components/agents/OxiDNSDevicePolicies.vue'
 import { useOxiDNSMonitor } from '@/composables/useOxiDNSMonitor'
 import { oxidnsMonitorPath, rememberOxiDNSDevice, useOxiDNSDevices } from '@/composables/useOxiDNSDevices'
 import { monitorNumber, type OxiDNSQuery } from '@/types/oxidnsMonitor'
+import { confirm, notify } from '@/lib/feedback'
 const route = useRoute()
 const router = useRouter()
 const agentId = computed(() => String(route.params.agentId || ''))
@@ -110,7 +112,7 @@ async function changeTab(value: string) {
   if (value !== tab.value && await canLeavePolicy()) tab.value = value
 }
 const selectedRecord = ref<OxiDNSQuery | null>(null)
-const { overview, overviewLoading, overviewError, qps, queries, queriesLoading, queriesError, recorder, filters,
+const { overview, overviewLoading, overviewError, resettingStatistics, resetError, resetStatistics, qps, queries, queriesLoading, queriesError, recorder, filters,
   page, hasNext, autoRefresh, refresh, loadQueries, selectRecorder, applyFilters, nextPage, previousPage } = useOxiDNSMonitor(agentId, tab)
 const { devices, loading: devicesLoading, error: devicesError, load: loadDevices } = useOxiDNSDevices()
 const currentDevice = computed(() => devices.value?.find(device => device.id === agentId.value) || overview.value?.agent)
@@ -137,6 +139,18 @@ async function switchDevice(id: string) {
 }
 async function refreshAll() {
   await Promise.allSettled([loadDevices(), refresh(true)])
+}
+let disposed = false
+onUnmounted(() => { disposed = true })
+async function confirmResetStatistics() {
+  if (resettingStatistics.value || !overview.value?.statistics) return
+  const requestAgent = agentId.value
+  const accepted = await confirm('将从现在起重新计算「' + (currentDevice.value?.name || requestAgent) + '」的累计指标和请求排行，所有查看此设备的页面都会使用新起点。查询记录和 DNS 服务保持不变。', {
+    title: '重置面板统计？', confirmText: '重新开始统计'
+  })
+  if (!accepted || disposed || requestAgent !== agentId.value) return
+  if (await resetStatistics()) notify.success('已重新开始统计', '查询记录已保留，DNS 服务持续运行。')
+  else if (resetError.value) notify.error('重置统计失败', resetError.value)
 }
 const coreRunning = computed(() => ['running', 'online', 'healthy', 'ready', 'ok'].includes(overview.value?.core.status || ''))
 const sampleTime = computed(() => overview.value ? new Date(overview.value.collected_at).toLocaleTimeString() : '—')

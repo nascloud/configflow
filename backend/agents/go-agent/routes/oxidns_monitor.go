@@ -70,6 +70,7 @@ type oxMonitorConfig struct {
 	basicAuth      bool
 	capabilities   oxMonitorCapabilities
 	sourceRevision string
+	rankings       oxRankingConfig
 }
 
 func oxMonitorConfigError() *oxMonitorError {
@@ -167,6 +168,7 @@ func loadOxiDNSMonitorConfig(cfg *Config) (*oxMonitorConfig, *oxMonitorError) {
 	}
 	sort.Strings(config.capabilities.QueryRecorders)
 	sort.Strings(config.capabilities.Caches)
+	config.rankings = oxMonitorRankingConfig(plugins)
 	return config, nil
 }
 
@@ -616,6 +618,7 @@ func oxMonitorHandlerWithSources(cfg *Config, sources *oxSourceCache) http.Handl
 		}
 		path := r.URL.Path
 		overview := path == "/api/oxidns/overview"
+		rankings := path == "/api/oxidns/rankings"
 		clients := path == "/api/oxidns/clients"
 		detail := strings.HasPrefix(path, "/api/oxidns/queries/")
 		id := ""
@@ -627,7 +630,7 @@ func oxMonitorHandlerWithSources(cfg *Config, sources *oxSourceCache) http.Handl
 				return
 			}
 		}
-		if (!overview && !clients && !detail && path != "/api/oxidns/queries") || r.URL.EscapedPath() != path {
+		if (!overview && !rankings && !clients && !detail && path != "/api/oxidns/queries") || r.URL.EscapedPath() != path {
 			oxMonitorWriteError(w, oxMonitorFail(http.StatusNotFound, "NOT_FOUND", "Unknown monitoring endpoint"))
 			return
 		}
@@ -640,7 +643,9 @@ func oxMonitorHandlerWithSources(cfg *Config, sources *oxSourceCache) http.Handl
 			}
 		} else {
 			var queryErr *oxMonitorError
-			if clients {
+			if rankings {
+				recorder, query, queryErr = oxMonitorParseRankings(r.URL.RawQuery)
+			} else if clients {
 				recorder, query, queryErr = oxMonitorParseClients(r.URL.RawQuery)
 			} else {
 				recorder, query, queryErr = oxMonitorParseQuery(r.URL.RawQuery, detail)
@@ -651,7 +656,7 @@ func oxMonitorHandlerWithSources(cfg *Config, sources *oxSourceCache) http.Handl
 			}
 		}
 		config, configErr := loadOxiDNSMonitorConfig(cfg)
-		wantSources := !overview && !clients && !detail && r.Header.Get(oxSourceHeader) == "1"
+		wantSources := !overview && !rankings && !clients && !detail && r.Header.Get(oxSourceHeader) == "1"
 		if configErr != nil {
 			if wantSources {
 				sources.reset()
@@ -663,8 +668,17 @@ func oxMonitorHandlerWithSources(cfg *Config, sources *oxSourceCache) http.Handl
 		defer cancel()
 		client := oxMonitorClient()
 		defer client.CloseIdleConnections()
+		if rankings {
+			config.writeRankings(w, ctx, client, cfg, recorder, query)
+			return
+		}
 		if overview {
 			health, err := config.fetch(ctx, client, "/api/health", nil, oxMonitorJSONLimit, true)
+			if err != nil {
+				oxMonitorWriteError(w, err)
+				return
+			}
+			running, err := config.runtimeSnapshot(ctx, client)
 			if err != nil {
 				oxMonitorWriteError(w, err)
 				return
@@ -674,7 +688,12 @@ func oxMonitorHandlerWithSources(cfg *Config, sources *oxSourceCache) http.Handl
 				oxMonitorWriteError(w, err)
 				return
 			}
-			JsonResponse(w, http.StatusOK, map[string]interface{}{"success": true, "capabilities": config.capabilities, "health": json.RawMessage(health), "metrics": string(metrics)})
+			collectedAt := time.Now().UnixMilli()
+			if err := config.verifySnapshot(ctx, client, cfg, health, running); err != nil {
+				oxMonitorWriteError(w, err)
+				return
+			}
+			JsonResponse(w, http.StatusOK, map[string]interface{}{"success": true, "capabilities": config.capabilities, "health": json.RawMessage(health), "metrics": string(metrics), "collected_at_ms": collectedAt, "source_revision": config.sourceRevision, "runtime_revision": running.revision(), "upstream_labels": config.rankings.upstreams})
 			return
 		}
 		tag, err := config.recorder(recorder)
