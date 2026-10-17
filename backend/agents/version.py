@@ -1,10 +1,17 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.7.1-go"
+LATEST_AGENT_VERSION = "1.8.0-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.0-go": {
+        "date": "2026-10-17",
+        "features": [
+            "回流规则管理：按 ConfigFlow 下发的期望状态维护独立 nft 表与策略路由，可接管同标记的手工规则并支持恢复",
+            "Agent 启动时自动重新应用已发布的回流规则"
+        ]
+    },
     "1.7.1-go": {
         "date": "2026-10-17",
         "features": [
