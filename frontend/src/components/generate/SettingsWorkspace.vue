@@ -16,6 +16,7 @@ const props = withDefaults(defineProps<{
   busy?: boolean
   saveDisabled?: boolean
   saveLabel?: string
+  backLabel?: string
   size?: 'wide' | 'form' | 'compact'
 }>(), {
   description: '',
@@ -23,6 +24,7 @@ const props = withDefaults(defineProps<{
   busy: false,
   saveDisabled: false,
   saveLabel: '保存',
+  backLabel: '返回生成工作台',
   size: 'wide',
 })
 
@@ -152,8 +154,8 @@ useEventListener('beforeunload', (event: BeforeUnloadEvent) => {
         <Button
           variant="ghost"
           class="size-11 shrink-0"
-          aria-label="返回生成工作台"
-          title="返回生成工作台"
+          :aria-label="backLabel"
+          :title="backLabel"
           :disabled="busy || confirmingClose"
           @click="requestClose"
         >

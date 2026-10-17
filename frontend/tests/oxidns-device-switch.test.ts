@@ -66,6 +66,26 @@ afterEach(() => {
 })
 
 describe('OxiDNS monitor device selection', () => {
+  it('opens general settings for the selected offline Agent without requiring monitor data', async () => {
+    vi.mocked(oxidnsMonitorApi.overview).mockRejectedValueOnce(new Error('核心未运行'))
+    const { wrapper } = await render('/agents/two/oxidns')
+    vi.mocked(agentApi.getAll).mockResolvedValueOnce(response([{ ...device('two', 'offline'), profile_id: 'office' }]))
+    await wrapper.findAll('button').find(button => button.text() === '设置')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="recorder-settings"]').text()).toBe('office ·  · 办公室 · Device two')
+  })
+  it('ignores a settings lookup that returns after switching devices', async () => {
+    const { wrapper, router } = await render()
+    let finish!: (value: any) => void
+    vi.mocked(agentApi.getAll).mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    await wrapper.findAll('button').find(button => button.text() === '设置')!.trigger('click')
+    await router.replace('/agents/two/oxidns')
+    await flushPromises()
+    finish(response([{ ...device('one'), profile_id: 'office' }]))
+    await flushPromises()
+    expect(wrapper.find('[data-test="recorder-settings"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Device two')
+  })
   it('opens recorder settings for the fresh Agent binding, not the sidebar or old snapshot profile', async () => {
     vi.mocked(oxidnsMonitorApi.overview).mockImplementation(async id => response({ ...snapshot(id), recorders: [] }))
     const { wrapper } = await render('/agents/one/oxidns?tab=queries')
@@ -83,10 +103,9 @@ describe('OxiDNS monitor device selection', () => {
     expect(wrapper.get('[data-test="recorder-settings"]').text()).toContain('home · query_recorder · 家庭')
   })
   it('shows a settings lookup error without opening an editor for the wrong profile', async () => {
-    vi.mocked(oxidnsMonitorApi.overview).mockImplementation(async id => response({ ...snapshot(id), recorders: [] }))
     vi.mocked(profileApi.list).mockRejectedValueOnce(new Error('配置空间读取失败'))
-    const { wrapper } = await render('/agents/one/oxidns?tab=queries')
-    await wrapper.findAll('button').find(button => button.text() === '前往设置')!.trigger('click')
+    const { wrapper } = await render()
+    await wrapper.findAll('button').find(button => button.text() === '设置')!.trigger('click')
     await flushPromises()
     expect(wrapper.get('[role="alert"]').text()).toContain('配置空间读取失败')
     expect(wrapper.find('[data-test="recorder-settings"]').exists()).toBe(false)
