@@ -195,6 +195,26 @@ describe('OxiDNS monitor display', () => {
     expect(wrapper.text()).toContain('本页 1 条')
     expect(oxidnsMonitorApi.query).toHaveBeenCalledTimes(1)
   })
+  it('explains an IPv4 preference empty answer without inventing an upstream or cache hit', async () => {
+    vi.mocked(oxidnsMonitorApi.query).mockResolvedValue(response({ success: true, recorder: 'queries', record: {
+      ...queryRecord, questions_json: [{ name: 'api.telegram.org.', qtype: 'AAAA', qclass: 'IN' }],
+      rcode: 'No Error', answer_count: 0, answers_json: [],
+      steps: ['entered', 'stop'].map((outcome, event_index) => ({
+        event_index, sequence_tag: 'sequence_main', node_index: 2, kind: 'executor',
+        tag: 'qs.exec.sequence_main.2.prefer_ipv4', outcome
+      }))
+    } }))
+    wrappers.push(mount(OxiDNSQueryDetail, { attachTo: document.body, props: { agentId: 'one', recorder: 'queries', recordId: 12 } }))
+    await flushPromises()
+    const source = document.querySelector('[aria-label="解析来源"]')!
+    expect(source.textContent).toContain('IPv4 优先（抑制 AAAA）')
+    expect(source.textContent).toContain('由本地 IPv4 优先策略生成空应答，使客户端优先使用 IPv4。')
+    expect(source.textContent).not.toContain('远程 DNS')
+    expect(source.textContent).not.toContain('缓存')
+    expect(document.body.textContent).toContain('NOERROR')
+    expect(document.body.textContent).toContain('这次查询没有应答记录。')
+    expect(document.body.textContent).toContain('qs.exec.sequence_main.2.prefer_ipv4')
+  })
   it('renders actual answer content and only actual recorded steps in query details', async () => {
     vi.mocked(oxidnsMonitorApi.query).mockResolvedValue(response({ success: true, recorder: 'queries', record: {
       ...queryRecord, steps: [{ event_index: 0, sequence_tag: 'main', node_index: 1, kind: 'matcher', tag: 'allow_list', outcome: 'matched' }]

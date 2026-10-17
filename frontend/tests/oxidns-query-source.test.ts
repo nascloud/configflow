@@ -17,6 +17,16 @@ const probeHit = [step('local_probe_cache', 'entered', 'executor', 'local_probe'
   step('qs.match.local_probe.1.0.has_resp', 'not_matched', 'matcher', 'local_probe'),
   step('return', 'return', 'builtin', 'local_probe'), step('local_probe_cache', 'return', 'executor', 'local_probe')]
 
+const suppressedAAAA: OxiDNSQuery = {
+  ...row, id: 160909, client_ip: '192.168.0.105',
+  questions_json: [{ name: 'api.telegram.org.', qtype: 'AAAA', qclass: 'IN' }],
+  steps: ['entered', 'stop'].map((outcome, event_index) => ({
+    event_index, sequence_tag: 'sequence_main', node_index: 2, kind: 'executor',
+    tag: 'qs.exec.sequence_main.2.prefer_ipv4', outcome
+  }))
+}
+const preferredLabel = 'IPv4 优先（抑制 AAAA）'
+
 describe('query source from the standard ConfigFlow trace', () => {
   it.each([['forward_local', '本地 DNS'], ['forward_remote', '远程 DNS'], ['forward_fallback', '备用 DNS']])('summarizes %s', (tag, expected) => {
     expect(label(...run(tag))).toBe(expected)
@@ -55,6 +65,53 @@ describe('query source from the standard ConfigFlow trace', () => {
   })
 })
 
+describe('IPv4 preference source', () => {
+  it.each(['NOERROR', 'No Error', 'noerror', '0', 0])('recognizes the reported suppressed AAAA with rcode %s', rcode => {
+    expect(querySourceLabel({ ...suppressedAAAA, rcode })).toBe(preferredLabel)
+  })
+  it.each(['AAAA', 'aaaa', '28', 28])('accepts DNS question type %s', qtype => {
+    expect(querySourceLabel({ ...suppressedAAAA, questions_json: [{ ...suppressedAAAA.questions_json[0], qtype }] })).toBe(preferredLabel)
+  })
+  it.each(['unknown', 'unrecorded'] as const)('refines an older %s summary only when the full trace is available', resolution_source => {
+    expect(querySourceLabel({ ...suppressedAAAA, resolution_source })).toBe(preferredLabel)
+    expect(querySourceLabel({ ...suppressedAAAA, resolution_source, steps: [] })).toBe(resolution_source === 'unknown' ? '未识别' : '未记录')
+  })
+  it('uses the Agent summary without requiring the trace', () => {
+    expect(querySourceLabel({ ...suppressedAAAA, steps: undefined, resolution_source: 'ipv4_preferred' })).toBe(preferredLabel)
+    expect(querySourceLabel({ ...suppressedAAAA, resolution_source: 'remote' })).toBe('远程 DNS')
+  })
+  it.each([
+    { questions_json: [{ name: 'example.test', qtype: 'A', qclass: 'IN' }] },
+    { questions_json: [] }, { questions_json: [...suppressedAAAA.questions_json, ...suppressedAAAA.questions_json] },
+    { questions_json: [{ name: 'example.test', qtype: [28], qclass: 'IN' }] },
+    { rcode: 'NXDOMAIN' }, { rcode: null }, { rcode: [0] },
+    { answer_count: 1 }, { answer_count: undefined }, { answer_count: null }, { answer_count: '0' },
+    { steps: suppressedAAAA.steps!.slice(1) }, { steps: suppressedAAAA.steps!.slice(0, 1) },
+    { steps: suppressedAAAA.steps!.map(s => ({ ...s, outcome: s.outcome === 'stop' ? 'next' : s.outcome })) },
+    { steps: suppressedAAAA.steps!.map(s => ({ ...s, outcome: s.outcome === 'stop' ? 'error' : s.outcome })) },
+    { steps: suppressedAAAA.steps!.map(s => ({ ...s, tag: 'custom.prefer_ipv4' })) },
+    { steps: suppressedAAAA.steps!.map(s => ({ ...s, tag: 'qs.custom.sequence_main.2.prefer_ipv4' })) },
+    { steps: suppressedAAAA.steps!.map(s => ({ ...s, node_index: null })) },
+    { steps: suppressedAAAA.steps!.map(s => ({ ...s, node_index: 3 })) },
+    { steps: [suppressedAAAA.steps![0], { ...suppressedAAAA.steps![1], sequence_tag: 'other' }] }
+  ])('does not infer suppression from incomplete or contradictory evidence: %j', patch => {
+    expect(querySourceLabel({ ...suppressedAAAA, ...patch } as OxiDNSQuery)).toBe('未识别')
+  })
+  it('keeps actual forwarding when prefer_ipv4 wraps downstream execution', () => {
+    expect(querySourceLabel({ ...suppressedAAAA, steps: [suppressedAAAA.steps![0], ...run('forward_remote'), suppressedAAAA.steps![1]] })).toBe('远程 DNS')
+  })
+  it('does not confuse a cache miss wrapping suppression with a cache hit', () => {
+    expect(querySourceLabel({ ...suppressedAAAA, steps: [step('lazy_cache', 'entered'), ...suppressedAAAA.steps!, step('lazy_cache', 'stop')] })).toBe(preferredLabel)
+    expect(querySourceLabel({ ...suppressedAAAA, steps: run('lazy_cache', 'stop') })).toBe('缓存')
+  })
+  it('still reports errors, missing responses, discarded responses and later forwards accurately', () => {
+    expect(querySourceLabel({ ...suppressedAAAA, error: 'timeout' })).toBe('处理错误')
+    expect(querySourceLabel({ ...suppressedAAAA, has_response: false })).toBe('无应答')
+    expect(querySourceLabel({ ...suppressedAAAA, steps: [...suppressedAAAA.steps!, ...run('qs.exec.main.1.drop_resp')] })).toBe('未识别')
+    expect(querySourceLabel({ ...suppressedAAAA, steps: [...suppressedAAAA.steps!, ...run('forward_local')] })).toBe('本地 DNS')
+  })
+})
+
 let wrapper: VueWrapper | undefined
 beforeEach(() => { vi.resetAllMocks(); Object.defineProperty(document, 'hidden', { configurable: true, value: false }) })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined })
@@ -74,6 +131,22 @@ function deferred() {
   return { promise, resolve }
 }
 describe('query list source loading', () => {
+  it('displays an inline IPv4 preference summary without requesting details', async () => {
+    const { input, model } = harness(0)
+    const record: OxiDNSQuery = { ...suppressedAAAA, steps: undefined, resolution_source: 'ipv4_preferred' }
+    input.data = { ...input.data!, records: [record] }
+    await flushPromises()
+    expect(model.sourceOf(record).label).toBe(preferredLabel)
+    expect(oxidnsMonitorApi.query).not.toHaveBeenCalled()
+  })
+  it('classifies suppressed AAAA through the historical detail fallback', async () => {
+    vi.mocked(oxidnsMonitorApi.query).mockResolvedValue({ data: { success: true, record: { ...suppressedAAAA, id: 1 } } } as any)
+    const { input, model } = harness()
+    await flushPromises()
+    expect(model.sourceOf(input.data!.records[0]).label).toBe(preferredLabel)
+    expect(oxidnsMonitorApi.query).toHaveBeenCalledTimes(1)
+  })
+
   it('uses fifty Agent stream summaries without requesting any details', async () => {
     const { input, model } = harness(0)
     input.data = { ...input.data!, records: Array.from({ length: 50 }, (_, i) => ({

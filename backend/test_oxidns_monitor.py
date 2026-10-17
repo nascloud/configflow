@@ -143,7 +143,7 @@ def test_query_detail_is_flat_and_read_only(monkeypatch):
 
 
 @pytest.mark.parametrize('source', ['local', 'remote', 'fallback', 'cache', 'hosts', 'blocked',
-                                    'rejected', 'unknown', 'unrecorded', 'error', 'no_response'])
+                                    'rejected', 'unknown', 'unrecorded', 'error', 'no_response', 'ipv4_preferred'])
 def test_list_preserves_agent_source_summary_without_trace_requests(monkeypatch, source):
     calls = install_transport(monkeypatch, Response({'ok': True, 'records': [
         {**ROW, 'resolution_source': source, 'source_credentials': 'never forward'}], 'next_cursor': None}))

@@ -2,6 +2,7 @@ package routes
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -20,12 +21,53 @@ type oxSourceRecord struct {
 	Client      string          `json:"client_ip"`
 	Questions   json.RawMessage `json:"questions_json"`
 	HasResponse bool            `json:"has_response"`
+	Rcode       json.RawMessage `json:"rcode"`
+	AnswerCount json.RawMessage `json:"answer_count"`
 	Error       *string         `json:"error"`
 	Steps       []oxSourceStep  `json:"steps"`
 }
 
 func oxSourceQuick(tag, kind string) bool {
 	return strings.HasPrefix(tag, "qs.") && strings.HasSuffix(tag, "."+kind)
+}
+
+// The official API emits text DNS types/codes; tolerate their equivalent numeric
+// JSON forms without treating missing, null, boolean or object values as zero.
+func oxSourceToken(raw json.RawMessage, number float64, names ...string) bool {
+	var value interface{}
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	switch value := value.(type) {
+	case float64:
+		return value == number
+	case string:
+		value = strings.ToUpper(strings.TrimSpace(value))
+		for _, name := range names {
+			if value == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func oxSourceIPv4Selector(step oxSourceStep) bool {
+	return step.Node != nil && *step.Node >= 0 && step.Sequence != "" &&
+		step.Tag == "qs.exec."+step.Sequence+"."+strconv.Itoa(*step.Node)+".prefer_ipv4"
+}
+
+func oxSourceIPv4SuppressedResponse(record oxSourceRecord) bool {
+	var questions []struct {
+		Qtype json.RawMessage `json:"qtype"`
+	}
+	if json.Unmarshal(record.Questions, &questions) != nil || len(questions) != 1 ||
+		!oxSourceToken(questions[0].Qtype, 28, "AAAA", "28") ||
+		!oxSourceToken(record.Rcode, 0, "NO ERROR", "NOERROR", "0") {
+		return false
+	}
+	// No string aliases here: answer_count must be explicitly numeric zero.
+	return oxSourceToken(record.AnswerCount, 0)
 }
 
 // These are ConfigFlow's standard path labels, not the server selected inside a
@@ -99,7 +141,12 @@ func oxQuerySource(record oxSourceRecord) string {
 				}
 			}
 		default:
-			if step.Tag == "drop_resp" || oxSourceQuick(step.Tag, "drop_resp") {
+			if oxSourceIPv4Selector(step) && step.Outcome == "stop" &&
+				i == start+1 && oxSourceIPv4SuppressedResponse(record) {
+				// Suppression retains only the selector's entered/stop pair. Its
+				// isolated probe may still have contacted upstream DNS servers.
+				source = "ipv4_preferred"
+			} else if step.Tag == "drop_resp" || oxSourceQuick(step.Tag, "drop_resp") {
 				source = "unknown"
 			}
 		}

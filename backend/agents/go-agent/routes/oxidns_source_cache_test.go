@@ -383,3 +383,25 @@ func TestOxSourceCacheIdleAndMalformedRecords(t *testing.T) {
 		t.Fatal("idle subscriber was retained")
 	}
 }
+
+func TestOxSourceCacheIPv4SuppressionSummary(t *testing.T) {
+	cache := newOxSourceCache()
+	defer cache.close()
+	stream := oxSourceTestStream(cache, "queries")
+	stream.put([]byte(oxIPv4PolicyUserTrace))
+	var row map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(oxIPv4PolicyUserTrace), &row); err != nil {
+		t.Fatal(err)
+	}
+	delete(row, "steps")
+	list := oxSourceTestJSON(map[string]interface{}{"ok": true, "records": []interface{}{row}, "next_cursor": nil})
+	var response struct {
+		Records []map[string]interface{} `json:"records"`
+	}
+	if err := json.Unmarshal(stream.enrich(context.Background(), list), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Records) != 1 || response.Records[0]["resolution_source"] != "ipv4_preferred" || response.Records[0]["steps"] != nil {
+		t.Fatalf("expected compact IPv4 policy summary, got %v", response.Records)
+	}
+}
