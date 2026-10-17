@@ -297,6 +297,7 @@ class ProfileRepository:
     MIN_LOCK_TIMEOUT_SECONDS = 0.1
     MAX_LOCK_TIMEOUT_SECONDS = 3600.0
     LOCK_POLL_INTERVAL_SECONDS = 0.05
+    DOCUMENT_CACHE_MAX_BYTES = 8 * 1024 * 1024
 
     def __init__(self, data_dir, default_config_factory=None, initial_config_factory=None):
         self.data_dir = Path(data_dir).expanduser().resolve()
@@ -307,6 +308,8 @@ class ProfileRepository:
         self._default_config_factory = default_config_factory
         self._initial_config_factory = initial_config_factory
         self._local = threading.local()
+        # One validated generation only; public readers return independent values.
+        self._document_cache = None
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.profiles_dir.mkdir(parents=True, exist_ok=True)
         with self._lock(self.initialization_lock_file):
@@ -567,6 +570,33 @@ class ProfileRepository:
                         temporary.unlink()
             raise
 
+    def _document_signature(self):
+        # POSIX ctime changes even when an editor restores the old mtime and
+        # length. Windows ctime is creation time, so do not cache there.
+        if os.name == 'nt':
+            return None
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return None
+        if stat.st_size > self.DOCUMENT_CACHE_MAX_BYTES:
+            return None
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+    def _read_document_locked(self):
+        signature = self._document_signature()
+        if signature is not None and self._document_cache is not None:
+            cached_signature, document = self._document_cache
+            if signature == cached_signature:
+                return document
+        self._document_cache = None
+        document = self._read_recoverable(self.path, self._validate_document)
+        # Recovery, replacement or an uncoordinated edit during the read must
+        # never label an older document with the newer file's signature.
+        if signature is not None and signature == self._document_signature():
+            self._document_cache = (signature, document)
+        return document
+
     @contextmanager
     def _document(self, write=False):
         nested = getattr(self._local, 'document', None)
@@ -576,7 +606,12 @@ class ProfileRepository:
             yield nested
             return
         with self._lock(self.initialization_lock_file):
-            document = self._read_recoverable(self.path, self._validate_document)
+            document = self._read_document_locked()
+            if write:
+                # Never expose the cached generation to a mutating transaction,
+                # including callbacks which fail before validation or commit.
+                self._document_cache = None
+                document = copy.deepcopy(document)
             self._local.document = document
             try:
                 yield document
@@ -587,6 +622,8 @@ class ProfileRepository:
                         self._write_json(self.path, document)
             finally:
                 self._local.document = None
+                if write:
+                    self._document_cache = None
 
     @staticmethod
     def _profile(document, profile_id):
@@ -844,7 +881,7 @@ class ProfileRepository:
         if resource_type not in SHARED_FIELDS:
             raise ProfileValidationError('未知资源类型')
         with self._document() as document:
-            return self._resource_usage(document, resource_type, resource_id)
+            return copy.deepcopy(self._resource_usage(document, resource_type, resource_id))
 
     def _resolve_profile(self, document, profile_id, resource_roots=None):
         profile = self._profile(document, profile_id)
@@ -868,7 +905,7 @@ class ProfileRepository:
                 rule.setdefault('behavior', 'domain')
                 if resource.get('source_type') == 'content':
                     rule['url'] = f'/api/profiles/{profile_id}/rule-library/content/{resource["id"]}'
-                rule['library_enabled'] = resource.get('enabled', True)
+                rule['library_enabled'] = copy.deepcopy(resource.get('enabled', True))
         return result
 
     def get_compat_config(self, profile_id, *, resource_roots=None):

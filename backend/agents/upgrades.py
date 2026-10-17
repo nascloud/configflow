@@ -1,8 +1,10 @@
 """Durable, version-confirmed Agent updates; never confuse acceptance with success."""
+from collections import OrderedDict
 from datetime import datetime
 import hashlib
 import os
 from pathlib import Path
+from threading import Lock
 import time
 import uuid
 
@@ -21,16 +23,90 @@ def artifact_directory():
     return configured if configured.exists() else Path(__file__).resolve().parents[1] / 'static/agents'
 
 
+_MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
+_ARTIFACT_READ_BYTES = 256 * 1024
+_ARTIFACT_CACHE_LIMIT = 12
+_ARTIFACT_CACHE = OrderedDict()
+_ARTIFACT_CACHE_LOCK = Lock()
+
+
+class _ArtifactChanged(Exception):
+    """The pathname and bytes read did not describe one stable file."""
+
+
+def _artifact_signature(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _read_artifact(path, expected):
+    """Hash through a fixed buffer; never retain the executable in memory."""
+    digest = hashlib.sha256()
+    size = 0
+    magic = b''
+    buffer = bytearray(_ARTIFACT_READ_BYTES)
+    view = memoryview(buffer)
+    with path.open('rb', buffering=0) as handle:
+        if _artifact_signature(os.fstat(handle.fileno())) != expected:
+            raise _ArtifactChanged
+        while True:
+            count = handle.readinto(buffer)
+            if not count:
+                break
+            if len(magic) < 4:
+                magic += bytes(view[:min(4 - len(magic), count)])
+            size += count
+            digest.update(view[:count])
+        after_read = _artifact_signature(os.fstat(handle.fileno()))
+    try:
+        after_path = _artifact_signature(path.stat())
+    except FileNotFoundError as error:
+        raise _ArtifactChanged from error
+    if expected != after_read or expected != after_path or size != expected[2]:
+        raise _ArtifactChanged
+    if magic != b'\x7fELF' or size > _MAX_ARTIFACT_BYTES:
+        return None
+    return digest.hexdigest(), size
+
+
+def _artifact_metadata(path):
+    # Absolute lexical paths isolate directories without resolving symlinks to
+    # another cache slot. Target identity is still checked through stat/fstat.
+    key = os.path.abspath(os.fspath(path))
+    # On Windows st_ctime is creation time, so restoring mtime can conceal
+    # an in-place edit. Keep streaming there, without trusting digest reuse.
+    use_cache = os.name != 'nt'
+    with _ARTIFACT_CACHE_LOCK:
+        for attempt in range(2):
+            if not path.is_file():
+                _ARTIFACT_CACHE.pop(key, None)
+                return None
+            expected = _artifact_signature(path.stat())
+            cached = _ARTIFACT_CACHE.get(key) if use_cache else None
+            if cached is not None and cached[0] == expected:
+                _ARTIFACT_CACHE.move_to_end(key)
+                return cached[1]
+            _ARTIFACT_CACHE.pop(key, None)
+            try:
+                metadata = _read_artifact(path, expected)
+            except _ArtifactChanged:
+                if attempt == 0:
+                    continue
+                raise OSError('Agent artifact changed while being read; please retry') from None
+            if metadata is not None and use_cache:
+                _ARTIFACT_CACHE[key] = (expected, metadata)
+                while len(_ARTIFACT_CACHE) > _ARTIFACT_CACHE_LIMIT:
+                    _ARTIFACT_CACHE.popitem(last=False)
+            return metadata
+
+
 def artifacts():
     result = {}
     for arch in ARCHES:
         path = artifact_directory() / ('configflow-agent-' + arch)
-        if not path.is_file():
-            continue
-        data = path.read_bytes()
-        if not data.startswith(b'\x7fELF') or len(data) > 128 * 1024 * 1024:
-            continue
-        result[arch] = {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)}
+        metadata = _artifact_metadata(path)
+        if metadata is not None:
+            # Cache immutable tuples; callers may freely mutate either dict.
+            result[arch] = {'sha256': metadata[0], 'size': metadata[1]}
     return result
 
 
