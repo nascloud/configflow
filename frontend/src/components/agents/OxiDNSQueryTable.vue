@@ -7,11 +7,11 @@
             <SelectTrigger class="min-h-11 w-full sm:w-[190px]" aria-label="查询记录器"><SelectValue /></SelectTrigger>
             <SelectContent><SelectItem v-for="tag in recorders" :key="tag" :value="tag">{{ tag }}</SelectItem></SelectContent>
           </Select>
-          <Select v-model="draft.range">
+          <Select :model-value="draft.range" @update:model-value="selectFilter('range', $event as OxiDNSQueryFilters['range'])">
             <SelectTrigger class="min-h-11 w-[140px]" aria-label="查询时间范围"><SelectValue /></SelectTrigger>
             <SelectContent><SelectItem value="1h">最近 1 小时</SelectItem><SelectItem value="24h">最近 24 小时</SelectItem><SelectItem value="all">全部时间</SelectItem></SelectContent>
           </Select>
-          <Select v-model="draft.status">
+          <Select :model-value="draft.status" @update:model-value="selectFilter('status', $event as OxiDNSQueryFilters['status'])">
             <SelectTrigger class="min-h-11 w-[140px]" aria-label="查询结果筛选"><SelectValue /></SelectTrigger>
             <SelectContent><SelectItem value="all">全部结果</SelectItem><SelectItem value="error">处理错误</SelectItem><SelectItem value="has_response">有应答</SelectItem><SelectItem value="no_response">无应答</SelectItem></SelectContent>
           </Select>
@@ -87,6 +87,11 @@ const emit = defineEmits<{
   next: []; previous: []; retry: []
 }>()
 const draft = reactive({ ...props.filters })
+function selectFilter<K extends 'range' | 'status'>(key: K, value: OxiDNSQueryFilters[K]) {
+  if (draft[key] === value) return
+  draft[key] = value
+  emit('filter', { ...draft })
+}
 function selectClient(value: string) {
   draft.client_ip = value
   emit('filter', { ...draft })
