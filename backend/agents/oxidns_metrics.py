@@ -25,7 +25,13 @@ _CACHE_FIELDS = {
     'cache_expired_total': 'expired',
     'cache_entry_count': 'entries',
 }
-_FAMILIES = set(_SERVER_FIELDS) | set(_CACHE_FIELDS) | {'cache_hit_total'}
+_UPSTREAM_FIELDS = {
+    'forward_upstream_query_total': 'requests',
+    'forward_upstream_error_total': 'failed',
+    'forward_upstream_latency_sum_ms': 'latency_sum_ms',
+    'forward_upstream_latency_count': 'latency_count',
+}
+_FAMILIES = set(_SERVER_FIELDS) | set(_CACHE_FIELDS) | set(_UPSTREAM_FIELDS) | {'cache_hit_total'}
 _SAMPLE = re.compile(
     r'(?P<name>[a-zA-Z_:][a-zA-Z0-9_:]*)'
     r'(?:\{(?P<labels>.*)\})?[ \t]+'
@@ -112,8 +118,8 @@ def _observe(group, field, value):
         group[field] = value
 
 
-def summarize_metrics(text):
-    """Return metrics/caches/servers; reject oversized input with ValueError.
+def parse_metrics(text):
+    """Return JSON-safe raw observations; reject oversized input with ValueError.
 
     Malformed samples are ignored. Recognizable nonfinite/negative values stay
     None, as do missing series. Aggregates require a known value for every
@@ -129,7 +135,7 @@ def summarize_metrics(text):
     except UnicodeEncodeError:
         raise ValueError('OxiDNS metrics contain invalid text') from None
 
-    server_values, cache_values = {}, {}
+    server_values, cache_values, upstream_values = {}, {}, {}
     sample_count = 0
     for raw in text.splitlines():
         if len(raw) > MAX_LINE_LENGTH:
@@ -159,6 +165,12 @@ def summarize_metrics(text):
                 continue
             group = server_values.setdefault((tag, protocol), {})
             _observe(group, _SERVER_FIELDS[family], value)
+        elif family in _UPSTREAM_FIELDS:
+            upstream = labels.get('upstream')
+            if not upstream:
+                continue
+            group = upstream_values.setdefault((tag, upstream), {})
+            _observe(group, _UPSTREAM_FIELDS[family], value)
         elif family == 'cache_hit_total':
             kind = labels.get('kind')
             if kind not in ('fresh', 'stale'):
@@ -169,20 +181,96 @@ def summarize_metrics(text):
             group = cache_values.setdefault(tag, {})
             _observe(group, _CACHE_FIELDS[family], value)
 
+    return {
+        'servers': [dict(tag=tag, protocol=protocol, **{
+            field: values.get(field) for field in _SERVER_FIELDS.values()})
+            for (tag, protocol), values in sorted(server_values.items())],
+        'caches': [dict(tag=tag, **{field: values.get(field) for field in (
+            'lookups', 'fresh_hits', 'stale_hits', 'misses', 'expired', 'entries')})
+            for tag, values in sorted(cache_values.items())],
+        'upstreams': [dict(tag=tag, upstream=upstream, **{
+            field: values.get(field) for field in _UPSTREAM_FIELDS.values()})
+            for (tag, upstream), values in sorted(upstream_values.items())],
+    }
+
+
+# Gauges (inflight and entries) describe current state and must not be reset.
+_COUNTERS = {
+    'servers': ('requests', 'failed', 'latency_sum_ms', 'latency_count'),
+    'caches': ('lookups', 'fresh_hits', 'stale_hits', 'misses', 'expired'),
+    'upstreams': ('requests', 'failed', 'latency_sum_ms', 'latency_count'),
+}
+_IDENTITIES = {'servers': ('tag', 'protocol'), 'caches': ('tag',),
+               'upstreams': ('tag', 'upstream')}
+
+
+def metrics_counters_restarted(current, baseline):
+    """A proven counter drop requires a new durable statistics generation.
+
+    Merely clipping a negative delta for one response fails when the restarted
+    counter later catches up with the old baseline. Missing series alone do not
+    prove a restart and remain unknown instead.
+    """
+    for kind, fields in _COUNTERS.items():
+        identity = lambda row: tuple(row.get(key) for key in _IDENTITIES[kind])
+        previous = {identity(row): row for row in baseline.get(kind, [])}
+        for row in current.get(kind, []):
+            old = previous.get(identity(row))
+            if old is not None and any(row.get(field) is not None and old.get(field) is not None
+                                       and row[field] < old[field] for field in fields):
+                return True
+    return False
+
+
+def apply_metrics_baseline(current, baseline):
+    """Subtract one persisted reset snapshot without mutating either input.
+
+    Missing observations stay unknown. A decreased counter means this series
+    restarted; its counters then describe its new lifetime, with a partial flag.
+    The caller handles whole-core/configuration changes as a new generation.
+    """
+    adjusted, partial = {}, False
+    for kind, fields in _COUNTERS.items():
+        identity = lambda row: tuple(row.get(key) for key in _IDENTITIES[kind])
+        previous = {identity(row): row for row in baseline.get(kind, [])}
+        adjusted[kind] = []
+        for row in current.get(kind, []):
+            old = previous.get(identity(row))
+            output = dict(row)
+            if old is None:
+                # A missing baseline does not prove that a series was created
+                # after reset (it might have been absent in a partial scrape).
+                partial = True
+                output.update(dict.fromkeys(fields))
+            elif any(row.get(field) is not None and old.get(field) is not None
+                     and row[field] < old[field] for field in fields):
+                partial = True
+            else:
+                for field in fields:
+                    value, before = row.get(field), old.get(field)
+                    output[field] = value - before if value is not None and before is not None else None
+                    if output[field] is None:
+                        partial = True
+            adjusted[kind].append(output)
+        if set(previous) - {identity(row) for row in current.get(kind, [])}:
+            partial = True
+    return adjusted, partial
+
+
+def summarize_observations(snapshot):
+    """Compute weighted dashboard ratios from raw or reset-adjusted counters."""
     servers = []
-    for (tag, protocol), values in sorted(server_values.items()):
+    for values in snapshot['servers']:
         servers.append({
-            'tag': tag, 'protocol': protocol,
-            **{field: values.get(field) for field in ('requests', 'failed', 'inflight')},
+            **{field: values.get(field) for field in ('tag', 'protocol', 'requests', 'failed', 'inflight')},
             'avg_latency_ms': _divide(values.get('latency_sum_ms'), values.get('latency_count')),
         })
     caches = []
-    for tag, values in sorted(cache_values.items()):
+    for values in snapshot['caches']:
         hits = _sum((values.get('fresh_hits'), values.get('stale_hits')))
         caches.append({
-            'tag': tag,
             **{field: values.get(field) for field in (
-                'lookups', 'fresh_hits', 'stale_hits', 'misses', 'expired', 'entries')},
+                'tag', 'lookups', 'fresh_hits', 'stale_hits', 'misses', 'expired', 'entries')},
             'hits': hits,
             'hit_rate': _divide(hits, values.get('lookups'), percentage=True),
         })
@@ -192,16 +280,28 @@ def summarize_metrics(text):
     if any(row['hits'] is not None and row['lookups'] is not None
            and row['hits'] > row['lookups'] for row in caches):
         cache_hit_rate = None
+    upstreams = [{
+        **{field: values.get(field) for field in ('tag', 'upstream', 'requests', 'failed')},
+        'avg_latency_ms': _divide(values.get('latency_sum_ms'), values.get('latency_count')),
+    } for values in snapshot.get('upstreams', [])]
+    # Unknown counts sort last; stable identifiers resolve ties without hiding
+    # idle upstreams. Latency is completed attempts, including failed attempts.
+    upstreams.sort(key=lambda row: (row['requests'] is None, -(row['requests'] or 0), row['tag'], row['upstream']))
     return {
         'metrics': {
             'requests_total': _sum(row['requests'] for row in servers),
             'failed_total': _sum(row['failed'] for row in servers),
             'avg_latency_ms': _divide(
-                _sum(row.get('latency_sum_ms') for row in server_values.values()),
-                _sum(row.get('latency_count') for row in server_values.values())),
+                _sum(row.get('latency_sum_ms') for row in snapshot['servers']),
+                _sum(row.get('latency_count') for row in snapshot['servers'])),
             'inflight': _sum(row['inflight'] for row in servers),
             'cache_hit_rate': cache_hit_rate,
         },
         'caches': caches,
         'servers': servers,
+        'upstreams': upstreams,
     }
+
+
+def summarize_metrics(text):
+    return summarize_observations(parse_metrics(text))

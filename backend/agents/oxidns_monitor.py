@@ -1,17 +1,22 @@
 """Read-only OxiDNS monitoring through an authenticated, registered Agent."""
 from datetime import datetime, timezone
+import hashlib
 import ipaddress
 import json
 import math
 import re
+import secrets
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
 from .version import compare_versions
-from .oxidns_metrics import summarize_metrics
+from . import oxidns_metrics
+from .oxidns_dashboard_state import DashboardStateStore, DashboardStateError, DashboardStateConflict
 
 MIN_AGENT_VERSION = '1.7.0-go'
 MIN_CLIENTS_AGENT_VERSION = '1.7.1-go'
+MIN_DASHBOARD_AGENT_VERSION = '1.8.14-go'
 CLIENT_SAMPLE_LIMIT = 10000
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 MAX_INTEGER = 2 ** 53 - 1
@@ -54,6 +59,9 @@ MESSAGES = {
     'INVALID_RESPONSE': '监控数据格式异常，请检查 Agent 和 OxiDNS 版本。',
     'INVALID_QUERY': '查询条件无效，请检查筛选内容。',
     'RECORD_NOT_FOUND': '这条查询记录已不存在，可能已超过保留期限。',
+    'DASHBOARD_STATE_ERROR': '无法读取或保存 DNS 面板统计起点，请检查数据目录并刷新面板确认状态。',
+    'DASHBOARD_CHANGED': '设备或统计起点已改变，请重新载入 DNS 面板。',
+    'SNAPSHOT_CHANGED': '采集期间核心或配置发生变化，请稍后刷新。',
     'CONFIG_UNSUPPORTED': '当前核心 API 配置无法用于监控，请检查监听地址与认证设置。',
 }
 
@@ -66,7 +74,8 @@ class MonitorError(Exception):
 
 
 def _upgrade_required(min_version):
-    feature = '客户端 IP 选择与筛选' if min_version == MIN_CLIENTS_AGENT_VERSION else 'DNS 监控'
+    feature = ('客户端 IP 选择与筛选' if min_version == MIN_CLIENTS_AGENT_VERSION else
+               'DNS 排行与统计重置' if min_version == MIN_DASHBOARD_AGENT_VERSION else 'DNS 监控')
     return MonitorError('UPGRADE_REQUIRED', 409,
                         f'请将此 Agent 升级到 {min_version} 或更新版本后使用{feature}。')
 
@@ -140,7 +149,7 @@ def _request(agent, endpoint, params=None, *, min_version=MIN_AGENT_VERSION):
                         code = 'UPGRADE_REQUIRED' if response.status_code == 404 else 'CORE_UNREACHABLE'
                     status = 404 if code == 'RECORD_NOT_FOUND' else 400 if code == 'INVALID_QUERY' else 409 if code in (
                         'UPGRADE_REQUIRED', 'API_NOT_CONFIGURED', 'RECORDER_NOT_CONFIGURED',
-                        'TLS_UNSUPPORTED', 'CONFIG_UNSUPPORTED') else 502
+                        'TLS_UNSUPPORTED', 'CONFIG_UNSUPPORTED', 'SNAPSHOT_CHANGED') else 502
                     if code == 'UPGRADE_REQUIRED':
                         raise _upgrade_required(min_version)
                     raise MonitorError(code, status)
@@ -164,25 +173,258 @@ def _text(value, limit=512):
     return value[:limit] if isinstance(value, str) else ''
 
 
-def overview(manager, agent_id):
-    agent = _agent(manager, agent_id)
-    data = _request(agent, 'overview')
-    health, capabilities, metrics = data.get('health'), data.get('capabilities'), data.get('metrics')
-    if not isinstance(health, dict) or not isinstance(capabilities, dict) or not isinstance(metrics, str):
+def _dashboard_params(args=None):
+    if args is None:
+        return {}
+    result = {}
+    for key in args:
+        values = args.getlist(key)
+        if key != 'recorder' or len(values) != 1 or not _valid_recorder_tag(values[0]):
+            raise MonitorError('INVALID_QUERY', 400)
+        result[key] = values[0]
+    return result
+
+
+def _target(agent):
+    # The digest detects registered target or token changes without storing secrets.
+    identity = [agent.get(key) for key in ('id', 'host', 'port', 'token', 'service_type')]
+    return hashlib.sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()
+
+
+def _display_upstream(value):
+    value = _text(value, 2048)
+    if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
+        return ''
+    if '://' in value:
+        try:
+            parsed = urlsplit(value)
+            host = parsed.hostname
+            if not host:
+                return '上游服务器'
+            if ':' in host:
+                host = '[' + host + ']'
+            port = parsed.port
+            return urlunsplit((parsed.scheme, host + (':' + str(port) if port is not None else ''),
+                               parsed.path, '', ''))
+        except ValueError:
+            return '上游服务器'
+    return value.split('?', 1)[0].rsplit('@', 1)[-1]
+
+
+def _public_upstreams(rows, labels):
+    addresses = {(item['plugin_tag'], item['upstream']): item['address'] for item in labels}
+    return [{**row, 'id': hashlib.sha256(json.dumps([row.get('tag'), row.get('upstream')],
+                                                   separators=(',', ':')).encode()).hexdigest(),
+             'tag': _display_upstream(row.get('tag')),
+             'upstream': _display_upstream(row.get('upstream')),
+             'address': _display_upstream(addresses.get((row.get('tag'), row.get('upstream')), ''))}
+            for row in rows]
+
+
+def _overview_snapshot(agent, dashboard):
+    data = _request(agent, 'overview', min_version=MIN_DASHBOARD_AGENT_VERSION if dashboard else MIN_AGENT_VERSION)
+    health, capabilities, text = data.get('health'), data.get('capabilities'), data.get('metrics')
+    if not isinstance(health, dict) or not isinstance(capabilities, dict) or not isinstance(text, str):
         raise MonitorError('INVALID_RESPONSE')
     recorders = capabilities.get('query_recorders', [])
-    if not isinstance(recorders, list) or any(not isinstance(x, str) for x in recorders):
+    if not isinstance(recorders, list) or any(not isinstance(x, str) for x in recorders) or len(recorders) > 64:
         raise MonitorError('INVALID_RESPONSE')
     try:
-        summary = summarize_metrics(metrics)
+        observations = oxidns_metrics.parse_metrics(text)
     except (ValueError, TypeError):
         raise MonitorError('INVALID_RESPONSE') from None
-    return {'success': True, 'agent': {k: agent.get(k) for k in (
-        'id', 'name', 'host', 'profile_id', 'version', 'status')},
-        'collected_at': datetime.now(timezone.utc).isoformat(),
-        'core': {'version': _text(health.get('version'), 64), 'status': _text(health.get('status'), 32),
-                 'uptime_ms': _number(health.get('uptime_ms')), 'instance_id': _text(health.get('instance_id'), 128)},
-        'recorders': recorders[:64], **summary}
+    core = {'version': _text(health.get('version'), 64), 'status': _text(health.get('status'), 32),
+            'uptime_ms': _number(health.get('uptime_ms')), 'instance_id': _text(health.get('instance_id'), 128)}
+    labels = data.get('upstream_labels', [])
+    if not isinstance(labels, list) or len(labels) > CLIENT_SAMPLE_LIMIT:
+        raise MonitorError('INVALID_RESPONSE')
+    seen = set()
+    for item in labels:
+        if (not isinstance(item, dict) or any(not isinstance(item.get(key), str) or len(item[key]) > 16_384
+                                             for key in ('plugin_tag', 'upstream', 'address'))):
+            raise MonitorError('INVALID_RESPONSE')
+        identity = (item['plugin_tag'], item['upstream'])
+        if identity in seen:
+            raise MonitorError('INVALID_RESPONSE')
+        seen.add(identity)
+    if dashboard and (any(not _valid_recorder_tag(tag) for tag in recorders)
+            or not isinstance(health.get('instance_id'), str)
+            or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', health['instance_id'])
+            or type(data.get('collected_at_ms')) is not int or not 0 <= data['collected_at_ms'] <= 253402300799999
+            or not isinstance(data.get('source_revision'), str)
+            or not re.fullmatch(r'[0-9a-f]{64}', data['source_revision'])
+            or not isinstance(data.get('runtime_revision'), str)
+            or not re.fullmatch(r'[0-9a-f]{64}', data['runtime_revision'])):
+        raise MonitorError('INVALID_RESPONSE')
+    return data, core, recorders, observations, labels
+
+
+def _rankings_unavailable(code, **fields):
+    reasons = {
+        'upgrade_required': f'请将 Agent 升级到 {MIN_DASHBOARD_AGENT_VERSION} 或更新版本以查看排行并重置统计。',
+        'recorder_not_configured': '未启用查询记录，无法计算域名和客户端排行。',
+        'unsupported_configuration': '当前配置未包含可确认的标准 AdGuard 拦截路径。',
+        'snapshot_changed': '采集期间核心或配置发生变化，请稍后刷新。',
+    }
+    reason = reasons.get(code, MESSAGES.get(code.upper(), '暂时无法获取排行，请稍后刷新。'))
+    return {'available': False, 'success': False, 'code': code, 'reason': reason,
+            'sample_size': 0, 'rows': [], 'at_limit': False, **fields}
+
+
+def _ranking_section(value, kind):
+    if not isinstance(value, dict):
+        raise MonitorError('INVALID_RESPONSE')
+    sample, rows, at_limit = value.get('sample_size'), value.get('rows'), value.get('at_limit')
+    if (type(sample) is not int or not 0 <= sample <= CLIENT_SAMPLE_LIMIT
+            or not isinstance(rows, list) or len(rows) > 10
+            or type(at_limit) is not bool or at_limit != (sample == CLIENT_SAMPLE_LIMIT)):
+        raise MonitorError('INVALID_RESPONSE')
+    result, seen, total = [], set(), 0
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get('key'), str):
+            raise MonitorError('INVALID_RESPONSE')
+        key, count = row['key'], row.get('count')
+        if (not key or len(key) > 1024 or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in key)
+                or key in seen or type(count) is not int
+                or not 0 < count <= sample * (1 if kind == 'clients' else 65535)):
+            raise MonitorError('INVALID_RESPONSE')
+        if kind == 'clients':
+            try:
+                if '%' in key:
+                    raise ValueError
+                ipaddress.ip_address(key)
+            except ValueError:
+                raise MonitorError('INVALID_RESPONSE') from None
+        seen.add(key)
+        total += count
+        result.append({'key': key, 'count': count, 'share': count / sample})
+    # A top-N list can omit the tail. Domain counts expand all questions in a
+    # DNS packet, so their sum/share can legitimately exceed the record sample.
+    if total > sample * (1 if kind == 'clients' else 65535):
+        raise MonitorError('INVALID_RESPONSE')
+    result.sort(key=lambda row: (-row['count'], row['key']))
+    return {'sample_size': sample, 'rows': result, 'at_limit': at_limit}
+
+
+def _dashboard_rankings(agent, params, snapshot, state, recorders):
+    bounds = {'since_ms': state['started_at_ms'], 'until_ms': snapshot['collected_at_ms']}
+    if params.get('recorder') and params['recorder'] not in recorders:
+        raise MonitorError('INVALID_QUERY', 400)
+    if not recorders:
+        return _rankings_unavailable('recorder_not_configured', **bounds)
+    data = _request(agent, 'rankings', {**params, **{key: str(value) for key, value in bounds.items()}},
+                    min_version=MIN_DASHBOARD_AGENT_VERSION)
+    recorder = data.get('recorder')
+    if (data.get('success') is not True or not _valid_recorder_tag(recorder) or recorder not in recorders
+            or params.get('recorder', recorder) != recorder
+            or type(data.get('collected_at_ms')) is not int or not 0 <= data['collected_at_ms'] <= 253402300799999
+            or data.get('sample_limit') != CLIENT_SAMPLE_LIMIT or type(data.get('sample_limit')) is not int
+            or data.get('retention_days') is not None and (type(data['retention_days']) is not int
+                                                         or not 0 <= data['retention_days'] <= 36500)):
+        raise MonitorError('INVALID_RESPONSE')
+    if (data.get('instance_id') != state['instance_id'] or data.get('source_revision') != state['source_revision']
+            or data.get('runtime_revision') != state['runtime_revision']
+            or data['collected_at_ms'] < snapshot['collected_at_ms']):
+        raise MonitorError('SNAPSHOT_CHANGED', 409)
+    blocked = data.get('blocked')
+    if not isinstance(blocked, dict) or type(blocked.get('available')) is not bool:
+        raise MonitorError('INVALID_RESPONSE')
+    if blocked['available']:
+        blocked_result = {'available': True, 'reason': '标准 AdGuard 拦截路径',
+                          **_ranking_section(blocked, 'domains')}
+        if 'matcher_tag' in blocked:
+            if not _valid_recorder_tag(blocked['matcher_tag']):
+                raise MonitorError('INVALID_RESPONSE')
+            blocked_result['matcher_tag'] = blocked['matcher_tag']
+    else:
+        reason = blocked.get('reason')
+        if not isinstance(reason, str) or not re.fullmatch(r'[a-z_]{1,64}', reason):
+            reason = 'unsupported_configuration'
+        blocked_result = _rankings_unavailable(reason)
+    return {'available': True, 'success': True, 'recorder': recorder, 'collected_at_ms': data['collected_at_ms'],
+            'instance_id': data['instance_id'], 'source_revision': data['source_revision'],
+            'runtime_revision': data['runtime_revision'],
+            'retention_days': data.get('retention_days'), 'sample_limit': CLIENT_SAMPLE_LIMIT,
+            **bounds, 'clients': _ranking_section(data.get('clients'), 'clients'),
+            'domains': _ranking_section(data.get('domains'), 'domains'), 'blocked': blocked_result}
+
+
+def _verify_target(manager, agent_id, expected):
+    current = manager.get_agent_by_id(agent_id)
+    if current is None or _target(current) != expected:
+        raise MonitorError('DASHBOARD_CHANGED', 409)
+
+
+def _dashboard_overview(manager, agent_id, params, *, manual=False):
+    agent = _agent(manager, agent_id, MIN_DASHBOARD_AGENT_VERSION if manual else MIN_AGENT_VERSION)
+    dashboard = compare_versions(agent.get('version', '0'), MIN_DASHBOARD_AGENT_VERSION) >= 0
+    if not dashboard:
+        _, core, recorders, observations, labels = _overview_snapshot(agent, False)
+        summary = oxidns_metrics.summarize_observations(observations)
+        summary['upstreams'] = _public_upstreams(summary.get('upstreams', []), labels)
+        return {'success': True, 'agent': {key: agent.get(key) for key in (
+                    'id', 'name', 'host', 'profile_id', 'version', 'status')},
+                'collected_at': datetime.now(timezone.utc).isoformat(), 'core': core,
+                'recorders': recorders, **summary, 'statistics': None,
+                'rankings': _rankings_unavailable('upgrade_required')}
+    store = DashboardStateStore(manager.repository.data_dir)
+    try:
+        previous = store.read(agent_id)
+        snapshot, core, recorders, observations, labels = _overview_snapshot(agent, True)
+        target = _target(agent)
+        _verify_target(manager, agent_id, target)
+        reason = ('manual' if manual else 'initial' if previous is None else
+                  'target_changed' if previous['target'] != target else
+                  'core_changed' if previous['instance_id'] != core['instance_id'] else
+                  'configuration_changed' if previous['source_revision'] != snapshot['source_revision'] else
+                  'core_changed' if previous['runtime_revision'] != snapshot['runtime_revision'] else
+                  'counters_changed' if oxidns_metrics.metrics_counters_restarted(observations, previous['baseline']) else None)
+        state = previous
+        if reason is not None:
+            state = {'schema': 1, 'generation': secrets.token_hex(16),
+                     'started_at_ms': snapshot['collected_at_ms'], 'reason': reason, 'target': target,
+                     'instance_id': core['instance_id'], 'source_revision': snapshot['source_revision'],
+                     'runtime_revision': snapshot['runtime_revision'], 'baseline': observations}
+        if snapshot['collected_at_ms'] < state['started_at_ms']:
+            raise MonitorError('SNAPSHOT_CHANGED', 409)
+        adjusted, partial = oxidns_metrics.apply_metrics_baseline(observations, state['baseline'])
+        summary = oxidns_metrics.summarize_observations(adjusted)
+        summary['upstreams'] = _public_upstreams(summary.get('upstreams', []), labels)
+        try:
+            # A pushed configuration may remove the UI's selected recorder.
+            # GET must return the new list so viewers can recover automatically;
+            # a manual reset remains strict about its explicitly selected target.
+            effective_params = params if manual or params.get('recorder') in recorders else {}
+            rankings = _dashboard_rankings(agent, effective_params, snapshot, state, recorders)
+        except MonitorError as error:
+            if manual or error.code == 'INVALID_QUERY':
+                raise
+            rankings = _rankings_unavailable(error.code.lower())
+        store.compare_and_set(agent_id, previous['generation'] if previous else None,
+                              state if reason is not None else None,
+                              verify=lambda: _verify_target(manager, agent_id, target))
+        return {'success': True, 'agent': {key: agent.get(key) for key in (
+                    'id', 'name', 'host', 'profile_id', 'version', 'status')},
+                'collected_at': datetime.fromtimestamp(snapshot['collected_at_ms'] / 1000, timezone.utc).isoformat(),
+                'core': core, 'recorders': recorders, **summary,
+                'statistics': {'generation': state['generation'], 'started_at_ms': state['started_at_ms'],
+                               'reason': state['reason'], 'partial': partial}, 'rankings': rankings}
+    except DashboardStateError:
+        raise MonitorError('DASHBOARD_STATE_ERROR', 500) from None
+    except DashboardStateConflict:
+        raise MonitorError('DASHBOARD_CHANGED', 409) from None
+
+
+def overview(manager, agent_id, args=None):
+    return _dashboard_overview(manager, agent_id, _dashboard_params(args))
+
+
+def reset_dashboard(manager, agent_id, body):
+    if (not isinstance(body, dict) or set(body) - {'recorder'}
+            or 'recorder' in body and not _valid_recorder_tag(body['recorder'])):
+        raise MonitorError('INVALID_QUERY', 400)
+    return _dashboard_overview(manager, agent_id, body, manual=True)
+
 
 
 def query_params(args, detail=False):

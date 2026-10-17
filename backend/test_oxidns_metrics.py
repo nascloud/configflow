@@ -178,3 +178,119 @@ def test_nonfinite_aggregate_is_unknown():
     ]))
     assert result['metrics']['requests_total'] is None
     assert result['metrics']['avg_latency_ms'] is None
+
+
+def upstream(tag, name, requests, failed, elapsed, count):
+    values = {'query_total': requests, 'error_total': failed,
+              'latency_sum_ms': elapsed, 'latency_count': count}
+    return '\n'.join(
+        f'forward_upstream_{field}{{plugin_tag="{tag}",upstream="{name}"}} {value}'
+        for field, value in values.items())
+
+
+def test_upstreams_keep_attempts_separate_from_listener_requests():
+    text = '\n'.join([
+        server('dns', 'udp', 8, 0, 40, 8),
+        upstream('remote', 'https://dns.example/dns-query', 10, 2, 120, 6),
+        upstream('local', 'udp://192.0.2.1', 5, 0, 25, 5),
+        'forward_upstream_timeout_total{plugin_tag="remote",upstream="https://dns.example/dns-query"} 2',
+    ])
+    result = metrics.summarize_metrics(text)
+    assert result['metrics']['requests_total'] == 8
+    assert result['upstreams'] == [
+        {'tag': 'remote', 'upstream': 'https://dns.example/dns-query', 'requests': 10,
+         'failed': 2, 'avg_latency_ms': 20},
+        {'tag': 'local', 'upstream': 'udp://192.0.2.1', 'requests': 5,
+         'failed': 0, 'avg_latency_ms': 5},
+    ]
+    assert metrics.summarize_metrics(text + '\n' + text)['upstreams'] == result['upstreams']
+
+
+def test_reset_uses_raw_weighted_differences_and_keeps_live_gauges():
+    import copy
+    import json
+    baseline = metrics.parse_metrics('\n'.join([
+        server('dns', 'udp', 100, 1, 1000, 100, 2),
+        cache('cache', 100, 50, 10, 30, 10, 99),
+        upstream('forward', 'dns', 50, 5, 5000, 50),
+    ]))
+    baseline = json.loads(json.dumps(baseline))  # identical after persistence
+    current = metrics.parse_metrics('\n'.join([
+        server('dns', 'udp', 110, 3, 1300, 110, 4),
+        cache('cache', 120, 65, 12, 32, 11, 105),
+        upstream('forward', 'dns', 54, 6, 5800, 54),
+    ]))
+    original = copy.deepcopy(current)
+    delta, partial = metrics.apply_metrics_baseline(current, baseline)
+    result = metrics.summarize_observations(delta)
+    assert not partial
+    assert current == original
+    assert result['metrics'] == {'requests_total': 10, 'failed_total': 2,
+        'avg_latency_ms': 30, 'inflight': 4, 'cache_hit_rate': 85}
+    assert result['caches'][0]['entries'] == 105
+    assert result['upstreams'][0]['requests'] == 4
+    assert result['upstreams'][0]['avg_latency_ms'] == 200
+    assert result['upstreams'][0]['failed'] == 1
+
+
+def test_reset_to_same_sample_has_zero_counters_and_unknown_ratios():
+    snapshot = metrics.parse_metrics(server('s', 'udp', 100, 0, 1000, 100, 7) + '\n' + cache('c', 5, 2, 1, entries=20))
+    adjusted, partial = metrics.apply_metrics_baseline(snapshot, snapshot)
+    result = metrics.summarize_observations(adjusted)
+    assert not partial
+    assert result['metrics']['requests_total'] == 0
+    assert result['metrics']['avg_latency_ms'] is None
+    assert result['metrics']['cache_hit_rate'] is None
+    assert result['metrics']['inflight'] == 7
+    assert result['caches'][0]['entries'] == 20
+
+
+def test_new_or_missing_series_are_partial_not_fabricated_from_zero():
+    baseline = metrics.parse_metrics(server('old', 'udp', 100, 2, 500, 100))
+    current = metrics.parse_metrics(server('new', 'udp', 5, 1, 20, 5, 2))
+    adjusted, partial = metrics.apply_metrics_baseline(current, baseline)
+    result = metrics.summarize_observations(adjusted)
+    assert partial
+    assert result['metrics']['requests_total'] is None
+    assert result['metrics']['avg_latency_ms'] is None
+    assert result['metrics']['inflight'] == 2
+
+
+def test_plugin_counter_reset_reports_new_lifetime_instead_of_negative():
+    baseline = metrics.parse_metrics(upstream('f', 'dns', 100, 5, 1000, 100))
+    current = metrics.parse_metrics(upstream('f', 'dns', 3, 0, 15, 3))
+    adjusted, partial = metrics.apply_metrics_baseline(current, baseline)
+    result = metrics.summarize_observations(adjusted)
+    assert partial
+    assert result['upstreams'][0]['requests'] == 3
+    assert result['upstreams'][0]['avg_latency_ms'] == 5
+
+
+def test_missing_latency_counter_does_not_become_average_of_averages():
+    baseline = metrics.parse_metrics(upstream('f', 'dns', 20, 2, 'NaN', 18))
+    current = metrics.parse_metrics(upstream('f', 'dns', 25, 3, 1000, 22))
+    adjusted, partial = metrics.apply_metrics_baseline(current, baseline)
+    assert partial
+    result = metrics.summarize_observations(adjusted)
+    assert result['upstreams'][0]['requests'] == 5
+    assert result['upstreams'][0]['avg_latency_ms'] is None
+
+
+def test_upstream_identity_is_group_and_name_not_name_alone():
+    result = metrics.summarize_metrics('\n'.join([
+        upstream('fallback', 'dns', 1, 0, 10, 1),
+        upstream('remote', 'dns', 3, 1, 12, 2),
+        'forward_upstream_query_total{plugin_tag="missing_name"} 99',
+    ]))
+    assert len(result['upstreams']) == 2
+    assert [row['requests'] for row in result['upstreams']] == [3, 1]
+    assert [row['avg_latency_ms'] for row in result['upstreams']] == [6, 10]
+
+
+
+def test_counter_reset_detection_excludes_gauges_and_missing_series():
+    baseline = metrics.parse_metrics(server('s', 'udp', 100, 0, 1000, 100, 7) + '\n' + cache('c', 5, 2, 1, entries=20))
+    gauges_changed = metrics.parse_metrics(server('s', 'udp', 101, 0, 1010, 101, 0) + '\n' + cache('c', 5, 2, 1, entries=0))
+    assert not metrics.metrics_counters_restarted(gauges_changed, baseline)
+    assert not metrics.metrics_counters_restarted(metrics.parse_metrics(''), baseline)
+    assert metrics.metrics_counters_restarted(metrics.parse_metrics(server('s', 'udp', 1, 0, 10, 1)), baseline)

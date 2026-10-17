@@ -9,7 +9,7 @@ import OxiDNSQueryDetail from '@/components/agents/OxiDNSQueryDetail.vue'
 import OxiDNSMetric from '@/components/agents/OxiDNSMetric.vue'
 import { labelOfPath, navigationPath, scopeOfPath } from '@/navigation'
 
-vi.mock('@/api', () => ({ oxidnsMonitorApi: { overview: vi.fn(), queries: vi.fn(), query: vi.fn() } }))
+vi.mock('@/api', () => ({ oxidnsMonitorApi: { overview: vi.fn(), queries: vi.fn(), query: vi.fn(), resetStatistics: vi.fn() } }))
 const wrappers: VueWrapper[] = []
 const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, 'hidden')
 const snapshot = (count: number | null = 100, at = '2026-10-17T01:00:00Z', instance = 'core-one'): OxiDNSOverview => ({
@@ -17,6 +17,9 @@ const snapshot = (count: number | null = 100, at = '2026-10-17T01:00:00Z', insta
   collected_at: at, core: { version: '1.6.1', status: 'running', uptime_ms: 120000, instance_id: instance },
   recorders: ['queries'], metrics: { requests_total: count, failed_total: 2, avg_latency_ms: 0, inflight: 0, cache_hit_rate: 75 },
   caches: [], servers: []
+})
+const periodSnapshot = (generation = 'period-one', count = 100, at = '2026-10-17T01:00:00Z'): OxiDNSOverview => ({
+  ...snapshot(count, at), statistics: { generation, started_at_ms: Date.parse(at), reason: 'manual', partial: false }
 })
 const queryRecord = { id: 12, created_at_ms: 1700000000000, elapsed_ms: 0, client_ip: '192.0.2.5',
   questions_json: [{ name: 'example.test', qtype: 1, qclass: 1 }], error: null, has_response: true, rcode: 0,
@@ -169,6 +172,120 @@ describe('OxiDNS monitoring requests', () => {
     await flushPromises()
     expect(model.overview.value?.agent.name).not.toBe('Stale Agent')
     expect(oxidnsMonitorApi.overview).toHaveBeenLastCalledWith('second', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+  })
+})
+
+describe('OxiDNS dashboard resets', () => {
+  it('starts a fresh period without deleting records, filters, or query pagination', async () => {
+    vi.mocked(oxidnsMonitorApi.overview).mockResolvedValue(response(periodSnapshot()))
+    vi.mocked(oxidnsMonitorApi.queries).mockResolvedValue(response(records('1700000000000:12')))
+    vi.mocked(oxidnsMonitorApi.resetStatistics).mockResolvedValue(response(periodSnapshot('period-two', 0)))
+    const { model } = harness('queries')
+    await flushPromises()
+    model.applyFilters({ ...emptyQueryFilters(), qname: 'kept.test' })
+    await flushPromises()
+    model.nextPage()
+    await flushPromises()
+    const priorRecords = model.queries.value
+    const queryCalls = vi.mocked(oxidnsMonitorApi.queries).mock.calls.length
+    expect(await model.resetStatistics()).toBe(true)
+    expect(oxidnsMonitorApi.resetStatistics).toHaveBeenCalledWith('one', 'queries', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(model.overview.value?.statistics?.generation).toBe('period-two')
+    expect(model.overview.value?.metrics.requests_total).toBe(0)
+    expect(model.qps.value).toBeNull()
+    expect(model.queries.value).toBe(priorRecords)
+    expect(model.filters.value.qname).toBe('kept.test')
+    expect(model.page.value).toBe(2)
+    expect(oxidnsMonitorApi.queries).toHaveBeenCalledTimes(queryCalls)
+  })
+
+  it('discards a pre-reset overview response arriving after the reset', async () => {
+    vi.mocked(oxidnsMonitorApi.overview).mockResolvedValue(response(periodSnapshot()))
+    const { model } = harness()
+    await flushPromises()
+    const pending = deferred()
+    vi.mocked(oxidnsMonitorApi.overview).mockImplementationOnce(() => pending.promise as any)
+    const refreshing = model.refresh()
+    const oldSignal = vi.mocked(oxidnsMonitorApi.overview).mock.calls.at(-1)![1]?.signal
+    vi.mocked(oxidnsMonitorApi.resetStatistics).mockResolvedValue(response(periodSnapshot('period-two', 0)))
+    expect(await model.resetStatistics()).toBe(true)
+    expect(oldSignal?.aborted).toBe(true)
+    pending.resolve(response(periodSnapshot('period-one', 900)))
+    await refreshing
+    expect(model.overview.value?.statistics?.generation).toBe('period-two')
+    expect(model.overview.value?.metrics.requests_total).toBe(0)
+  })
+
+  it('keeps data on reset failure and prevents duplicate resets while pending', async () => {
+    vi.mocked(oxidnsMonitorApi.overview).mockResolvedValue(response(periodSnapshot()))
+    const { model } = harness()
+    await flushPromises()
+    const pending = deferred()
+    vi.mocked(oxidnsMonitorApi.resetStatistics).mockImplementationOnce(() => pending.promise as any)
+    const resetting = model.resetStatistics()
+    expect(model.resettingStatistics.value).toBe(true)
+    expect(await model.resetStatistics()).toBe(false)
+    await model.refresh()
+    expect(oxidnsMonitorApi.overview).toHaveBeenCalledTimes(1)
+    pending.reject({ response: { data: { message: '核心连接已断开' } } })
+    expect(await resetting).toBe(false)
+    expect(model.resettingStatistics.value).toBe(false)
+    expect(model.resetError.value).toBe('核心连接已断开')
+    expect(model.overview.value?.metrics.requests_total).toBe(100)
+    expect(oxidnsMonitorApi.resetStatistics).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores a late reset response after switching the monitored device', async () => {
+    vi.mocked(oxidnsMonitorApi.overview).mockResolvedValue(response(periodSnapshot()))
+    const { model, id } = harness()
+    await flushPromises()
+    const pending = deferred()
+    vi.mocked(oxidnsMonitorApi.resetStatistics).mockImplementationOnce(() => pending.promise as any)
+    const resetting = model.resetStatistics()
+    const oldSignal = vi.mocked(oxidnsMonitorApi.resetStatistics).mock.calls[0][2]?.signal
+    id.value = 'second'
+    await flushPromises()
+    pending.resolve(response(periodSnapshot('old-reset', 0)))
+    expect(await resetting).toBe(false)
+    expect(oldSignal?.aborted).toBe(true)
+    expect(model.overview.value?.statistics?.generation).toBe('period-one')
+    expect(model.resettingStatistics.value).toBe(false)
+  })
+
+  it('does not compute QPS across periods reset by another browser', async () => {
+    vi.mocked(oxidnsMonitorApi.overview).mockResolvedValue(response(periodSnapshot()))
+    const { model } = harness()
+    await flushPromises()
+    vi.mocked(oxidnsMonitorApi.overview).mockResolvedValue(response(periodSnapshot('period-two', 200, '2026-10-17T01:00:10Z')))
+    await model.refresh()
+    expect(model.qps.value).toBeNull()
+    vi.mocked(oxidnsMonitorApi.overview).mockResolvedValue(response(periodSnapshot('period-two', 250, '2026-10-17T01:00:20Z')))
+    await model.refresh()
+    expect(model.qps.value).toBe(5)
+  })
+
+  it('reloads rankings and queries from the selected recorder, ignoring old rankings', async () => {
+    const multi = { ...periodSnapshot(), recorders: ['queries', 'second-recorder'] }
+    vi.mocked(oxidnsMonitorApi.overview).mockResolvedValue(response(multi))
+    const { model } = harness('queries')
+    await flushPromises()
+    const pending = deferred()
+    vi.mocked(oxidnsMonitorApi.overview).mockImplementationOnce(() => pending.promise as any)
+    const refreshing = model.refresh()
+    model.selectRecorder('second-recorder')
+    await flushPromises()
+    expect(oxidnsMonitorApi.overview).toHaveBeenLastCalledWith('one', expect.objectContaining({ recorder: 'second-recorder' }))
+    expect(oxidnsMonitorApi.queries).toHaveBeenLastCalledWith('one', expect.objectContaining({ recorder: 'second-recorder' }), expect.anything())
+    pending.resolve(response({ ...multi, recorders: ['queries'] }))
+    await refreshing
+    expect(model.recorder.value).toBe('second-recorder')
+  })
+
+  it('does not send a reset for an older Agent without period support', async () => {
+    const { model } = harness()
+    await flushPromises()
+    expect(await model.resetStatistics()).toBe(false)
+    expect(oxidnsMonitorApi.resetStatistics).not.toHaveBeenCalled()
   })
 })
 

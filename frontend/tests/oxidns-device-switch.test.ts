@@ -5,9 +5,11 @@ import { createMemoryHistory, createRouter, RouterView, useRoute } from 'vue-rou
 import { agentApi, oxidnsMonitorApi } from '@/api'
 import OxiDNSMonitor from '@/views/OxiDNSMonitor.vue'
 import { Select } from '@/components/ui/select'
+import { confirm, notify } from '@/lib/feedback'
 import { OXIDNS_DEVICE_STORAGE_KEY } from '@/composables/useOxiDNSDevices'
 
-vi.mock('@/api', () => ({ agentApi: { getAll: vi.fn() }, oxidnsMonitorApi: { overview: vi.fn(), queries: vi.fn(), query: vi.fn() } }))
+vi.mock('@/api', () => ({ agentApi: { getAll: vi.fn() }, oxidnsMonitorApi: { overview: vi.fn(), queries: vi.fn(), query: vi.fn(), resetStatistics: vi.fn() } }))
+vi.mock('@/lib/feedback', () => ({ confirm: vi.fn(), notify: { success: vi.fn(), error: vi.fn() } }))
 const wrappers: VueWrapper[] = []
 function stubStorage() {
   const values = new Map<string, string>()
@@ -36,7 +38,7 @@ async function render(path = '/agents/one/oxidns') {
   // App.vue keys routed pages by path; this reproduces a real device switch remount.
   const shell = defineComponent({ components: { RouterView }, setup: () => ({ route: useRoute() }), template: '<RouterView :key="route.path" />' })
   const wrapper = mount(shell, { global: { plugins: [router], stubs: {
-    OxiDNSOverviewPanel: { props: ['overview'], template: '<div data-test="overview">{{ overview.agent.name }}</div>' },
+    OxiDNSOverviewPanel: { props: ['overview'], emits: ['reset'], template: '<div data-test="overview">{{ overview.agent.name }}<button data-test="reset" @click="$emit(\'reset\')">重置统计</button></div>' },
     OxiDNSQueryTable: { props: ['data'], emits: ['detail'], template: '<div data-test="queries">{{ data?.records[0]?.client_ip }}<button data-test="detail" @click="$emit(\'detail\', { id: 12 })">详情</button></div>' },
     OxiDNSQueryDetail: { props: ['agentId'], template: '<div data-test="query-detail">{{ agentId }}</div>' }
   } } })
@@ -49,6 +51,8 @@ beforeEach(() => {
   stubStorage()
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })))
+  vi.mocked(confirm).mockResolvedValue(true)
+  vi.mocked(oxidnsMonitorApi.resetStatistics).mockImplementation(async id => response({ ...snapshot(id), statistics: { generation: 'reset', started_at_ms: 0, reason: 'manual', partial: false } }))
   vi.mocked(agentApi.getAll).mockResolvedValue(response([device('one'), device('two', 'offline'), device('proxy', 'online', 'mihomo')]))
   vi.mocked(oxidnsMonitorApi.overview).mockImplementation(async id => response(snapshot(id)))
   vi.mocked(oxidnsMonitorApi.queries).mockImplementation(async id => response({ success: true, recorder: 'queries', records: [{ id: 12, client_ip: 'client-' + id }], next_cursor: null }))
@@ -123,5 +127,41 @@ describe('OxiDNS monitor device selection', () => {
     wrapper.findComponent(Select).vm.$emit('update:modelValue', 'proxy')
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/agents/one/oxidns')
+  })
+})
+
+
+describe('OxiDNS dashboard reset confirmation', () => {
+  beforeEach(() => {
+    vi.mocked(oxidnsMonitorApi.overview).mockImplementation(async id => response({ ...snapshot(id),
+      statistics: { generation: 'period', started_at_ms: 0, reason: 'initial', partial: false }
+    }))
+  })
+  it('explains scope and preserves the dashboard when confirmation is cancelled', async () => {
+    vi.mocked(confirm).mockResolvedValue(false)
+    const { wrapper } = await render()
+    await wrapper.get('[data-test="reset"]').trigger('click')
+    await flushPromises()
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('查询记录和 DNS 服务保持不变'), expect.objectContaining({ confirmText: '重新开始统计' }))
+    expect(oxidnsMonitorApi.resetStatistics).not.toHaveBeenCalled()
+    expect(notify.success).not.toHaveBeenCalled()
+  })
+  it('resets only the selected device after confirmation and reports success', async () => {
+    const { wrapper } = await render()
+    await wrapper.get('[data-test="reset"]').trigger('click')
+    await flushPromises()
+    expect(oxidnsMonitorApi.resetStatistics).toHaveBeenCalledWith('one', 'queries', expect.anything())
+    expect(notify.success).toHaveBeenCalledWith('已重新开始统计', expect.stringContaining('查询记录已保留'))
+  })
+  it('does not reset a newly selected device when an old confirmation is accepted', async () => {
+    let accept!: (value: boolean) => void
+    vi.mocked(confirm).mockReturnValue(new Promise(resolve => { accept = resolve }))
+    const { wrapper, router } = await render()
+    await wrapper.get('[data-test="reset"]').trigger('click')
+    await router.replace('/agents/two/oxidns')
+    await flushPromises()
+    accept(true)
+    await flushPromises()
+    expect(oxidnsMonitorApi.resetStatistics).not.toHaveBeenCalled()
   })
 })

@@ -1255,7 +1255,7 @@ def get_latest_agent_version():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
-# Read-only DNS monitoring stays separate from deployment and lifecycle actions.
+# DNS monitoring and its local statistics baseline stay separate from deployment and lifecycle actions.
 def _oxidns_monitor_response(operation, agent_id, *args):
     from backend.agents import oxidns_monitor
     try:
@@ -1272,9 +1272,29 @@ def _oxidns_monitor_response(operation, agent_id, *args):
 @bp.route('/<agent_id>/oxidns/overview', methods=['GET'])
 @require_auth
 def get_oxidns_overview(agent_id):
-    if request.args:
-        return jsonify(success=False, code='INVALID_QUERY', message='此接口不接受查询参数。'), 400
-    return _oxidns_monitor_response('overview', agent_id)
+    return _oxidns_monitor_response('overview', agent_id, request.args)
+
+
+@bp.route('/<agent_id>/oxidns/dashboard/reset', methods=['POST'])
+@require_auth
+def reset_oxidns_dashboard(agent_id):
+    def invalid_request():
+        response = jsonify(success=False, code='INVALID_QUERY', message='重置请求格式无效。')
+        response.headers['Cache-Control'] = 'no-store'
+        return response, 400
+
+    if request.args or request.content_length is not None and request.content_length > 2048:
+        return invalid_request()
+    # Bound chunked requests too, rather than trusting Content-Length or reading
+    # an arbitrary body into the JSON parser.
+    raw = request.stream.read(2049)
+    if len(raw) > 2048 or raw and not request.is_json:
+        return invalid_request()
+    try:
+        body = json.loads(raw) if raw else {}
+    except (ValueError, UnicodeError, RecursionError):
+        return invalid_request()
+    return _oxidns_monitor_response('reset_dashboard', agent_id, body)
 
 
 @bp.route('/<agent_id>/oxidns/clients', methods=['GET'])
