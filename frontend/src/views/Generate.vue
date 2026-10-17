@@ -1146,9 +1146,9 @@ const targets = computed(() => [
     url: mihomoUrl.value,
     urlDisplay: mihomoUrlDisplay.value,
     actions: [
-      { label: '基础配置', icon: Pencil, run: () => showCustomConfigDialog('mihomo') },
+      { label: '基础配置', group: 'settings' as const, icon: Pencil, run: () => showCustomConfigDialog('mihomo') },
       { label: '预览', icon: Eye, loading: mihomoPreviewLoading.value, run: () => previewConfig('mihomo') },
-      { label: '下载', icon: Download, primary: true, loading: mihomoLoading.value, run: generateMihomo }
+      { label: '下载', group: 'export' as const, icon: Download, primary: true, loading: mihomoLoading.value, run: generateMihomo }
     ]
   },
   {
@@ -1159,10 +1159,10 @@ const targets = computed(() => [
     url: surgeUrl.value,
     urlDisplay: surgeUrlDisplay.value,
     actions: [
-      { label: '基础配置', icon: Pencil, run: handleSurgeCustomConfig },
-      { label: 'Smart', icon: Settings, run: showSurgeSmartDialog },
+      { label: '基础配置', group: 'settings' as const, icon: Pencil, run: handleSurgeCustomConfig },
+      { label: 'Smart', group: 'settings' as const, icon: Settings, run: showSurgeSmartDialog },
       { label: '预览', icon: Eye, loading: surgePreviewLoading.value, run: handleSurgePreview },
-      { label: '下载', icon: Download, primary: true, loading: surgeLoading.value, run: generateSurge }
+      { label: '下载', group: 'export' as const, icon: Download, primary: true, loading: surgeLoading.value, run: generateSurge }
     ]
   },
   {
@@ -1173,10 +1173,10 @@ const targets = computed(() => [
     url: loonUrl.value,
     urlDisplay: loonUrlDisplay.value,
     actions: [
-      { label: '基础配置', icon: Pencil, run: () => showCustomConfigDialog('loon') },
+      { label: '基础配置', group: 'settings' as const, icon: Pencil, run: () => showCustomConfigDialog('loon') },
       { label: '预览', icon: Eye, loading: loonPreviewLoading.value, run: () => previewConfig('loon') },
-      { label: '导入 Loon', icon: Upload, run: importToLoon },
-      { label: '下载', icon: Download, primary: true, loading: loonLoading.value, run: generateLoon }
+      { label: '导入 Loon', group: 'export' as const, icon: Upload, run: importToLoon },
+      { label: '下载', group: 'export' as const, icon: Download, primary: true, loading: loonLoading.value, run: generateLoon }
     ]
   },
   {
@@ -1187,9 +1187,9 @@ const targets = computed(() => [
     url: mosdnsUrl.value,
     urlDisplay: mosdnsUrlDisplay.value,
     actions: [
-      { label: '设置', icon: Settings, run: showMosdnsSettingsDialog },
+      { label: '设置', group: 'settings' as const, icon: Settings, run: showMosdnsSettingsDialog },
       { label: '预览', icon: Eye, loading: mosdnsPreviewLoading.value, run: () => previewConfig('mosdns') },
-      { label: '下载', icon: Download, primary: true, loading: mosdnsLoading.value, run: generateMosdns }
+      { label: '下载', group: 'export' as const, icon: Download, primary: true, loading: mosdnsLoading.value, run: generateMosdns }
     ]
   },
   {
@@ -1200,8 +1200,8 @@ const targets = computed(() => [
     url: oxidnsUrl.value,
     urlDisplay: oxidnsUrl.value,
     actions: [
-      { label: '设置', icon: Settings, run: () => { oxidnsSettingsDialogVisible.value = true } },
-      { label: '下载', icon: Download, primary: true, loading: oxidnsLoading.value, run: generateOxidns }
+      { label: '设置', group: 'settings' as const, icon: Settings, run: () => { oxidnsSettingsDialogVisible.value = true } },
+      { label: '下载', group: 'export' as const, icon: Download, primary: true, loading: oxidnsLoading.value, run: generateOxidns }
     ]
   }
 ])
