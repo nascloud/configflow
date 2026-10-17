@@ -196,7 +196,7 @@ class RouterOSDriver(RouterDriver):
         if manifest and isinstance(context.get('mangle'), list):
             from backend.routers.ros_policy import config_row, MANGLE
             proven = {entry['id'] for entry in manifest.get('resources', []) if entry['path'] == MANGLE
-                      and any(row.get('.id') == entry['id'] and config_row(row) == entry['config']
+                      and any(row.get('.id') == entry['id'] and config_row(row) == config_row(entry['config'])
                               for row in context['mangle'])}
             context['mangle'] = [row for row in context['mangle'] if row.get('.id') not in proven]
         return state

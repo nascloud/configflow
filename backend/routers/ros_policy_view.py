@@ -24,7 +24,7 @@ def read_policy_objects(driver, manifest):
         if entry['path'] not in KINDS:
             continue
         row = live[entry['path']].get(entry['id'])
-        status = 'missing' if row is None else 'matched' if config_row(row) == entry['config'] else 'changed'
+        status = 'missing' if row is None else 'matched' if config_row(row) == config_row(entry['config']) else 'changed'
         shown = entry['config'] if row is None else row
         # A present-empty fib flag means enabled; expose it consistently to the
         # UI without changing the raw ownership baseline or other field values.
