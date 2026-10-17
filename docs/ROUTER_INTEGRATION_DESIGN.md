@@ -27,7 +27,7 @@
 
 | 方式 | RouterOS | iKuai | 结论 |
 |---|---|---|---|
-| 服务端直连路由器 API | v7 REST（`/rest/...`，HTTPS + Basic）或 API-SSL 8729 | Web 管理接口 `/Action/login`、`/Action/call` | **采用** |
+| 服务端直连路由器 API | v7 REST（`/rest/...`，HTTP/HTTPS + Basic）或 API-SSL 8729 | Web 管理接口 `/Action/login`、`/Action/call` | **采用** |
 | 路由器上跑 Agent | 可用 container，但资源和兼容性差 | 不可行 | 不采用 |
 | 下发脚本由用户手动执行 | `.rsc` 导入 | 无对应机制 | 仅作为降级：导出 RouterOS 脚本 |
 
@@ -175,7 +175,7 @@ ConfigFlow 已有 Agent 心跳。mihomo Agent 离线时：
 ## 8. 安全
 
 - 凭据加密存储，界面与导出中脱敏；日志中不打印 API 请求体。
-- RouterOS 建议建专用用户组，只授予 `api, rest-api, read, write` 中需要的权限，并启用 HTTPS（`www-ssl`）或 API-SSL；默认校验证书，自签证书需导入 CA。
+- RouterOS 建议建专用用户组，只授予 `api, rest-api, read, write` 中需要的权限，并启用 HTTPS（`www-ssl`）或 API-SSL；默认校验证书，自签证书需导入 CA。REST 也支持 HTTP（RouterOS 7.9+，启用 `www`）。
 - iKuai 没有细粒度权限，只能使用管理员账号，需在界面上明确提示风险。
 - 安全护栏，下发前强制检查：不管理默认路由、WAN 口相关对象和路由器管理访问规则；不允许把路由器自身或管理网段放进劫持、代理范围，防止把自己锁在外面。
 

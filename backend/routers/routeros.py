@@ -37,7 +37,7 @@ class RouterOSDriver(RouterDriver):
         if response.status_code == 401:
             raise RouterError('RouterOS 认证失败，请检查用户名、密码以及用户组的 rest-api 权限')
         if response.status_code == 404:
-            raise RouterError('RouterOS 未提供 REST API（需要 7.1+ 并启用 www-ssl 服务）')
+            raise RouterError('RouterOS 未提供 REST API（HTTPS 需要 7.1+ 并启用 www-ssl；HTTP 需要 7.9+ 并启用 www）')
         if response.status_code != 200:
             raise RouterError(f'RouterOS 返回 HTTP {response.status_code}')
         try:

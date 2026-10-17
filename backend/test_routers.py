@@ -196,19 +196,19 @@ def test_routeros_requires_7_1():
         driver.probe()
 
 
-def test_store_validation_password_and_redaction():
-    payload = {'name': '主路由', 'type': 'ikuai', 'endpoint': 'http://192.168.1.1/', 'username': 'admin', 'password': 'secret',
+@pytest.mark.parametrize('router_type', ['ikuai', 'routeros'])
+@pytest.mark.parametrize('scheme', ['http', 'https'])
+def test_store_validation_password_and_redaction(router_type, scheme):
+    payload = {'name': '主路由', 'type': router_type, 'endpoint': f'{scheme}://192.168.1.1/', 'username': 'admin', 'password': 'secret',
                'ip_rule_sets': ['r1', 'r1']}
     router = normalize(payload)
     assert router['ip_rule_sets'] == ['r1']
     with pytest.raises(RouterValidationError):
         normalize({**payload, 'ip_rule_sets': 'r1'})
-    assert router['endpoint'] == 'http://192.168.1.1' and router['id'].startswith('router_')
+    assert router['endpoint'] == f'{scheme}://192.168.1.1' and router['id'].startswith('router_')
     assert 'password' not in public_view(router) and public_view(router)['has_password'] is True
     kept = normalize({**payload, 'password': ''}, router)
     assert kept['password'] == 'secret'
-    with pytest.raises(RouterValidationError):
-        normalize({**payload, 'type': 'routeros'})            # RouterOS needs HTTPS
     with pytest.raises(RouterValidationError):
         normalize({**payload, 'endpoint': 'ftp://x'})
     redacted = redact_routers({'items': [router]})['items'][0]
