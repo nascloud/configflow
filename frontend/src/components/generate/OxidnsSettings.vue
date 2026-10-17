@@ -2,6 +2,7 @@
   <SettingsWorkspace
     :open="open"
     title="OxiDNS 设置"
+    :back-label="backLabel"
     description="常用设置、完整参数与 YAML 共用一份草稿。保存草稿不会下发；保存并发布必须通过规则检查和目标 OxiDNS 核心检查。"
     size="wide"
     :dirty="dirty"
@@ -101,7 +102,7 @@ import { Button } from '@/components/ui/button'
 import SettingsWorkspace from './SettingsWorkspace.vue'
 import SettingsPublishBar from './SettingsPublishBar.vue'
 
-const props = defineProps<{ open: boolean; profileId: string; initialFeature?: string; contextLabel?: string }>()
+const props = defineProps<{ open: boolean; profileId: string; initialFeature?: string; contextLabel?: string; backLabel?: string }>()
 const emit = defineEmits<{ (event: 'update:open', value: boolean): void; (event: 'saved'): void }>()
 const settings = ref<Record<string, any> | null>(null)
 const rules = ref<any[]>([])

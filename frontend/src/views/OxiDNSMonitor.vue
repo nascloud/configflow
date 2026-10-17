@@ -26,8 +26,12 @@
         <Button variant="outline" class="min-h-11" :disabled="overviewLoading || queriesLoading || devicesLoading" @click="refreshAll">
           <RefreshCw class="size-4" :class="{ 'animate-spin': overviewLoading || queriesLoading || devicesLoading }" />刷新
         </Button>
+        <Button variant="outline" class="min-h-11" :disabled="openingSettings || switchingDevice || !currentDevice" @click="openSettings()">
+          <Loader2 v-if="openingSettings" class="size-4 animate-spin" /><Settings v-else class="size-4" />{{ openingSettings ? '正在打开…' : '设置' }}
+        </Button>
       </template>
     </PageHeader>
+    <p v-if="settingsError" role="alert" class="mb-4 break-words text-sm text-destructive-accent">{{ settingsError }}</p>
     <div v-if="devicesError || switchError" role="alert" class="mb-4 flex flex-wrap items-center gap-x-3 text-sm text-warning-accent">
       <span>{{ devicesError || switchError }}</span>
       <Button v-if="devicesError" variant="ghost" class="min-h-11" :disabled="devicesLoading" @click="loadDevices">重试设备列表</Button>
@@ -71,9 +75,8 @@
         <TabsContent value="queries">
           <SectionCard v-if="overview && !overview.recorders.length">
             <EmptyState :icon="Search" title="尚未启用查询记录" description="打开此 Agent 所属配置空间的查询记录设置，启用并保存草稿后，发布到此 Agent 生效。">
-              <Button class="min-h-11" :disabled="openingSettings" @click="openRecorderSettings"><Settings class="size-4" />{{ openingSettings ? '正在打开…' : '前往设置' }}</Button>
+              <Button class="min-h-11" :disabled="openingSettings" @click="openSettings('query_recorder')"><Settings class="size-4" />{{ openingSettings ? '正在打开…' : '前往设置' }}</Button>
             </EmptyState>
-            <p v-if="settingsError" role="alert" class="mt-0 break-words text-center text-sm text-destructive-accent">{{ settingsError }}</p>
           </SectionCard>
           <OxiDNSQueryTable v-else-if="overview" :agent-id="agentId" :instance-id="overview.core.instance_id" :recorders="overview.recorders" :recorder="recorder" :filters="filters" :data="queries"
             :loading="queriesLoading" :error="queriesError" :page="page" :has-next="hasNext"
@@ -83,14 +86,14 @@
       </Tabs>
     </template>
     <OxiDNSQueryDetail v-if="selectedRecord" :agent-id="agentId" :record-id="selectedRecord.id" :recorder="recorder" @close="selectedRecord = null" />
-    <OxidnsSettings v-if="recorderSettings" :open="true" :profile-id="recorderSettings.profileId" :context-label="recorderSettings.label"
-      initial-feature="query_recorder" @update:open="value => { if (!value) recorderSettings = null }" />
+    <OxidnsSettings v-if="settingsEditor" :open="true" :profile-id="settingsEditor.profileId" :context-label="settingsEditor.label"
+      :initial-feature="settingsEditor.initialFeature" back-label="返回 OxiDNS 监控" @update:open="value => { if (!value) settingsEditor = null }" />
   </div>
 </template>
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
-import { RefreshCw, Search, Server, Settings, TriangleAlert } from '@lucide/vue'
+import { Loader2, RefreshCw, Search, Server, Settings, TriangleAlert } from '@lucide/vue'
 import { agentApi, profileApi } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -111,15 +114,15 @@ import { oxidnsMonitorPath, rememberOxiDNSDevice, useOxiDNSDevices } from '@/com
 import { monitorNumber, type OxiDNSQuery } from '@/types/oxidnsMonitor'
 import { confirm, notify } from '@/lib/feedback'
 const OxidnsSettings = defineAsyncComponent(() => import('@/components/generate/OxidnsSettings.vue'))
-const recorderSettings = ref<{ profileId: string; label: string } | null>(null)
+const settingsEditor = ref<{ profileId: string; label: string; initialFeature?: string } | null>(null)
 const openingSettings = ref(false)
 const settingsError = ref('')
 let settingsRequest = 0
 const route = useRoute()
 const router = useRouter()
 const agentId = computed(() => String(route.params.agentId || ''))
-watch(agentId, () => { settingsRequest++; recorderSettings.value = null; openingSettings.value = false; settingsError.value = '' })
-async function openRecorderSettings() {
+watch(agentId, () => { settingsRequest++; settingsEditor.value = null; openingSettings.value = false; settingsError.value = '' })
+async function openSettings(initialFeature?: string) {
   if (openingSettings.value) return
   const current = ++settingsRequest
   const id = agentId.value
@@ -135,7 +138,7 @@ async function openRecorderSettings() {
     const profileId = agent.profile_id || profiles.data.find((item: any) => item.is_default ?? item.id === 'default')?.id
     const profile = profiles.data.find((item: any) => item.id === profileId)
     if (!profile) throw new Error('找不到此 Agent 绑定的配置空间，请检查设备绑定后重试。')
-    recorderSettings.value = { profileId, label: `${profile.name || profileId} · ${agent.name || id}` }
+    settingsEditor.value = { profileId, label: `${profile.name || profileId} · ${agent.name || id}`, initialFeature }
   } catch (failure: any) {
     if (!disposed && current === settingsRequest) settingsError.value = failure?.response?.data?.message || failure?.message || '暂时无法打开设置，请重试。'
   } finally {
