@@ -12,6 +12,7 @@ func RegisterRoutes(mux *http.ServeMux, cfg *Config) {
 	mux.HandleFunc("/api/oxidns/queries", monitor)
 	mux.HandleFunc("/api/oxidns/queries/", monitor)
 	mux.HandleFunc("/api/capabilities", AuthMiddleware(cfg, CapabilitiesHandler(cfg)))
+	mux.HandleFunc("/api/return-routing", AuthMiddleware(cfg, ReturnRoutingHandler(cfg)))
 	mux.HandleFunc("/api/deployments", AuthMiddleware(cfg, DeploymentUploadHandler(cfg)))
 	mux.HandleFunc("/api/deployments/", AuthMiddleware(cfg, DeploymentHandler(cfg)))
 	// 注册健康检查路由

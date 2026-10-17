@@ -15,6 +15,7 @@ import {
   GripVertical,
   IdCard,
   Layers,
+  Router,
   LayoutDashboard,
   LayoutGrid,
   Link2,
@@ -58,7 +59,8 @@ const MAP: Record<string, LucideIcon> = {
   Sunny: Sun,
   Moon,
   User,
-  SwitchButton: LogOut
+  SwitchButton: LogOut,
+  Router
 }
 
 /** 取不到时回落到通用图标，避免导航项因图标缺失而不渲染 */

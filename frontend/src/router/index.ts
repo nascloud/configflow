@@ -83,6 +83,11 @@ const routes = [
     component: () => import('@/views/Generate.vue')
   },
   {
+    path: '/routers',
+    name: 'Routers',
+    component: () => import('@/views/Routers.vue')
+  },
+  {
     path: '/agents',
     name: 'Agents',
     component: () => import('@/views/Agents.vue')

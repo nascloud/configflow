@@ -17,7 +17,7 @@ declare module 'axios' {
   }
 }
 
-const scopedPath = /^\/(?:profiles\/[^/]+\/generate|proxy-groups(?:\/|$)|rules(?:\/|$)|rule-sets(?:\/|$)|rule-configs(?:\/|$)|custom-config(?:\/|$)|(?:mosdns|oxidns)(?:\/|$)|stats(?:\/|$)|domain-discovery(?:\/|$))/
+const scopedPath = /^\/(?:profiles\/[^/]+\/generate|proxy-groups(?:\/|$)|rules(?:\/|$)|rule-sets(?:\/|$)|rule-configs(?:\/|$)|custom-config(?:\/|$)|(?:mosdns|oxidns)(?:\/|$)|stats(?:\/|$)|domain-discovery(?:\/|$)|routers(?:\/|$))/
 const profileOptions = (profileId = getActiveProfileId()) => ({
   headers: { 'X-ConfigFlow-Profile': profileId }
 })
@@ -186,6 +186,16 @@ export const generateApi = {
   oxidns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/oxidns'), { base_url: getBaseUrl() }, { responseType: 'blob', timeout: 60000 }),
   previewOxidns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/oxidns/preview'), { base_url: getBaseUrl() }),
   previewMosdns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/mosdns/preview'), { base_url: getBaseUrl() })
+}
+
+// 上游路由器（只读：探测与差异报告）
+export const routerApi = {
+  list: () => api.get('/routers'),
+  create: (data: unknown) => api.post('/routers', data),
+  update: (id: string, data: unknown) => api.put(`/routers/${id}`, data),
+  remove: (id: string) => api.delete(`/routers/${id}`),
+  probe: (id: string) => api.post(`/routers/${id}/probe`, null, { timeout: 60000 }),
+  report: (id: string) => api.get(`/routers/${id}/report`, { timeout: 90000 })
 }
 
 // OxiDNS 统一配置

@@ -19,6 +19,7 @@ settings_bp = Blueprint('settings', __name__, url_prefix='/api')
 logs_bp = Blueprint('logs', __name__, url_prefix='/api/logs')
 stats_bp = Blueprint('stats', __name__, url_prefix='/api/stats')
 profiles_bp = Blueprint('profiles', __name__, url_prefix='/api/profiles')
+routers_bp = Blueprint('routers', __name__, url_prefix='/api/routers')
 
 
 def register_blueprints(app):
@@ -44,6 +45,7 @@ def register_blueprints(app):
     from backend.routes.stats import stats_bp  # 统计路由
     from backend.routes import profiles
     from backend.routes.domain_discovery import domain_discovery_bp
+    from backend.routes import routers
 
     # 注册所有蓝图
     app.register_blueprint(auth_bp)
@@ -65,6 +67,7 @@ def register_blueprints(app):
     app.register_blueprint(stats_bp)  # 注册统计路由
     app.register_blueprint(profiles_bp)
     app.register_blueprint(domain_discovery_bp)
+    app.register_blueprint(routers_bp)
 
     from backend.common.config_repository import (
         ProfileRepositoryError, ProfileNotFound, ProfileValidationError,

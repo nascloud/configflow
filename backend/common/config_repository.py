@@ -157,12 +157,13 @@ def _default_profile_config() -> Dict[str, Any]:
         },
         "surge": {"custom_config": "", "smart_groups": []},
         "loon": {"custom_config": ""},
+        "routers": {"items": []},
     }
 
 
 SHARED_FIELDS = ('subscriptions', 'nodes', 'subscription_aggregations', 'rule_library')
 RESOURCE_FIELDS = SHARED_FIELDS[:3]
-PROFILE_FIELDS = ('proxy_groups', 'rule_configs', 'mihomo', 'surge', 'mosdns', 'oxidns', 'loon', 'domain_discovery')
+PROFILE_FIELDS = ('proxy_groups', 'rule_configs', 'mihomo', 'surge', 'mosdns', 'oxidns', 'loon', 'domain_discovery', 'routers')
 BUILTIN_POLICIES = {'DIRECT', 'REJECT'}
 RULE_SOURCE_FIELDS = ('name', 'url', 'behavior', 'content', 'source_type', 'format')
 
@@ -316,7 +317,7 @@ class ProfileRepository:
 
     def _empty_profile(self, profile_id, name, description=''):
         defaults = self._legacy_defaults()
-        result = {key: copy.deepcopy(defaults.get(key, {} if key in ('mihomo', 'surge', 'mosdns', 'oxidns', 'loon', 'domain_discovery') else []))
+        result = {key: copy.deepcopy(defaults.get(key, {} if key in ('mihomo', 'surge', 'mosdns', 'oxidns', 'loon', 'domain_discovery', 'routers') else []))
                   for key in PROFILE_FIELDS}
         result.update(id=profile_id, name=name, description=description, _revision=0,
                       created_at=_now(), updated_at=_now())
@@ -908,6 +909,9 @@ class ProfileRepository:
                 from backend.common.config_export import redact_oxidns_settings
                 if 'oxidns' in profile:
                     profile['oxidns'] = redact_oxidns_settings(profile['oxidns'])
+                if 'routers' in profile:
+                    from backend.routers.store import redact_routers
+                    profile['routers'] = redact_routers(profile['routers'])
                 for engine in ('mihomo', 'surge', 'mosdns'):
                     profile[engine]['custom_config'] = ''
                 if isinstance(profile.get('loon'), dict):
@@ -1721,6 +1725,10 @@ class ProfileRepository:
         # 域名发现设置同样是后加字段，缺省为空对象
         if not isinstance(profile.get('domain_discovery', {}), dict):
             raise ProfileValidationError('domain_discovery 参数必须是对象')
+        # 上游路由器同样是后加字段，缺省为空对象
+        routers = profile.get('routers', {})
+        if not isinstance(routers, dict) or not isinstance(routers.get('items', []), list):
+            raise ProfileValidationError('routers 参数必须是包含 items 列表的对象')
         # OxiDNS is additive: pre-existing schema-5 profiles may omit it.
         if not isinstance(profile.get('oxidns', {}), dict):
             raise ProfileValidationError('oxidns 参数必须是对象')

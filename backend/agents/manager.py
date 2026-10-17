@@ -1129,6 +1129,10 @@ class AgentManager:
             raise RuntimeError(body.get('message') or f'Agent 返回 HTTP {response.status_code}')
         return body
 
+    def return_routing_status(self, agent: Dict[str, Any]) -> Dict[str, Any]:
+        """读取旁路网关上的回流规则现状（连接标记表、策略路由）。"""
+        return self._agent_json_request(agent, 'get', '/api/return-routing', 15, '回流规则状态')
+
     def region_targets(self, agent: Dict[str, Any]) -> List[Dict[str, Any]]:
         """探测组可切换的目标（节点与策略组）。"""
         return self._agent_json_request(agent, 'get', '/api/region-check/targets', 15, '区域检测').get('targets') or []
