@@ -1,25 +1,37 @@
 package routes
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-// DNS watchdog. The service manager (supervise-daemon, systemd) restarts a
-// crashed core, but a hung one keeps its process alive while DNS goes silent.
-// The watchdog probes the local listener and restarts the service when it
-// stops answering, without fighting deployments or deliberate stops.
+// Service watchdog. The service manager (supervise-daemon, systemd) restarts a
+// crashed core, but a hung one keeps its process alive while it stops serving.
+// The watchdog probes the core locally (DNS listener for OxiDNS/MosDNS, the
+// external controller for mihomo) and restarts the service when it stops
+// answering, without fighting deployments or deliberate stops.
 
 const watchdogProbeName = "configflow-watchdog.invalid."
 
-type dnsWatchdog struct {
+// watchdogTarget is what gets probed; String never includes the secret.
+type watchdogTarget struct {
+	kind    string // "dns" or "http"
+	address string
+	secret  string
+}
+
+func (t watchdogTarget) String() string { return t.kind + "://" + t.address }
+
+type serviceWatchdog struct {
 	cfg *Config
 
 	interval    time.Duration
@@ -28,7 +40,7 @@ type dnsWatchdog struct {
 	maxRestarts int           // per window; beyond it only log
 	window      time.Duration
 
-	probe   func(address string) error
+	probe   func(target watchdogTarget) error
 	running func(cfg *Config) (bool, error)
 	lock    func(cfg *Config) (func(), error)
 	restart func(cfg *Config) ([]byte, error)
@@ -40,23 +52,28 @@ type dnsWatchdog struct {
 	gaveUp      bool
 }
 
-func newDNSWatchdog(cfg *Config) *dnsWatchdog {
-	return &dnsWatchdog{
+func newDNSWatchdog(cfg *Config) *serviceWatchdog {
+	return &serviceWatchdog{
 		cfg: cfg, interval: 10 * time.Second, failures: 3, grace: 60 * time.Second,
 		maxRestarts: 3, window: time.Hour,
-		probe: dnsAnswers, running: serviceRunning, lock: AcquireServiceOperation,
+		probe: probeWatchdogTarget, running: serviceRunning, lock: AcquireServiceOperation,
 		restart: RestartService, now: time.Now,
 	}
 }
 
-// StartDNSWatchdog runs the watchdog for DNS services unless disabled.
+// StartDNSWatchdog runs the watchdog for OxiDNS, MosDNS and mihomo unless disabled.
 func StartDNSWatchdog(cfg *Config) {
-	if cfg.DNSWatchdogDisabled || (cfg.ServiceType != "oxidns" && cfg.ServiceType != "mosdns") {
+	switch cfg.ServiceType {
+	case "oxidns", "mosdns", "mihomo":
+	default:
+		return
+	}
+	if cfg.DNSWatchdogDisabled {
 		return
 	}
 	w := newDNSWatchdog(cfg)
-	log.Printf("DNS watchdog enabled: probe every %s, restart after %d silent probes, at most %d restarts per %s",
-		w.interval, w.failures, w.maxRestarts, w.window)
+	log.Printf("Watchdog enabled for %s: probe every %s, restart after %d silent probes, at most %d restarts per %s",
+		cfg.ServiceType, w.interval, w.failures, w.maxRestarts, w.window)
 	go func() {
 		ticker := time.NewTicker(w.interval)
 		defer ticker.Stop()
@@ -67,7 +84,7 @@ func StartDNSWatchdog(cfg *Config) {
 }
 
 // tick runs one probe round; it returns what it did, for tests and logs.
-func (w *dnsWatchdog) tick() string {
+func (w *serviceWatchdog) tick() string {
 	now := w.now()
 	if now.Before(w.pausedUntil) {
 		return "grace"
@@ -84,19 +101,19 @@ func (w *dnsWatchdog) tick() string {
 		w.consecutive = 0
 		return "not-running"
 	}
-	address, err := watchdogDNSAddress(w.cfg)
+	target, err := watchdogTargetFor(w.cfg)
 	if err != nil {
 		return "no-address"
 	}
-	if err = w.probe(address); err == nil {
+	if err = w.probe(target); err == nil {
 		if w.consecutive > 0 {
-			log.Printf("DNS watchdog: %s answering again", address)
+			log.Printf("Watchdog: %s answering again", target)
 		}
 		w.consecutive, w.gaveUp = 0, false
 		return "ok"
 	}
 	w.consecutive++
-	log.Printf("DNS watchdog: probe %d/%d to %s failed: %v", w.consecutive, w.failures, address, err)
+	log.Printf("Watchdog: probe %d/%d to %s failed: %v", w.consecutive, w.failures, target, err)
 	if w.consecutive < w.failures {
 		return "failing"
 	}
@@ -109,20 +126,78 @@ func (w *dnsWatchdog) tick() string {
 	w.restarts = recent
 	if len(w.restarts) >= w.maxRestarts {
 		if !w.gaveUp {
-			log.Printf("DNS watchdog: %d restarts within %s, not restarting again until the window passes", len(w.restarts), w.window)
+			log.Printf("Watchdog: %d restarts within %s, not restarting again until the window passes", len(w.restarts), w.window)
 			w.gaveUp = true
 		}
 		return "budget-exhausted"
 	}
-	log.Printf("DNS watchdog: %s is running but not answering, restarting %s", address, w.cfg.ServiceType)
+	log.Printf("Watchdog: %s is running but not answering, restarting %s", target, w.cfg.ServiceType)
 	w.restarts = append(w.restarts, now)
 	w.consecutive = 0
 	w.pausedUntil = now.Add(w.grace)
 	if _, err = w.restart(w.cfg); err != nil {
-		log.Printf("DNS watchdog: restart failed: %v", err)
+		log.Printf("Watchdog: restart failed: %v", err)
 		return "restart-failed"
 	}
 	return "restarted"
+}
+
+// watchdogTargetFor picks what to probe: mihomo's external controller (or its
+// DNS listener when no controller is configured), otherwise the DNS listener.
+func watchdogTargetFor(cfg *Config) (watchdogTarget, error) {
+	if cfg.ServiceType != "mihomo" {
+		address, err := watchdogDNSAddress(cfg)
+		return watchdogTarget{kind: "dns", address: address}, err
+	}
+	data, err := os.ReadFile(cfg.ConfigPath)
+	if err != nil {
+		return watchdogTarget{}, err
+	}
+	var doc map[string]interface{}
+	if err = yaml.Unmarshal(data, &doc); err != nil {
+		return watchdogTarget{}, err
+	}
+	if controller, _ := doc["external-controller"].(string); controller != "" {
+		secret, _ := doc["secret"].(string)
+		return watchdogTarget{kind: "http", address: loopbackAddress(controller), secret: secret}, nil
+	}
+	if dns, _ := doc["dns"].(map[string]interface{}); dns != nil {
+		if enabled, _ := dns["enable"].(bool); enabled {
+			if listen, _ := dns["listen"].(string); listen != "" {
+				return watchdogTarget{kind: "dns", address: loopbackAddress(listen)}, nil
+			}
+		}
+	}
+	return watchdogTarget{}, fmt.Errorf("no external-controller or dns.listen")
+}
+
+func probeWatchdogTarget(t watchdogTarget) error {
+	if t.kind == "http" {
+		return controllerAnswers(t.address, t.secret)
+	}
+	return dnsAnswers(t.address)
+}
+
+// controllerAnswers treats any HTTP response from mihomo's controller as alive:
+// a 401 still proves the core is serving, and liveness is all that matters here.
+func controllerAnswers(address, secret string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/version", nil)
+	if err != nil {
+		return err
+	}
+	if secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
+	}
+	client := http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("controller unreachable")
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // watchdogDNSAddress is the configured health address or the first UDP listener.

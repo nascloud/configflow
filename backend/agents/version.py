@@ -12,6 +12,12 @@ VERSION_CHANGELOG = {
             "撤销按精确路由、规则和 nft 句柄执行，不清空路由表或删除 nft 表；兼容部分 iproute2 版本的 VRF 读取差异"
         ]
     },
+    "1.8.4-go": {
+        "date": "2026-10-17",
+        "features": [
+            "看门狗扩展到 mihomo：控制接口（或 DNS 监听）连续 30 秒无响应时自动重启，规则与 OxiDNS 相同"
+        ]
+    },
     "1.8.3-go": {
         "date": "2026-10-17",
         "features": [
