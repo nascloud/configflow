@@ -2,7 +2,9 @@ package routes
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -62,11 +64,12 @@ type oxMonitorCapabilities struct {
 }
 
 type oxMonitorConfig struct {
-	endpoint     string
-	username     string
-	password     string
-	basicAuth    bool
-	capabilities oxMonitorCapabilities
+	endpoint       string
+	username       string
+	password       string
+	basicAuth      bool
+	capabilities   oxMonitorCapabilities
+	sourceRevision string
 }
 
 func oxMonitorConfigError() *oxMonitorError {
@@ -102,6 +105,8 @@ func loadOxiDNSMonitorConfig(cfg *Config) (*oxMonitorConfig, *oxMonitorError) {
 		return nil, oxMonitorFail(http.StatusConflict, "API_NOT_CONFIGURED", "Enable the OxiDNS HTTP API to use monitoring")
 	}
 	config := &oxMonitorConfig{capabilities: oxMonitorCapabilities{QueryRecorders: []string{}, Caches: []string{}}}
+	revision := sha256.Sum256(data)
+	config.sourceRevision = hex.EncodeToString(revision[:])
 	var listen string
 	switch httpConfig := api["http"].(type) {
 	case string:
@@ -598,6 +603,10 @@ func (config *oxMonitorConfig) exactIPRecords(ctx context.Context, client *http.
 // It does not invoke lifecycle commands, deploy configuration, or open recorder
 // databases; all query data comes from the running core's official HTTP API.
 func OxiDNSMonitorHandler(cfg *Config) http.HandlerFunc {
+	return oxMonitorHandlerWithSources(cfg, newOxSourceCache())
+}
+
+func oxMonitorHandlerWithSources(cfg *Config, sources *oxSourceCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodGet {
@@ -642,7 +651,11 @@ func OxiDNSMonitorHandler(cfg *Config) http.HandlerFunc {
 			}
 		}
 		config, configErr := loadOxiDNSMonitorConfig(cfg)
+		wantSources := !overview && !clients && !detail && r.Header.Get(oxSourceHeader) == "1"
 		if configErr != nil {
+			if wantSources {
+				sources.reset()
+			}
 			oxMonitorWriteError(w, configErr)
 			return
 		}
@@ -669,6 +682,17 @@ func OxiDNSMonitorHandler(cfg *Config) http.HandlerFunc {
 			oxMonitorWriteError(w, err)
 			return
 		}
+		var sourceStream *oxSourceStream
+		if wantSources {
+			healthCtx, healthCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			health, healthErr := config.fetch(healthCtx, client, "/api/health", nil, oxMonitorJSONLimit, true)
+			healthCancel()
+			if healthErr == nil && oxSourceInstance(health) != "" {
+				sourceStream = sources.subscribe(config, tag, oxSourceInstance(health))
+			} else {
+				sources.reset()
+			}
+		}
 		corePath := "/api/plugins/" + tag + "/records"
 		if detail {
 			corePath += "/" + id
@@ -693,6 +717,7 @@ func OxiDNSMonitorHandler(cfg *Config) http.HandlerFunc {
 			JsonResponse(w, http.StatusOK, result)
 			return
 		}
+		data = sourceStream.enrich(ctx, data)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(data)

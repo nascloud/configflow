@@ -142,6 +142,23 @@ def test_query_detail_is_flat_and_read_only(monkeypatch):
     assert calls[0][0].endswith('/queries/42')
 
 
+@pytest.mark.parametrize('source', ['local', 'remote', 'fallback', 'cache', 'hosts', 'blocked',
+                                    'rejected', 'unknown', 'unrecorded', 'error', 'no_response'])
+def test_list_preserves_agent_source_summary_without_trace_requests(monkeypatch, source):
+    calls = install_transport(monkeypatch, Response({'ok': True, 'records': [
+        {**ROW, 'resolution_source': source, 'source_credentials': 'never forward'}], 'next_cursor': None}))
+    result = monitor.queries(Manager(), 'oxi', MultiDict({'recorder': 'recorder'}))
+    assert result['records'][0]['resolution_source'] == source
+    assert 'source_credentials' not in result['records'][0]
+    assert len(calls) == 1 and calls[0][0].endswith('/queries')
+    assert calls[0][1]['headers']['X-ConfigFlow-Query-Sources'] == '1'
+
+
+@pytest.mark.parametrize('source', ['private://credentials', 'constructor', {}, [], None])
+def test_invalid_source_summary_is_ignored_for_legacy_detail_fallback(source):
+    assert 'resolution_source' not in monitor._record({**ROW, 'resolution_source': source})
+
+
 def test_routes_require_admin_auth_and_never_accept_agent_token(authenticated_app, monkeypatch):
     client, manager, _, admin, _ = authenticated_app
     registered = manager.register_agent({k: v for k, v in AGENT.items() if k not in ('id', 'token')})

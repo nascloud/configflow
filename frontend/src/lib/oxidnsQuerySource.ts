@@ -1,15 +1,22 @@
-import type { OxiDNSQuery } from '@/types/oxidnsMonitor'
+import type { OxiDNSQuery, OxiDNSQuerySource } from '@/types/oxidnsMonitor'
 
 type Step = NonNullable<OxiDNSQuery['steps']>[number]
 const forwards = new Map([['forward_local', '本地 DNS'], ['forward_remote', '远程 DNS'], ['forward_fallback', '备用 DNS']])
 const completed = new Set(['next', 'stop', 'return'])
 const sameCall = (a: Step, b: Step) => a.tag === b.tag && a.sequence_tag === b.sequence_tag && a.node_index === b.node_index
 const quickPlugin = (tag: string | null, type: string) => tag?.startsWith('qs.') && tag.endsWith('.' + type)
+const summaryLabels = new Map<OxiDNSQuerySource, string>([
+  ['local', '本地 DNS'], ['remote', '远程 DNS'], ['fallback', '备用 DNS'], ['cache', '缓存'],
+  ['hosts', '本地 Hosts'], ['blocked', '规则拦截'], ['rejected', '规则拒绝'], ['unknown', '未识别'],
+  ['unrecorded', '未记录'], ['error', '处理错误'], ['no_response', '无应答']
+])
+export const hasQuerySource = (record: OxiDNSQuery) => record.resolution_source !== undefined && summaryLabels.has(record.resolution_source)
 
 /** Summarize ConfigFlow's standard routing tags, not the winning server inside a forward group. */
 export function querySourceLabel(record: OxiDNSQuery): string {
   if (record.error) return '处理错误'
   if (!record.has_response) return '无应答'
+  if (hasQuerySource(record)) return summaryLabels.get(record.resolution_source!)!
   const steps = record.steps || []
   if (!steps.length) return '未记录'
   let source = '未识别'
