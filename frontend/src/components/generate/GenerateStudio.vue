@@ -1,7 +1,7 @@
 <template>
-  <div class="mb-5 grid min-w-0 items-start gap-3.5 md:grid-cols-[152px_minmax(0,1fr)]">
-    <div class="min-w-0 md:sticky md:top-20">
-      <SectionCard :padded="false" class="hidden p-2 md:block">
+  <SectionCard :padded="false" class="mb-5 grid min-w-0 md:grid-cols-[152px_minmax(0,1fr)]" aria-label="配置生成工作台">
+    <aside class="min-w-0 border-b border-border bg-background/30 md:border-r md:border-b-0">
+      <div class="hidden p-2 md:block">
         <h2 class="m-0 px-3 pt-2 pb-3 text-xs font-medium text-muted-foreground">生成软件</h2>
         <nav class="flex flex-col gap-1" aria-label="生成软件">
           <Button
@@ -18,8 +18,8 @@
             <ChevronRight v-if="active === target.key" class="ml-auto size-3.5 shrink-0" aria-hidden="true" />
           </Button>
         </nav>
-      </SectionCard>
-      <div class="md:hidden">
+      </div>
+      <div class="p-4 md:hidden">
         <label for="generate-software" class="mb-2 block text-xs font-medium text-muted-foreground">生成软件</label>
         <Select v-model="active" :disabled="running">
           <SelectTrigger id="generate-software" class="min-h-11 w-full bg-card" aria-label="生成软件">
@@ -35,11 +35,11 @@
           </SelectContent>
         </Select>
       </div>
-    </div>
+    </aside>
 
     <div class="@container/studio min-w-0">
-      <SectionCard v-if="current" :padded="false" class="mb-3.5" :aria-label="`${current.title} 配置编辑`">
-        <div class="flex flex-wrap items-center justify-between gap-x-5 gap-y-3 px-[18px] py-4">
+      <section v-if="current" class="border-b border-border" :aria-label="`${current.title} 配置编辑`">
+        <div class="flex flex-wrap items-center justify-between gap-x-5 gap-y-3 px-5 py-4">
           <div class="min-w-0">
             <h2 class="m-0 flex items-center gap-2 text-sm font-semibold">
               <component :is="current.icon" class="size-4 text-primary-accent" aria-hidden="true" />
@@ -62,67 +62,37 @@
             </Button>
           </div>
         </div>
-      </SectionCard>
+      </section>
 
-      <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-3.5 @min-[760px]/studio:grid-cols-[260px_minmax(0,1fr)]">
-        <div class="order-2 flex min-w-0 flex-col gap-3.5 @min-[760px]/studio:order-none">
-          <!-- 保留生成步骤与动效；小屏上先展示可操作的生成结果。 -->
-          <SectionCard :padded="false" class="p-[18px]" role="list" aria-label="生成步骤">
-            <div
-              v-for="(step, i) in steps"
-              :key="step.title"
-              role="listitem"
-              :class="cn('gen-step relative grid grid-cols-[26px_1fr] gap-3 pb-5 last:pb-0', stepState(i))"
+      <div class="grid grid-cols-[minmax(0,1fr)] @min-[720px]/studio:grid-cols-[260px_minmax(0,1fr)]">
+        <section class="order-2 min-w-0 border-t border-border p-5 @min-[720px]/studio:order-none @min-[720px]/studio:border-t-0 @min-[720px]/studio:border-r" role="list" aria-label="生成步骤">
+          <div
+            v-for="(step, i) in steps"
+            :key="step.title"
+            role="listitem"
+            :class="cn('gen-step relative grid grid-cols-[26px_1fr] gap-3 pb-5 last:pb-0', stepState(i))"
+          >
+            <span
+              class="gen-bullet grid size-[26px] place-items-center rounded-full border-[1.5px] border-border-strong bg-card font-mono text-[11px] text-muted-foreground transition-all duration-300"
             >
-              <span
-                class="gen-bullet grid size-[26px] place-items-center rounded-full border-[1.5px] border-border-strong bg-card font-mono text-[11px] text-muted-foreground transition-all duration-300"
-              >
-                <Check v-if="stepState(i) === 'done'" class="size-3.5" :stroke-width="2.5" />
-                <X v-else-if="stepState(i) === 'fail'" class="size-3.5" :stroke-width="2.5" />
-                <template v-else>{{ i + 1 }}</template>
-              </span>
-              <div class="min-w-0">
-                <b class="mt-[3px] block text-[13px] font-semibold">{{ step.title }}</b>
-                <span class="block truncate font-mono text-[12px] text-muted-foreground">{{ step.meta }}</span>
-              </div>
+              <Check v-if="stepState(i) === 'done'" class="size-3.5" :stroke-width="2.5" />
+              <X v-else-if="stepState(i) === 'fail'" class="size-3.5" :stroke-width="2.5" />
+              <template v-else>{{ i + 1 }}</template>
+            </span>
+            <div class="min-w-0">
+              <b class="mt-[3px] block text-[13px] font-semibold">{{ step.title }}</b>
+              <span class="block truncate font-mono text-[12px] text-muted-foreground">{{ step.meta }}</span>
             </div>
-          </SectionCard>
+          </div>
+        </section>
 
-          <SectionCard v-if="current" :padded="false" class="p-[18px]" aria-label="订阅地址">
-            <div class="flex items-center gap-2">
-              <component :is="current.icon" class="size-4 text-primary-accent" :stroke-width="2" aria-hidden="true" />
-              <b class="text-[13px] font-semibold">{{ current.title }} 订阅地址</b>
-            </div>
-            <div class="mt-2.5 flex items-center gap-1.5">
-              <Input
-                :model-value="current.urlDisplay"
-                readonly
-                class="h-11 min-w-0 bg-background/50 font-mono text-[11.5px]"
-                :aria-label="`${current.title} 配置 URL`"
-              />
-              <Button
-                variant="outline"
-                size="icon"
-                class="size-11 shrink-0"
-                :title="`复制 ${current.title} 配置 URL`"
-                :aria-label="`复制 ${current.title} 配置 URL`"
-                @click="emit('copy', current.url, current.title)"
-              >
-                <Copy class="size-4" />
-              </Button>
-            </div>
-            <p class="mt-1.5 mb-0 text-[11.5px] text-muted-foreground">客户端可直接订阅此地址。</p>
-          </SectionCard>
-        </div>
-
-        <!-- 生成工作台保留；下载和导入集中到结果工具条。 -->
-        <SectionCard :padded="false" class="min-w-0 overflow-hidden" aria-label="生成结果">
-          <div class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3.5 py-3">
-            <div class="flex min-w-0 flex-1 items-center gap-2.5">
+        <section class="min-w-0 overflow-hidden" aria-label="生成结果">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-5 py-3">
+            <div class="flex min-w-max flex-1 items-center gap-2.5">
               <span class="flex shrink-0 gap-1.5" aria-hidden="true">
                 <i class="size-2.5 rounded-full bg-accent" /><i class="size-2.5 rounded-full bg-accent" /><i class="size-2.5 rounded-full bg-accent" />
               </span>
-              <span class="font-mono text-[12px] text-muted-foreground">{{ fileName }}</span>
+              <span class="whitespace-nowrap font-mono text-[12px] text-muted-foreground">{{ fileName }}</span>
               <span v-if="lines.length && !running" class="whitespace-nowrap font-mono text-[11px] text-muted-foreground">· {{ lines.length }} 行</span>
             </div>
             <div class="flex flex-wrap items-center gap-1.5 max-sm:w-full" role="group" aria-label="生成和导出操作">
@@ -184,10 +154,38 @@
               <span class="text-[12.5px] [overflow-wrap:anywhere]">{{ error || `按「生成」开始编译，或 ${metaKey} + Enter` }}</span>
             </div>
           </div>
-        </SectionCard>
+        </section>
       </div>
+
+      <footer v-if="current" class="grid min-w-0 items-center gap-3 border-t border-border px-5 py-4 @min-[720px]/studio:grid-cols-[220px_minmax(0,1fr)] @min-[720px]/studio:gap-5" aria-label="订阅地址">
+        <div class="min-w-0">
+          <h3 class="m-0 flex items-center gap-2 text-[13px] font-semibold">
+            <component :is="current.icon" class="size-4 shrink-0 text-primary-accent" aria-hidden="true" />
+            {{ current.title }} 订阅地址
+          </h3>
+          <p class="mt-1 mb-0 text-[11.5px] text-muted-foreground">客户端可直接订阅此地址。</p>
+        </div>
+        <div class="flex min-w-0 items-center gap-2">
+          <Input
+            :model-value="current.urlDisplay"
+            readonly
+            class="h-11 min-w-0 bg-background/50 font-mono text-[11.5px]"
+            :aria-label="`${current.title} 配置 URL`"
+          />
+          <Button
+            variant="outline"
+            size="icon"
+            class="size-11 shrink-0"
+            :title="`复制 ${current.title} 配置 URL`"
+            :aria-label="`复制 ${current.title} 配置 URL`"
+            @click="emit('copy', current.url, current.title)"
+          >
+            <Copy class="size-4" />
+          </Button>
+        </div>
+      </footer>
     </div>
-  </div>
+  </SectionCard>
 </template>
 
 <script setup lang="ts">
