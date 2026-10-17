@@ -1,8 +1,8 @@
 <template>
-  <SectionCard class="min-w-0" :title="title" description="按请求次数排列 · 前 10 项" :padded="false">
-    <EmptyState v-if="!entries.length" :title="emptyTitle" :description="emptyDescription" />
-    <div v-else class="cf-table-wrap max-w-full" tabindex="0" role="region" :aria-label="title">
-      <table class="cf-table table-fixed">
+  <SectionCard class="min-w-0" :title="title" help="按请求次数排列 · 前 10 项" :padded="false">
+    <div class="cf-table-wrap h-96 max-w-full overflow-y-auto lg:h-[32rem]" tabindex="0" role="region" :aria-label="title">
+      <EmptyState v-if="!entries.length" class="h-full" :title="emptyTitle" :description="emptyDescription" />
+      <table v-else class="cf-table table-fixed">
         <caption class="cf-sr">{{ title }}，按请求次数从高到低排列</caption>
         <thead><tr><th class="w-12"><span class="cf-sr">排名</span></th><th>{{ nameLabel }}</th><th class="w-24 text-right">请求次数</th></tr></thead>
         <tbody>
@@ -29,3 +29,9 @@ defineProps<{
   emptyDescription: string
 }>()
 </script>
+
+<style scoped>
+.cf-table th.text-right {
+  text-align: right;
+}
+</style>

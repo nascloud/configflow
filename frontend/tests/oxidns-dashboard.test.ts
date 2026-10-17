@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import OxiDNSRankingTable from '@/components/agents/OxiDNSRankingTable.vue'
 import OxiDNSOverview from '@/components/agents/OxiDNSOverview.vue'
+import OxiDNSStatisticsControls from '@/components/agents/OxiDNSStatisticsControls.vue'
+import FieldHelp from '@/components/common/FieldHelp.vue'
 import type { OxiDNSOverview as Overview, OxiDNSRankings } from '@/types/oxidnsMonitor'
 
 const wrappers: VueWrapper[] = []
@@ -58,15 +60,23 @@ function panel(data = overview()) {
   wrappers.push(wrapper)
   return wrapper
 }
+function helpText(wrapper: VueWrapper, label: string) {
+  return wrapper.findAllComponents(FieldHelp).find(help => help.props('label') === label)!.props('text')
+}
+function controls(data = overview()) {
+  const wrapper = mount(OxiDNSStatisticsControls, { props: { statistics: data.statistics, resetting: false } })
+  wrappers.push(wrapper)
+  return wrapper
+}
 
 describe('OxiDNS dashboard periods and availability', () => {
   it('labels the period and bounded record samples separately from cumulative metrics', () => {
     const wrapper = panel()
-    expect(wrapper.text()).toContain('本轮统计开始于')
+    expect(controls().text()).toContain('本轮统计开始于')
     expect(wrapper.text()).toContain('自本轮统计开始以来')
-    expect(wrapper.text()).toContain('记录样本排行，不是全量累计')
+    expect(helpText(wrapper, '请求排行')).toContain('记录样本排行，不是全量累计')
     expect(wrapper.text()).toContain('已达到样本上限')
-    expect(wrapper.text()).toContain('核心保留期 7 天')
+    expect(helpText(wrapper, '请求排行')).toContain('核心保留期 7 天')
     expect(wrapper.text()).toContain('192.0.2.7')
     expect(wrapper.text()).toContain('example.test')
     expect(wrapper.text()).toContain('blocked.test')
@@ -81,8 +91,8 @@ describe('OxiDNS dashboard periods and availability', () => {
     expect(rows[1].text()).toContain('20.25 ms')
     expect(rows[2].text()).toContain('—')
     expect(rows[2].text()).not.toContain('0 ms')
-    expect(wrapper.text()).toContain('竞速或重试')
-    expect(wrapper.text()).toContain('包含成功和失败的已完成尝试')
+    expect(helpText(wrapper, '上游服务器排行')).toContain('竞速或重试')
+    expect(helpText(wrapper, '上游服务器排行')).toContain('包含成功和失败的已完成尝试')
   })
 
   it('keeps older Agent metrics visible while disabling reset and explaining unavailable rankings', () => {
@@ -91,9 +101,10 @@ describe('OxiDNS dashboard periods and availability', () => {
     data.rankings = { available: false, reason: '当前 Agent 尚未提供排行接口' }
     const wrapper = panel(data)
     expect(wrapper.text()).toContain('自核心启动以来')
-    expect(wrapper.text()).toContain('Agent 1.8.14-go')
+    const toolbar = controls(data)
+    expect(helpText(toolbar, '统计周期')).toContain('Agent 1.8.14-go')
     expect(wrapper.text()).toContain('当前 Agent 尚未提供排行接口')
-    expect(wrapper.findAll('button').find(button => button.text() === '重置统计')!.attributes('disabled')).toBeDefined()
+    expect(toolbar.findAll('button').find(button => button.text() === '重置统计')!.attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('100')
   })
 
@@ -107,7 +118,7 @@ describe('OxiDNS dashboard periods and availability', () => {
   })
 
   it('signals reset and keeps it disabled during the request', async () => {
-    const wrapper = panel()
+    const wrapper = controls()
     const button = wrapper.findAll('button').find(item => item.text() === '重置统计')!
     await button.trigger('click')
     expect(wrapper.emitted('reset')).toHaveLength(1)

@@ -11,6 +11,7 @@
         <h2 v-if="title" class="m-0 flex items-center gap-2 text-[14px] font-semibold tracking-[-0.01em] text-foreground">
           <component v-if="icon" :is="icon" class="size-4 text-primary-accent" :stroke-width="2.2" aria-hidden="true" />
           {{ title }}
+          <FieldHelp v-if="help" :label="title" :text="help" />
         </h2>
         <p v-if="description" class="mt-1 mb-0 text-[12px] leading-relaxed text-muted-foreground">
           {{ description }}
@@ -28,11 +29,13 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
 import { cn } from '@/lib/utils'
+import FieldHelp from './FieldHelp.vue'
 
 withDefaults(
   defineProps<{
     title?: string
     description?: string
+    help?: string
     icon?: Component
     /** 内容自带内边距时（例如整块是表格）传 false */
     padded?: boolean
