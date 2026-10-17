@@ -132,7 +132,7 @@ const validationError = ref('')
 const validationSource = computed(() => settings.value ? JSON.stringify(settings.value) : '')
 const savedSource = ref('')
 const editedInput = ref(false)
-const dirty = computed(() => Boolean(settings.value) && (validationSource.value !== savedSource.value || Boolean(pendingCount.value) || (editedInput.value && Boolean(editorError.value))))
+const dirty = computed(() => Boolean(settings.value) && (validationSource.value !== savedSource.value || applying.value || Boolean(pendingCount.value) || (editedInput.value && Boolean(editorError.value))))
 function markEdited() { if (!loading.value) editedInput.value = true }
 const validatedSource = ref('')
 const validationErrors = computed(() => validationIssues.value.filter(issue => issue.severity === 'error'))

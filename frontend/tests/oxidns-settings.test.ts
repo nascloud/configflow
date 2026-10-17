@@ -242,6 +242,33 @@ describe('unified OxiDNS profile settings', () => {
     expect((loadYaml(savedPayload().native_config) as any).runtime.worker_threads).toBe(4)
   })
 
+  it('protects an unsaved common edit while its draft synchronization is still in flight', async () => {
+    const wrapper = await render()
+    let resolveApply!: (value: any) => void
+    vi.mocked(oxidnsApi.applyCommonSettings).mockImplementationOnce(() => new Promise(resolve => { resolveApply = resolve }))
+    await input(worker, '3')
+    expect(oxidnsApi.applyCommonSettings).toHaveBeenCalledTimes(1)
+    expect(wrapper.findComponent(OxidnsNativeEditor).props('modelValue')).toBe(config)
+    expect(wrapper.findComponent(SettingsWorkspace).props('dirty')).toBe(true)
+    ;(document.querySelector('[aria-label="返回生成工作台"]') as HTMLButtonElement).click()
+    await flushPromises()
+    expect(confirmState.open).toBe(true)
+    settleConfirm('cancel')
+    await flushPromises()
+    expect(wrapper.emitted('update:open')).toBeUndefined()
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('3')
+
+    const applied = { ...settings(), native_config: config.replace('worker_threads: 8', 'worker_threads: 3') }
+    resolveApply({ data: { settings: applied, ...projection(applied) } })
+    await flushPromises()
+    await settleValidation()
+    expect(wrapper.findComponent(SettingsWorkspace).props('dirty')).toBe(true)
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('3')
+    expect(oxidnsApi.saveSettings).not.toHaveBeenCalled()
+    await click('保存草稿')
+    expect((loadYaml(savedPayload().native_config) as any).runtime.worker_threads).toBe(3)
+  })
+
   it('keeps TLS controls and the saved draft consistent after off/on clicks share one patch', async () => {
     const tls = {server_name: 'router.example.test', ca: 'certs/router-ca.pem', insecure: false}
     const args = {address: '192.0.2.1:8729', tls}
