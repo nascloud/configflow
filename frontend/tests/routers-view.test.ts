@@ -3,6 +3,7 @@ import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-uti
 import Routers from '@/views/Routers.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
+import MultiSelect from '@/components/common/MultiSelect.vue'
 import { Select } from '@/components/ui/select'
 import { routerApi, agentApi, ruleApi } from '@/api'
 import { NAV_GROUPS, scopeOfPath } from '@/navigation'
@@ -69,6 +70,93 @@ const mountRouter = async (router: Record<string, unknown> | null = ROUTER, agen
 }
 
 describe('routers view', () => {
+  it('selects policy rule sets directly without selecting any static rule sets', async () => {
+    vi.mocked(ruleApi.getAll).mockResolvedValueOnce({ data: [
+      { id: 'telegram', itemType: 'ruleset', name: 'Telegram', policy: '代理' },
+      { id: 'other', itemType: 'ruleset', name: '其他 IP', policy: '代理' },
+      { id: 'unused', itemType: 'ruleset', name: '未选规则集', policy: '代理' }
+    ] } as any)
+    vi.mocked(routerApi.update).mockResolvedValue({ data: { success: true } } as any)
+    const wrapper = await mountRouter({ ...ROUTER, type: 'routeros',
+      ip_rule_sets: [], ros_policy_rule_sets: [] })
+    await wrapper.find('button[aria-label="编辑"]').trigger('click')
+    await flushPromises()
+    const [staticSets, policy] = wrapper.findAllComponents(MultiSelect)
+    expect(policy.props('options').map(item => item.value)).toEqual(['telegram', 'other', 'unused'])
+    expect(document.body.textContent).toContain('使用静态路由的 IP 规则集')
+    expect(document.body.textContent).toContain('使用策略路由的 IP 规则集')
+    policy.vm.$emit('update:modelValue', ['telegram'])
+    await flushPromises()
+    expect(staticSets.props('modelValue')).toEqual([])
+    buttonInDocument('保存').click()
+    await flushPromises()
+    expect(routerApi.update).toHaveBeenCalledWith('router_1', expect.objectContaining({
+      ip_rule_sets: [], ros_policy_rule_sets: ['telegram']
+    }))
+    expect(routerApi.apply).not.toHaveBeenCalled()
+  })
+
+  it('moves a rule set between routing modes without leaving duplicate selections', async () => {
+    const wrapper = await mountRouter({ ...ROUTER, type: 'routeros',
+      ip_rule_sets: ['other'], ros_policy_rule_sets: ['telegram'] })
+    await wrapper.find('button[aria-label="编辑"]').trigger('click')
+    await flushPromises()
+    const [staticSets, policy] = wrapper.findAllComponents(MultiSelect)
+    policy.vm.$emit('update:modelValue', ['telegram', 'other'])
+    await flushPromises()
+    expect(staticSets.props('modelValue')).toEqual([])
+    staticSets.vm.$emit('update:modelValue', ['telegram'])
+    await flushPromises()
+    expect(policy.props('modelValue')).toEqual(['other'])
+    expect(staticSets.props('modelValue')).toEqual(['telegram'])
+  })
+
+  it('keeps selections independent when either group is cleared', async () => {
+    const wrapper = await mountRouter({ ...ROUTER, type: 'routeros',
+      ip_rule_sets: ['other'], ros_policy_rule_sets: ['telegram'] })
+    await wrapper.find('button[aria-label="编辑"]').trigger('click')
+    await flushPromises()
+    const [staticSets, policy] = wrapper.findAllComponents(MultiSelect)
+    staticSets.vm.$emit('update:modelValue', [])
+    await flushPromises()
+    expect(policy.props('modelValue')).toEqual(['telegram'])
+    policy.vm.$emit('update:modelValue', [])
+    await flushPromises()
+    expect(staticSets.props('modelValue')).toEqual([])
+    expect(policy.props('placeholder')).toBe('不使用策略路由')
+  })
+
+  it('opens legacy overlapping selections with their actual routing modes preserved', async () => {
+    const wrapper = await mountRouter({ ...ROUTER, type: 'routeros',
+      ip_rule_sets: ['telegram', 'other'], ros_policy_rule_sets: ['telegram'] })
+    await wrapper.find('button[aria-label="编辑"]').trigger('click')
+    await flushPromises()
+    const [staticSets, policy] = wrapper.findAllComponents(MultiSelect)
+    expect(staticSets.props('modelValue')).toEqual(['other'])
+    expect(policy.props('modelValue')).toEqual(['telegram'])
+    expect(routerApi.update).not.toHaveBeenCalled()
+    expect(routerApi.apply).not.toHaveBeenCalled()
+  })
+
+  it('shows source policy drift separately from static routes', async () => {
+    vi.mocked(routerApi.report).mockResolvedValue({ data: { success: true, report: {
+      ...REPORT, routes: { ...REPORT.routes, items: [REPORT.routes.items[0]] },
+      policy_routing: { enabled: true, sources: ['192.168.0.101/32'],
+        blockers: ['策略与静态网段重叠，请调整选择'], warnings: [],
+        items: [{ cidr: '91.108.4.0/22', sources: ['Telegram'], status: 'pending', detail: '按来源转发' }] }
+    } } } as any)
+    const wrapper = await mountRouter({ ...ROUTER, type: 'routeros' })
+    buttonInDocument('差异报告').click()
+    await flushPromises()
+    const sections = wrapper.findAllComponents(SectionCard)
+    const staticRoutes = sections.find(item => item.props('title') === '代理路由')!
+    const policy = sections.find(item => item.props('title') === '按来源策略路由')!
+    expect(staticRoutes.text()).not.toContain('91.108.4.0/22')
+    expect(policy.text()).toContain('91.108.4.0/22')
+    expect(policy.find('[role="alert"]').text()).toContain('网段重叠')
+    expect(routerApi.apply).not.toHaveBeenCalled()
+  })
+
   it('switches between static routes and the report instead of stacking both panels', async () => {
     vi.mocked(routerApi.routes).mockResolvedValue({ data: { success: true, routes: [] } } as any)
     vi.mocked(routerApi.report).mockResolvedValue({ data: { success: true, report: REPORT, generated_at: '2026-10-17T10:00:00' } } as any)

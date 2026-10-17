@@ -2,6 +2,7 @@
   <Popover v-model:open="open">
     <PopoverTrigger as-child>
       <button
+        :id="triggerId"
         type="button"
         role="combobox"
         :aria-expanded="open"
@@ -73,6 +74,7 @@ const props = withDefaults(
   defineProps<{
     modelValue: string[]
     options: MultiSelectOption[]
+    triggerId?: string
     placeholder?: string
     searchPlaceholder?: string
     maxVisible?: number

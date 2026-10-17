@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 ROUTER_TYPES = ('ikuai', 'routeros')
 EDITABLE_FIELDS = ('name', 'type', 'endpoint', 'username', 'verify_tls', 'proxy_gateway_agent_id', 'dns_agent_id',
-                   'ip_rule_sets', 'manage_return_routing')
+                   'ip_rule_sets', 'manage_return_routing', 'ros_policy_rule_sets')
 
 
 class RouterValidationError(ValueError):
@@ -23,10 +23,18 @@ def find_router(config: Dict[str, Any], router_id: str) -> Optional[Dict[str, An
     return next((item for item in routers_of(config) if item.get('id') == router_id), None)
 
 
+def static_rule_sets(router: Dict[str, Any]) -> List[str]:
+    """Read legacy overlapping selections without changing their routing mode."""
+    policy_sets = set(router.get('ros_policy_rule_sets') or []) if router.get('type') == 'routeros' else set()
+    return [item for item in router.get('ip_rule_sets') or [] if item not in policy_sets]
+
+
 def public_view(router: Dict[str, Any]) -> Dict[str, Any]:
     """Router as returned to the UI: never expose the password."""
     result = {key: router.get(key) for key in ('id', *EDITABLE_FIELDS, 'last_probe', 'last_release')}
     result['manage_return_routing'] = router.get('manage_return_routing') is True
+    result['ros_policy_rule_sets'] = list(router.get('ros_policy_rule_sets') or [])
+    result['ip_rule_sets'] = static_rule_sets(router)
     result['has_password'] = bool(router.get('password'))
     return result
 
@@ -35,6 +43,10 @@ def normalize(payload: Dict[str, Any], existing: Optional[Dict[str, Any]] = None
     if not isinstance(payload, dict):
         raise RouterValidationError('路由器参数必须是对象')
     router = dict(existing or {})
+    if existing:
+        # Old records used ip_rule_sets as a total selection. Convert that base
+        # before applying edits, so clearing policy selection cannot add routes.
+        router['ip_rule_sets'] = static_rule_sets(existing)
     for key in EDITABLE_FIELDS:
         if key in payload:
             router[key] = payload[key]
@@ -59,6 +71,16 @@ def normalize(payload: Dict[str, Any], existing: Optional[Dict[str, Any]] = None
     if not isinstance(rule_sets, list) or any(not isinstance(item, str) or not item for item in rule_sets):
         raise RouterValidationError('IP 路由规则集必须是规则集 ID 列表')
     router['ip_rule_sets'] = list(dict.fromkeys(rule_sets))
+    policy_sets = router.get('ros_policy_rule_sets') or []
+    if not isinstance(policy_sets, list) or any(not isinstance(item, str) or not item for item in policy_sets):
+        raise RouterValidationError('策略路由规则集必须是规则集 ID 列表')
+    if policy_sets and router['type'] != 'routeros':
+        raise RouterValidationError('按来源策略路由仅支持 RouterOS')
+    if set(policy_sets).intersection(rule_sets):
+        raise RouterValidationError('同一规则集只能选择静态路由或策略路由中的一种方式')
+    router['ros_policy_rule_sets'] = list(dict.fromkeys(policy_sets))
+    if existing and existing.get('ros_policy_state') and any(router.get(key) != existing.get(key) for key in ('type', 'endpoint')):
+        raise RouterValidationError('请先清空策略路由选择并发布撤销，再修改路由器类型或管理地址')
 
     if not router['name']:
         raise RouterValidationError('请填写名称')
@@ -82,7 +104,8 @@ def redact_routers(routers: Any) -> Any:
     items = []
     for item in routers.get('items') or []:
         if isinstance(item, dict):
-            clean = {key: value for key, value in item.items() if key not in ('password', 'last_probe', 'last_release')}
+            clean = {key: value for key, value in item.items()
+                     if key not in ('password', 'last_probe', 'last_release', 'ros_policy_state')}
             if clean.get('username'):
                 clean['username'] = '[REDACTED]'
             if clean.get('endpoint'):

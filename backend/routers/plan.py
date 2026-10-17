@@ -299,6 +299,11 @@ def build_plan(router: Dict[str, Any], desired: Dict[str, Any], state: RouterSta
         route_ops, skipped, policy_checks = _policy_route_ops(report, state, gateway, warnings)
     else:
         route_ops, skipped = _route_ops(report, state, gateway, warnings)
+    ros_policy = state.ros_policy_plan
+    if ros_policy is not None:
+        blockers.extend(ros_policy['blockers'])
+        warnings.extend(ros_policy['warnings'])
+        route_ops.extend(ros_policy['ops'])
     stale = stale_routes(state, gateway)
     if stale:
         warnings.append(stale_route_warning(stale, gateway))
@@ -327,7 +332,8 @@ def build_plan(router: Dict[str, Any], desired: Dict[str, Any], state: RouterSta
     return_ops = []
     if manage_return:
         allocation = return_allocation(return_routing)
-        spec = {'router_ip': upstream, 'proxy_dst': _collapse(proxy_cidrs + exempt),
+        policy_cidrs = [item['cidr'] for item in desired.get('ros_policy', {}).get('cidrs', [])]
+        spec = {'router_ip': upstream, 'proxy_dst': _collapse(proxy_cidrs + policy_cidrs + exempt),
                 **{key: allocation[key] for key in RETURN_ALLOCATION_FIELDS},
                 'safety_version': RETURN_SAFETY_VERSION}
         return_ops = _return_op(return_routing, spec)
@@ -358,6 +364,8 @@ def build_plan(router: Dict[str, Any], desired: Dict[str, Any], state: RouterSta
     }
     if policy:
         checks['policy_routes'] = policy_checks
+    if ros_policy is not None:
+        checks['ros_policy'] = ros_policy['check']
     if manage_return:
         checks['return_routing'] = dict(spec)
     if manage_dns and dns['status'] in {'synced', 'pending'}:
@@ -366,6 +374,8 @@ def build_plan(router: Dict[str, Any], desired: Dict[str, Any], state: RouterSta
                               'dns': item['desired_dns']}
     script = driver.render_script(route_ops + nat_ops + dns_ops) if manual else ''
     evidence = {'context': state.nat_context, 'address_sets': state.address_sets} if state.nat_context is not None else None
+    if ros_policy is not None:
+        evidence = {'nat': evidence, 'ros_policy': ros_policy.get('evidence'), 'request': ros_policy.get('request')}
     dns_evidence = ({'agent_id': router['dns_agent_id'], 'target_dns': dns['target_dns'], 'gateway': gateway,
                      'state': as_dict(state.dhcp_dns)} if manage_dns else None)
     return {'stages': stages, 'checks': checks, 'blockers': blockers, 'warnings': warnings, 'script': script,
