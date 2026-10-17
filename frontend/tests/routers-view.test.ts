@@ -69,6 +69,100 @@ const mountRouter = async (router: Record<string, unknown> | null = ROUTER, agen
 }
 
 describe('routers view', () => {
+  it('switches between static routes and the report instead of stacking both panels', async () => {
+    vi.mocked(routerApi.routes).mockResolvedValue({ data: { success: true, routes: [] } } as any)
+    vi.mocked(routerApi.report).mockResolvedValue({ data: { success: true, report: REPORT, generated_at: '2026-10-17T10:00:00' } } as any)
+    const wrapper = await mountRouter()
+    buttonInDocument('静态路由').click()
+    await flushPromises()
+    expect(wrapper.text()).toContain('静态路由 · 主路由')
+    buttonInDocument('差异报告').click()
+    await flushPromises()
+    expect(wrapper.text()).toContain('差异报告 · 主路由')
+    expect(wrapper.text()).not.toContain('静态路由 ·')
+    // Also exercise the shortcut inside the report, not just the device list.
+    const otherRoutes = wrapper.findAllComponents(SectionCard).find(card => card.props('title') === '其他路由')!
+    await otherRoutes.find('button').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('静态路由 · 主路由')
+    expect(wrapper.text()).not.toContain('差异报告 ·')
+    buttonInDocument('关闭静态路由').click()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('差异报告 ·')
+  })
+
+  it('switches immediately to report loading and lets a failed report retry', async () => {
+    vi.mocked(routerApi.routes).mockResolvedValue({ data: { success: true, routes: [] } } as any)
+    let rejectReport!: (error: any) => void
+    vi.mocked(routerApi.report).mockImplementationOnce(() => new Promise((_, reject) => { rejectReport = reject }))
+      .mockResolvedValue({ data: { success: true, report: REPORT, generated_at: '2026-10-17T10:00:00' } } as any)
+    const wrapper = await mountRouter()
+    buttonInDocument('静态路由').click()
+    await flushPromises()
+    buttonInDocument('差异报告').click()
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('静态路由 ·')
+    expect(wrapper.text()).toContain('正在生成差异报告…')
+    rejectReport({ response: { data: { message: '设备暂时离线' } } })
+    await flushPromises()
+    expect(wrapper.find('[role="alert"]').text()).toBe('设备暂时离线')
+    buttonInDocument('重试').click()
+    await flushPromises()
+    expect(wrapper.text()).toContain('预览发布')
+    expect(wrapper.text()).not.toContain('设备暂时离线')
+  })
+
+  it('ignores a pending route list after switching to the report', async () => {
+    let resolveRoutes!: (value: any) => void
+    vi.mocked(routerApi.routes).mockImplementationOnce(() => new Promise(resolve => { resolveRoutes = resolve }))
+    vi.mocked(routerApi.report).mockResolvedValue({ data: { success: true, report: REPORT, generated_at: '2026-10-17T10:00:00' } } as any)
+    const wrapper = await mountRouter()
+    buttonInDocument('静态路由').click()
+    await flushPromises()
+    buttonInDocument('差异报告').click()
+    await flushPromises()
+    resolveRoutes({ data: { success: true, routes: [] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('差异报告 · 主路由')
+    expect(wrapper.text()).not.toContain('静态路由 ·')
+  })
+
+  it('ignores a pending report after switching back to static routes', async () => {
+    let resolveReport!: (value: any) => void
+    vi.mocked(routerApi.routes).mockResolvedValue({ data: { success: true, routes: [] } } as any)
+    vi.mocked(routerApi.report).mockImplementationOnce(() => new Promise(resolve => { resolveReport = resolve }))
+    const wrapper = await mountRouter()
+    buttonInDocument('差异报告').click()
+    await flushPromises()
+    buttonInDocument('静态路由').click()
+    await flushPromises()
+    resolveReport({ data: { success: true, report: REPORT, generated_at: '2026-10-17T10:00:00' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('静态路由 · 主路由')
+    expect(wrapper.text()).not.toContain('差异报告 ·')
+  })
+
+  it('does not let an old report overwrite a newer request after switching twice', async () => {
+    const pending: ((value: any) => void)[] = []
+    vi.mocked(routerApi.routes).mockResolvedValue({ data: { success: true, routes: [] } } as any)
+    vi.mocked(routerApi.report).mockImplementation(() => new Promise(resolve => { pending.push(resolve) }))
+    const wrapper = await mountRouter()
+    buttonInDocument('差异报告').click()
+    await flushPromises()
+    buttonInDocument('静态路由').click()
+    await flushPromises()
+    buttonInDocument('差异报告').click()
+    await flushPromises()
+    pending[0]({ data: { success: true, report: REPORT, generated_at: '2026-10-17T10:00:00' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('正在生成差异报告…')
+    expect(buttonInDocument('差异报告').disabled).toBe(true)
+    pending[1]({ data: { success: true, report: REPORT, generated_at: '2026-10-17T10:01:00' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('预览发布')
+    expect(wrapper.text()).not.toContain('正在生成差异报告…')
+  })
+
   it('is reachable from the profile-scoped navigation', () => {
     const profile = NAV_GROUPS.find(group => group.scope === 'profile')
     expect(profile?.items.some(item => item.path === '/routers' && item.label === '上游路由')).toBe(true)

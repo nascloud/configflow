@@ -32,7 +32,7 @@ let wrapper: VueWrapper | null = null
 const openManager = async () => {
   wrapper = mount(Routers, { attachTo: document.body })
   await flushPromises()
-  button('管理路由').click()
+  button('静态路由').click()
   await flushPromises()
   return wrapper
 }
@@ -162,11 +162,11 @@ describe('independent static route management', () => {
     vi.mocked(routerApi.routes).mockReturnValueOnce(pending.promise)
       .mockResolvedValue({ data: { success: true, routes: [{ ...ROUTE, cidr: '10.0.0.0/8' }] } } as any)
     await openManager()
-    wrapper!.findAll('button').filter(item => item.text() === '管理路由')[1].element.click()
+    wrapper!.findAll('button').filter(item => item.text() === '静态路由')[1].element.click()
     await flushPromises()
     pending.resolve({ data: { success: true, routes: [ROUTE] } })
     await flushPromises()
-    expect(document.body.textContent).toContain('管理路由 · 备用主路由')
+    expect(document.body.textContent).toContain('静态路由 · 备用主路由')
     expect(document.body.textContent).toContain('10.0.0.0/8')
     expect(document.body.textContent).not.toContain('192.168.20.0/24')
   })
@@ -181,7 +181,7 @@ describe('independent static route management', () => {
     activeProfileId.value = 'profile-b'
     pending.resolve(preview())
     await flushPromises()
-    expect(document.body.textContent).not.toContain('管理路由 ·')
+    expect(document.body.textContent).not.toContain('静态路由 ·')
     expect(confirm).not.toHaveBeenCalled()
     expect(routerApi.routeApply).not.toHaveBeenCalled()
   })
