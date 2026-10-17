@@ -175,8 +175,11 @@ async function load() {
       mihomoPanelApi.proxyProviders(props.agentId).catch(() => null)
     ])
     if (requestEpoch !== epoch) return
-    proxies.value = proxyResult.data.data?.proxies || {}
     const providerMap: Record<string, MihomoProvider> = providerResult?.data.data?.providers || {}
+    // /proxies 不含 proxy-providers 里的节点，合并进来才能显示策略组成员的类型和延迟
+    const providerProxies = Object.fromEntries(Object.values(providerMap)
+      .flatMap(provider => provider.proxies || []).map(proxy => [proxy.name, proxy]))
+    proxies.value = { ...providerProxies, ...(proxyResult.data.data?.proxies || {}) }
     providers.value = Object.values(providerMap).filter(provider => provider.vehicleType !== 'Compatible')
   } catch (failure) {
     if (requestEpoch === epoch) error.value = panelError(failure, '暂时无法读取策略组。')
