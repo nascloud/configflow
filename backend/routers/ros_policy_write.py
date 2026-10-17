@@ -13,6 +13,7 @@ from backend.routers.ros_policy import (
     check_policy_order, check_references, check_route_egress, config_row, enabled, owned_rows, snapshot, stable,
 )
 from backend.routers.routeros import ROUTE_FIELDS, MissingResource, UncertainWrite, _matches
+from backend.routers.ros_values import comparable_values
 
 
 def _read(driver, path, row_id):
@@ -46,6 +47,10 @@ def _resource(path, row):
     return {'path': path, 'id': row['.id'], 'config': config_row(row)}
 
 
+def _matches_values(path, row, values):
+    return _matches(comparable_values(path, row), comparable_values(path, values))
+
+
 def _create(driver, path, values, journal, ids, *, restoring=False):
     values = copy.deepcopy(values)
     if path == NAT and not restoring:
@@ -58,7 +63,7 @@ def _create(driver, path, values, journal, ids, *, restoring=False):
             raise UncertainWrite('策略对象已提交但未返回对象 ID')
     except UncertainWrite:
         candidates = [row for row in driver._list(path)
-                      if row.get('.id') not in ids[path] and _matches(row, values)]
+                      if row.get('.id') not in ids[path] and _matches_values(path, row, values)]
         if len(candidates) != 1:
             raise RouterRollbackError('策略对象写入结果不明确，未删除任何不明归属的对象，请检查路由器') from None
         journal.append({'action': 'delete', **_resource(path, candidates[0])})
@@ -68,8 +73,11 @@ def _create(driver, path, values, journal, ids, *, restoring=False):
     undo = {'action': 'delete', **_resource(path, row)}
     journal.append(undo)
     actual = _read(driver, path, row_id)
-    if actual is None or not _matches(actual, values):
-        raise RouterError('策略路由回读与提交内容不一致：' + path)
+    if actual is None or not _matches_values(path, actual, values):
+        fields = [key for key, value in values.items()
+                  if not _matches_values(path, actual or {}, {key: value})]
+        detail = '（对象不存在）' if actual is None else '（字段：' + '、'.join(fields) + '）'
+        raise RouterError('策略路由回读与提交内容不一致：' + path + detail)
     # Full server defaults become the ownership baseline for future releases.
     undo['config'] = config_row(actual)
     if path == ROUTES and values.get('routing-table', 'main') != 'main' and str(actual.get('active', '')).lower() not in ('true', 'yes'):

@@ -136,8 +136,12 @@ def _inspect(config, router, driver):
         except RouterError:
             owned = []
         owned_mangle = {row['id'] for row in owned if row['path'] == MANGLE}
+        # The snapshot contains live counters. Match read_state's counter-free
+        # NAT evidence so normal traffic does not invalidate a release preview.
+        # Preserve matchers, order and route state used to prove the egress.
         state.nat_context.update(
-            mangle=[row for row in state.ros_policy[MANGLE] if row.get('.id') not in owned_mangle],
+            mangle=[{key: value for key, value in row.items() if key not in {'bytes', 'packets'}}
+                    for row in state.ros_policy[MANGLE] if row.get('.id') not in owned_mangle],
             routing_rules=state.ros_policy[RULES], vrfs=state.ros_policy[VRFS], routes=state.ros_policy[ROUTES])
     if dns_id and not desired['dns_error']:
         try:

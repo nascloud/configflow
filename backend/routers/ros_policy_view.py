@@ -1,5 +1,6 @@
 """Read the recorded policy objects without adopting objects by their names."""
 from backend.routers.ros_policy import ADDRESSES, MANGLE, NAT, ROUTES, TABLES, config_row
+from backend.routers.ros_values import comparable_values
 
 KINDS = {ADDRESSES: 'addresses', MANGLE: 'mangle', TABLES: 'tables', ROUTES: 'routes', NAT: 'nat'}
 PUBLIC_FIELDS = {
@@ -25,6 +26,10 @@ def read_policy_objects(driver, manifest):
         row = live[entry['path']].get(entry['id'])
         status = 'missing' if row is None else 'matched' if config_row(row) == entry['config'] else 'changed'
         shown = entry['config'] if row is None else row
+        # A present-empty fib flag means enabled; expose it consistently to the
+        # UI without changing the raw ownership baseline or other field values.
+        if entry['path'] == TABLES:
+            shown = comparable_values(TABLES, shown)
         result.append({'id': entry['id'], 'kind': KINDS[entry['path']], 'status': status,
                        'fields': {key: value for key, value in shown.items() if key in PUBLIC_FIELDS}})
     return result
