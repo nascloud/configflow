@@ -21,7 +21,7 @@ RouterOS 与 iKuai 不同：
 - RouterOS Container 使用 `veth`、`root-dir`、`envlists` 和 `mountlists`；容器重建会更换临时 veth 路由，不能把 iKuai 的虚拟机网卡步骤直接套用。
 - RouterOS 的本地 `file=<name>.tar remote-image=""` 是已导入的 TAR 快照，不是在线拉取。必须记录源 Docker 镜像摘要和 TAR SHA-256。
 - RouterOS 的 NAT、地址列表、策略路由和 fake-ip 路由属于路由器数据面；没有明确授权时只读检查，不为了部署 OxiDNS 任意增删防火墙或路由。
-- ConfigFlow 是配置源。正式配置必须使用 Agent 的 `push-config` 事务发布，不能用 SFTP 直接覆盖受管 YAML；SFTP 只用于镜像 TAR、备份和只读哈希回读。
+- ConfigFlow 是配置源。正式配置必须使用 Agent 的 `push-config` 事务发布，不能把 SFTP 覆盖 YAML 当成正式发布。首次启用新 DNS 核心时，可将同一 Profile 的受管生成器产出的完整、原生校验通过的 bundle 作为启动引导，先备份并逐文件读回哈希；引导后仍必须完成下文 `ready → 原生校验 → activate → succeeded` 正式事务。不要手工改写引导配置、使用其他实例配置或把引导成功标为迁移完成。
 
 OxiDNS 的代理规则应与 Mihomo 的代理策略保持一致。代理域名必须交给 Mihomo 返回 fake-ip；否则得到真实 IP 后会绕过 Mihomo。代理路径应 fail-closed，不要把公共 DNS 作为代理失败时的备用路径。
 
@@ -40,9 +40,9 @@ OxiDNS 的代理规则应与 Mihomo 的代理策略保持一致。代理域名�
 上线前读取并保存：
 
 ```routeros
-/export hide-sensitive file=cf-prechange
+/export file=cf-prechange
 /system backup save dont-encrypt=no name=cf-prechange
-/container print detail without-paging
+:foreach i in=[/container/find where name="<TARGET_CONTAINER>"] do={:put ("id=".$i." root=".[/container/get $i root-dir]." interface=".[/container/get $i interface]." mounts=".[/container/get $i mountlists]." envlists=".[/container/get $i envlists])}
 /interface veth print detail
 /ip address print detail
 /ip route print detail without-paging
@@ -51,7 +51,7 @@ OxiDNS 的代理规则应与 Mihomo 的代理策略保持一致。代理域名�
 /ip firewall filter print detail without-paging
 ```
 
-同时保存 OxiDNS/Mihomo 容器的 `root-dir`、`interface`、`envlists`、`mountlists`、`start-on-boot` 和镜像摘要。不要把 `env`、Agent token、ConfigFlow 密码或 API 密码粘贴到工单或聊天中。
+同时保存 OxiDNS/Mihomo 容器的 `root-dir`、`interface`、`envlists`、`mountlists`、`start-on-boot` 和镜像摘要。新 RouterOS 默认隐藏导出中的敏感字段，但普通容器输出仍可能暴露内联环境变量；上面的白名单读取替代完整 `/container print`。二进制备份可能包含凭据，使用设备支持的加密备份方式，下载后限制权限。不要把 `env`、Agent token、ConfigFlow 密码或 API 密码粘贴到工单或聊天中。
 
 ## 3. 导出并导入 Agent 镜像
 
@@ -121,6 +121,17 @@ mosdns       STOPPED
 
 ## 5. RouterOS 单实例容器迁移
 
+**镜像升级不等于 MosDNS → OxiDNS 迁移。** 即使 Agent 显示新版本、在线且 MosDNS 正常运行，只要注册记录仍为 `service_type=mosdns`，就没有完成 OxiDNS 替换。已升级到包含 OxiDNS 的维护镜像时，不必再次导入镜像；需要的是保留身份的核心切换：
+
+1. 逐实例备份 Profile、当前有效 MosDNS 受管 bundle、Mihomo 配置和运行选择、完整身份目录、Supervisor、RouterOS 导出及二进制备份。不要拿镜像升级前已经失效的旧磁盘 YAML 当回滚来源。
+2. 读取真实 `/entrypoint.sh`：AIO 的 OxiDNS 路径为 `/etc/oxidns/config.yaml`；需要 `ENABLE_MOSDNS=false`、`ENABLE_OXIDNS=true` 和原 DNS Agent 的端口，不能凭默认 `8082` 改变已有端口。默认生成 JSON 只保留当前服务文件中的 ID/token，所以在首次启用前必须准备好 `config-oxidns.json`。
+3. 从当前 Profile 的 MosDNS 设置显式迁移规则选择、直连/代理/备用上游、hosts 和适用的缓存字段到 OxiDNS 设置，保存后 GET 精确读回。不要直接复制 MosDNS YAML 或其 API 配置；OxiDNS 模板有独立的 schema、插件和缓存控制流。备机、主机保持各自 Mihomo `:1053` 和独有 fake-ip CIDR。
+4. 确认 OxiDNS store 的实际 mount。推荐独立目录；若沿用旧 resolver store 并新增 `/etc/oxidns` 挂载，目录名即使仍含 `mosdns`，运行核心也由命令、Supervisor 和 Agent 类型决定。旧 MosDNS 只能保持 STOPPED；回滚时必须先停止 OxiDNS，再恢复**本实例此次迁移前**核验过的 MosDNS 主配置及规则，不能让两个核心同时写同一 store，也不能仅改启用开关。
+5. 对完整引导 bundle 做 `oxidns check -c <config> -d <bundle-dir>`，保持原身份、端口和 Profile 后切换原容器。完整重启会短暂停止同容器的 Mihomo，因此要先完成备机所有应用验收，再动主机。随后立即完成第 6 节正式事务，不能把引导当最终发布。
+6. 容器重启后逐项读取 `config-oxidns.json` 的非敏感生命周期字段，确认 `service_manager=supervisor`、`service_unit=oxidns`、`service_binary=/usr/local/bin/oxidns`，ID/token 私下比较一致；重新验证 Mihomo 静态文件哈希和各个原有 Selector 的 `now`。必要时仅恢复仍存在的原选择并读回，不改候选池或策略。
+
+下面仅适用于**确需更换镜像容器**的步骤：
+
 先升级备机，再升级 NAS，最后升级主机；每次只操作一个实例。新容器必须使用新的 `root-dir`，保留实例自己的 veth、envlist、Mihomo/MosDNS（或 OxiDNS）配置 mount 和身份 mount：
 
 ```routeros
@@ -153,7 +164,7 @@ mosdns       STOPPED
 3. 对同一 deployment 做原生 OxiDNS 校验，确认所有引用的规则文件已打包且非空；
 4. `POST /api/agents/<id>/deployments/<deployment_id>/activate`；
 5. 继续轮询直到 `succeeded`；
-6. 读取 `active-manifest.json`，核对 deployment ID、每个受管文件 SHA-256、OxiDNS native check、Supervisor 状态和运行流量。
+6. 读取配置目录下 `.configflow-deployments/active-manifest.json`，核对 deployment ID、每个受管文件 SHA-256、OxiDNS native check、Supervisor 状态和运行流量。`ready` 阶段先冻结保存 `effective-manifest.json` 与完整 `stage/`；激活可能移动或清理原 stage，所以不能等发布后再取候选文件。原生检查使用独立副本、相同镜像摘要和隔离网络，不写入生产 stage。
 
 不要在 `ready` 后重新生成配置，也不要用另一份 SFTP 文件替换 staged bundle。`202 Accepted` 只表示受理，不表示已经生效。
 
@@ -235,5 +246,23 @@ curl --proxy socks5h://<MIHOMO_IP>:<MIXED_PORT> \
 ## 10. 实测记录格式
 
 建议为每次迁移保存一份权限为 `0700` 的私有报告，包含：时间、ConfigFlow/Agent 版本与摘要、各实例容器 ID、Agent ID（token 不写入报告）、配置和 manifest 哈希、RouterOS 导出哈希、deployment 状态、DNS UDP/TCP、HTTP/SOCKS、AdGuard hop、heartbeat 样本和回滚结果。报告中不保存密码、订阅 URL、JWT、Agent token 或完整环境变量。
+
+## 11. 主备 OxiDNS 正式迁移验收示例
+
+以下是主备均完成核心切换后的验证边界，而不是仅镜像升级的记录：
+
+| 检查项 | 备机 | 主机 |
+|---|---|---|
+| 原身份与原 Profile | 保留，无新增注册记录 | 保留，无新增注册记录 |
+| 注册 `service_type` | `oxidns` | `oxidns` |
+| 核心与 Agent | Mihomo/OxiDNS 及各自 Agent RUNNING | Mihomo/OxiDNS 及各自 Agent RUNNING |
+| 旧核心 | MosDNS/Agent STOPPED | MosDNS/Agent STOPPED |
+| 正式受管发布 | 同一 deployment `ready → native check → activate → succeeded` | 同一 deployment `ready → native check → activate → succeeded` |
+| 交付文件 | 主配置 + 10 个规则文件，逐文件 SHA-256 一致 | 主配置 + 10 个规则文件，逐文件 SHA-256 一致 |
+| UDP/TCP DNS | 国内真实 IP、代理域名为备机所属 fake-ip | 国内真实 IP、代理域名为主机所属 fake-ip |
+| HTTP/SOCKS | 三个 HTTPS 目标均通过 | 三个 HTTPS 目标均通过 |
+| 保持项 | Mihomo 静态文件、Selector、fake-ip CIDR、路由/NAT/filter/mangle 不变 | 同左 |
+
+独立验收还须再次读取 live registry、active manifest、身份文件、当前 Supervisor 和实际流量，并跨完整 heartbeat interval 比较时间戳；不要只读部署脚本刚生成的“成功”文件。额外的 LAN DNS/AdGuard 入口结果应单列：AdGuard 返回主机 fake-ip 是主机所有权的证据，不能要求其属于备机 CIDR；RouterOS 网关递归返回真实 IP 也不能当作 OxiDNS fake-ip 链路的通过证据。上游恢复后的成功不证明历史超时已找到根因。此示例未声称做过故障注入、自动故障切换或 RouterOS 回流规则变更。
 
 本项目一次已验证的维护镜像为 Agent `1.7.1-go`；实际部署仍以运行时 image-id、二进制 SHA-256、ConfigFlow deployment `succeeded`、DNS/代理结果和 heartbeat 回读为准。未执行的 RouterOS 回流或防火墙修改不应在文档中标记为已验证。
