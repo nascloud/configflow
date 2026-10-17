@@ -34,6 +34,7 @@ export interface OxiDNSOverview {
 
 export interface OxiDNSQuestion { name: string; qtype: string | number; qclass: string | number }
 export interface OxiDNSAnswer { name: string; rr_type: string | number; ttl: number; payload_text: string }
+export type OxiDNSQuerySource = 'local' | 'remote' | 'fallback' | 'cache' | 'hosts' | 'blocked' | 'rejected' | 'unknown' | 'unrecorded' | 'error' | 'no_response'
 export interface OxiDNSQuery {
   id: number | string
   created_at_ms: number
@@ -45,6 +46,7 @@ export interface OxiDNSQuery {
   rcode: string | number | null
   answer_count: number
   answers_json: OxiDNSAnswer[]
+  resolution_source?: OxiDNSQuerySource
   steps?: Array<{ event_index: number; sequence_tag: string; node_index: number | null; kind: string; tag: string | null; outcome: string }>
 }
 export interface OxiDNSQueries {

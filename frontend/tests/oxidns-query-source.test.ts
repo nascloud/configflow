@@ -74,6 +74,36 @@ function deferred() {
   return { promise, resolve }
 }
 describe('query list source loading', () => {
+  it('uses fifty Agent stream summaries without requesting any details', async () => {
+    const { input, model } = harness(0)
+    input.data = { ...input.data!, records: Array.from({ length: 50 }, (_, i) => ({
+      ...row, id: i + 1, resolution_source: i % 2 ? 'cache' as const : 'remote' as const
+    })) }
+    await flushPromises()
+    expect(model.sourceOf(input.data.records[0]).label).toBe('远程 DNS')
+    expect(model.sourceOf(input.data.records[1]).label).toBe('缓存')
+    expect(oxidnsMonitorApi.query).not.toHaveBeenCalled()
+  })
+  it('fetches only rows not covered by the Agent stream cache', async () => {
+    vi.mocked(oxidnsMonitorApi.query).mockImplementation(async (_agent, id) => detail(id))
+    const { input, model } = harness(0)
+    input.data = { ...input.data!, records: [{ ...row, resolution_source: 'cache' }, { ...row, id: 2 }] }
+    await flushPromises()
+    expect(oxidnsMonitorApi.query).toHaveBeenCalledTimes(1)
+    expect(oxidnsMonitorApi.query).toHaveBeenCalledWith('one', 2, 'queries', expect.anything())
+    expect(model.sourceOf(input.data.records[0]).label).toBe('缓存')
+    expect(model.sourceOf(input.data.records[1]).label).toBe('远程 DNS')
+  })
+  it('lets a fresh Agent summary replace an earlier detail failure', async () => {
+    vi.mocked(oxidnsMonitorApi.query).mockRejectedValue(new Error('unavailable'))
+    const { input, model } = harness()
+    await flushPromises()
+    expect(model.sourceOf(row).failed).toBe(true)
+    input.data = { ...input.data!, records: [{ ...row, resolution_source: 'local' }] }
+    await flushPromises()
+    expect(model.sourceOf(input.data.records[0])).toEqual({ label: '本地 DNS' })
+    expect(oxidnsMonitorApi.query).toHaveBeenCalledTimes(1)
+  })
   it('loads at most four details concurrently and reuses summaries on list refresh', async () => {
     const pending = deferred()
     vi.mocked(oxidnsMonitorApi.query).mockImplementation(async (_agent, id) => { await pending.promise; return detail(id) })

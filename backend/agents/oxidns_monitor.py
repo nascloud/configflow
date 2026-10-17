@@ -107,11 +107,15 @@ def _request(agent, endpoint, params=None, *, min_version=MIN_AGENT_VERSION):
     # Endpoints are chosen by the functions below, never taken from a URL argument.
     url = _base_url(agent) + endpoint
     try:
+        headers = {'Authorization': 'Bearer ' + agent['token'], 'Accept': 'application/json'}
+        if endpoint == 'queries':
+            # New Agents use the core's SSE feed to enrich list rows. Old Agents
+            # ignore this header and keep the existing detail-query fallback.
+            headers['X-ConfigFlow-Query-Sources'] = '1'
         with requests.Session() as session:
             session.trust_env = False
-            with session.get(url, params=params or {}, headers={
-                'Authorization': 'Bearer ' + agent['token'], 'Accept': 'application/json',
-            }, timeout=(3, 12), allow_redirects=False, stream=True) as response:
+            with session.get(url, params=params or {}, headers=headers,
+                             timeout=(3, 12), allow_redirects=False, stream=True) as response:
                 if response.status_code in (401, 403):
                     raise MonitorError('AGENT_AUTH_FAILED')
                 if 300 <= response.status_code < 400:
@@ -249,6 +253,11 @@ def _record(value, detail=False):
         if not isinstance(value.get('steps'), list):
             raise MonitorError('INVALID_RESPONSE')
         record['steps'] = value['steps']
+    source = value.get('resolution_source')
+    if isinstance(source, str) and source in {
+            'local', 'remote', 'fallback', 'cache', 'hosts', 'blocked', 'rejected',
+            'unknown', 'unrecorded', 'error', 'no_response'}:
+        record['resolution_source'] = source
     return record
 
 
