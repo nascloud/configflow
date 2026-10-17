@@ -47,6 +47,36 @@ async function click(w: VueWrapper, text: string) {
 }
 
 describe('one-place DNS and ROS workflow', () => {
+  it('edits an existing source through the dialog and retains routing choices until explicit publish', async () => {
+    const w = await setup()
+    await w.get('[aria-label="编辑 192.0.2.105"]').trigger('click'); await flushPromises()
+    const editor = w.findComponent({ name: 'PolicySourceEditor' })
+    expect(editor.props('policy')).toEqual(initial().sources.policies[0])
+    expect(w.findAll('button').find(b => b.text() === '保存并预览')?.attributes('disabled')).toBeDefined()
+    editor.vm.$emit('apply', { ip: '192.0.2.101', name: '本机', mode: 'smart' }); await flushPromises()
+    expect(routerApi.savePolicySettings).not.toHaveBeenCalled()
+    await click(w, '保存并预览')
+    expect(routerApi.savePolicySettings).toHaveBeenCalledWith('ros', expect.objectContaining({
+      policies: [{ ip: '192.0.2.101', name: '本机', mode: 'smart' }], router: {
+        ip_rule_sets: ['static'], ros_policy_rule_sets: ['proxy'], proxy_gateway_agent_id: 'mihomo'
+      }
+    }), 'office')
+    expect(routerApi.apply).not.toHaveBeenCalled()
+  })
+  it('clears an old preview after rule content changes without auto-selecting a cancelled policy', async () => {
+    state.router.ros_policy_rule_sets = []
+    const w = await setup()
+    await click(w, '保存并预览')
+    expect(w.text()).toContain('确认发布')
+    await click(w, '规则集与网关'); await click(w, '编辑规则内容')
+    w.findComponent({ name: 'PolicyDestinationEditor' }).vm.$emit('saved'); await flushPromises()
+    await click(w, '发布预览')
+    expect(w.findAll('button').some(button => button.text() === '确认发布')).toBe(false)
+    await click(w, '保存并预览')
+    expect(routerApi.savePolicySettings).not.toHaveBeenCalled()
+    expect(state.router.ros_policy_rule_sets).toEqual([])
+    expect(routerApi.apply).not.toHaveBeenCalled()
+  })
   it('saves sources and routing together, previews, and only publishes after explicit confirmation', async () => {
     const w = await setup()
     await w.get('#policy-source-ip').setValue('192.0.2.101')

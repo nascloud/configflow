@@ -3,8 +3,8 @@
     help="在这里编辑当前配置空间共用的来源设备、规则集与网关。保存只更新草稿；预览列出 OxiDNS 和 ROS 的变更，确认后按目标依次发布。">
     <template #actions>
       <span v-if="dirty" class="text-xs text-warning-accent">未保存</span>
-      <Button variant="outline" class="min-h-11" :disabled="locked" @click="reload">重新载入</Button>
-      <Button class="min-h-11" :disabled="locked || !state" @click="saveAndPreview"><Loader2 v-if="saving" class="size-4 animate-spin" />保存并预览</Button>
+      <Button variant="outline" class="min-h-11" :disabled="locked || editing" @click="reload">重新载入</Button>
+      <Button class="min-h-11" :disabled="locked || editing || !state" @click="saveAndPreview"><Loader2 v-if="saving" class="size-4 animate-spin" />保存并预览</Button>
       <Button variant="ghost" class="min-h-11" :disabled="loading || saving || publishing" @click="close"><ChevronUp class="size-4" />收起面板</Button>
     </template>
     <LoadingRows v-if="loading && !state" :rows="4" />
@@ -48,12 +48,12 @@
             </div>
           </div>
           <div v-if="policies.length" class="cf-table-wrap">
-            <table class="cf-table min-w-[540px] w-full"><thead><tr><th>客户端 IP / 网段</th><th>备注</th><th>策略</th><th><span class="sr-only">操作</span></th></tr></thead>
+            <table class="cf-table min-w-[540px] w-full"><thead><tr><th>客户端 IP / 网段</th><th>备注</th><th>策略</th><th class="text-right">操作</th></tr></thead>
               <tbody><tr v-for="(row, index) in policies" :key="row.ip">
                 <td class="font-mono text-xs">{{ row.ip }}</td>
                 <td><Input v-model="row.name" :aria-label="`${row.ip} 备注`" maxlength="80" class="min-h-11 min-w-28" /></td>
                 <td><Select v-model="row.mode" :disabled="locked || !state.sources.editable"><SelectTrigger class="min-h-11 w-32" :aria-label="`${row.ip} 策略`"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="smart">智能分流</SelectItem><SelectItem value="direct">直连</SelectItem></SelectContent></Select></td>
-                <td><Button variant="ghost" size="icon" class="size-11" :aria-label="`移除 ${row.ip}`" @click="policies.splice(index, 1)"><Trash2 class="size-4" /></Button></td>
+                <td class="text-right"><div class="flex justify-end"><Button variant="ghost" size="icon" class="size-11" :aria-label="`编辑 ${row.ip}`" @click="editSource(index)"><Pencil class="size-4" /></Button><Button variant="ghost" size="icon" class="size-11" :aria-label="`移除 ${row.ip}`" @click="policies.splice(index, 1)"><Trash2 class="size-4" /></Button></div></td>
               </tr></tbody>
             </table>
           </div>
@@ -68,7 +68,7 @@
               <SelectContent><SelectItem value="__none__">不关联</SelectItem><SelectItem v-for="agent in state.gateways" :key="agent.id" :value="agent.id">{{ agent.name }}（{{ agent.host }}）</SelectItem></SelectContent>
             </Select><p class="m-0 text-xs text-muted-foreground">这台 ROS 的策略路由与静态代理路由共用此网关。</p>
           </div>
-          <div class="space-y-2"><Label for="policy-destinations">使用策略路由的 IP 规则集</Label><MultiSelect :model-value="settings.ros_policy_rule_sets" :options="ruleOptions" trigger-id="policy-destinations" placeholder="不使用策略路由" @update:model-value="value => selectRules('ros_policy_rule_sets', value)" /></div>
+          <div class="space-y-2"><div class="flex flex-wrap items-center justify-between gap-2"><Label for="policy-destinations">使用策略路由的 IP 规则集</Label><Button variant="ghost" class="min-h-11" :disabled="locked" @click="editDestinations()"><Pencil class="size-4" />编辑规则内容</Button></div><MultiSelect :model-value="settings.ros_policy_rule_sets" :options="ruleOptions" trigger-id="policy-destinations" placeholder="不使用策略路由" @update:model-value="value => selectRules('ros_policy_rule_sets', value)" /></div>
           <div class="space-y-2"><Label for="policy-static-destinations">使用静态路由的 IP 规则集</Label><MultiSelect :model-value="settings.ip_rule_sets" :options="ruleOptions" trigger-id="policy-static-destinations" placeholder="仅 fake-ip 网段" @update:model-value="value => selectRules('ip_rule_sets', value)" /></div>
           <p class="m-0 text-xs text-muted-foreground">同一规则集只能选择一种方式，移入另一组时自动移出原组。fake-ip 始终使用静态路由。取消选择后，需保存并确认发布才会清理对应的受管对象。</p>
         </fieldset>
@@ -132,13 +132,15 @@
           </section>
         </div>
       </TabsContent>
-      <TabsContent value="objects" class="m-0"><PolicyRoutingObjects :id="id" :profile="profile" /></TabsContent>
+      <TabsContent value="objects" class="m-0"><PolicyRoutingObjects :id="id" :profile="profile" :disabled="locked || editing" :sources-editable="state.sources.editable" @add-source="editSource(-1)" @edit-destinations="editDestinations()" @edit="editObject" /></TabsContent>
     </Tabs>
+    <PolicySourceEditor v-if="sourceEditorOpen" ref="sourceEditor" :policy="sourceIndex >= 0 ? policies[sourceIndex] : undefined" :policies="policies" @close="sourceEditorOpen = false" @apply="applySource" />
+    <PolicyDestinationEditor v-if="destinationEditorOpen && state" ref="destinationEditor" :rules="state.rule_sets" :selected-ids="settings.ros_policy_rule_sets" :address="destinationAddress" @close="destinationEditorOpen = false" @saved="contentSaved" />
   </SectionCard>
 </template>
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { ChevronUp, Info, Loader2, Network, Plus, Trash2 } from '@lucide/vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { ChevronUp, Info, Loader2, Network, Pencil, Plus, Trash2 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -151,23 +153,31 @@ import FieldHelp from '@/components/common/FieldHelp.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
 import OxiDNSClientSelect from '@/components/agents/OxiDNSClientSelect.vue'
 import PolicyRoutingObjects from './PolicyRoutingObjects.vue'
+import PolicySourceEditor from './PolicySourceEditor.vue'
+import PolicyDestinationEditor from './PolicyDestinationEditor.vue'
 import RouterOperationPreview from './RouterOperationPreview.vue'
 import { usePolicyRoutingWorkspace } from '@/composables/usePolicyRoutingWorkspace'
 import { deploymentLabels } from '@/composables/useAgentDeployments'
 import { normalizeClientRange } from '@/lib/oxidnsClientRange'
+import { sourcePolicyIndex } from '@/lib/policySourceEditor'
 import { notify } from '@/lib/feedback'
-import { oxidnsMonitorApi } from '@/api'
+import { oxidnsMonitorApi, type PolicyRoutingObject } from '@/api'
+import type { OxiDNSDevicePolicy } from '@/types/oxidnsMonitor'
 const props = defineProps<{ id: string; name: string; profile: string }>()
 const emit = defineEmits<{ close: []; saved: []; busy: [value: boolean] }>()
 const { state, policies, settings, targets, tab, loading, saving, publishing, locked, dirty, error, preview, changes,
-  results, rosResult, unresolved, blockers, canPublish, reload, canLeave, selectRules, saveAndPreview, publish, refreshResults } = usePolicyRoutingWorkspace(props, () => emit('saved'))
+  results, rosResult, unresolved, blockers, canPublish, reload, canLeave: canLeaveWorkspace, selectRules, saveAndPreview, publish, refreshResults } = usePolicyRoutingWorkspace(props, () => emit('saved'))
+const sourceEditorOpen = ref(false), destinationEditorOpen = ref(false), sourceIndex = ref(-1), destinationAddress = ref('')
+const sourceEditor = ref<InstanceType<typeof PolicySourceEditor>>(), destinationEditor = ref<InstanceType<typeof PolicyDestinationEditor>>()
+const editing = computed(() => sourceEditorOpen.value || destinationEditorOpen.value)
 const tabs = [{ value: 'sources', label: '来源设备' }, { value: 'settings', label: '规则集与网关' }, { value: 'preview', label: '发布预览' }, { value: 'objects', label: '已下发对象' }]
 const ruleOptions = computed(() => state.value?.rule_sets.map(rule => ({ value: rule.id, label: `${rule.name}（${rule.policy}）` })) || [])
 const newIP = ref(''), queryAgent = ref(''), recorder = ref(''), queryError = ref('')
 const queryLoading = ref(false)
 const routeChangeCount = computed(() => preview.value?.router_plan.stages.reduce((count, stage) => count + (stage.enabled === false ? 0 : stage.ops.length), 0) || 0)
 let queryEpoch = 0
-watch(locked, value => emit('busy', value), { immediate: true })
+watch([locked, editing], ([busy, editing]) => emit('busy', busy || editing), { immediate: true })
+watch(() => [props.id, props.profile], () => { sourceEditorOpen.value = false; destinationEditorOpen.value = false })
 watch(() => state.value?.profile_id, () => { queryAgent.value = state.value?.source_agents[0]?.id || ''; newIP.value = '' })
 watch(queryAgent, () => { void loadQueryRecorder() })
 async function loadQueryRecorder() {
@@ -190,6 +200,40 @@ function addSource(value: string) {
     if (policies.value.some(row => row.ip === ip)) { notify.info('此 IP 或网段已在列表中'); return }
     policies.value.push({ ip, name: '', mode: 'smart' }); newIP.value = ''
   } catch { notify.error('请输入有效的 IP 或 CIDR 网段') }
+}
+function editSource(index: number) {
+  if (locked.value || !state.value?.sources.editable) return
+  sourceIndex.value = index; sourceEditorOpen.value = true
+}
+function applySource(row: OxiDNSDevicePolicy) {
+  if (locked.value || !state.value?.sources.editable) return
+  if (sourceIndex.value >= 0) policies.value.splice(sourceIndex.value, 1, row)
+  else policies.value.push(row)
+  sourceEditorOpen.value = false; tab.value = 'sources'
+}
+function editDestinations(address = '') {
+  if (locked.value) return
+  destinationAddress.value = address; destinationEditorOpen.value = true
+}
+function contentSaved() {
+  preview.value = null; destinationEditorOpen.value = false; emit('saved')
+}
+async function editObject(item: PolicyRoutingObject) {
+  if (locked.value) return
+  if (item.editor === 'destination') { editDestinations(item.configured_address); return }
+  if (item.editor === 'source') {
+    const index = sourcePolicyIndex(item.configured_address || '', policies.value)
+    if (index >= 0) { editSource(index); return }
+    tab.value = 'sources'
+    notify.info('该网段可能由多个来源合并，或草稿已变更，请在来源列表中选择要编辑的设备。')
+    return
+  }
+  tab.value = 'settings'; await nextTick(); document.getElementById('policy-gateway')?.focus()
+}
+async function canLeave() {
+  if (sourceEditor.value && !await sourceEditor.value.canLeave()) return false
+  if (destinationEditor.value && !await destinationEditor.value.canLeave()) return false
+  return canLeaveWorkspace()
 }
 async function close() { if (await canLeave()) emit('close') }
 const resultStatus = (status: string) => status === 'succeeded' ? '成功' : deploymentLabels[status] || status

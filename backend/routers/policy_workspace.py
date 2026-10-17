@@ -22,7 +22,8 @@ def read_workspace(config, router, profile_id, profile_name, agents, default_pro
                and (a.get('profile_id') or default_profile) == profile_id]
     gateways = [{'id': a['id'], 'name': a.get('name') or a['id'], 'host': a.get('host') or ''}
                 for a in agents if a.get('service_type') == 'mihomo']
-    rules = [{'id': r['id'], 'name': r.get('name') or r['id'], 'policy': r.get('policy') or ''}
+    rules = [{'id': r['id'], 'name': r.get('name') or r['id'], 'policy': r.get('policy') or '',
+              'library_rule_id': r.get('library_rule_id') or ''}
              for r in config.get('rule_configs', []) if r.get('itemType') == 'ruleset']
     return {'profile_id': profile_id, 'profile_name': profile_name,
             'revision': draft_revision(config, router), 'router': public_view(router),
