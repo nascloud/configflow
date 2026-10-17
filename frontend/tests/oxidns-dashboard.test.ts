@@ -70,6 +70,18 @@ function controls(data = overview()) {
 }
 
 describe('OxiDNS dashboard periods and availability', () => {
+  it('disables recorder selection only while statistics are resetting', async () => {
+    const data = overview()
+    data.recorders = ['query_recorder', 'other_recorder']
+    const wrapper = panel(data)
+    const selector = wrapper.get('[aria-label="排行记录器"]')
+    expect(selector.attributes('disabled')).toBeUndefined()
+    await wrapper.setProps({ resetting: true })
+    expect(selector.attributes('disabled')).toBeDefined()
+    await wrapper.setProps({ resetting: false })
+    expect(selector.attributes('disabled')).toBeUndefined()
+  })
+
   it('labels the period and bounded record samples separately from cumulative metrics', () => {
     const wrapper = panel()
     expect(controls().text()).toContain('本轮统计开始于')
