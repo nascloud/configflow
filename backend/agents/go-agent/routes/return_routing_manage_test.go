@@ -54,8 +54,9 @@ func argNumber(args []string, key string) int {
 
 func installFakeHost(t *testing.T, host *fakeHost) {
 	t.Helper()
-	oldRun, oldInput := runCommand, runCommandInput
-	t.Cleanup(func() { runCommand, runCommandInput = oldRun, oldInput })
+	oldRun, oldInput, oldSysctl := runCommand, runCommandInput, sysctlRoot
+	t.Cleanup(func() { runCommand, runCommandInput, sysctlRoot = oldRun, oldInput, oldSysctl })
+	sysctlRoot = t.TempDir() // never touch the test host's /proc/sys
 	runCommand = func(name string, args ...string) (string, error) {
 		line := strings.Join(append([]string{name}, args...), " ")
 		host.commands = append(host.commands, line)

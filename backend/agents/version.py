@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.8-go"
+LATEST_AGENT_VERSION = "1.8.9-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.9-go": {
+        "date": "2026-10-17",
+        "features": [
+            "回流生效时关闭 all 与 LAN 网卡的 send_redirects（避免旁路网关向客户端发 ICMP 重定向），记录原值并在撤销回流时恢复；跳过重放时也会重新确认"
+        ]
+    },
     "1.8.8-go": {
         "date": "2026-10-17",
         "features": [
