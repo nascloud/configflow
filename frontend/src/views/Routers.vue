@@ -290,6 +290,13 @@
             </Select>
           </div>
           <div class="flex flex-col gap-1.5">
+            <Label>按 IP 路由给 mihomo 的规则集</Label>
+            <MultiSelect v-model="form.ip_rule_sets" :options="ruleSetOptions" placeholder="只路由 fake-ip 网段" />
+            <p class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
+              fake-ip 网段始终包含。只勾选客户端直接连 IP、不经过 DNS 的规则集（如 Telegram）；其余流量经 OxiDNS 解析成 fake-ip 后自然进入 mihomo。
+            </p>
+          </div>
+          <div class="flex flex-col gap-1.5">
             <Label for="router-dns">DNS 服务器（OxiDNS Agent）</Label>
             <Select v-model="form.dns_agent_id">
               <SelectTrigger id="router-dns" class="w-full bg-background/50"><SelectValue placeholder="不关联" /></SelectTrigger>
@@ -336,7 +343,8 @@ import LoadingRows from '@/components/common/LoadingRows.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
-import { agentApi, routerApi } from '@/api'
+import MultiSelect from '@/components/common/MultiSelect.vue'
+import { agentApi, routerApi, ruleApi } from '@/api'
 import { confirmDanger, notify } from '@/lib/feedback'
 
 type RouterType = 'ikuai' | 'routeros'
@@ -351,6 +359,7 @@ interface RouterItem {
   verify_tls: boolean
   proxy_gateway_agent_id: string
   dns_agent_id: string
+  ip_rule_sets?: string[]
   has_password: boolean
   last_probe?: { ok: boolean; version?: string; message?: string; at: string }
 }
@@ -373,6 +382,7 @@ const STATUS: Record<string, { label: string; chip: string }> = {
 
 const routers = ref<RouterItem[]>([])
 const agents = ref<AgentItem[]>([])
+const ruleSets = ref<{ id: string; name: string; policy: string }[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
@@ -392,11 +402,15 @@ const emptyForm = () => ({
   password: '',
   verify_tls: true,
   proxy_gateway_agent_id: NONE,
-  dns_agent_id: NONE
+  dns_agent_id: NONE,
+  ip_rule_sets: [] as string[]
 })
 const form = reactive(emptyForm())
 
 const typeLabel = (type: RouterType) => (type === 'routeros' ? 'RouterOS' : 'iKuai')
+const ruleSetOptions = computed(() =>
+  ruleSets.value.map(rule => ({ value: rule.id, label: `${rule.name}（${rule.policy}）` }))
+)
 const agentsOf = (serviceType: string) => agents.value.filter(agent => agent.service_type === serviceType)
 const errorMessage = (error: any, fallback: string) => error?.response?.data?.message || fallback
 
@@ -417,10 +431,19 @@ const returnLabel = computed(() => {
 const load = async () => {
   loading.value = true
   try {
-    const [routerResponse, agentResponse] = await Promise.all([routerApi.list(), agentApi.getAll()])
+    const [routerResponse, agentResponse, ruleResponse] = await Promise.all([
+      routerApi.list(),
+      agentApi.getAll(),
+      ruleApi.getAll()
+    ])
     routers.value = routerResponse.data.routers || []
     const agentData = agentResponse.data
     agents.value = Array.isArray(agentData) ? agentData : agentData?.data || agentData?.agents || []
+    const ruleData = ruleResponse.data
+    const rules = Array.isArray(ruleData) ? ruleData : ruleData?.data || []
+    ruleSets.value = rules
+      .filter((rule: any) => rule.itemType === 'ruleset')
+      .map((rule: any) => ({ id: rule.id, name: rule.name || rule.id, policy: rule.policy || '' }))
   } catch (error) {
     notify.error(errorMessage(error, '加载路由器失败'))
   } finally {
@@ -444,7 +467,8 @@ const openEdit = (router: RouterItem) => {
     password: '',
     verify_tls: router.verify_tls,
     proxy_gateway_agent_id: router.proxy_gateway_agent_id || NONE,
-    dns_agent_id: router.dns_agent_id || NONE
+    dns_agent_id: router.dns_agent_id || NONE,
+    ip_rule_sets: [...(router.ip_rule_sets || [])]
   })
   editingId.value = router.id
   editingHasPassword.value = router.has_password

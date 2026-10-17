@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import Routers from '@/views/Routers.vue'
-import { routerApi, agentApi } from '@/api'
+import { routerApi, agentApi, ruleApi } from '@/api'
 import { NAV_GROUPS, scopeOfPath } from '@/navigation'
 
 vi.mock('@/api', () => ({
   agentApi: { getAll: vi.fn() },
-  routerApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), probe: vi.fn(), report: vi.fn() }
+  routerApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), probe: vi.fn(), report: vi.fn() },
+  ruleApi: { getAll: vi.fn() }
 }))
 vi.mock('@/lib/feedback', () => ({ notify: { success: vi.fn(), error: vi.fn() }, confirmDanger: vi.fn() }))
 
@@ -50,6 +51,7 @@ describe('routers view', () => {
   it('lists routers without passwords and renders the drift report', async () => {
     vi.mocked(routerApi.list).mockResolvedValue({ data: { success: true, routers: [ROUTER] } } as any)
     vi.mocked(agentApi.getAll).mockResolvedValue({ data: [{ id: 'a1', name: 'mihomo', host: '192.0.2.4', service_type: 'mihomo' }] } as any)
+    vi.mocked(ruleApi.getAll).mockResolvedValue({ data: [{ id: 'r1', itemType: 'ruleset', name: 'Telegram', policy: '📲 Telegram' }] } as any)
     vi.mocked(routerApi.report).mockResolvedValue({ data: { success: true, report: REPORT, generated_at: '2026-10-17T10:00:00' } } as any)
 
     const wrapper = mount(Routers, { attachTo: document.body })

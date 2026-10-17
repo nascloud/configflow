@@ -110,7 +110,8 @@ def router_report(router_id):
     if router is None:
         return _not_found()
     gateway_agent = _agent(router.get('proxy_gateway_agent_id'))
-    desired = compute_desired(config, gateway_agent.get('host') if gateway_agent else None)
+    desired = compute_desired(config, gateway_agent.get('host') if gateway_agent else None,
+                              router.get('ip_rule_sets') or [])
 
     driver = _driver(router)
     try:

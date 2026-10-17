@@ -4,7 +4,8 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 ROUTER_TYPES = ('ikuai', 'routeros')
-EDITABLE_FIELDS = ('name', 'type', 'endpoint', 'username', 'verify_tls', 'proxy_gateway_agent_id', 'dns_agent_id')
+EDITABLE_FIELDS = ('name', 'type', 'endpoint', 'username', 'verify_tls', 'proxy_gateway_agent_id', 'dns_agent_id',
+                   'ip_rule_sets')
 
 
 class RouterValidationError(ValueError):
@@ -49,6 +50,10 @@ def normalize(payload: Dict[str, Any], existing: Optional[Dict[str, Any]] = None
     router['verify_tls'] = router.get('verify_tls') is not False
     for key in ('proxy_gateway_agent_id', 'dns_agent_id'):
         router[key] = str(router.get(key) or '')
+    rule_sets = router.get('ip_rule_sets') or []
+    if not isinstance(rule_sets, list) or any(not isinstance(item, str) or not item for item in rule_sets):
+        raise RouterValidationError('IP 路由规则集必须是规则集 ID 列表')
+    router['ip_rule_sets'] = list(dict.fromkeys(rule_sets))
 
     if not router['name']:
         raise RouterValidationError('请填写名称')

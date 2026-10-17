@@ -1,8 +1,10 @@
 """Compute what the upstream router should contain for the side-gateway setup.
 
 Only IPv4 is handled in P0.  Proxy CIDRs are the mihomo fake-ip range plus the
-public IP-CIDR entries of rule sets whose policy routes through mihomo (for
-example Telegram, whose clients connect by IP without DNS).
+public IP-CIDR entries of rule sets explicitly selected on the router (typically
+Telegram, whose clients connect by IP without DNS).  Rule sets are not inferred
+from policies: other IP rules usually have domain counterparts that already reach
+mihomo through fake-ip, and the active choice of a select group is unknown.
 """
 import ipaddress
 from typing import Any, Dict, List, Optional
@@ -60,7 +62,7 @@ def _public_ipv4_networks(lines: str) -> List[ipaddress.IPv4Network]:
 
 
 def compute_desired(config: Dict[str, Any], proxy_gateway: Optional[str],
-                    content_loader=None) -> Dict[str, Any]:
+                    ip_rule_sets: Optional[List[str]] = None, content_loader=None) -> Dict[str, Any]:
     """Build the desired router state.
 
     ``content_loader(rule_item, library_rule)`` returns rule set text; the
@@ -80,13 +82,20 @@ def compute_desired(config: Dict[str, Any], proxy_gateway: Optional[str],
 
     direct_groups = _direct_only_groups(config)
     library = {rule.get('id'): rule for rule in config.get('rule_library') or [] if isinstance(rule, dict)}
-    for item in config.get('rule_configs') or []:
-        if not isinstance(item, dict) or item.get('itemType') != 'ruleset' or item.get('enabled') is False:
+    rulesets = {item.get('id'): item for item in config.get('rule_configs') or []
+                if isinstance(item, dict) and item.get('itemType') == 'ruleset'}
+    for rule_id in ip_rule_sets or []:
+        item = rulesets.get(rule_id)
+        if item is None:
+            warnings.append(f'所选规则集 {rule_id} 已不存在，已忽略')
+            continue
+        name = str(item.get('name') or item.get('id') or '规则集')
+        if item.get('enabled') is False:
+            warnings.append(f'规则集「{name}」在策略规则中已停用，未计入')
             continue
         policy = str(item.get('policy') or '')
         if policy in BUILTIN_NON_PROXY or policy in direct_groups:
-            continue
-        name = str(item.get('name') or item.get('id') or '规则集')
+            warnings.append(f'规则集「{name}」的策略是 {policy}（不走代理），仍按勾选计入，请确认')
         library_rule = library.get(item.get('library_rule_id'))
         try:
             content = content_loader(item, library_rule) or ''

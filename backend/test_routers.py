@@ -38,12 +38,24 @@ def loader(item, _library):
     return {'Telegram': TG_CONTENT, 'ChinaIP': 'IP-CIDR,1.0.1.0/24', 'Blocked': 'IP-CIDR,2.2.2.0/24'}.get(item['name'], '')
 
 
-def test_desired_uses_fake_ip_range_and_proxy_rule_sets_only():
-    result = desired_module.compute_desired(profile_config(), '192.168.1.4', content_loader=loader)
+def test_desired_uses_only_selected_rule_sets():
+    result = desired_module.compute_desired(profile_config(), '192.168.1.4', ['r1'], content_loader=loader)
     cidrs = {entry['cidr']: entry['sources'] for entry in result['proxy_cidrs']}
     assert cidrs == {'91.108.4.0/22': ['Telegram'], '149.154.160.0/20': ['Telegram'], '198.18.0.0/16': ['fake-ip']}
-    assert result['proxy_gateway'] == '192.168.1.4'
-    assert any('Uncached' in warning for warning in result['warnings'])
+    assert result['proxy_gateway'] == '192.168.1.4' and result['warnings'] == []
+
+
+def test_desired_defaults_to_fake_ip_only():
+    result = desired_module.compute_desired(profile_config(), '192.168.1.4', content_loader=loader)
+    assert [entry['cidr'] for entry in result['proxy_cidrs']] == ['198.18.0.0/16']
+
+
+def test_desired_warns_about_questionable_selections():
+    result = desired_module.compute_desired(profile_config(), None, ['r2', 'r4', 'r5', 'gone'], content_loader=loader)
+    assert [entry['cidr'] for entry in result['proxy_cidrs']] == ['1.0.1.0/24', '198.18.0.0/16']
+    joined = '\n'.join(result['warnings'])
+    for text in ('ChinaIP', '不走代理', 'Disabled', '已停用', 'Uncached', '没有本地缓存', 'gone', 'mihomo Agent'):
+        assert text in joined
 
 
 def test_desired_defaults_and_missing_gateway():
@@ -185,8 +197,12 @@ def test_routeros_requires_7_1():
 
 
 def test_store_validation_password_and_redaction():
-    payload = {'name': '主路由', 'type': 'ikuai', 'endpoint': 'http://192.168.1.1/', 'username': 'admin', 'password': 'secret'}
+    payload = {'name': '主路由', 'type': 'ikuai', 'endpoint': 'http://192.168.1.1/', 'username': 'admin', 'password': 'secret',
+               'ip_rule_sets': ['r1', 'r1']}
     router = normalize(payload)
+    assert router['ip_rule_sets'] == ['r1']
+    with pytest.raises(RouterValidationError):
+        normalize({**payload, 'ip_rule_sets': 'r1'})
     assert router['endpoint'] == 'http://192.168.1.1' and router['id'].startswith('router_')
     assert 'password' not in public_view(router) and public_view(router)['has_password'] is True
     kept = normalize({**payload, 'password': ''}, router)
