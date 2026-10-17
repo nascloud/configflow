@@ -12,9 +12,9 @@
       <Command :model-value="modelValue" selection-behavior="replace">
         <div class="flex items-center gap-2 border-b px-3">
           <Search class="size-4 shrink-0 text-muted-foreground" />
-          <ListboxFilter as-child :model-value="search" @update:model-value="changeSearch">
-            <Input class="min-h-11 border-0 bg-transparent px-0 font-mono shadow-none focus-visible:ring-0" aria-label="搜索已有客户端 IP" placeholder="搜索已有 IP…" />
-          </ListboxFilter>
+          <ListboxFilter :model-value="search" @update:model-value="changeSearch"
+            class="min-h-11 w-full min-w-0 rounded-sm border-0 bg-transparent px-0 font-mono text-base text-foreground outline-none placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-primary-accent md:text-sm"
+            aria-label="搜索已有客户端 IP" placeholder="搜索已有 IP…" />
         </div>
         <div v-if="allowAll" class="border-b px-1 py-1">
           <Button type="button" variant="ghost" class="min-h-11 w-full justify-start font-normal" @click="select('')">
@@ -35,7 +35,7 @@
           </CommandItem>
           </CommandGroup>
         </CommandList>
-        <p v-if="!loading && !error && !options.length" class="m-0 px-3 py-4 text-xs text-muted-foreground">{{ search ? '没有找到匹配的客户端 IP。' : '此时间范围内暂无客户端记录。' }}</p>
+        <p v-if="!loading && !searchPending && !error && !options.length" class="m-0 px-3 py-4 text-xs text-muted-foreground">{{ search ? '没有找到匹配的客户端 IP。' : '此时间范围内暂无客户端记录。' }}</p>
         <p v-if="limited && !error" class="m-0 border-t px-3 py-2.5 text-xs text-muted-foreground">已列出最近 10,000 条匹配记录中的客户端，可搜索其他 IP。</p>
       </Command>
     </PopoverContent>
@@ -50,7 +50,6 @@ import { ListboxFilter } from 'reka-ui'
 import { oxidnsMonitorApi } from '@/api'
 import type { OxiDNSClients, OxiDNSQueryFilters } from '@/types/oxidnsMonitor'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 
@@ -60,6 +59,7 @@ const open = ref(false)
 const search = ref('')
 const clients = ref<OxiDNSClients['clients']>([])
 const loading = ref(false)
+const searchPending = ref(false)
 const error = ref('')
 const limited = ref(false)
 let controller: AbortController | undefined
@@ -79,6 +79,7 @@ function cancel() {
   if (debounce) clearTimeout(debounce)
   debounce = undefined
   loading.value = false
+  searchPending.value = false
 }
 async function load() {
   cancel()
@@ -109,7 +110,7 @@ function changeSearch(value: string) {
   cancel()
   error.value = ''
   limited.value = false
-  loading.value = true
+  searchPending.value = true
   debounce = setTimeout(() => { void load() }, 300)
 }
 function select(value: string) {

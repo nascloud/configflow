@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { oxidnsMonitorApi } from '@/api'
 import { ListboxFilter } from 'reka-ui'
 import OxiDNSClientSelect from '@/components/agents/OxiDNSClientSelect.vue'
@@ -44,6 +44,39 @@ afterEach(() => {
 })
 
 describe('existing OxiDNS clients', () => {
+  it('keeps every typed character and focus while filtering and loading clients', async () => {
+    vi.useFakeTimers()
+    const wrapper = mountPicker({ allowAll: false })
+    await open(wrapper)
+    const input = new DOMWrapper(document.querySelector<HTMLInputElement>('input[aria-label="搜索已有客户端 IP"]')!)
+    input.element.focus()
+    let typed = ''
+    for (const character of '192.0.2.10') {
+      typed += character
+      input.element.value += character
+      await input.trigger('input')
+      await flushPromises()
+      expect(input.element.value).toBe(typed)
+      expect(document.activeElement).toBe(input.element)
+      await vi.advanceTimersByTimeAsync(50)
+    }
+    expect(oxidnsMonitorApi.clients).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).not.toContain('正在读取客户端')
+    const pending = deferred()
+    vi.mocked(oxidnsMonitorApi.clients).mockImplementationOnce(() => pending.promise as any)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(vi.mocked(oxidnsMonitorApi.clients).mock.lastCall?.[1].search).toBe(typed)
+    expect(document.body.textContent).toContain('正在读取客户端')
+    expect(input.element.value).toBe(typed)
+    pending.resolve(result(['192.0.2.10']))
+    await flushPromises()
+    expect(input.element.value).toBe(typed)
+    expect(document.activeElement).toBe(input.element)
+    await input.trigger('keydown', { key: 'ArrowDown' })
+    await input.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['192.0.2.10'])
+  })
   it('loads a standalone time-scoped list only when opened and selects the full IP', async () => {
     const wrapper = mountPicker()
     expect(oxidnsMonitorApi.clients).not.toHaveBeenCalled()
@@ -57,6 +90,40 @@ describe('existing OxiDNS clients', () => {
     await choose('192.0.2.10')
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['192.0.2.10'])
     expect(wrapper.get('[role="combobox"]').attributes('aria-expanded')).toBe('false')
+  })
+  it('accepts pasted IPv6 and edits during a pending search without losing text or the cursor', async () => {
+    vi.useFakeTimers()
+    const wrapper = mountPicker()
+    await open(wrapper)
+    const input = new DOMWrapper(document.querySelector<HTMLInputElement>('input[aria-label="搜索已有客户端 IP"]')!)
+    input.element.focus()
+    input.element.value = '2001:db8::51'
+    await input.trigger('input', { inputType: 'insertFromPaste' })
+    await flushPromises()
+    expect(input.element.value).toBe('2001:db8::51')
+    expect(document.body.textContent).not.toContain('没有找到匹配')
+    const pending = deferred()
+    vi.mocked(oxidnsMonitorApi.clients).mockImplementationOnce(() => pending.promise as any)
+    await vi.advanceTimersByTimeAsync(300)
+    const oldSignal = vi.mocked(oxidnsMonitorApi.clients).mock.lastCall?.[2]?.signal
+    input.element.value = '2001:db8::5'
+    await input.trigger('input', { inputType: 'deleteContentBackward' })
+    input.element.setSelectionRange(5, 5)
+    await flushPromises()
+    expect(oldSignal?.aborted).toBe(true)
+    pending.resolve(result(['2001:db8::51']))
+    await flushPromises()
+    expect(input.element.value).toBe('2001:db8::5')
+    expect(input.element.selectionStart).toBe(5)
+    expect(document.activeElement).toBe(input.element)
+    vi.mocked(oxidnsMonitorApi.clients).mockResolvedValue(result(['2001:db8::5']))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushPromises()
+    expect(vi.mocked(oxidnsMonitorApi.clients).mock.lastCall?.[1].search).toBe('2001:db8::5')
+    expect(input.element.value).toBe('2001:db8::5')
+    expect(input.element.selectionStart).toBe(5)
+    await choose('2001:db8::5')
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['2001:db8::5'])
   })
   it('searches historical clients separately and ignores obsolete responses', async () => {
     vi.useFakeTimers()
