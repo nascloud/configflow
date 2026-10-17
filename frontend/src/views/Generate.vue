@@ -1,42 +1,28 @@
 <template>
   <div class="min-w-0 [overflow-wrap:anywhere]">
-    <PageHeader title="配置生成">
-      <template #actions>
-        <div id="generate-header-actions" class="contents" />
-      </template>
-    </PageHeader>
+    <PageHeader title="配置生成" />
 
     <!-- ===== 生成工作台：目标切换 + 编译步骤 + 代码面板 ===== -->
     <GenerateStudio :targets="studioTargets" @copy="copyUrl" />
 
     <!-- ===== 自定义基础配置 ===== -->
-    <Dialog v-model:open="customConfigDialogVisible">
-      <DialogContent
-        class="h-[min(88dvh,900px)] max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden [overflow-wrap:anywhere] sm:w-[90vw] sm:max-w-[1400px] max-sm:h-[calc(100dvh-1rem)] max-sm:max-h-[calc(100dvh-1rem)] max-sm:w-[calc(100vw-1rem)] max-sm:max-w-[calc(100vw-1rem)] max-sm:p-4"
-      >
-        <DialogHeader>
-          <DialogTitle>{{ getCustomConfigDialogTitle() }}</DialogTitle>
-          <DialogDescription class="[overflow-wrap:anywhere]">
-            {{ getCustomConfigDialogDesc() }}
-            留空并保存可恢复默认基础配置。{{ currentConfigType === 'surge' || currentConfigType === 'loon' ? '请使用 INI 格式' : '请使用 YAML 格式' }}。
-          </DialogDescription>
-        </DialogHeader>
-
+    <SettingsWorkspace
+      v-model:open="customConfigDialogVisible"
+      :title="getCustomConfigDialogTitle()"
+      :description="customConfigDescription"
+      :dirty="customConfigDirty"
+      :busy="savingCustomConfig"
+      size="wide"
+      @save="saveCustomConfig"
+    >
+      <div :inert="savingCustomConfig" class="min-h-0 min-w-0 flex-1 p-4 md:p-5">
         <YamlEditor
           v-model="customConfigContent"
           class="h-full min-h-0"
           :placeholder="getCustomConfigPlaceholder()"
         />
-
-        <DialogFooter>
-          <Button variant="outline" @click="customConfigDialogVisible = false">取消</Button>
-          <Button :disabled="savingCustomConfig" @click="saveCustomConfig">
-            <Loader2 v-if="savingCustomConfig" class="size-4 animate-spin" />
-            保存
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </SettingsWorkspace>
 
     <!-- ===== 配置预览 ===== -->
     <Dialog v-model:open="previewDialogVisible">
@@ -63,26 +49,28 @@
     <OxidnsSettings v-model:open="oxidnsSettingsDialogVisible" :profile-id="profileId" />
 
     <!-- ===== MosDNS 设置 ===== -->
-    <Dialog v-model:open="mosdnsSettingsDialogVisible">
-      <DialogContent class="max-w-[760px] [overflow-wrap:anywhere]">
-        <DialogHeader>
-          <DialogTitle>MosDNS 设置</DialogTitle>
-          <DialogDescription>设置当前配置空间的域名解析规则、DNS 服务器、缓存和日志，用于生成 MosDNS 配置。</DialogDescription>
-        </DialogHeader>
-
-        <Tabs v-model="mosdnsActiveTab" class="min-w-0">
-          <TabsList class="w-full justify-start overflow-x-auto dark:bg-background/50">
-            <TabsTrigger value="rules" class="text-xs">规则配置</TabsTrigger>
-            <TabsTrigger value="cache" class="text-xs">缓存</TabsTrigger>
-            <TabsTrigger value="dns" class="text-xs">DNS 服务器</TabsTrigger>
-            <TabsTrigger value="default" class="text-xs">默认转发</TabsTrigger>
-            <TabsTrigger value="hosts" class="text-xs">自定义 Host</TabsTrigger>
-            <TabsTrigger value="log" class="text-xs">日志</TabsTrigger>
-            <TabsTrigger value="api" class="text-xs">API</TabsTrigger>
+    <SettingsWorkspace
+      v-model:open="mosdnsSettingsDialogVisible"
+      title="MosDNS 设置"
+      description="设置当前配置空间的域名解析规则、DNS 服务器、缓存和日志，用于生成 MosDNS 配置。"
+      :dirty="mosdnsSettingsDirty"
+      :busy="savingMosdnsSettings"
+      size="form"
+      @save="saveMosdnsSettings"
+    >
+        <Tabs v-model="mosdnsActiveTab" :inert="savingMosdnsSettings" class="min-h-0 min-w-0 flex-1 gap-0 overflow-hidden">
+          <TabsList class="h-auto min-h-11 w-full shrink-0 justify-start gap-1 overflow-x-auto rounded-none border-b border-border bg-card px-4 py-2 md:px-5">
+            <TabsTrigger value="rules" class="min-h-9 shrink-0 text-xs max-md:min-h-11">规则配置</TabsTrigger>
+            <TabsTrigger value="cache" class="min-h-9 shrink-0 text-xs max-md:min-h-11">缓存</TabsTrigger>
+            <TabsTrigger value="dns" class="min-h-9 shrink-0 text-xs max-md:min-h-11">DNS 服务器</TabsTrigger>
+            <TabsTrigger value="default" class="min-h-9 shrink-0 text-xs max-md:min-h-11">默认转发</TabsTrigger>
+            <TabsTrigger value="hosts" class="min-h-9 shrink-0 text-xs max-md:min-h-11">自定义 Host</TabsTrigger>
+            <TabsTrigger value="log" class="min-h-9 shrink-0 text-xs max-md:min-h-11">日志</TabsTrigger>
+            <TabsTrigger value="api" class="min-h-9 shrink-0 text-xs max-md:min-h-11">API</TabsTrigger>
           </TabsList>
 
           <!-- 规则配置 -->
-          <TabsContent value="rules" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
+          <TabsContent value="rules" class="min-h-0 overflow-y-auto px-4 py-4 md:px-5">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>选择哪些规则和规则集使用国内 DNS，哪些使用国外 DNS。</p>
@@ -222,7 +210,7 @@
           </TabsContent>
 
           <!-- 缓存 -->
-          <TabsContent value="cache" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
+          <TabsContent value="cache" class="min-h-0 overflow-y-auto px-4 py-4 md:px-5">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>开启缓存后，可复用 DNS 查询结果，加快重复查询。</p>
@@ -299,7 +287,7 @@
           </TabsContent>
 
           <!-- DNS 服务器 -->
-          <TabsContent value="dns" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
+          <TabsContent value="dns" class="min-h-0 overflow-y-auto px-4 py-4 md:px-5">
             <div class="flex flex-col gap-5">
               <InfoNote>
                 <p>配置国内和国外的 DNS 服务器地址。</p>
@@ -414,7 +402,7 @@
           </TabsContent>
 
           <!-- 默认转发 -->
-          <TabsContent value="default" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
+          <TabsContent value="default" class="min-h-0 overflow-y-auto px-4 py-4 md:px-5">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>当所有规则都不匹配时，使用的默认 DNS 服务器。</p>
@@ -443,7 +431,7 @@
           </TabsContent>
 
           <!-- 自定义 Host -->
-          <TabsContent value="hosts" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
+          <TabsContent value="hosts" class="min-h-0 overflow-y-auto px-4 py-4 md:px-5">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>为指定域名设置固定 IP，优先于其他规则使用。</p>
@@ -467,7 +455,7 @@
           </TabsContent>
 
           <!-- 日志 -->
-          <TabsContent value="log" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
+          <TabsContent value="log" class="min-h-0 overflow-y-auto px-4 py-4 md:px-5">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>配置 MosDNS 日志输出级别和文件路径。</p>
@@ -515,7 +503,7 @@
           </TabsContent>
 
           <!-- API -->
-          <TabsContent value="api" class="cf-focus-gutter max-h-[56dvh] overflow-y-auto">
+          <TabsContent value="api" class="min-h-0 overflow-y-auto px-4 py-4 md:px-5">
             <div class="flex flex-col gap-4">
               <InfoNote>
                 <p>开启 API 后，可通过 API 查询 MosDNS 运行状态和统计信息。</p>
@@ -546,28 +534,19 @@
           </TabsContent>
         </Tabs>
 
-        <DialogFooter>
-          <Button variant="outline" @click="mosdnsSettingsDialogVisible = false">取消</Button>
-          <Button :disabled="savingMosdnsSettings" @click="saveMosdnsSettings">
-            <Loader2 v-if="savingMosdnsSettings" class="size-4 animate-spin" />
-            保存
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </SettingsWorkspace>
 
     <!-- ===== Surge Smart 模式 ===== -->
-    <Dialog v-model:open="surgeSmartDialogVisible">
-      <DialogContent class="max-w-[680px] [overflow-wrap:anywhere]">
-        <DialogHeader>
-          <DialogTitle>Surge Smart 模式</DialogTitle>
-          <DialogDescription class="[overflow-wrap:anywhere]">
-            选择要使用 Smart 模式的策略组，并填写 policy-priority 设置优先级。
-            仅影响 Surge 配置；Mihomo 中仍保留原类型（如 url-test）。
-          </DialogDescription>
-        </DialogHeader>
-
-        <div class="cf-focus-gutter flex max-h-[52dvh] flex-col gap-2 overflow-y-auto">
+    <SettingsWorkspace
+      v-model:open="surgeSmartDialogVisible"
+      title="Surge Smart 模式"
+      description="选择要使用 Smart 模式的策略组，并填写 policy-priority 设置优先级。仅影响 Surge 配置；Mihomo 中仍保留原类型（如 url-test）。"
+      :dirty="surgeSmartDirty"
+      :busy="savingSurgeSmartGroups"
+      size="compact"
+      @save="saveSurgeSmartGroups"
+    >
+        <div :inert="savingSurgeSmartGroups" class="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto p-4 md:p-5">
           <div
             v-for="(item, index) in surgeSmartGroups"
             :key="index"
@@ -616,15 +595,7 @@
           </Button>
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" @click="surgeSmartDialogVisible = false">取消</Button>
-          <Button :disabled="savingSurgeSmartGroups" @click="saveSurgeSmartGroups">
-            <Loader2 v-if="savingSurgeSmartGroups" class="size-4 animate-spin" />
-            保存
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </SettingsWorkspace>
 
   </div>
 </template>
@@ -633,6 +604,7 @@
 import PageHeader from '@/components/common/PageHeader.vue'
 import OxidnsSettings from '@/components/generate/OxidnsSettings.vue'
 import GenerateStudio from '@/components/generate/GenerateStudio.vue'
+import SettingsWorkspace from '@/components/generate/SettingsWorkspace.vue'
 import { useProfileStore } from '@/stores/profile'
 import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import {
@@ -643,7 +615,6 @@ import {
   Eye,
   FileCode2,
   GripVertical,
-  Loader2,
   Network,
   Pencil,
   Plus,
@@ -967,6 +938,8 @@ type ConfigType = 'mihomo' | 'surge' | 'loon' | 'mosdns'
 
 const customConfigDialogVisible = ref(false)
 const customConfigContent = ref('')
+const customConfigSavedContent = ref('')
+const customConfigDirty = computed(() => customConfigContent.value !== customConfigSavedContent.value)
 const savingCustomConfig = ref(false)
 const currentConfigType = ref<ConfigType>('mihomo')
 
@@ -1010,6 +983,35 @@ const mosdnsCacheDumpInterval = ref(300)
 const availableRuleSets = ref<RuleSet[]>([])
 const availableRules = ref<any[]>([])
 const savingMosdnsSettings = ref(false)
+const mosdnsSavedSnapshot = ref('')
+// Compare editable drafts, not tab selection, validation messages or generated row IDs.
+const mosdnsDraftSnapshot = computed(() => JSON.stringify({
+  customConfig: mosdnsCustomConfig.value,
+  directRulesets: mosdnsDirectRulesets.value,
+  proxyRulesets: mosdnsProxyRulesets.value,
+  directRules: mosdnsDirectRules.value,
+  proxyRules: mosdnsProxyRules.value,
+  customMatches: mosdnsCustomMatches.value.map(({ enabled, exec, matchesText }) => ({ enabled, exec, matchesText })),
+  customMatchPosition: mosdnsCustomMatchPosition.value,
+  dns: [mosdnsLocalDnsEntries.value, mosdnsRemoteDnsEntries.value, mosdnsFallbackDnsEntries.value]
+    .map(entries => entries.map(entry => entry.mode === 'yaml'
+      ? { yaml: entry.yaml_config }
+      : { addr: entry.addr, bootstrap: entry.bootstrap, enable_pipeline: entry.enable_pipeline })),
+  defaultForward: mosdnsDefaultForward.value,
+  customHosts: mosdnsCustomHosts.value,
+  logEnabled: mosdnsLogEnabled.value,
+  logLevel: mosdnsLogLevel.value,
+  logFile: mosdnsLogFile.value,
+  apiEnabled: mosdnsApiEnabled.value,
+  apiAddress: mosdnsApiAddress.value,
+  cacheEnabled: mosdnsCacheEnabled.value,
+  cacheSize: mosdnsCacheSize.value,
+  cacheLazyTtl: mosdnsCacheLazyTtl.value,
+  cacheDumpEnabled: mosdnsCacheDumpEnabled.value,
+  cacheDumpFile: mosdnsCacheDumpFile.value,
+  cacheDumpInterval: mosdnsCacheDumpInterval.value
+}))
+const mosdnsSettingsDirty = computed(() => mosdnsDraftSnapshot.value !== mosdnsSavedSnapshot.value)
 
 // 服务域名配置
 const serverDomain = ref(localStorage.getItem('serverDomain') || window.location.origin)
@@ -1022,6 +1024,9 @@ const surgeSmartDialogVisible = ref(false)
 const surgeSmartGroups = ref<Array<{group_id: string, policy_priority: string}>>([])
 const proxyGroupOptions = ref<Array<{id: string, name: string}>>([])
 const savingSurgeSmartGroups = ref(false)
+const surgeSmartSavedSnapshot = ref('')
+const surgeSmartDraftSnapshot = computed(() => JSON.stringify(surgeSmartGroups.value))
+const surgeSmartDirty = computed(() => surgeSmartDraftSnapshot.value !== surgeSmartSavedSnapshot.value)
 
 const showSurgeSmartDialog = async () => {
   try {
@@ -1048,6 +1053,7 @@ const showSurgeSmartDialog = async () => {
       group_id: sg.group_id || '',
       policy_priority: sg.policy_priority || ''
     }))
+    surgeSmartSavedSnapshot.value = surgeSmartDraftSnapshot.value
     surgeSmartDialogVisible.value = true
   } catch (error) {
     notify.error('加载 Smart 配置失败')
@@ -1068,6 +1074,7 @@ const saveSurgeSmartGroups = async () => {
     // 过滤掉未选择策略组的空行
     const validGroups = surgeSmartGroups.value.filter(g => g.group_id)
     await customConfigApi.saveSurge({ smart_groups: validGroups }, profileId)
+    surgeSmartSavedSnapshot.value = surgeSmartDraftSnapshot.value
     notify.success('Smart 配置已保存')
     surgeSmartDialogVisible.value = false
   } catch (error) {
@@ -1146,9 +1153,9 @@ const targets = computed(() => [
     url: mihomoUrl.value,
     urlDisplay: mihomoUrlDisplay.value,
     actions: [
-      { label: '基础配置', icon: Pencil, run: () => showCustomConfigDialog('mihomo') },
+      { label: '基础配置', group: 'settings' as const, icon: Pencil, run: () => showCustomConfigDialog('mihomo') },
       { label: '预览', icon: Eye, loading: mihomoPreviewLoading.value, run: () => previewConfig('mihomo') },
-      { label: '下载', icon: Download, primary: true, loading: mihomoLoading.value, run: generateMihomo }
+      { label: '下载', group: 'export' as const, icon: Download, primary: true, loading: mihomoLoading.value, run: generateMihomo }
     ]
   },
   {
@@ -1159,10 +1166,10 @@ const targets = computed(() => [
     url: surgeUrl.value,
     urlDisplay: surgeUrlDisplay.value,
     actions: [
-      { label: '基础配置', icon: Pencil, run: handleSurgeCustomConfig },
-      { label: 'Smart', icon: Settings, run: showSurgeSmartDialog },
+      { label: '基础配置', group: 'settings' as const, icon: Pencil, run: handleSurgeCustomConfig },
+      { label: 'Smart', group: 'settings' as const, icon: Settings, run: showSurgeSmartDialog },
       { label: '预览', icon: Eye, loading: surgePreviewLoading.value, run: handleSurgePreview },
-      { label: '下载', icon: Download, primary: true, loading: surgeLoading.value, run: generateSurge }
+      { label: '下载', group: 'export' as const, icon: Download, primary: true, loading: surgeLoading.value, run: generateSurge }
     ]
   },
   {
@@ -1173,10 +1180,10 @@ const targets = computed(() => [
     url: loonUrl.value,
     urlDisplay: loonUrlDisplay.value,
     actions: [
-      { label: '基础配置', icon: Pencil, run: () => showCustomConfigDialog('loon') },
+      { label: '基础配置', group: 'settings' as const, icon: Pencil, run: () => showCustomConfigDialog('loon') },
       { label: '预览', icon: Eye, loading: loonPreviewLoading.value, run: () => previewConfig('loon') },
-      { label: '导入 Loon', icon: Upload, run: importToLoon },
-      { label: '下载', icon: Download, primary: true, loading: loonLoading.value, run: generateLoon }
+      { label: '导入 Loon', group: 'export' as const, icon: Upload, run: importToLoon },
+      { label: '下载', group: 'export' as const, icon: Download, primary: true, loading: loonLoading.value, run: generateLoon }
     ]
   },
   {
@@ -1187,9 +1194,9 @@ const targets = computed(() => [
     url: mosdnsUrl.value,
     urlDisplay: mosdnsUrlDisplay.value,
     actions: [
-      { label: '设置', icon: Settings, run: showMosdnsSettingsDialog },
+      { label: '设置', group: 'settings' as const, icon: Settings, run: showMosdnsSettingsDialog },
       { label: '预览', icon: Eye, loading: mosdnsPreviewLoading.value, run: () => previewConfig('mosdns') },
-      { label: '下载', icon: Download, primary: true, loading: mosdnsLoading.value, run: generateMosdns }
+      { label: '下载', group: 'export' as const, icon: Download, primary: true, loading: mosdnsLoading.value, run: generateMosdns }
     ]
   },
   {
@@ -1200,8 +1207,8 @@ const targets = computed(() => [
     url: oxidnsUrl.value,
     urlDisplay: oxidnsUrl.value,
     actions: [
-      { label: '设置', icon: Settings, run: () => { oxidnsSettingsDialogVisible.value = true } },
-      { label: '下载', icon: Download, primary: true, loading: oxidnsLoading.value, run: generateOxidns }
+      { label: '设置', group: 'settings' as const, icon: Settings, run: () => { oxidnsSettingsDialogVisible.value = true } },
+      { label: '下载', group: 'export' as const, icon: Download, primary: true, loading: oxidnsLoading.value, run: generateOxidns }
     ]
   }
 ])
@@ -1470,10 +1477,10 @@ const generateOxidns = async () => {
 
 const getCustomConfigDialogTitle = () => {
   const titles = {
-    mihomo: '自定义 Mihomo 基础配置',
-    surge: '自定义 Surge 基础配置',
-    loon: '自定义 Loon 基础配置',
-    mosdns: '自定义 MosDNS 基础配置'
+    mihomo: 'Mihomo 基础配置',
+    surge: 'Surge 基础配置',
+    loon: 'Loon 基础配置',
+    mosdns: 'MosDNS 基础配置'
   }
   return titles[currentConfigType.value]
 }
@@ -1487,6 +1494,11 @@ const getCustomConfigDialogDesc = () => {
   }
   return descs[currentConfigType.value]
 }
+
+const customConfigDescription = computed(() => {
+  const format = currentConfigType.value === 'surge' || currentConfigType.value === 'loon' ? 'INI' : 'YAML'
+  return `${getCustomConfigDialogDesc()} 留空并保存可恢复默认基础配置。请使用 ${format} 格式。`
+})
 
 const getCustomConfigPlaceholder = () => {
   const placeholders = {
@@ -1519,6 +1531,7 @@ const showCustomConfigDialog = async (type: ConfigType) => {
     }
     const response = await apiMap[type](profileId)
     customConfigContent.value = response.data.config || ''
+    customConfigSavedContent.value = customConfigContent.value
     customConfigDialogVisible.value = true
   } catch (error) {
     notify.error('加载自定义配置失败')
@@ -1535,6 +1548,7 @@ const saveCustomConfig = async () => {
       mosdns: customConfigApi.saveMosdns
     }
     await apiMap[currentConfigType.value]({ config: customConfigContent.value }, profileId)
+    customConfigSavedContent.value = customConfigContent.value
     notify.success('自定义配置已保存')
     customConfigDialogVisible.value = false
   } catch (error) {
@@ -1837,7 +1851,8 @@ const showMosdnsSettingsDialog = async () => {
     // 重置到第一个 tab
     mosdnsActiveTab.value = 'rules'
 
-    // 显示对话框
+    // Snapshot only once every editable field has finished loading.
+    mosdnsSavedSnapshot.value = mosdnsDraftSnapshot.value
     mosdnsSettingsDialogVisible.value = true
 
     // 初始化拖拽功能
@@ -1917,6 +1932,7 @@ const saveMosdnsSettings = async () => {
       cache_dump_interval: mosdnsCacheDumpInterval.value
     }, profileOptions)
 
+    mosdnsSavedSnapshot.value = mosdnsDraftSnapshot.value
     notify.success('MosDNS 设置已保存')
     mosdnsSettingsDialogVisible.value = false
   } catch (error) {

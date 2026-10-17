@@ -3,12 +3,12 @@
     <div class="flex shrink-0 flex-wrap items-center justify-between gap-2">
       <div class="flex items-center gap-1">
         <Button v-if="mode === 'full'" variant="outline" class="min-h-11 max-sm:w-11 max-sm:px-0 md:hidden" aria-label="目录" @click="directoryOpen = true"><PanelLeft class="size-4" /><span class="max-sm:sr-only">目录</span></Button>
-        <h3 class="text-sm font-semibold max-sm:sr-only">配置编辑</h3>
+        <slot name="navigation"><h3 class="text-sm font-semibold max-sm:sr-only">配置编辑</h3></slot>
         <FieldHelp label="完整配置" text="常用设置、完整参数和 YAML 编辑同一份配置，共用一次保存。切换入口或分组不会改写配置，也不会丢失未完成的输入。只有主动添加或修改的参数才写入配置；未知字段和原生值类型均保留。表单修改后会重新整理 YAML 注释和排版。" />
       </div>
       <OxidnsEditorModeToggle :model-value="mode" :disabled="disabled" :options="[{ value: 'common', label: '常用设置', disabled: Boolean(slots.common) && formDraftError }, { value: 'full', label: '完整参数' }, { value: 'yaml', label: 'YAML', disabled: mode !== 'yaml' && formDraftError }]" label="配置编辑方式" @update:model-value="switchMode" />
     </div>
-    <Textarea v-if="mode === 'yaml'" :model-value="draft" :disabled="disabled" :rows="20" aria-label="OxiDNS 完整配置 YAML" :aria-invalid="Boolean(error)" class="min-h-40 min-w-0 flex-1 resize-none font-mono text-xs" @update:model-value="editYaml(String($event))" />
+    <Textarea v-if="mode === 'yaml'" :model-value="draft" :disabled="disabled" :rows="20" aria-label="OxiDNS 完整配置 YAML" :aria-invalid="Boolean(error)" class="min-h-0 min-w-0 flex-1 resize-none font-mono text-xs" @update:model-value="editYaml(String($event))" />
     <div v-show="mode === 'common'" class="flex min-h-0 min-w-0 flex-1 flex-col">
       <slot name="common"><OxidnsCommonEditor v-if="mode === 'common'" v-model:section-id="commonSection" :global-node="globalTree" :plugin-nodes="plugins?.value.items ?? []" :disabled="disabled" :non-list-plugins="nonListPlugins" @change="$event ? commitGlobals() : commit()" @navigate="selectScope" @add-global="addGlobalFeature" @add-plugin="addPlugin" @add-args="addPluginArgs" /></slot>
     </div>
