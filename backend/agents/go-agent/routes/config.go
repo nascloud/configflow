@@ -78,6 +78,7 @@ type Config struct {
 	HealthDNSAddress        string `json:"health_dns_address,omitempty"`
 	HealthDNSName           string `json:"health_dns_name,omitempty"`
 	DeploymentHealthTimeout int    `json:"deployment_health_timeout,omitempty"`
+	DNSWatchdogDisabled     bool   `json:"dns_watchdog_disabled,omitempty"`
 
 	// MosDNS 特殊功能字段
 	Directories      []string              `json:"directories,omitempty"`

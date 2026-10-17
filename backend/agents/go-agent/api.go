@@ -62,6 +62,7 @@ func toRoutesConfig(cfg *Config) *routes.Config {
 		HealthDNSAddress:        cfg.HealthDNSAddress,
 		HealthDNSName:           cfg.HealthDNSName,
 		DeploymentHealthTimeout: cfg.DeploymentHealthTimeout,
+		DNSWatchdogDisabled:     cfg.DNSWatchdogDisabled,
 		HeartbeatInterval:       cfg.HeartbeatInterval,
 		AgentID:                 cfg.AgentID,
 		Token:                   cfg.Token,

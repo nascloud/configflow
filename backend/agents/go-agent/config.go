@@ -29,6 +29,7 @@ type Config struct {
 	HealthDNSAddress        string `json:"health_dns_address,omitempty"`
 	HealthDNSName           string `json:"health_dns_name,omitempty"`
 	DeploymentHealthTimeout int    `json:"deployment_health_timeout,omitempty"`
+	DNSWatchdogDisabled     bool   `json:"dns_watchdog_disabled,omitempty"`
 	HeartbeatInterval       int    `json:"heartbeat_interval"`
 	AgentID                 string `json:"agent_id,omitempty"`
 	UpgradeSchema           int    `json:"upgrade_schema,omitempty"`

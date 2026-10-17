@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.2-go"
+LATEST_AGENT_VERSION = "1.8.3-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.3-go": {
+        "date": "2026-10-17",
+        "features": [
+            "DNS 看门狗：OxiDNS / MosDNS 进程在运行但连续 30 秒不应答时自动重启（每小时最多 3 次），发布、手动停止期间不干预；可用 dns_watchdog_disabled 关闭"
+        ]
+    },
     "1.8.2-go": {
         "date": "2026-10-17",
         "features": [
