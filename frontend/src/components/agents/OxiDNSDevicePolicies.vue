@@ -18,9 +18,7 @@
       <p v-if="state.agents.length > 1" class="m-0 break-words">共用草稿：{{ state.agents.map(agent => agent.name).join('、') }}</p>
       <details>
         <summary class="min-h-11 cursor-pointer content-center text-foreground focus-visible:outline-2 focus-visible:outline-primary-accent">使用说明</summary>
-        <p class="mb-2 mt-0">智能分流沿用现有规则，未设置的设备保持默认。</p>
-        <p class="mb-2 mt-0">直连使用本地 DNS，仅影响解析，不改变代理路由。</p>
-        <p class="m-0">设备需使用 OxiDNS，且能识别其真实 IP。</p>
+        <p class="m-0">智能分流沿用现有规则，未设置的设备保持默认；直连使用本地 DNS，不改变代理路由。设备需通过 OxiDNS 查询，并保留真实客户端 IP。</p>
       </details>
     </div>
     <p v-if="!state.editable" role="alert" class="mb-4 rounded-lg bg-warning-soft p-3 text-sm text-warning-accent">{{ state.reason }}</p>
