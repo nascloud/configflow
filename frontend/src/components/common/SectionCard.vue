@@ -12,6 +12,7 @@
           <component v-if="icon" :is="icon" class="size-4 text-primary-accent" :stroke-width="2.2" aria-hidden="true" />
           {{ title }}
           <FieldHelp v-if="help" :label="title" :text="help" />
+          <slot name="title-extra" />
         </h2>
         <p v-if="description" class="mt-1 mb-0 text-[12px] leading-relaxed text-muted-foreground">
           {{ description }}

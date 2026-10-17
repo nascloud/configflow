@@ -5,7 +5,15 @@
       <Button variant="outline" class="min-h-11" :disabled="loading" @click="load">重试</Button>
     </EmptyState>
   </SectionCard>
-  <SectionCard v-else class="[&>header]:items-start max-sm:[&>header>div:first-child]:basis-full" title="设备策略">
+  <SectionCard
+    v-else
+    class="[&>header]:items-start [&>header_h2]:whitespace-nowrap max-sm:[&>header>div:first-child]:basis-full"
+    title="设备策略"
+    :help="devicePolicyHelp"
+  >
+    <template #title-extra>
+      <span class="min-w-0 max-w-48 truncate rounded-md bg-muted px-2 py-1 text-xs font-normal text-muted-foreground" :title="`配置空间：${state.profile_name}`">配置：{{ state.profile_name }}</span>
+    </template>
     <template #actions>
       <span v-if="dirty" class="text-xs text-warning-accent">未保存</span>
       <Button variant="outline" class="min-h-11" :disabled="saving || publishing || loading" @click="reload">重新载入</Button>
@@ -13,33 +21,25 @@
         <Loader2 v-if="saving" class="size-4 animate-spin" />保存草稿
       </Button>
     </template>
-    <div class="mb-4 space-y-2 text-xs leading-relaxed text-muted-foreground">
-      <p class="m-0 break-words">配置：<span class="font-medium text-foreground">{{ state.profile_name }}</span> · 保存草稿，发布到当前设备后生效。</p>
-      <p v-if="state.agents.length > 1" class="m-0 break-words">共用草稿：{{ state.agents.map(agent => agent.name).join('、') }}</p>
-      <details>
-        <summary class="min-h-11 cursor-pointer content-center text-foreground focus-visible:outline-2 focus-visible:outline-primary-accent">使用说明</summary>
-        <p class="m-0">智能分流沿用现有规则，未匹配策略的设备保持默认；直连使用本地 DNS，不改变代理路由。设备需通过 OxiDNS 查询，并保留真实客户端 IP。</p>
-      </details>
-    </div>
+    <p v-if="state.agents.length > 1" class="mb-4 mt-0 break-words text-xs leading-relaxed text-muted-foreground">共用草稿：{{ state.agents.map(agent => agent.name).join('、') }}</p>
     <p v-if="!state.editable" role="alert" class="mb-4 rounded-lg bg-warning-soft p-3 text-sm text-warning-accent">{{ state.reason }}</p>
     <p v-if="error" role="alert" class="mb-4 text-sm text-destructive-accent">{{ error }}</p>
     <fieldset :disabled="!state.editable || saving || publishing || loading" class="m-0 min-w-0 border-0 p-0">
-      <div class="mb-4 grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-        <div class="min-w-0">
-          <p class="mb-2 mt-0 flex min-h-6 items-center text-xs text-muted-foreground">从查询记录选择</p>
-          <OxiDNSClientSelect :model-value="''" :agent-id="agentId" :recorder="recorder" range="all" :allow-all="false" placeholder="选择已有客户端…" @update:model-value="add" />
-          <p v-if="!recorder" class="mb-0 mt-1.5 text-xs text-muted-foreground">暂无可读取的查询记录，可手动添加 IP 或网段。</p>
+      <div class="mb-4 grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-start md:gap-y-2">
+        <div class="min-w-0 md:contents">
+          <p class="mb-2 mt-0 flex min-h-6 items-center text-xs text-muted-foreground md:col-start-1 md:row-start-1 md:mb-0 md:self-stretch">从查询记录选择</p>
+          <OxiDNSClientSelect class="md:col-start-1 md:row-start-2" :model-value="''" :agent-id="agentId" :recorder="recorder" range="all" :allow-all="false" placeholder="选择已有客户端…" @update:model-value="add" />
+          <p v-if="!recorder" class="mb-0 mt-1.5 text-xs text-muted-foreground md:col-start-1 md:row-start-3 md:mt-0">暂无可读取的查询记录，可手动添加 IP 或网段。</p>
         </div>
-        <div class="min-w-0">
-          <div class="mb-2 flex min-h-6 items-center gap-1">
+        <div class="min-w-0 md:contents">
+          <div class="mb-2 flex min-h-6 items-center gap-1 md:col-start-2 md:row-start-1 md:mb-0 md:self-stretch">
             <label for="policy-client-ip" class="text-xs text-muted-foreground">手动添加 IP / 网段</label>
             <FieldHelp label="手动添加 IP / 网段" :text="clientRangeHelp" />
           </div>
-          <Input id="policy-client-ip" v-model="newIP" class="min-h-11 font-mono" placeholder="192.168.50.0/24 或 IPv6" aria-describedby="policy-range-help" @keydown.enter.prevent="add(newIP)" />
+          <Input id="policy-client-ip" v-model="newIP" class="min-h-11 font-mono md:col-start-2 md:row-start-2" placeholder="192.168.50.0/24 或 IPv6" @keydown.enter.prevent="add(newIP)" />
         </div>
-        <Button variant="outline" class="min-h-11 md:mt-8" :disabled="!newIP.trim() || rows.length >= 512" @click="add(newIP)"><Plus class="size-4" />添加策略</Button>
+        <Button variant="outline" class="min-h-11 md:col-start-3 md:row-start-2" :disabled="!newIP.trim() || rows.length >= 512" @click="add(newIP)"><Plus class="size-4" />添加策略</Button>
       </div>
-      <p id="policy-range-help" class="mb-4 mt-0 text-xs leading-relaxed text-muted-foreground">支持单个 IPv4 / IPv6 和 CIDR 网段，网段地址会自动规范化。规则重叠时，单个 IP 优先，其次是范围更小的网段，与添加顺序无关。</p>
       <div v-if="rows.length" class="cf-table-wrap">
         <table class="cf-table w-full min-w-[540px]">
           <thead><tr><th scope="col">客户端 IP / 网段</th><th scope="col">备注</th><th scope="col">策略</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead>
@@ -67,7 +67,7 @@
         <p v-if="task?.status === 'ready'" class="mb-0 mt-1">待激活的是已上传的配置快照，不包含之后保存的草稿修改。</p>
       </div>
       <Button v-if="task?.status === 'ready'" class="min-h-11" :disabled="publishing" @click="activate(agentId)">应用并启动</Button>
-      <Button v-else variant="outline" class="min-h-11" :disabled="dirty || !state.editable || saving || loading || publishing || busy(agentId)" @click="publish">
+      <Button v-else class="min-h-11" :disabled="dirty || !state.editable || saving || loading || publishing || busy(agentId)" @click="publish">
         <Loader2 v-if="publishing || busy(agentId)" class="size-4 animate-spin" /><Upload v-else class="size-4" />{{ publishing || busy(agentId) ? '发布中…' : '发布到当前设备' }}
       </Button>
     </div>
@@ -92,9 +92,16 @@ import { createDeploymentId, deploymentStatusLabel, useAgentDeployments } from '
 import type { OxiDNSDevicePolicies, OxiDNSDevicePolicy } from '@/types/oxidnsMonitor'
 
 const props = defineProps<{ agentId: string; recorder: string }>()
+const devicePolicyHelp = [
+  '选择设备或填写 IP / 网段，再选择策略。其他设备继续使用原有规则。',
+  '智能分流：按当前 DNS 规则处理。\n直连：使用本地 DNS 查询域名；是否走代理，仍取决于路由器的分流设置。',
+  '先点「保存草稿」，再点「发布到当前设备」，设置才会生效。',
+  '设备需使用这台 OxiDNS 作为 DNS，查询记录中应能看到设备自己的 IP。',
+].join('\n\n')
 const clientRangeHelp = [
   '为指定设备或网段设置 DNS 解析策略，未出现在查询记录中的设备也可手动添加。',
-  '支持单个 IPv4 / IPv6 和 CIDR 网段，例如 192.168.50.50、192.168.50.0/24。重叠时单个 IP 优先，其次为更小的网段。',
+  '支持单个 IPv4 / IPv6 和 CIDR 网段，例如 192.168.50.50、192.168.50.0/24。',
+  '网段会自动整理为标准写法。范围重叠时，单个 IP 优先，其次是更小的网段，与添加顺序无关。',
   '添加后选择智能分流（沿用现有规则）或直连（使用本地 DNS 上游），保存草稿并发布到当前设备后生效。',
   '设备需使用 OxiDNS，且 OxiDNS 能识别真实客户端 IP；填写地址不会自动修改设备 DNS。',
 ].join('\n\n')
