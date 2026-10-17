@@ -6,13 +6,17 @@ from flask import jsonify, request
 
 from backend.common.auth import require_auth
 from backend.common.config import get_config, save_config
-from backend.routers.base import RouterError, as_dict
+from backend.routers.base import RouterConflictError, RouterError, as_dict
 from backend.routers.desired import compute_desired
 from backend.routers.dhcp_dns import dns_agent_settings
 from backend.routers.ikuai import IKuaiDriver
 from backend.routers.plan import build_plan
 from backend.routers.release import AgentReturnRouting, execute
 from backend.routers.report import build_report
+from backend.routers.route_editor import (
+    RouteEditValidationError, build_route_plan, execute_route_plan,
+    normalize_request, public_route, read_routes, router_operation_lock,
+)
 from backend.routers.routeros import RouterOSDriver
 from backend.routers.store import (
     RouterValidationError, find_router, normalize, public_view, routers_of,
@@ -180,20 +184,21 @@ def router_apply(router_id):
     expected = str((request.get_json(silent=True) or {}).get('fingerprint') or '')
     driver = _driver(router)
     try:
-        gateway_agent, desired, state, report = _inspect(config, router, driver)
-        plan = build_plan(router, desired, state, report, report['return_routing'], driver)
-        if plan['blockers']:
-            return jsonify({'success': False, 'message': '；'.join(plan['blockers']), 'plan': plan}), 409
-        if not expected or plan['fingerprint'] != expected:
-            return jsonify({'success': False, 'message': '路由器、Agent 或期望状态在预览后发生了变化，请重新预览',
-                            'plan': plan}), 409
-        if plan['empty']:
-            return jsonify({'success': True, 'result': {'ok': True, 'log': [], 'rollback': []}, 'plan': plan})
-        agent_client = None
-        if router.get('manage_return_routing') is True:
-            from backend.common.agent_manager import get_agent_manager
-            agent_client = AgentReturnRouting(get_agent_manager(), gateway_agent)
-        result = execute(plan, driver, agent_client)
+        with router_operation_lock(router):
+            gateway_agent, desired, state, report = _inspect(config, router, driver)
+            plan = build_plan(router, desired, state, report, report['return_routing'], driver)
+            if plan['blockers']:
+                return jsonify({'success': False, 'message': '；'.join(plan['blockers']), 'plan': plan}), 409
+            if not expected or plan['fingerprint'] != expected:
+                return jsonify({'success': False, 'message': '路由器、Agent 或期望状态在预览后发生了变化，请重新预览',
+                                'plan': plan}), 409
+            if plan['empty']:
+                return jsonify({'success': True, 'result': {'ok': True, 'log': [], 'rollback': []}, 'plan': plan})
+            agent_client = None
+            if router.get('manage_return_routing') is True:
+                from backend.common.agent_manager import get_agent_manager
+                agent_client = AgentReturnRouting(get_agent_manager(), gateway_agent)
+            result = execute(plan, driver, agent_client)
     except RouterError as error:
         return jsonify({'success': False, 'message': str(error)}), 502
     finally:
@@ -214,6 +219,65 @@ def router_apply(router_id):
     return jsonify({'success': result['ok'], 'result': result, 'plan': plan, 'message': message}), \
         200 if result['ok'] else 502
 
+
+@routers_bp.route('/<router_id>/routes', methods=['GET'])
+@require_auth
+def list_device_routes(router_id):
+    router = find_router(get_config(), router_id)
+    if router is None:
+        return _not_found()
+    driver = _driver(router)
+    try:
+        rows = read_routes(driver)
+        return jsonify({'success': True, 'routes': [public_route(row) for row in rows]})
+    except RouterError as error:
+        return jsonify({'success': False, 'message': str(error)}), 502
+    finally:
+        driver.close()
+
+
+@routers_bp.route('/<router_id>/routes/plan', methods=['POST'])
+@require_auth
+def preview_device_route(router_id):
+    return _device_route_change(router_id, apply=False)
+
+
+@routers_bp.route('/<router_id>/routes/apply', methods=['POST'])
+@require_auth
+def apply_device_route(router_id):
+    return _device_route_change(router_id, apply=True)
+
+
+def _device_route_change(router_id, *, apply):
+    router = find_router(get_config(), router_id)
+    if router is None:
+        return _not_found()
+    payload = request.get_json(silent=True)
+    try:
+        normalize_request(payload)
+    except RouteEditValidationError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
+    driver = _driver(router)
+    try:
+        with router_operation_lock(router):
+            rows = read_routes(driver)
+            plan = build_route_plan(router, rows, payload)
+            if not apply:
+                return jsonify({'success': True, 'plan': plan})
+            fingerprint = payload.get('fingerprint') if isinstance(payload, dict) else None
+            if not isinstance(fingerprint, str) or fingerprint != plan['fingerprint']:
+                return jsonify({'success': False, 'message': '操作内容或路由状态已变化，请重新预览后确认'}), 409
+            result = execute_route_plan(driver, rows, plan)
+            return jsonify({'success': True, 'result': result,
+                            'message': '路由变更已写入并通过回读校验' if result['changed'] else '路由没有变化'})
+    except RouteEditValidationError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
+    except RouterConflictError as error:
+        return jsonify({'success': False, 'message': str(error)}), 409
+    except RouterError as error:
+        return jsonify({'success': False, 'message': str(error)}), 502
+    finally:
+        driver.close()
 
 def _return_routing(agent):
     """Return-routing state reported by the proxy gateway's Agent (read-only)."""

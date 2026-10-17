@@ -188,6 +188,36 @@ export const generateApi = {
   previewMosdns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/mosdns/preview'), { base_url: getBaseUrl() })
 }
 
+export interface StaticRouteValues {
+  cidr: string
+  gateway: string
+  enabled: boolean
+  comment: string
+}
+export interface StaticRouteItem extends StaticRouteValues {
+  id: string
+  table: string
+  editable: boolean
+  reason: string
+  managed: boolean
+  revision: string
+}
+export interface StaticRouteChange {
+  action: 'add' | 'update' | 'delete'
+  id?: string
+  revision?: string
+  values?: StaticRouteValues
+}
+export interface StaticRoutePlan {
+  action: StaticRouteChange['action']
+  before: StaticRouteValues | null
+  after: StaticRouteValues | null
+  summary: string
+  warnings: string[]
+  fingerprint: string
+  empty: boolean
+}
+
 // 上游路由器：接入管理、探测、差异报告与预览确认发布
 export const routerApi = {
   list: () => api.get('/routers'),
@@ -198,7 +228,13 @@ export const routerApi = {
   report: (id: string) => api.get(`/routers/${id}/report`, { timeout: 90000 }),
   plan: (id: string) => api.post(`/routers/${id}/plan`, null, { timeout: 90000 }),
   apply: (id: string, fingerprint: string) =>
-    api.post(`/routers/${id}/apply`, { fingerprint }, { timeout: 300000 })
+    api.post(`/routers/${id}/apply`, { fingerprint }, { timeout: 300000 }),
+  routes: (id: string, profileId = getActiveProfileId()) =>
+    api.get(`/routers/${id}/routes`, { ...profileOptions(profileId), timeout: 60000 }),
+  routePlan: (id: string, change: StaticRouteChange, profileId = getActiveProfileId()) =>
+    api.post(`/routers/${id}/routes/plan`, change, { ...profileOptions(profileId), timeout: 60000 }),
+  routeApply: (id: string, change: StaticRouteChange & { fingerprint: string }, profileId = getActiveProfileId()) =>
+    api.post(`/routers/${id}/routes/apply`, change, { ...profileOptions(profileId), timeout: 90000 })
 }
 
 // OxiDNS 统一配置

@@ -8,13 +8,17 @@ need to know router specifics. Writable drivers apply release operations (see
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-# Prefix written into the comment of objects ConfigFlow manages; objects without
-# it are never modified except when adopted (re-commented) during a release.
+# Prefix used by generated deployments. Unmarked objects are only adopted
+# during a release or changed through an explicitly confirmed manual edit.
 MANAGED_PREFIX = 'cf'
 
 
 class RouterError(Exception):
     """A router request failed; the message is safe to show to users."""
+
+
+class RouterConflictError(RouterError):
+    """The route changed or cannot be edited; a fresh preview is required."""
 
 
 class RouterRollbackError(RouterError):

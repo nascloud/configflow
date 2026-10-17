@@ -10,11 +10,11 @@ import { NAV_GROUPS, scopeOfPath } from '@/navigation'
 vi.mock('@/api', () => ({
   agentApi: { getAll: vi.fn() },
   routerApi: {
-    list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), probe: vi.fn(), report: vi.fn(), plan: vi.fn(), apply: vi.fn()
+    list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), probe: vi.fn(), report: vi.fn(), plan: vi.fn(), apply: vi.fn(), routes: vi.fn(), routePlan: vi.fn(), routeApply: vi.fn()
   },
   ruleApi: { getAll: vi.fn() }
 }))
-vi.mock('@/lib/feedback', () => ({ notify: { success: vi.fn(), error: vi.fn() }, confirmDanger: vi.fn() }))
+vi.mock('@/lib/feedback', () => ({ notify: { success: vi.fn(), error: vi.fn() }, confirmDanger: vi.fn(), confirm: vi.fn(), confirmState: { resolve: null }, settleConfirm: vi.fn() }))
 
 const wrappers: VueWrapper[] = []
 afterEach(() => {

@@ -31,7 +31,7 @@
 
     <SectionCard v-else :padded="false" title="路由器">
       <div class="cf-table-wrap">
-        <table class="cf-table">
+        <table class="cf-table min-w-[880px]">
           <thead>
             <tr>
               <th>名称</th>
@@ -64,6 +64,9 @@
                     <Activity v-else class="size-3.5" />
                     探测
                   </Button>
+                  <Button size="sm" variant="outline" class="max-md:min-h-11" @click="openRouteManager(router)">
+                    管理路由
+                  </Button>
                   <Button size="sm" :disabled="busyId === router.id" @click="loadReport(router)">
                     <Loader2 v-if="busyId === router.id && busyAction === 'report'" class="size-3.5 animate-spin" />
                     <GitCompare v-else class="size-3.5" />
@@ -89,6 +92,70 @@
         </table>
       </div>
     </SectionCard>
+
+    <SectionCard v-if="routeRouter" class="mt-4 min-w-0 max-md:[&>header]:flex-col max-md:[&>header]:items-stretch max-md:[&_[data-slot=button]]:min-h-11" :padded="false" :title="`管理路由 · ${routeRouter.name}`"
+      description="直接管理这台设备的静态路由，无需关联 Agent。每次写入前先预览并确认。">
+      <template #actions>
+        <Button size="sm" variant="outline" :disabled="routeLoading || routeBusy" @click="refreshRoutes()">
+          <Loader2 v-if="routeLoading" class="size-3.5 animate-spin" />
+          刷新路由
+        </Button>
+        <Button size="sm" :disabled="routeLoading || routeBusy || Boolean(routeError)" @click="openRouteEditor()"><Plus class="size-3.5" />新增路由</Button>
+        <Button size="sm" variant="ghost" :disabled="routeBusy" @click="closeRouteManager">关闭管理</Button>
+      </template>
+      <p class="m-0 px-5 pb-4 text-[12px] leading-relaxed text-muted-foreground max-md:px-4">
+        此处只修改选中的静态路由。带 cf 标记的路由可能被后续自动发布调整；NAT、DHCP DNS 和 mihomo 回流配置不随手工操作变化。
+      </p>
+      <p v-if="routeBusy" role="status" class="m-0 flex items-center gap-2 px-5 pb-4 text-[12px] text-muted-foreground max-md:px-4"><Loader2 class="size-3.5 animate-spin" />正在准备或执行路由变更…</p>
+      <p v-if="routeError" role="alert" class="m-0 break-words px-5 pb-4 text-[12.5px] text-destructive-accent max-md:px-4">{{ routeError }}</p>
+      <LoadingRows v-if="routeLoading" :rows="3" />
+      <div v-else-if="routeRows.length" class="cf-table-wrap">
+        <table class="cf-table min-w-[920px]">
+          <thead><tr><th>目的网段</th><th>下一跳</th><th>路由表</th><th>状态</th><th>备注 / 管理说明</th><th class="text-right">操作</th></tr></thead>
+          <tbody>
+            <tr v-for="item in routeRows" :key="item.id">
+              <td class="whitespace-nowrap font-mono text-[12px]">{{ item.cidr }}</td>
+              <td class="whitespace-nowrap font-mono text-[12px]">{{ item.gateway || '—' }}</td>
+              <td class="font-mono text-[12px]">{{ item.table || '默认' }}</td>
+              <td><span :class="['chip', item.enabled ? 'chip-ok' : '']">{{ item.enabled ? '已启用' : '已停用' }}</span></td>
+              <td class="min-w-[240px] max-w-[360px] whitespace-normal break-words text-[12px]">
+                <p class="m-0">{{ item.comment || '无备注' }}</p>
+                <p v-if="item.managed" class="mt-1 mb-0 text-warning-accent">由自动发布管理</p>
+                <p v-if="!item.editable" class="mt-1 mb-0 text-muted-foreground">只读：{{ item.reason || '该路由不支持手工修改' }}</p>
+              </td>
+              <td><div class="flex justify-end gap-1">
+                <Button size="sm" variant="outline" :aria-label="`编辑路由 ${item.cidr}`" :disabled="!item.editable || routeBusy || Boolean(routeError)" @click="openRouteEditor(item)">编辑</Button>
+                <Button size="sm" variant="ghost" class="text-destructive-accent hover:bg-destructive-soft" :aria-label="`删除路由 ${item.cidr}`" :disabled="!item.editable || routeBusy || Boolean(routeError)" @click="previewRouteChange({ action: 'delete', id: item.id, revision: item.revision })">删除</Button>
+              </div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <EmptyState v-else-if="!routeError" :icon="RouterIcon" title="没有静态路由" description="可新增目的网段和下一跳，确认变更后写入这台路由器。" />
+    </SectionCard>
+
+    <Dialog :open="routeEditorVisible" @update:open="value => { if (!routeBusy) routeEditorVisible = value }">
+      <DialogContent class="max-w-[480px] max-md:[&_[data-slot=button]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-w-11" :show-close-button="!routeBusy">
+        <DialogHeader>
+          <DialogTitle>{{ routeEditing ? '编辑路由' : '新增路由' }} · {{ routeRouter?.name }}</DialogTitle>
+          <DialogDescription>填写 IPv4 目的网段和下一跳，预览完整变更后再确认写入。</DialogDescription>
+        </DialogHeader>
+        <form @submit.prevent="submitRoute">
+          <fieldset :disabled="routeBusy" class="m-0 flex min-w-0 flex-col gap-4 border-0 p-0">
+            <div class="flex flex-col gap-1.5"><Label for="static-route-cidr">目的网段（IPv4 CIDR）</Label><Input id="static-route-cidr" v-model="routeForm.cidr" class="font-mono" placeholder="例如 192.168.20.0/24" /></div>
+            <div class="flex flex-col gap-1.5"><Label for="static-route-gateway">下一跳（IPv4）</Label><Input id="static-route-gateway" v-model="routeForm.gateway" class="font-mono" placeholder="例如 192.168.1.2" /></div>
+            <div class="flex flex-col gap-1.5"><Label for="static-route-comment">备注</Label><Textarea id="static-route-comment" v-model="routeForm.comment" :rows="3" placeholder="可选，最多 512 个字符" /></div>
+            <div class="flex min-h-11 items-center justify-between gap-3"><Label for="static-route-enabled" class="flex min-h-11 flex-1 items-center">启用路由</Label><Switch id="static-route-enabled" :disabled="routeBusy" :model-value="routeForm.enabled" @update:model-value="value => (routeForm.enabled = Boolean(value))" /></div>
+            <p v-if="routeEditing?.managed" class="m-0 text-[12px] text-warning-accent">此路由带 cf 标记，后续自动发布可能调整本次手工变更。</p>
+            <p v-if="routeFormError" role="alert" class="m-0 break-words text-[12px] text-destructive-accent">{{ routeFormError }}</p>
+          </fieldset>
+          <DialogFooter class="mt-5">
+            <Button type="button" variant="outline" :disabled="routeBusy" @click="routeEditorVisible = false">取消</Button>
+            <Button type="submit" :disabled="routeBusy || routeLoading"><Loader2 v-if="routeBusy" class="size-4 animate-spin" />预览路由变更</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
 
     <template v-if="report">
       <SectionCard class="mt-4" :title="`差异报告 · ${reportRouter?.name}`" :description="`生成于 ${reportTime}`">
@@ -245,6 +312,7 @@
         title="其他路由"
         description="指向代理网关但不由期望状态推导的手工路由不会被修改；多余项为 ConfigFlow 标记但已不再需要的路由。"
       >
+        <template #actions><Button v-if="reportRouter" size="sm" variant="outline" @click="openRouteManager(reportRouter)">管理路由</Button></template>
         <div class="cf-table-wrap">
           <table class="cf-table">
             <thead>
@@ -463,7 +531,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   Activity,
   CircleX,
@@ -486,6 +554,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -495,8 +564,9 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
-import { agentApi, routerApi, ruleApi } from '@/api'
-import { confirmDanger, notify } from '@/lib/feedback'
+import { agentApi, routerApi, ruleApi, type StaticRouteChange, type StaticRouteItem, type StaticRoutePlan, type StaticRouteValues } from '@/api'
+import { activeProfileId, getActiveProfileId } from '@/profileContext'
+import { confirm, confirmDanger, confirmState, notify, settleConfirm } from '@/lib/feedback'
 
 type RouterType = 'ikuai' | 'routeros'
 type Status = 'synced' | 'adoptable' | 'conflict' | 'missing' | 'extra' | 'not_required' | 'unknown' | 'pending'
@@ -636,6 +706,159 @@ const ruleSetOptions = computed(() =>
 const agentsOf = (serviceType: string) => agents.value.filter(agent => agent.service_type === serviceType)
 const errorMessage = (error: any, fallback: string) => error?.response?.data?.message || fallback
 
+// Keep route management independent of Agent inspection and pin each operation
+// to the device/profile it started from, including time spent in confirmation.
+const routeRouter = ref<RouterItem | null>(null)
+const routeRows = ref<StaticRouteItem[]>([])
+const routeLoading = ref(false)
+const routeBusy = ref(false)
+const routeError = ref('')
+const routeEditorVisible = ref(false)
+const routeEditing = ref<StaticRouteItem | null>(null)
+const routeForm = reactive<StaticRouteValues>({ cidr: '', gateway: '', enabled: true, comment: '' })
+const routeFormError = ref('')
+let routeEpoch = 0
+let routeRead = 0
+let ownedRouteConfirmation: typeof confirmState.resolve = null
+const routeContext = () => ({ id: routeRouter.value?.id, profile: getActiveProfileId(), epoch: routeEpoch })
+type RouteContext = ReturnType<typeof routeContext>
+const currentRouteContext = (context: RouteContext) => Boolean(context.id && context.id === routeRouter.value?.id
+  && context.profile === getActiveProfileId() && context.epoch === routeEpoch)
+const closeRouteManager = () => {
+  if (ownedRouteConfirmation && confirmState.resolve === ownedRouteConfirmation) settleConfirm('cancel')
+  ownedRouteConfirmation = null
+  routeEpoch++
+  routeRouter.value = null
+  routeRows.value = []
+  routeEditorVisible.value = false
+  routeEditing.value = null
+  routeBusy.value = false
+  routeLoading.value = false
+  routeError.value = ''
+}
+const refreshRoutes = async (context = routeContext()) => {
+  if (!currentRouteContext(context)) return false
+  const read = ++routeRead
+  routeLoading.value = true
+  routeError.value = ''
+  try {
+    const { data } = await routerApi.routes(context.id!, context.profile)
+    if (!currentRouteContext(context) || read !== routeRead) return false
+    if (!data.success) throw new Error(data.message || '读取路由失败')
+    routeRows.value = data.routes || []
+    return true
+  } catch (error: any) {
+    if (currentRouteContext(context) && read === routeRead) {
+      routeError.value = errorMessage(error, error?.message || '读取路由失败，请重试')
+      notify.error(routeError.value)
+    }
+    return false
+  } finally {
+    if (currentRouteContext(context) && read === routeRead) routeLoading.value = false
+  }
+}
+const openRouteManager = async (router: RouterItem) => {
+  closeRouteManager()
+  routeRouter.value = router
+  await refreshRoutes()
+}
+const openRouteEditor = (item?: StaticRouteItem) => {
+  if (!routeRouter.value || routeBusy.value || routeLoading.value || routeError.value || (item && !item.editable)) return
+  routeEditing.value = item ? { ...item } : null
+  Object.assign(routeForm, item ? { cidr: item.cidr, gateway: item.gateway, enabled: item.enabled, comment: item.comment }
+    : { cidr: '', gateway: '', enabled: true, comment: '' })
+  routeFormError.value = ''
+  routeEditorVisible.value = true
+}
+const routeDetails = (value: StaticRouteValues | null) => value
+  ? `网段：${value.cidr}\n下一跳：${value.gateway}\n状态：${value.enabled ? '启用' : '停用'}\n备注：${value.comment || '无备注'}`
+  : '无'
+const previewRouteChange = async (change: StaticRouteChange) => {
+  if (routeBusy.value || routeLoading.value || routeError.value) return
+  const context = routeContext()
+  if (!currentRouteContext(context)) return
+  routeBusy.value = true
+  let reopenEditor = routeEditorVisible.value
+  routeFormError.value = ''
+  try {
+    const { data } = await routerApi.routePlan(context.id!, change, context.profile)
+    if (!currentRouteContext(context)) return
+    if (!data.success) throw new Error(data.message || '生成路由预览失败')
+    const preview = data.plan as StaticRoutePlan
+    if (preview.empty) {
+      notify.success('路由配置没有变化')
+      return
+    }
+    const description = [preview.summary, `修改前\n${routeDetails(preview.before)}`, `修改后\n${routeDetails(preview.after)}`,
+      ...(preview.warnings || [])].join('\n\n')
+    // The shared confirmation host must be the only open modal. Restore the
+    // editor and its draft on cancellation or failure.
+    routeEditorVisible.value = false
+    await nextTick()
+    if (!currentRouteContext(context)) return
+    const confirmation = (change.action === 'delete' ? confirmDanger : confirm)(description, {
+      title: `${change.action === 'delete' ? '删除' : change.action === 'add' ? '新增' : '修改'}路由 · ${routeRouter.value?.name}`,
+      confirmText: change.action === 'delete' ? '确认删除路由' : '确认写入路由'
+    })
+    ownedRouteConfirmation = confirmState.resolve
+    const accepted = await confirmation
+    if (!currentRouteContext(context)) return
+    ownedRouteConfirmation = null
+    if (!accepted) return
+    const response = await routerApi.routeApply(context.id!, { ...change, fingerprint: preview.fingerprint }, context.profile)
+    if (!currentRouteContext(context)) return
+    if (!response.data.success) throw new Error(response.data.message || '路由写入失败')
+    reopenEditor = false
+    notify.success(response.data.result?.changed === false ? '路由配置没有变化' : '路由变更已完成')
+    routeEditorVisible.value = false
+    clearInspection(context.id!)
+    await refreshRoutes(context)
+  } catch (error: any) {
+    if (!currentRouteContext(context)) return
+    const conflict = error?.response?.status === 409
+    const message = errorMessage(error, error?.message || '路由操作失败')
+    routeFormError.value = message
+    notify.error(message)
+    if (conflict) {
+      const refreshed = await refreshRoutes(context)
+      if (!currentRouteContext(context)) return
+      const latest = routeRows.value.find(item => item.id === change.id)
+      if (change.action === 'update' && refreshed && latest?.editable) routeEditing.value = { ...latest }
+      else if (change.action !== 'add') reopenEditor = false
+      routeFormError.value = refreshed ? '路由配置已变化，列表已刷新。请核对后重新预览。' : '刷新失败，请关闭编辑窗口并刷新路由后重试。'
+    }
+  } finally {
+    if (currentRouteContext(context)) {
+      routeBusy.value = false
+      if (reopenEditor) routeEditorVisible.value = true
+    }
+  }
+}
+const validIPv4 = (value: string) => /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(value)
+  && value.split('.').every(part => Number(part) <= 255)
+const submitRoute = async () => {
+  if (routeBusy.value) return
+  const values = { ...routeForm, cidr: routeForm.cidr.trim(), gateway: routeForm.gateway.trim() }
+  const [address, prefix, ...extra] = values.cidr.split('/')
+  if (!validIPv4(address || '') || !/^(?:[0-9]|[12][0-9]|3[0-2])$/.test(prefix || '') || extra.length) {
+    routeFormError.value = '请输入有效 IPv4 网段，例如 192.168.20.0/24。'
+    return
+  }
+  if (!validIPv4(values.gateway)) {
+    routeFormError.value = '下一跳必须是 IPv4 地址。'
+    return
+  }
+  if (values.comment.length > 512 || values.comment.includes('\0')) {
+    routeFormError.value = '备注不能超过 512 个字符，且不能包含空字符。'
+    return
+  }
+  await previewRouteChange(routeEditing.value
+    ? { action: 'update', id: routeEditing.value.id, revision: routeEditing.value.revision, values }
+    : { action: 'add', values })
+}
+watch(activeProfileId, closeRouteManager, { flush: 'sync' })
+onBeforeUnmount(closeRouteManager)
+
 const returnTone = computed(() => {
   const state = report.value?.return_routing
   if (!state || state.status !== 'ok') return 'muted'
@@ -654,19 +877,23 @@ const returnLabel = computed(() => {
 const load = async () => {
   loading.value = true
   try {
-    const [routerResponse, agentResponse, ruleResponse] = await Promise.all([
+    const [routerResult, agentResult, ruleResult] = await Promise.allSettled([
       routerApi.list(),
       agentApi.getAll(),
       ruleApi.getAll()
     ])
-    routers.value = routerResponse.data.routers || []
-    const agentData = agentResponse.data
+    if (routerResult.status === 'rejected') throw routerResult.reason
+    routers.value = routerResult.value.data.routers || []
+    const agentData = agentResult.status === 'fulfilled' ? agentResult.value.data : []
     agents.value = Array.isArray(agentData) ? agentData : agentData?.data || agentData?.agents || []
-    const ruleData = ruleResponse.data
+    const ruleData = ruleResult.status === 'fulfilled' ? ruleResult.value.data : []
     const rules = Array.isArray(ruleData) ? ruleData : ruleData?.data || []
     ruleSets.value = rules
       .filter((rule: any) => rule.itemType === 'ruleset')
       .map((rule: any) => ({ id: rule.id, name: rule.name || rule.id, policy: rule.policy || '' }))
+    if (agentResult.status === 'rejected' || ruleResult.status === 'rejected') {
+      notify.error('关联 Agent 或规则集暂时无法读取，仍可管理设备上的静态路由')
+    }
   } catch (error) {
     notify.error(errorMessage(error, '加载路由器失败'))
   } finally {
@@ -724,7 +951,10 @@ const submit = async () => {
     else await routerApi.create(payload)
     notify.success(editingId.value ? '路由器已更新' : '路由器已添加')
     dialogVisible.value = false
-    if (editingId.value) clearInspection(editingId.value)
+    if (editingId.value) {
+      clearInspection(editingId.value)
+      if (routeRouter.value?.id === editingId.value) closeRouteManager()
+    }
     await load()
   } catch (error) {
     notify.error(errorMessage(error, '保存失败'))
@@ -738,6 +968,7 @@ const remove = async (router: RouterItem) => {
   try {
     await routerApi.remove(router.id)
     clearInspection(router.id)
+    if (routeRouter.value?.id === router.id) closeRouteManager()
     notify.success('已删除')
     await load()
   } catch (error) {
