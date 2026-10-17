@@ -1,10 +1,6 @@
 <template>
   <div class="min-w-0 [overflow-wrap:anywhere]">
-    <PageHeader title="配置生成">
-      <template #actions>
-        <div id="generate-header-actions" class="contents" />
-      </template>
-    </PageHeader>
+    <PageHeader title="配置生成" />
 
     <!-- ===== 生成工作台：目标切换 + 编译步骤 + 代码面板 ===== -->
     <GenerateStudio :targets="studioTargets" @copy="copyUrl" />

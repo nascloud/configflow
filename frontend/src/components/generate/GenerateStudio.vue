@@ -1,164 +1,191 @@
 <template>
-  <div class="mb-5 min-w-0">
-    <!-- 目标切换与页头同层，配置入口直接展示在工作台上方。 -->
-    <Teleport defer to="#generate-header-actions">
-      <Segmented
-        v-model="active"
-        label="生成目标"
-        :options="targetOptions"
-        :disabled="running"
-        block
-        class="w-full sm:w-auto [&_[data-segment]]:h-11 [&_[data-segment]]:px-2 sm:[&_[data-segment]]:px-3.5"
-      />
-    </Teleport>
-
-    <SectionCard v-if="current" :padded="false" class="mb-3.5" :aria-label="`${current.title} 配置编辑`">
-      <div class="flex flex-wrap items-center justify-between gap-x-5 gap-y-3 px-[18px] py-4">
-        <div class="min-w-0">
-          <h2 class="m-0 flex items-center gap-2 text-sm font-semibold">
-            <component :is="current.icon" class="size-4 text-primary-accent" aria-hidden="true" />
-            {{ current.title }} 配置
-          </h2>
-          <p class="mt-1 mb-0 text-xs text-muted-foreground">{{ current.desc }}</p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2" role="group" :aria-label="`${current.title} 配置操作`">
+  <div class="mb-5 grid min-w-0 items-start gap-3.5 md:grid-cols-[152px_minmax(0,1fr)]">
+    <div class="min-w-0 md:sticky md:top-20">
+      <SectionCard :padded="false" class="hidden p-2 md:block">
+        <h2 class="m-0 px-3 pt-2 pb-3 text-xs font-medium text-muted-foreground">生成软件</h2>
+        <nav class="flex flex-col gap-1" aria-label="生成软件">
           <Button
-            v-for="action in settingsActions"
-            :key="action.label"
-            variant="outline"
-            class="min-h-11 border-border-strong bg-primary-soft text-primary-accent hover:bg-accent hover:text-foreground"
-            :disabled="action.loading"
-            @click="action.run"
+            v-for="target in targets"
+            :key="target.key"
+            variant="ghost"
+            :class="cn('min-h-11 w-full justify-start gap-2 px-3', active === target.key && 'bg-primary-soft text-primary-accent hover:bg-primary-soft hover:text-primary-accent')"
+            :aria-pressed="active === target.key"
+            :disabled="running"
+            @click="active = target.key"
           >
-            <Loader2 v-if="action.loading" class="size-4 animate-spin" />
-            <component :is="action.icon" v-else class="size-4" />
-            {{ action.label }}
+            <component :is="target.icon" class="size-4 shrink-0" aria-hidden="true" />
+            {{ target.title }}
+            <ChevronRight v-if="active === target.key" class="ml-auto size-3.5 shrink-0" aria-hidden="true" />
           </Button>
-        </div>
+        </nav>
+      </SectionCard>
+      <div class="md:hidden">
+        <label for="generate-software" class="mb-2 block text-xs font-medium text-muted-foreground">生成软件</label>
+        <Select v-model="active" :disabled="running">
+          <SelectTrigger id="generate-software" class="min-h-11 w-full bg-card" aria-label="生成软件">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem v-for="target in targets" :key="target.key" :value="target.key" class="min-h-11">
+              <span class="flex items-center gap-2">
+                <component :is="target.icon" class="size-4 shrink-0" aria-hidden="true" />
+                {{ target.title }}
+              </span>
+            </SelectItem>
+          </SelectContent>
+        </Select>
       </div>
-    </SectionCard>
+    </div>
 
-    <div class="grid grid-cols-[300px_minmax(0,1fr)] items-start gap-3.5 max-[1180px]:grid-cols-[minmax(0,1fr)]">
-      <div class="flex min-w-0 flex-col gap-3.5 max-[1180px]:order-2">
-        <!-- 保留生成步骤与动效；小屏上先展示可操作的生成结果。 -->
-        <SectionCard :padded="false" class="p-[18px]" role="list" aria-label="生成步骤">
-          <div
-            v-for="(step, i) in steps"
-            :key="step.title"
-            role="listitem"
-            :class="cn('gen-step relative grid grid-cols-[26px_1fr] gap-3 pb-5 last:pb-0', stepState(i))"
-          >
-            <span
-              class="gen-bullet grid size-[26px] place-items-center rounded-full border-[1.5px] border-border-strong bg-card font-mono text-[11px] text-muted-foreground transition-all duration-300"
-            >
-              <Check v-if="stepState(i) === 'done'" class="size-3.5" :stroke-width="2.5" />
-              <X v-else-if="stepState(i) === 'fail'" class="size-3.5" :stroke-width="2.5" />
-              <template v-else>{{ i + 1 }}</template>
-            </span>
-            <div class="min-w-0">
-              <b class="mt-[3px] block text-[13px] font-semibold">{{ step.title }}</b>
-              <span class="block truncate font-mono text-[12px] text-muted-foreground">{{ step.meta }}</span>
-            </div>
+    <div class="@container/studio min-w-0">
+      <SectionCard v-if="current" :padded="false" class="mb-3.5" :aria-label="`${current.title} 配置编辑`">
+        <div class="flex flex-wrap items-center justify-between gap-x-5 gap-y-3 px-[18px] py-4">
+          <div class="min-w-0">
+            <h2 class="m-0 flex items-center gap-2 text-sm font-semibold">
+              <component :is="current.icon" class="size-4 text-primary-accent" aria-hidden="true" />
+              {{ current.title }} 配置
+            </h2>
+            <p class="mt-1 mb-0 text-xs text-muted-foreground">{{ current.desc }}</p>
           </div>
-        </SectionCard>
-
-        <SectionCard v-if="current" :padded="false" class="p-[18px]" aria-label="订阅地址">
-          <div class="flex items-center gap-2">
-            <component :is="current.icon" class="size-4 text-primary-accent" :stroke-width="2" aria-hidden="true" />
-            <b class="text-[13px] font-semibold">{{ current.title }} 订阅地址</b>
-          </div>
-          <div class="mt-2.5 flex items-center gap-1.5">
-            <Input
-              :model-value="current.urlDisplay"
-              readonly
-              class="h-11 min-w-0 bg-background/50 font-mono text-[11.5px]"
-              :aria-label="`${current.title} 配置 URL`"
-            />
+          <div class="flex flex-wrap items-center gap-2" role="group" :aria-label="`${current.title} 配置操作`">
             <Button
-              variant="outline"
-              size="icon"
-              class="size-11 shrink-0"
-              :title="`复制 ${current.title} 配置 URL`"
-              :aria-label="`复制 ${current.title} 配置 URL`"
-              @click="emit('copy', current.url, current.title)"
-            >
-              <Copy class="size-4" />
-            </Button>
-          </div>
-          <p class="mt-1.5 mb-0 text-[11.5px] text-muted-foreground">客户端可直接订阅此地址。</p>
-        </SectionCard>
-      </div>
-
-      <!-- 生成工作台保留；下载和导入集中到结果工具条。 -->
-      <SectionCard :padded="false" class="min-w-0 overflow-hidden" aria-label="生成结果">
-        <div class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3.5 py-3">
-          <div class="flex min-w-0 flex-1 items-center gap-2.5">
-            <span class="flex shrink-0 gap-1.5" aria-hidden="true">
-              <i class="size-2.5 rounded-full bg-accent" /><i class="size-2.5 rounded-full bg-accent" /><i class="size-2.5 rounded-full bg-accent" />
-            </span>
-            <span class="font-mono text-[12px] text-muted-foreground">{{ fileName }}</span>
-            <span v-if="lines.length && !running" class="whitespace-nowrap font-mono text-[11px] text-muted-foreground">· {{ lines.length }} 行</span>
-          </div>
-          <div class="flex flex-wrap items-center gap-1.5 max-sm:w-full" role="group" aria-label="生成和导出操作">
-            <Button variant="ghost" size="sm" class="min-h-11" :disabled="!output || running" @click="copyOutput">
-              <Copy class="size-3.5" />
-              复制
-            </Button>
-            <Button
-              v-for="action in exportActions"
+              v-for="action in settingsActions"
               :key="action.label"
               variant="outline"
-              size="sm"
-              class="min-h-11"
+              class="min-h-11 border-border-strong bg-primary-soft text-primary-accent hover:bg-accent hover:text-foreground"
               :disabled="action.loading"
               @click="action.run"
             >
-              <Loader2 v-if="action.loading" class="size-3.5 animate-spin" />
-              <component :is="action.icon" v-else class="size-3.5" />
+              <Loader2 v-if="action.loading" class="size-4 animate-spin" />
+              <component :is="action.icon" v-else class="size-4" />
               {{ action.label }}
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              class="min-h-11"
-              :disabled="!output || running || pushing || deploying || !pushTargets.length"
-              :title="pushTitle"
-              @click="pushToAgents"
-            >
-              <Loader2 v-if="pushing || deploying" class="size-3.5 animate-spin" />
-              <Send v-else class="size-3.5" />
-              推送
-            </Button>
-            <Button size="sm" class="min-h-11 shadow-glow" :disabled="running" @click="generate">
-              <Play class="size-3.5" />
-              生成
-            </Button>
-          </div>
-        </div>
-
-        <div class="relative">
-          <pre
-            ref="codeEl"
-            class="gen-code m-0 h-[520px] overflow-auto bg-background/70 py-4 font-mono text-[12.5px] leading-[1.7] max-md:h-[60dvh]"
-            :aria-busy="running"
-          ><span
-            v-for="(line, i) in lines"
-            :key="i"
-            class="gen-line block whitespace-pre pr-[18px]"
-            :class="i >= freshFrom && 'is-new'"
-            v-html="line || ' '"
-          /><span v-if="running && phase === 'write'" class="gen-caret" aria-hidden="true" /></pre>
-
-          <div
-            v-if="!lines.length && !running"
-            class="absolute inset-0 grid place-content-center gap-2.5 bg-background/70 px-4 text-center text-muted-foreground"
-          >
-            <BrandMark class="mx-auto size-11 text-primary" />
-            <b class="font-display text-[24px] font-medium text-foreground/80">{{ error ? '生成失败' : '准备就绪' }}</b>
-            <span class="text-[12.5px] [overflow-wrap:anywhere]">{{ error || `按「生成」开始编译，或 ${metaKey} + Enter` }}</span>
           </div>
         </div>
       </SectionCard>
+
+      <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-3.5 @min-[760px]/studio:grid-cols-[260px_minmax(0,1fr)]">
+        <div class="order-2 flex min-w-0 flex-col gap-3.5 @min-[760px]/studio:order-none">
+          <!-- 保留生成步骤与动效；小屏上先展示可操作的生成结果。 -->
+          <SectionCard :padded="false" class="p-[18px]" role="list" aria-label="生成步骤">
+            <div
+              v-for="(step, i) in steps"
+              :key="step.title"
+              role="listitem"
+              :class="cn('gen-step relative grid grid-cols-[26px_1fr] gap-3 pb-5 last:pb-0', stepState(i))"
+            >
+              <span
+                class="gen-bullet grid size-[26px] place-items-center rounded-full border-[1.5px] border-border-strong bg-card font-mono text-[11px] text-muted-foreground transition-all duration-300"
+              >
+                <Check v-if="stepState(i) === 'done'" class="size-3.5" :stroke-width="2.5" />
+                <X v-else-if="stepState(i) === 'fail'" class="size-3.5" :stroke-width="2.5" />
+                <template v-else>{{ i + 1 }}</template>
+              </span>
+              <div class="min-w-0">
+                <b class="mt-[3px] block text-[13px] font-semibold">{{ step.title }}</b>
+                <span class="block truncate font-mono text-[12px] text-muted-foreground">{{ step.meta }}</span>
+              </div>
+            </div>
+          </SectionCard>
+
+          <SectionCard v-if="current" :padded="false" class="p-[18px]" aria-label="订阅地址">
+            <div class="flex items-center gap-2">
+              <component :is="current.icon" class="size-4 text-primary-accent" :stroke-width="2" aria-hidden="true" />
+              <b class="text-[13px] font-semibold">{{ current.title }} 订阅地址</b>
+            </div>
+            <div class="mt-2.5 flex items-center gap-1.5">
+              <Input
+                :model-value="current.urlDisplay"
+                readonly
+                class="h-11 min-w-0 bg-background/50 font-mono text-[11.5px]"
+                :aria-label="`${current.title} 配置 URL`"
+              />
+              <Button
+                variant="outline"
+                size="icon"
+                class="size-11 shrink-0"
+                :title="`复制 ${current.title} 配置 URL`"
+                :aria-label="`复制 ${current.title} 配置 URL`"
+                @click="emit('copy', current.url, current.title)"
+              >
+                <Copy class="size-4" />
+              </Button>
+            </div>
+            <p class="mt-1.5 mb-0 text-[11.5px] text-muted-foreground">客户端可直接订阅此地址。</p>
+          </SectionCard>
+        </div>
+
+        <!-- 生成工作台保留；下载和导入集中到结果工具条。 -->
+        <SectionCard :padded="false" class="min-w-0 overflow-hidden" aria-label="生成结果">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-3.5 py-3">
+            <div class="flex min-w-0 flex-1 items-center gap-2.5">
+              <span class="flex shrink-0 gap-1.5" aria-hidden="true">
+                <i class="size-2.5 rounded-full bg-accent" /><i class="size-2.5 rounded-full bg-accent" /><i class="size-2.5 rounded-full bg-accent" />
+              </span>
+              <span class="font-mono text-[12px] text-muted-foreground">{{ fileName }}</span>
+              <span v-if="lines.length && !running" class="whitespace-nowrap font-mono text-[11px] text-muted-foreground">· {{ lines.length }} 行</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5 max-sm:w-full" role="group" aria-label="生成和导出操作">
+              <Button variant="ghost" size="sm" class="min-h-11" :disabled="!output || running" @click="copyOutput">
+                <Copy class="size-3.5" />
+                复制
+              </Button>
+              <Button
+                v-for="action in exportActions"
+                :key="action.label"
+                variant="outline"
+                size="sm"
+                class="min-h-11"
+                :disabled="action.loading"
+                @click="action.run"
+              >
+                <Loader2 v-if="action.loading" class="size-3.5 animate-spin" />
+                <component :is="action.icon" v-else class="size-3.5" />
+                {{ action.label }}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                class="min-h-11"
+                :disabled="!output || running || pushing || deploying || !pushTargets.length"
+                :title="pushTitle"
+                @click="pushToAgents"
+              >
+                <Loader2 v-if="pushing || deploying" class="size-3.5 animate-spin" />
+                <Send v-else class="size-3.5" />
+                推送
+              </Button>
+              <Button size="sm" class="min-h-11 shadow-glow" :disabled="running" @click="generate">
+                <Play class="size-3.5" />
+                生成
+              </Button>
+            </div>
+          </div>
+
+          <div class="relative">
+            <pre
+              ref="codeEl"
+              class="gen-code m-0 h-[520px] overflow-auto bg-background/70 py-4 font-mono text-[12.5px] leading-[1.7] max-md:h-[60dvh]"
+              :aria-busy="running"
+            ><span
+              v-for="(line, i) in lines"
+              :key="i"
+              class="gen-line block whitespace-pre pr-[18px]"
+              :class="i >= freshFrom && 'is-new'"
+              v-html="line || ' '"
+            /><span v-if="running && phase === 'write'" class="gen-caret" aria-hidden="true" /></pre>
+
+            <div
+              v-if="!lines.length && !running"
+              class="absolute inset-0 grid place-content-center gap-2.5 bg-background/70 px-4 text-center text-muted-foreground"
+            >
+              <BrandMark class="mx-auto size-11 text-primary" />
+              <b class="font-display text-[24px] font-medium text-foreground/80">{{ error ? '生成失败' : '准备就绪' }}</b>
+              <span class="text-[12.5px] [overflow-wrap:anywhere]">{{ error || `按「生成」开始编译，或 ${metaKey} + Enter` }}</span>
+            </div>
+          </div>
+        </SectionCard>
+      </div>
     </div>
   </div>
 </template>
@@ -166,11 +193,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Component } from 'vue'
 import { useRouter } from 'vue-router'
-import { Check, Copy, Loader2, Play, Send, X } from '@lucide/vue'
+import { Check, ChevronRight, Copy, Loader2, Play, Send, X } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import BrandMark from '@/components/common/BrandMark.vue'
-import Segmented from '@/components/common/Segmented.vue'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import SectionCard from '@/components/common/SectionCard.vue'
 import { agentApi, generateApi, ruleSetApi, statsApi } from '@/api'
 import { createDeploymentId, useAgentDeployments } from '@/composables/useAgentDeployments'
@@ -199,7 +226,6 @@ const live = useLive()
 const metaKey = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'
 
 const active = ref<TargetKey>('mihomo')
-const targetOptions = computed(() => props.targets.map(t => ({ value: t.key, label: t.title })))
 const current = computed(() => props.targets.find(t => t.key === active.value))
 const settingsActions = computed(() => current.value?.actions.filter(action => action.group === 'settings') ?? [])
 const exportActions = computed(() => current.value?.actions.filter(action => action.group !== 'settings') ?? [])
