@@ -5,11 +5,13 @@ import OxidnsSettings from '@/components/generate/OxidnsSettings.vue'
 import OxidnsNativeEditor from '@/components/generate/OxidnsNativeEditor.vue'
 import OxidnsConfigNavigation from '@/components/generate/OxidnsConfigNavigation.vue'
 import OxidnsCommonSettings from '@/components/generate/OxidnsCommonSettings.vue'
-import { oxidnsApi, ruleApi, ruleSetApi } from '@/api'
+import { agentApi, profileApi, oxidnsApi, ruleApi, ruleSetApi } from '@/api'
 import { confirmState, notify, settleConfirm } from '@/lib/feedback'
 import SettingsWorkspace from '@/components/generate/SettingsWorkspace.vue'
 
 vi.mock('@/api', () => ({
+  agentApi: { getAll: vi.fn(), pushConfig: vi.fn(), getDeployment: vi.fn(), activateDeployment: vi.fn() },
+  profileApi: { list: vi.fn() },
   oxidnsApi: { getSettings: vi.fn(), saveSettings: vi.fn(), prepareEditor: vi.fn(), readCommonSettings: vi.fn(), applyCommonSettings: vi.fn(), validateSettings: vi.fn() },
   ruleApi: { getAll: vi.fn() }, ruleSetApi: { getAll: vi.fn() }
 }))
@@ -17,6 +19,7 @@ const wrappers: ReturnType<typeof mount>[] = []
 const config = 'runtime: {worker_threads: 8, extension: false}\nplugins: [{tag: main, type: sequence, args: [{exec: reject 0}]}]\nunknown: {values: [0, false, null]}'
 const projection = (settings: any) => ({ values: { worker_threads: (loadYaml(settings.native_config) as any)?.runtime?.worker_threads }, capabilities: {} })
 const settings = () => ({ config_mode: 'native', native_config: config, additional_files: [], template_settings: { worker_threads: 2 } })
+const publishGuard = { expected_profile_id: 'oxi-profile', expected_service_type: 'oxidns', expected_config_revision: 7 }
 beforeEach(() => {
   settleConfirm('cancel')
   vi.clearAllMocks()
@@ -30,7 +33,11 @@ beforeEach(() => {
     })
     return {data: {valid: !issues.length, issues}} as any
   })
-  vi.mocked(oxidnsApi.saveSettings).mockResolvedValue({ data: { success: true } } as any)
+  vi.mocked(oxidnsApi.saveSettings).mockResolvedValue({ data: { success: true, publish_guard: publishGuard } } as any)
+  vi.mocked(profileApi.list).mockResolvedValue({ data: [{ id: 'oxi-profile', name: 'DNS配置', is_default: true }] } as any)
+  vi.mocked(agentApi.getAll).mockResolvedValue({ data: [{ id: 'dns', name: 'OxiDNS', profile_id: 'oxi-profile', service_type: 'oxidns', status: 'online' }] } as any)
+  vi.mocked(agentApi.pushConfig).mockImplementation(async (_id, deploymentId) => ({ data: { success: true, deployment_id: deploymentId, status: 'verifying' } }) as any)
+  vi.mocked(agentApi.getDeployment).mockImplementation(async (_id, deploymentId) => ({ data: { deployment_id: deploymentId, status: 'verifying' } }) as any)
   vi.mocked(oxidnsApi.prepareEditor).mockImplementation(async value => ({ data: { settings: structuredClone(value) } }) as any)
   vi.mocked(oxidnsApi.readCommonSettings).mockImplementation(async value => ({ data: projection(value) }) as any)
   vi.mocked(oxidnsApi.applyCommonSettings).mockImplementation(async (value: any, changes) => {
@@ -91,6 +98,43 @@ const worker = '#oxi-worker_threads'
 const yamlInput = '[aria-label="OxiDNS 完整配置 YAML"]'
 
 describe('unified OxiDNS profile settings', () => {
+  it('saves and publishes the returned version without closing the editor or marking unsaved changes', async () => {
+    const wrapper = await render()
+    await input(worker, '5')
+    await click('保存并发布')
+    expect(oxidnsApi.saveSettings).toHaveBeenCalledTimes(1)
+    expect(agentApi.pushConfig).toHaveBeenCalledWith('dns', expect.any(String), publishGuard)
+    expect(vi.mocked(oxidnsApi.saveSettings).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(agentApi.pushConfig).mock.invocationCallOrder[0])
+    expect(wrapper.emitted('update:open')).toBeUndefined()
+    expect(wrapper.findComponent(SettingsWorkspace).props('dirty')).toBe(false)
+    expect(wrapper.findComponent(SettingsWorkspace).props('busy')).toBe(false)
+    expect(document.body.textContent).toContain('草稿已保存')
+    expect(document.body.textContent).not.toContain('发布成功')
+  })
+
+  it('retains the saved draft when publication validation rejects it', async () => {
+    const wrapper = await render()
+    await input(worker, '0')
+    vi.mocked(agentApi.pushConfig).mockRejectedValueOnce({ response: { status: 400, data: { message: '工作线程数必须大于 0。' } } })
+    await click('保存并发布')
+    expect(agentApi.pushConfig).toHaveBeenCalledOnce()
+    expect(document.body.textContent).toContain('草稿已保存，发布失败')
+    expect(document.body.textContent).toContain('工作线程数必须大于 0。')
+    expect(wrapper.emitted('update:open')).toBeUndefined()
+    expect(wrapper.findComponent(SettingsWorkspace).props('dirty')).toBe(false)
+    expect(savedPayload().native_config).toContain('worker_threads: 0')
+  })
+
+  it('never publishes if saving the draft fails', async () => {
+    const wrapper = await render()
+    await input(worker, '5')
+    vi.mocked(oxidnsApi.saveSettings).mockRejectedValueOnce({ response: { data: { message: '保存暂时失败' } } })
+    await click('保存并发布')
+    expect(agentApi.pushConfig).not.toHaveBeenCalled()
+    expect(wrapper.findComponent(SettingsWorkspace).props('dirty')).toBe(true)
+    expect(document.body.textContent).toContain('保存暂时失败')
+  })
+
   it('tracks real draft changes without treating editor navigation as unsaved edits', async () => {
     const wrapper = await render()
     const workspace = () => wrapper.findComponent(SettingsWorkspace)
@@ -133,6 +177,7 @@ describe('unified OxiDNS profile settings', () => {
     expect((document.querySelector(worker) as HTMLInputElement).value).toBe('6')
     expect(oxidnsApi.saveSettings).not.toHaveBeenCalled()
     await click('保存草稿')
+    expect(agentApi.pushConfig).not.toHaveBeenCalled()
     expect(oxidnsApi.saveSettings).toHaveBeenCalledTimes(1)
     expect(oxidnsApi.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ config_mode: 'native' }), 'oxi-profile')
     expect(loadYaml(savedPayload().native_config)).toEqual({ ...(loadYaml(config) as any), runtime: { worker_threads: 6, extension: false } })

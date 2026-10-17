@@ -2,7 +2,7 @@
   <SettingsWorkspace
     :open="open"
     title="OxiDNS 设置"
-    description="常用设置、完整参数与 YAML 共用一份草稿。保存不会发布；发布前必须通过规则检查和目标 OxiDNS 核心检查。"
+    description="常用设置、完整参数与 YAML 共用一份草稿。保存草稿不会下发；保存并发布必须通过规则检查和目标 OxiDNS 核心检查。"
     size="wide"
     :dirty="dirty"
     :busy="saving"
@@ -11,6 +11,9 @@
     @update:open="emit('update:open', $event)"
     @save="save"
   >
+    <template #footer="{ disabled }">
+      <SettingsPublishBar :open="open" :profile-id="profileId" service-type="oxidns" :disabled="disabled" :save="() => save(false)" @save-draft="save()" />
+    </template>
     <div class="flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-3 md:p-5" @input.capture="markEdited">
       <LoadingRows v-if="loading" :rows="5" />
       <div v-else-if="loadError" role="alert" class="space-y-3 py-4">
@@ -84,7 +87,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { Check, Download, Loader2 } from '@lucide/vue'
-import { oxidnsApi, ruleApi, ruleSetApi } from '@/api'
+import { oxidnsApi, ruleApi, ruleSetApi, type PublishGuard } from '@/api'
 import { notify } from '@/lib/feedback'
 import { formatOxidnsIssuePath, readOxidnsValidationResult, type OxidnsValidationIssue } from '@/lib/oxidnsNativeValidation'
 import OxidnsNativeEditor from './OxidnsNativeEditor.vue'
@@ -95,6 +98,7 @@ import FieldHelp from '@/components/common/FieldHelp.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
 import { Button } from '@/components/ui/button'
 import SettingsWorkspace from './SettingsWorkspace.vue'
+import SettingsPublishBar from './SettingsPublishBar.vue'
 
 const props = defineProps<{ open: boolean; profileId: string }>()
 const emit = defineEmits<{ (event: 'update:open', value: boolean): void; (event: 'saved'): void }>()
@@ -325,8 +329,8 @@ function downloadLegacy() {
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
-async function save() {
-  if (!settings.value || editorLocked.value || projecting.value || editorError.value) return
+async function save(close = true): Promise<PublishGuard | null> {
+  if (!settings.value || loading.value || loadError.value || editorLocked.value || projecting.value || editorError.value) return null
   saving.value = true
   const version = loadVersion
   const profileId = props.profileId
@@ -334,13 +338,16 @@ async function save() {
   try {
     // Draft storage does not require an online validator or a publishable
     // configuration. Publication performs rule and target-core checks again.
-    await oxidnsApi.saveSettings({ ...settings.value, config_mode: 'native' }, profileId)
-    if (version !== loadVersion) return
-    notify.success('OxiDNS 草稿已保存，尚未发布')
+    const source = validationSource.value
+    const response = await oxidnsApi.saveSettings({ ...settings.value, config_mode: 'native' }, profileId)
+    if (version !== loadVersion) return null
+    savedSource.value = source
+    if (close) notify.success('OxiDNS 草稿已保存，尚未发布')
     emit('saved')
-    emit('update:open', false)
+    if (close) emit('update:open', false)
+    return response.data.publish_guard || null
   } catch (error: any) {
-    if (version !== loadVersion) return
+    if (version !== loadVersion) return null
     if (Array.isArray(error.response?.data?.issues)) {
       try {
         const result = readOxidnsValidationResult({ valid: false, issues: error.response.data.issues })
@@ -351,6 +358,7 @@ async function save() {
     }
     saveError.value = error.response?.data?.message || error.message || '保存 OxiDNS 设置失败。'
     notify.error(saveError.value)
+    return null
   } finally { if (version === loadVersion) saving.value = false }
 }
 watch(validationSource, () => { if (!loading.value && props.open) scheduleValidation() }, { flush: 'sync' })

@@ -280,6 +280,12 @@ export const customConfigApi = {
 }
 
 // Agent 管理
+export interface PublishGuard {
+  expected_profile_id: string
+  expected_service_type: string
+  expected_config_revision: number
+}
+
 export const agentApi = {
   getAll: () => api.get('/agents'),
   create: (data: any) => api.post('/agents', data),
@@ -300,7 +306,7 @@ export const agentApi = {
   validateLogPath: (id: string, path: string) => api.post(`/agents/${id}/logs/validate`, { path }),
   getLoggingConfig: (id: string) => api.get(`/agents/${id}/config/logging`),
   setLoggingConfig: (id: string, enabled: boolean) => api.post(`/agents/${id}/config/logging`, { enabled }),
-  pushConfig: (id: string, deploymentId?: string, expected?: { expected_profile_id: string; expected_oxidns_revision: string }) => api.post(`/agents/${id}/push-config`, {
+  pushConfig: (id: string, deploymentId?: string, expected?: PublishGuard | { expected_profile_id: string; expected_oxidns_revision: string }) => api.post(`/agents/${id}/push-config`, {
     base_url: getBaseUrl(), deployment_id: deploymentId, ...expected
   }, { timeout: 120000 }),
   getDeployment: (id: string, deploymentId: string) => api.get(`/agents/${id}/deployments/${deploymentId}`),

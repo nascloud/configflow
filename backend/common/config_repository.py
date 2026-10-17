@@ -667,6 +667,13 @@ class ProfileRepository:
             profile = self._profile(document, profile_id)
             return int(profile.get('_revision', 0)) + int(document['shared'].get('_revision', 0))
 
+    def get_publish_snapshot(self, profile_id):
+        """Capture generated inputs and their revision under the same read lock."""
+        with self._document() as document:
+            profile = self._profile(document, profile_id)
+            revision = int(profile.get('_revision', 0)) + int(document['shared'].get('_revision', 0))
+            return self._resolve_profile(document, profile_id), revision
+
     def create_profile(self, metadata, clone_from=None):
         if not isinstance(metadata, dict):
             raise ProfileValidationError('Profile metadata must be an object')
@@ -775,7 +782,7 @@ class ProfileRepository:
             return copy.deepcopy(replacement)
         return current
 
-    def update_profile_transaction(self, profile_id, updater):
+    def update_profile_transaction(self, profile_id, updater, *, include_config_revision=False):
         with self._document(write=True) as document:
             current = self._profile(document, profile_id)
             previous_group_names = {group.get('name') for group in current['proxy_groups']}
@@ -796,9 +803,11 @@ class ProfileRepository:
                         rule.pop(key, None)
             current['_revision'] += 1
             current['updated_at'] = _now()
-        return copy.deepcopy(current)
+            revision = int(current['_revision']) + int(document['shared'].get('_revision', 0))
+        saved = copy.deepcopy(current)
+        return (saved, revision) if include_config_revision else saved
 
-    def update_profile_fields(self, profile_id, fields, baseline=None):
+    def update_profile_fields(self, profile_id, fields, baseline=None, *, include_config_revision=False):
         if not isinstance(fields, dict) or (baseline is not None and not isinstance(baseline, dict)):
             raise ProfileValidationError('Profile fields and baseline must be objects')
         if set(fields) & {'resource_refs', 'node_dialers'}:
@@ -809,10 +818,10 @@ class ProfileRepository:
             for key, value in fields.items():
                 if key in PROFILE_FIELDS:
                     current[key] = _three_way_merge(current.get(key), baseline[key], value) if baseline is not None and key in baseline else copy.deepcopy(value)
-        return self.update_profile_transaction(profile_id, update)
+        return self.update_profile_transaction(profile_id, update, include_config_revision=include_config_revision)
 
-    def save_profile(self, profile_id, data, baseline=None):
-        return self.update_profile_fields(profile_id, data, baseline)
+    def save_profile(self, profile_id, data, baseline=None, *, include_config_revision=False):
+        return self.update_profile_fields(profile_id, data, baseline, include_config_revision=include_config_revision)
 
 
     def get_shared(self):

@@ -970,13 +970,26 @@ def push_config_to_agent(agent_id):
             host = request.headers.get('X-Forwarded-Host', request.host)
             base_url = f'{scheme}://{host}'
         profile_id = (agent.get('profile_id') or get_default_profile_id())
+        guarded = 'expected_service_type' in data or 'expected_config_revision' in data
+        if guarded and (not isinstance(data.get('expected_profile_id'), str)
+                        or not isinstance(data.get('expected_service_type'), str)
+                        or type(data.get('expected_config_revision')) is not int
+                        or data['expected_config_revision'] < 0):
+            return jsonify(success=False, message='保存后的发布信息不完整，请重新保存草稿后发布。'), 400
         try:
-            config_data = deepcopy(get_config(profile_id))
+            if guarded:
+                config_data, config_revision = get_repository().get_publish_snapshot(profile_id)
+            else:
+                config_data = deepcopy(get_config(profile_id))
+                config_revision = _profile_revision(profile_id)
         except ProfileRepositoryError as exc:
             return jsonify({'success': False, 'message': f'Agent profile unavailable: {exc}'}), 409
-        config_revision = _profile_revision(profile_id)
         service_type = agent.get('service_type', 'mihomo')
-        if 'expected_profile_id' in data or 'expected_oxidns_revision' in data:
+        if guarded and (data['expected_profile_id'] != profile_id
+                        or data['expected_service_type'] != service_type
+                        or data['expected_config_revision'] != config_revision):
+            return jsonify(success=False, message='草稿已保存，但配置或设备绑定已改变，请重新载入并保存后发布。'), 409
+        if 'expected_oxidns_revision' in data or ('expected_profile_id' in data and not guarded):
             from backend.common.oxidns_device_policy import revision
             if service_type != 'oxidns' or data.get('expected_profile_id') != profile_id or \
                     data.get('expected_oxidns_revision') != revision(config_data.get('oxidns', {})):
@@ -986,14 +999,16 @@ def push_config_to_agent(agent_id):
             restart = data.get('restart', True)
             self_restart = _supports_self_restart(agent.get('version') or '')
             extra = {'restart_after_update': True} if restart and self_restart else None
+            target_guard = ({'expected_profile_id': profile_id, 'expected_service_type': service_type}
+                            if guarded else {})
             result = agent_manager.push_config_to_agent(agent_id, content, extra_data=extra,
-                                                        config_revision=config_revision)
+                                                        config_revision=config_revision, **target_guard)
             if result.get('success'):
                 result['profile_id'] = profile_id
                 if restart:
                     result['restart'] = ({'success': True, 'message': 'Restart delegated to agent after config is written'}
                                          if self_restart else agent_manager.restart_agent_service(agent_id))
-            return jsonify(result), 200 if result.get('success') else 500
+            return jsonify(result), 200 if result.get('success') else result.get('http_status', 500)
         if service_type not in ('mihomo', 'mosdns', 'oxidns'):
             return jsonify({'success': False, 'message': 'Unsupported service type'}), 400
         activate = data.get('restart', True)
@@ -1007,6 +1022,12 @@ def push_config_to_agent(agent_id):
             if reservation.get('existing'):
                 return _deployment_response(agent_manager.get_deployment(agent_id, deployment_id))
         owns_preparation = True
+        if guarded and isinstance(reservation, dict) and (
+                reservation.get('profile_id') != profile_id or reservation.get('service_type') != service_type):
+            result = agent_manager.record_deployment(agent_id, deployment_id, {
+                'success': False, 'status': 'failed', 'http_status': 409,
+                'message': '草稿已保存，但设备绑定已改变，请重新选择设备后发布。'})
+            return jsonify(_public_deployment(result)), 409
         agent_manager.record_deployment(agent_id, deployment_id, {
             'status': 'preparing', 'message': '正在生成并检查配置'})
         last_progress_at = None

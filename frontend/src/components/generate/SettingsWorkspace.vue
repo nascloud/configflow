@@ -178,18 +178,21 @@ useEventListener('beforeunload', (event: BeforeUnloadEvent) => {
             <Minimize2 v-if="expanded" class="size-4" aria-hidden="true" />
             <Maximize2 v-else class="size-4" aria-hidden="true" />
           </Button>
-          <Button class="min-h-11 gap-2 px-4" :disabled="busy || saveDisabled || confirmingClose" @click="emit('save')">
+          <Button v-if="!$slots.footer" class="min-h-11 gap-2 px-4" :disabled="busy || saveDisabled || confirmingClose" @click="emit('save')">
             <LoaderCircle v-if="busy" class="size-4 animate-spin" aria-hidden="true" />
             <Save v-else class="size-4" aria-hidden="true" />
             {{ busy ? '保存中…' : saveLabel }}
           </Button>
         </div>
       </header>
-      <div class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div class="workspace-content flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <slot />
       </div>
-      <div v-if="$slots.status" class="min-w-0 shrink-0 border-t border-border bg-background/30 px-4 py-2 sm:px-5">
+      <div v-if="$slots.status" class="workspace-status min-w-0 shrink-0 border-t border-border bg-background/30 px-4 py-2 sm:px-5">
         <slot name="status" />
+      </div>
+      <div v-if="$slots.footer" class="min-w-0 shrink-0 border-t border-border bg-card px-4 py-3 sm:px-5">
+        <slot name="footer" :disabled="busy || saveDisabled || confirmingClose" />
       </div>
     </DialogContent>
   </Dialog>
@@ -199,6 +202,25 @@ useEventListener('beforeunload', (event: BeforeUnloadEvent) => {
 .workspace-help :deep(.field-help-trigger) {
   width: var(--cf-touch, 44px);
   height: var(--cf-touch, 44px);
+}
+
+@media (max-height: 600px) {
+  .workspace-content {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* Let nested editor navigation scroll out of view instead of crushing its fields. */
+  .workspace-content > :deep(*) {
+    min-height: 26rem;
+    flex-shrink: 0;
+  }
+
+  .workspace-status {
+    max-height: 15dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }
 
 /* The shared host may teleport before this editor. Elevate both confirmation

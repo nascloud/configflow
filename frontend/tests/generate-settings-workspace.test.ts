@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { defineComponent, h, nextTick } from 'vue'
 import api, { customConfigApi, proxyGroupApi, ruleApi, ruleSetApi } from '@/api'
 import Generate from '@/views/Generate.vue'
 import GenerateStudio from '@/components/generate/GenerateStudio.vue'
 import SettingsWorkspace from '@/components/generate/SettingsWorkspace.vue'
+import SettingsPublishBar from '@/components/generate/SettingsPublishBar.vue'
 import { notify } from '@/lib/feedback'
 import { scopedRequests, setActiveProfileId } from '@/profileContext'
 
@@ -13,16 +14,32 @@ vi.mock('@/router', () => ({ default: { push: vi.fn() } }))
 const originalAdapter = api.defaults.adapter
 const wrappers: ReturnType<typeof shallowMount>[] = []
 const initialConfig = '# Keep this comment\nmixed-port: 7890\n'
+const guard = (service: string, revision = 12) => ({
+  expected_profile_id: 'workspace-profile', expected_service_type: service, expected_config_revision: revision
+})
+const WorkspaceStub = defineComponent({
+  name: 'SettingsWorkspace',
+  props: ['open', 'title', 'description', 'dirty', 'busy', 'size', 'saveLabel'],
+  emits: ['save', 'update:open'],
+  setup(props, { slots }) {
+    return () => h('section', [slots.default?.(), slots.footer?.({ disabled: props.busy })])
+  }
+})
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}
 
 beforeEach(() => {
   setActiveProfileId('workspace-profile')
   scopedRequests.value = 0
-  api.defaults.adapter = async config => ({ config, data: {}, status: 200, statusText: 'OK', headers: {} })
+  api.defaults.adapter = async config => ({ config, data: { publish_guard: guard('mosdns') }, status: 200, statusText: 'OK', headers: {} })
   for (const method of ['getMihomo', 'getSurge', 'getLoon', 'getMosdns'] as const) {
     vi.spyOn(customConfigApi, method).mockResolvedValue({ data: { config: initialConfig, smart_groups: [{ group_id: 'group-1', policy_priority: 'HK:0' }] } } as any)
   }
   for (const method of ['saveMihomo', 'saveSurge', 'saveLoon', 'saveMosdns'] as const) {
-    vi.spyOn(customConfigApi, method).mockResolvedValue({ data: { success: true } } as any)
+    vi.spyOn(customConfigApi, method).mockResolvedValue({ data: { success: true, publish_guard: guard(method.slice(4).toLowerCase()) } } as any)
   }
   vi.spyOn(ruleApi, 'getAll').mockResolvedValue({ data: [] } as any)
   vi.spyOn(ruleSetApi, 'getAll').mockResolvedValue({ data: [] } as any)
@@ -41,7 +58,7 @@ afterEach(() => {
 })
 
 async function openSettings(target: string, label: string) {
-  const wrapper = shallowMount(Generate)
+  const wrapper = shallowMount(Generate, { global: { stubs: { SettingsWorkspace: WorkspaceStub } } })
   wrappers.push(wrapper)
   await flushPromises()
   const action = wrapper.getComponent(GenerateStudio).props('targets')
@@ -163,4 +180,132 @@ describe('generation settings workspace integration', () => {
     expect(customConfigApi.saveSurge).toHaveBeenLastCalledWith({ smart_groups: [{ group_id: 'group-1', policy_priority: 'HK:0' }] }, 'workspace-profile')
     expect(workspace.props('open')).toBe(false)
   })
+
+  it.each([
+    ['mihomo', '基础配置', 'saveMihomo'],
+    ['surge', '基础配置', 'saveSurge'],
+    ['surge', 'Smart', 'saveSurge']
+  ] as const)('%s %s saves the draft before handing its receipt to publishing', async (target, label, saveMethod) => {
+    const { workspace, draft } = await openSettings(target, label)
+    const publish = workspace.getComponent(SettingsPublishBar)
+    expect(publish.props()).toMatchObject({ open: true, profileId: 'workspace-profile', serviceType: target, disabled: false })
+    if (label === 'Smart') draft.surgeSmartGroups[0].policy_priority = 'US:1'
+    else draft.customConfigContent = 'edited: true\n'
+    await nextTick()
+    expect(workspace.props('dirty')).toBe(true)
+    const receipt = await publish.props('save')()
+    await nextTick()
+    expect(receipt).toEqual(guard(target))
+    expect(workspace.props()).toMatchObject({ open: true, dirty: false, busy: false })
+    expect(customConfigApi[saveMethod]).toHaveBeenCalledTimes(1)
+    publish.vm.$emit('save-draft')
+    await flushPromises()
+    expect(workspace.props('open')).toBe(false)
+  })
+
+  it('keeps Loon as draft-only because it has no publish target', async () => {
+    const { workspace } = await openSettings('loon', '基础配置')
+    expect(workspace.props('saveLabel')).toBe('保存草稿')
+    expect(workspace.findComponent(SettingsPublishBar).exists()).toBe(false)
+  })
+
+  it('uses the final MosDNS save receipt only after every existing save endpoint succeeds', async () => {
+    const { workspace } = await openSettings('mosdns', '设置')
+    const post = vi.spyOn(api, 'post').mockImplementation(async (url: string) => ({
+      data: { success: true, publish_guard: guard('mosdns', url === '/mosdns/cache-settings' ? 27 : 26) }
+    } as any))
+    const receipt = await workspace.getComponent(SettingsPublishBar).props('save')()
+    await nextTick()
+    expect(receipt).toEqual(guard('mosdns', 27))
+    expect(customConfigApi.saveMosdns).toHaveBeenCalledExactlyOnceWith({ config: initialConfig }, 'workspace-profile')
+    expect(post.mock.calls.map(([url]) => url)).toEqual([
+      '/mosdns/rulesets', '/mosdns/custom-matches', '/mosdns/dns-servers',
+      '/mosdns/log-settings', '/mosdns/api-settings', '/mosdns/cache-settings'
+    ])
+    expect(workspace.props()).toMatchObject({ open: true, dirty: false, busy: false })
+  })
+
+  it.each([
+    'base', '/mosdns/rulesets', '/mosdns/custom-matches', '/mosdns/dns-servers',
+    '/mosdns/log-settings', '/mosdns/api-settings', '/mosdns/cache-settings'
+  ])('does not permit publishing after the MosDNS %s save fails', async failing => {
+    const { workspace, draft } = await openSettings('mosdns', '设置')
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    draft.mosdnsCustomHosts = 'example.org 127.0.0.1'
+    if (failing === 'base') vi.mocked(customConfigApi.saveMosdns).mockRejectedValueOnce(new Error('save failed'))
+    const post = vi.spyOn(api, 'post').mockImplementation(async (url: string) => {
+      if (url === failing) throw new Error('save failed')
+      return { data: { publish_guard: guard('mosdns') } } as any
+    })
+    expect(await workspace.getComponent(SettingsPublishBar).props('save')()).toBeNull()
+    await nextTick()
+    expect(workspace.props()).toMatchObject({ open: true, dirty: true, busy: false })
+    if (failing === 'base') expect(post).not.toHaveBeenCalled()
+    else expect(post.mock.calls.at(-1)?.[0]).toBe(failing)
+  })
+
+  it('rejects duplicate saves and tracks only the submitted draft as saved', async () => {
+    const { workspace, draft } = await openSettings('mihomo', '基础配置')
+    const pending = deferred<any>()
+    vi.mocked(customConfigApi.saveMihomo).mockReturnValueOnce(pending.promise)
+    const save = workspace.getComponent(SettingsPublishBar).props('save')
+    draft.customConfigContent = 'submitted: true\n'
+    const first = save()
+    await nextTick()
+    expect(workspace.props('busy')).toBe(true)
+    expect(workspace.getComponent(SettingsPublishBar).props('disabled')).toBe(true)
+    expect(await save()).toBeNull()
+    expect(customConfigApi.saveMihomo).toHaveBeenCalledTimes(1)
+    draft.customConfigContent = 'later: true\n'
+    pending.resolve({ data: { publish_guard: guard('mihomo') } })
+    expect(await first).toEqual(guard('mihomo'))
+    await nextTick()
+    expect(workspace.props()).toMatchObject({ open: true, dirty: true, busy: false })
+    expect(customConfigApi.saveMihomo).toHaveBeenCalledWith({ config: 'submitted: true\n' }, 'workspace-profile')
+  })
+
+  it('does not publish a late save response into a reopened editor session', async () => {
+    const { workspace, draft } = await openSettings('mihomo', '基础配置')
+    const pending = deferred<any>()
+    vi.mocked(customConfigApi.saveMihomo).mockReturnValueOnce(pending.promise)
+    draft.customConfigContent = 'first: true\n'
+    const savedContent = draft.customConfigSavedContent
+    const saving = workspace.getComponent(SettingsPublishBar).props('save')()
+    draft.customConfigDialogVisible = false
+    draft.customConfigDialogVisible = true
+    draft.customConfigContent = 'second: true\n'
+    pending.resolve({ data: { publish_guard: guard('mihomo') } })
+    expect(await saving).toBeNull()
+    await nextTick()
+    expect(draft.customConfigSavedContent).toBe(savedContent)
+    expect(draft.customConfigContent).toBe('second: true\n')
+    expect(workspace.props()).toMatchObject({ open: true, dirty: true, busy: false })
+    expect(notify.success).not.toHaveBeenCalled()
+  })
+
+  it('does not continue the remaining MosDNS saves or publishing after the page unmounts', async () => {
+    const { wrapper, workspace } = await openSettings('mosdns', '设置')
+    const pending = deferred<any>()
+    vi.mocked(customConfigApi.saveMosdns).mockReturnValueOnce(pending.promise)
+    const post = vi.spyOn(api, 'post')
+    const saving = workspace.getComponent(SettingsPublishBar).props('save')()
+    wrapper.unmount()
+    wrappers.splice(wrappers.indexOf(wrapper), 1)
+    pending.resolve({ data: { publish_guard: guard('mosdns') } })
+    expect(await saving).toBeNull()
+    expect(post).not.toHaveBeenCalled()
+    expect(notify.success).not.toHaveBeenCalled()
+  })
+
+  it('keeps draft saving available with an older server but never manufactures a publish receipt', async () => {
+    const { workspace } = await openSettings('mihomo', '基础配置')
+    vi.mocked(customConfigApi.saveMihomo).mockResolvedValue({ data: { success: true } } as any)
+    expect(await workspace.getComponent(SettingsPublishBar).props('save')()).toBeNull()
+    await nextTick()
+    expect(workspace.props()).toMatchObject({ open: true, dirty: false, busy: false })
+    workspace.vm.$emit('save')
+    await flushPromises()
+    expect(workspace.props('open')).toBe(false)
+  })
+
 })

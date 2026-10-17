@@ -13,7 +13,8 @@
       :dirty="customConfigDirty"
       :busy="savingCustomConfig"
       size="wide"
-      @save="saveCustomConfig"
+      save-label="保存草稿"
+      @save="saveCustomConfig()"
     >
       <div :inert="savingCustomConfig" class="min-h-0 min-w-0 flex-1 p-4 md:p-5">
         <YamlEditor
@@ -22,6 +23,16 @@
           :placeholder="getCustomConfigPlaceholder()"
         />
       </div>
+      <template v-if="currentConfigType !== 'loon'" #footer="{ disabled }">
+        <SettingsPublishBar
+          :open="customConfigDialogVisible"
+          :profile-id="profileId"
+          :service-type="currentConfigType"
+          :disabled="disabled"
+          :save="() => saveCustomConfig(false)"
+          @save-draft="saveCustomConfig()"
+        />
+      </template>
     </SettingsWorkspace>
 
     <!-- ===== 配置预览 ===== -->
@@ -56,7 +67,7 @@
       :dirty="mosdnsSettingsDirty"
       :busy="savingMosdnsSettings"
       size="form"
-      @save="saveMosdnsSettings"
+      @save="saveMosdnsSettings()"
     >
         <Tabs v-model="mosdnsActiveTab" :inert="savingMosdnsSettings" class="min-h-0 min-w-0 flex-1 gap-0 overflow-hidden">
           <TabsList class="h-auto min-h-11 w-full shrink-0 justify-start gap-1 overflow-x-auto rounded-none border-b border-border bg-card px-4 py-2 md:px-5">
@@ -533,7 +544,16 @@
             </div>
           </TabsContent>
         </Tabs>
-
+        <template #footer="{ disabled }">
+          <SettingsPublishBar
+            :open="mosdnsSettingsDialogVisible"
+            :profile-id="profileId"
+            service-type="mosdns"
+            :disabled="disabled"
+            :save="() => saveMosdnsSettings(false)"
+            @save-draft="saveMosdnsSettings()"
+          />
+        </template>
     </SettingsWorkspace>
 
     <!-- ===== Surge Smart 模式 ===== -->
@@ -544,7 +564,7 @@
       :dirty="surgeSmartDirty"
       :busy="savingSurgeSmartGroups"
       size="compact"
-      @save="saveSurgeSmartGroups"
+      @save="saveSurgeSmartGroups()"
     >
         <div :inert="savingSurgeSmartGroups" class="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto p-4 md:p-5">
           <div
@@ -594,7 +614,16 @@
             添加策略组
           </Button>
         </div>
-
+        <template #footer="{ disabled }">
+          <SettingsPublishBar
+            :open="surgeSmartDialogVisible"
+            :profile-id="profileId"
+            service-type="surge"
+            :disabled="disabled"
+            :save="() => saveSurgeSmartGroups(false)"
+            @save-draft="saveSurgeSmartGroups()"
+          />
+        </template>
     </SettingsWorkspace>
 
   </div>
@@ -605,8 +634,9 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import OxidnsSettings from '@/components/generate/OxidnsSettings.vue'
 import GenerateStudio from '@/components/generate/GenerateStudio.vue'
 import SettingsWorkspace from '@/components/generate/SettingsWorkspace.vue'
+import SettingsPublishBar from '@/components/generate/SettingsPublishBar.vue'
 import { useProfileStore } from '@/stores/profile'
-import { ref, onMounted, computed, watch, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick, type Ref } from 'vue'
 import {
   ChevronDown,
   ChevronUp,
@@ -652,7 +682,7 @@ import InfoNote from '@/components/common/InfoNote.vue'
 import LabeledDivider from '@/components/common/LabeledDivider.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
 import { notify } from '@/lib/feedback'
-import { generateApi, customConfigApi, ruleApi, ruleSetApi, proxyGroupApi, serverDomainApi, configTokenApi } from '@/api'
+import { generateApi, customConfigApi, ruleApi, ruleSetApi, proxyGroupApi, serverDomainApi, configTokenApi, type PublishGuard } from '@/api'
 import YamlEditor from '@/components/YamlEditor.vue'
 import api from '@/api'
 import type { RuleSet } from '@/types'
@@ -665,6 +695,21 @@ import Sortable from 'sortablejs'
 const cfProfileStore = useProfileStore()
 const profileId = activeProfileId.value
 const profileOptions = { headers: { 'X-ConfigFlow-Profile': profileId } }
+let pageActive = true
+onBeforeUnmount(() => { pageActive = false })
+
+// A completed save must not publish from an editor session the user has left.
+const trackEditorSession = (open: Ref<boolean>, busy: Ref<boolean>) => {
+  let session = 0
+  watch(open, () => {
+    session += 1
+    busy.value = false
+  }, { flush: 'sync' })
+  return {
+    capture: () => session,
+    isCurrent: (expected: number) => pageActive && open.value && expected === session
+  }
+}
 interface DnsEntry {
   id: string
   mode: 'simple' | 'yaml'
@@ -942,6 +987,7 @@ const customConfigSavedContent = ref('')
 const customConfigDirty = computed(() => customConfigContent.value !== customConfigSavedContent.value)
 const savingCustomConfig = ref(false)
 const currentConfigType = ref<ConfigType>('mihomo')
+const customConfigSession = trackEditorSession(customConfigDialogVisible, savingCustomConfig)
 
 const previewDialogVisible = ref(false)
 const previewContent = ref('')
@@ -983,6 +1029,7 @@ const mosdnsCacheDumpInterval = ref(300)
 const availableRuleSets = ref<RuleSet[]>([])
 const availableRules = ref<any[]>([])
 const savingMosdnsSettings = ref(false)
+const mosdnsSettingsSession = trackEditorSession(mosdnsSettingsDialogVisible, savingMosdnsSettings)
 const mosdnsSavedSnapshot = ref('')
 // Compare editable drafts, not tab selection, validation messages or generated row IDs.
 const mosdnsDraftSnapshot = computed(() => JSON.stringify({
@@ -1024,6 +1071,7 @@ const surgeSmartDialogVisible = ref(false)
 const surgeSmartGroups = ref<Array<{group_id: string, policy_priority: string}>>([])
 const proxyGroupOptions = ref<Array<{id: string, name: string}>>([])
 const savingSurgeSmartGroups = ref(false)
+const surgeSmartSession = trackEditorSession(surgeSmartDialogVisible, savingSurgeSmartGroups)
 const surgeSmartSavedSnapshot = ref('')
 const surgeSmartDraftSnapshot = computed(() => JSON.stringify(surgeSmartGroups.value))
 const surgeSmartDirty = computed(() => surgeSmartDraftSnapshot.value !== surgeSmartSavedSnapshot.value)
@@ -1068,19 +1116,26 @@ const removeSurgeSmartGroup = (index: number) => {
   surgeSmartGroups.value.splice(index, 1)
 }
 
-const saveSurgeSmartGroups = async () => {
+const saveSurgeSmartGroups = async (close = true): Promise<PublishGuard | null> => {
+  if (!pageActive || !surgeSmartDialogVisible.value || savingSurgeSmartGroups.value) return null
+  const session = surgeSmartSession.capture()
+  const snapshot = surgeSmartDraftSnapshot.value
+  const groups: Array<{ group_id: string, policy_priority: string }> = JSON.parse(snapshot)
   try {
     savingSurgeSmartGroups.value = true
     // 过滤掉未选择策略组的空行
-    const validGroups = surgeSmartGroups.value.filter(g => g.group_id)
-    await customConfigApi.saveSurge({ smart_groups: validGroups }, profileId)
-    surgeSmartSavedSnapshot.value = surgeSmartDraftSnapshot.value
-    notify.success('Smart 配置已保存')
-    surgeSmartDialogVisible.value = false
+    const validGroups = groups.filter(g => g.group_id)
+    const response = await customConfigApi.saveSurge({ smart_groups: validGroups }, profileId)
+    if (!surgeSmartSession.isCurrent(session)) return null
+    surgeSmartSavedSnapshot.value = snapshot
+    notify.success('Smart 配置草稿已保存')
+    if (close) surgeSmartDialogVisible.value = false
+    return response.data.publish_guard ?? null
   } catch (error) {
-    notify.error('保存 Surge Smart 设置失败')
+    if (surgeSmartSession.isCurrent(session)) notify.error('保存 Surge Smart 设置失败')
+    return null
   } finally {
-    savingSurgeSmartGroups.value = false
+    if (surgeSmartSession.isCurrent(session)) savingSurgeSmartGroups.value = false
   }
 }
 
@@ -1538,7 +1593,11 @@ const showCustomConfigDialog = async (type: ConfigType) => {
   }
 }
 
-const saveCustomConfig = async () => {
+const saveCustomConfig = async (close = true): Promise<PublishGuard | null> => {
+  if (!pageActive || !customConfigDialogVisible.value || savingCustomConfig.value) return null
+  const session = customConfigSession.capture()
+  const type = currentConfigType.value
+  const content = customConfigContent.value
   try {
     savingCustomConfig.value = true
     const apiMap = {
@@ -1547,14 +1606,17 @@ const saveCustomConfig = async () => {
       loon: customConfigApi.saveLoon,
       mosdns: customConfigApi.saveMosdns
     }
-    await apiMap[currentConfigType.value]({ config: customConfigContent.value }, profileId)
-    customConfigSavedContent.value = customConfigContent.value
-    notify.success('自定义配置已保存')
-    customConfigDialogVisible.value = false
+    const response = await apiMap[type]({ config: content }, profileId)
+    if (!customConfigSession.isCurrent(session) || type !== currentConfigType.value) return null
+    customConfigSavedContent.value = content
+    notify.success('基础配置草稿已保存')
+    if (close) customConfigDialogVisible.value = false
+    return response.data.publish_guard ?? null
   } catch (error) {
-    notify.error('保存基础配置失败')
+    if (customConfigSession.isCurrent(session)) notify.error('保存基础配置失败')
+    return null
   } finally {
-    savingCustomConfig.value = false
+    if (customConfigSession.isCurrent(session)) savingCustomConfig.value = false
   }
 }
 
@@ -1863,83 +1925,82 @@ const showMosdnsSettingsDialog = async () => {
   }
 }
 
-const saveMosdnsSettings = async () => {
+const saveMosdnsSettings = async (close = true): Promise<PublishGuard | null> => {
+  if (!pageActive || !mosdnsSettingsDialogVisible.value || savingMosdnsSettings.value) return null
+  const session = mosdnsSettingsSession.capture()
+  const snapshot = mosdnsDraftSnapshot.value
+  const draft = JSON.parse(snapshot)
+  const customMatchPayload = mosdnsCustomMatches.value.map(item => ({
+    id: item.id,
+    enabled: item.enabled,
+    exec: item.exec,
+    matches: item.matchesText
+  }))
+  const localDnsText = dnsEntriesToText(mosdnsLocalDnsEntries.value)
+  const remoteDnsText = dnsEntriesToText(mosdnsRemoteDnsEntries.value)
+  const fallbackDnsText = dnsEntriesToText(mosdnsFallbackDnsEntries.value)
   try {
     savingMosdnsSettings.value = true
 
-    // 保存自定义配置
-    await customConfigApi.saveMosdns({ config: mosdnsCustomConfig.value }, profileId)
-
-    // 保存规则集和规则配置
+    // Keep the existing save endpoints and publish only when every section succeeds.
+    await customConfigApi.saveMosdns({ config: draft.customConfig }, profileId)
+    if (!mosdnsSettingsSession.isCurrent(session)) return null
     await api.post('/mosdns/rulesets', {
-      direct_rulesets: mosdnsDirectRulesets.value,
-      proxy_rulesets: mosdnsProxyRulesets.value,
-      direct_rules: mosdnsDirectRules.value,
-      proxy_rules: mosdnsProxyRules.value
+      direct_rulesets: draft.directRulesets,
+      proxy_rulesets: draft.proxyRulesets,
+      direct_rules: draft.directRules,
+      proxy_rules: draft.proxyRules
     }, profileOptions)
-
-    const customMatchPayload = mosdnsCustomMatches.value.map(item => ({
-      id: item.id,
-      enabled: item.enabled,
-      exec: item.exec,
-      matches: item.matchesText
-    }))
-
+    if (!mosdnsSettingsSession.isCurrent(session)) return null
     await api.post('/mosdns/custom-matches', {
       custom_matches: customMatchPayload,
-      position: mosdnsCustomMatchPosition.value
+      position: draft.customMatchPosition
     }, profileOptions)
-
-    // 将 DNS 条目数组转换为文本
-    const localDnsText = dnsEntriesToText(mosdnsLocalDnsEntries.value)
-    const remoteDnsText = dnsEntriesToText(mosdnsRemoteDnsEntries.value)
-    const fallbackDnsText = dnsEntriesToText(mosdnsFallbackDnsEntries.value)
-
-    // 保存 DNS 服务器配置
+    if (!mosdnsSettingsSession.isCurrent(session)) return null
     await api.post('/mosdns/dns-servers', {
       local_dns: localDnsText,
       remote_dns: remoteDnsText,
       fallback_dns: fallbackDnsText,
-      default_forward: mosdnsDefaultForward.value,
-      custom_hosts: mosdnsCustomHosts.value
+      default_forward: draft.defaultForward,
+      custom_hosts: draft.customHosts
     }, profileOptions)
+    if (!mosdnsSettingsSession.isCurrent(session)) return null
+    await api.post('/mosdns/log-settings', {
+      log_enabled: draft.logEnabled,
+      log_level: draft.logLevel,
+      log_file: draft.logFile
+    }, profileOptions)
+    if (!mosdnsSettingsSession.isCurrent(session)) return null
+    await api.post('/mosdns/api-settings', {
+      api_enabled: draft.apiEnabled,
+      api_address: draft.apiAddress
+    }, profileOptions)
+    if (!mosdnsSettingsSession.isCurrent(session)) return null
+    const response = await api.post('/mosdns/cache-settings', {
+      cache_enabled: draft.cacheEnabled,
+      cache_size: draft.cacheSize,
+      cache_lazy_ttl: draft.cacheLazyTtl,
+      cache_dump_enabled: draft.cacheDumpEnabled,
+      cache_dump_file: draft.cacheDumpFile,
+      cache_dump_interval: draft.cacheDumpInterval
+    }, profileOptions)
+    if (!mosdnsSettingsSession.isCurrent(session)) return null
 
-    // 同步更新文本字段（保持兼容性）
     mosdnsLocalDns.value = localDnsText
     mosdnsRemoteDns.value = remoteDnsText
     mosdnsFallbackDns.value = fallbackDnsText
-
-    // 保存日志配置
-    await api.post('/mosdns/log-settings', {
-      log_enabled: mosdnsLogEnabled.value,
-      log_level: mosdnsLogLevel.value,
-      log_file: mosdnsLogFile.value
-    }, profileOptions)
-
-    // 保存 API 配置
-    await api.post('/mosdns/api-settings', {
-      api_enabled: mosdnsApiEnabled.value,
-      api_address: mosdnsApiAddress.value
-    }, profileOptions)
-
-    // 保存缓存配置
-    await api.post('/mosdns/cache-settings', {
-      cache_enabled: mosdnsCacheEnabled.value,
-      cache_size: mosdnsCacheSize.value,
-      cache_lazy_ttl: mosdnsCacheLazyTtl.value,
-      cache_dump_enabled: mosdnsCacheDumpEnabled.value,
-      cache_dump_file: mosdnsCacheDumpFile.value,
-      cache_dump_interval: mosdnsCacheDumpInterval.value
-    }, profileOptions)
-
-    mosdnsSavedSnapshot.value = mosdnsDraftSnapshot.value
-    notify.success('MosDNS 设置已保存')
-    mosdnsSettingsDialogVisible.value = false
+    mosdnsSavedSnapshot.value = snapshot
+    notify.success('MosDNS 设置草稿已保存')
+    if (close) mosdnsSettingsDialogVisible.value = false
+    return response.data.publish_guard ?? null
   } catch (error) {
-    console.error('保存 MosDNS 设置失败', error)
-    notify.error('保存 MosDNS 设置失败')
+    if (mosdnsSettingsSession.isCurrent(session)) {
+      console.error('保存 MosDNS 设置失败', error)
+      notify.error('保存 MosDNS 设置失败')
+    }
+    return null
   } finally {
-    savingMosdnsSettings.value = false
+    if (mosdnsSettingsSession.isCurrent(session)) savingMosdnsSettings.value = false
   }
 }
 
