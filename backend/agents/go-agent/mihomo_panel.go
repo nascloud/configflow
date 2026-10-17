@@ -17,11 +17,15 @@ import (
 // 只放行面板用到的接口与方法，控制接口的 secret 由 Agent 自己从配置读取，不经过服务端。
 
 const (
-	mihomoPanelPrefix       = "/api/mihomo/"
-	mihomoPanelBodyLimit    = 16 * 1024
-	mihomoPanelReplyLimit   = 16 << 20
-	mihomoPanelTimeout      = 15 * time.Second
-	mihomoPanelDelayTimeout = 35 * time.Second
+	mihomoPanelPrefix         = "/api/mihomo/"
+	mihomoPanelBodyLimit      = 16 * 1024
+	mihomoPanelReplyLimit     = 16 << 20
+	mihomoPanelTimeout        = 15 * time.Second
+	mihomoPanelDelayTimeout   = 35 * time.Second
+	mihomoPanelReloadTimeout  = 60 * time.Second
+	mihomoPanelUpgradeTimeout = 3 * time.Minute
+	// 重载只允许从内核当前使用的配置文件重新读取，不接受外部传入的路径或内容
+	mihomoPanelReloadBody = `{"path":"","payload":""}`
 )
 
 type mihomoPanelRoute struct {
@@ -35,7 +39,7 @@ const panelSegment = `[^/]+`
 
 var mihomoPanelRoutes = []mihomoPanelRoute{
 	{regexp.MustCompile(`^version$`), "GET", nil},
-	{regexp.MustCompile(`^configs$`), "GET PATCH", nil},
+	{regexp.MustCompile(`^configs$`), "GET PATCH PUT", nil},
 	{regexp.MustCompile(`^proxies$`), "GET", nil},
 	{regexp.MustCompile(`^proxies/` + panelSegment + `$`), "GET PUT DELETE", nil},
 	{regexp.MustCompile(`^proxies/` + panelSegment + `/delay$`), "GET", []string{"url", "timeout"}},
@@ -50,6 +54,7 @@ var mihomoPanelRoutes = []mihomoPanelRoute{
 	{regexp.MustCompile(`^providers/rules/` + panelSegment + `$`), "PUT", nil},
 	{regexp.MustCompile(`^cache/fakeip/flush$`), "POST", nil},
 	{regexp.MustCompile(`^cache/dns/flush$`), "POST", nil},
+	{regexp.MustCompile(`^upgrade$`), "POST", nil},
 }
 
 func matchMihomoPanelRoute(path, method string) (*mihomoPanelRoute, bool) {
@@ -96,8 +101,13 @@ func mihomoPanelHandler(cfg *Config) http.HandlerFunc {
 				query.Set(key, value)
 			}
 		}
+		reload := path == "configs" && r.Method == http.MethodPut
+		upgrading := path == "upgrade"
 		var body []byte
-		if r.Method == http.MethodPut || r.Method == http.MethodPatch {
+		if reload {
+			body = []byte(mihomoPanelReloadBody)
+			query.Set("force", "true")
+		} else if r.Method == http.MethodPut || r.Method == http.MethodPatch {
 			data, err := io.ReadAll(io.LimitReader(r.Body, mihomoPanelBodyLimit+1))
 			if err != nil || len(data) > mihomoPanelBodyLimit {
 				mihomoPanelFail(w, http.StatusBadRequest, "INVALID_REQUEST", "request body is too large")
@@ -110,8 +120,21 @@ func mihomoPanelHandler(cfg *Config) http.HandlerFunc {
 			mihomoPanelFail(w, http.StatusConflict, "CONTROLLER_UNAVAILABLE", "mihomo controller unavailable: "+err.Error())
 			return
 		}
+		if reload || upgrading {
+			// 改变内核运行状态的操作与配置推送、服务重启共用服务操作锁
+			release, err := routes.AcquireServiceOperation(toRoutesConfig(cfg))
+			if err != nil {
+				mihomoPanelFail(w, http.StatusConflict, "SERVICE_BUSY", err.Error())
+				return
+			}
+			defer release()
+		}
 		timeout := mihomoPanelTimeout
-		if strings.HasSuffix(path, "/delay") || strings.HasSuffix(path, "/healthcheck") || (strings.HasPrefix(path, "providers/") && r.Method == http.MethodPut) {
+		if reload {
+			timeout = mihomoPanelReloadTimeout
+		} else if upgrading {
+			timeout = mihomoPanelUpgradeTimeout
+		} else if strings.HasSuffix(path, "/delay") || strings.HasSuffix(path, "/healthcheck") || (strings.HasPrefix(path, "providers/") && r.Method == http.MethodPut) {
 			timeout = mihomoPanelDelayTimeout
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)

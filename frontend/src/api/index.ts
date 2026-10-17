@@ -356,6 +356,10 @@ export const mihomoPanelApi = {
     api.get(mihomoPath(id, 'providers/proxy/healthcheck'), { ...mihomoName(name), timeout: 60000 }),
   ruleProviders: (id: string) => api.get(mihomoPath(id, 'providers/rules')),
   updateRuleProvider: (id: string, name: string) => api.put(mihomoPath(id, 'providers/rule'), {}, { ...mihomoName(name), timeout: 60000 }),
+  /** 从内核当前使用的配置文件重载（Agent 1.8.16-go+） */
+  reloadConfig: (id: string) => api.put(mihomoPath(id, 'configs/reload'), {}, { timeout: 80000 }),
+  /** 内核自更新并重启（Agent 1.8.16-go+） */
+  upgradeCore: (id: string) => api.post(mihomoPath(id, 'upgrade'), {}, { timeout: 210000 }),
   flushFakeIP: (id: string) => api.post(mihomoPath(id, 'cache/fakeip/flush')),
   flushDNS: (id: string) => api.post(mihomoPath(id, 'cache/dns/flush'))
 }
