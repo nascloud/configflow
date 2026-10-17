@@ -113,6 +113,10 @@ services:
 
 后端默认通过 Waitress 的单进程、8 个固定工作线程处理请求，复用线程及其内存，避免为每次请求创建线程。可通过 `CONFIGFLOW_HTTP_THREADS` 调整为 1–64；同时执行较多耗时任务时可适当增加，超过线程数的请求会排队。`LOG_LEVEL=DEBUG` 保留 Flask 开发服务器及自动重载行为。
 
+Docker 镜像在 Linux/glibc 生产环境中，仅为后端 Python 进程默认设置 `MALLOC_ARENA_MAX=4` 和 `MALLOC_TRIM_THRESHOLD_=1048576`（1 MiB），减少多个内存池分别保留空闲内存，并让符合条件的释放更早归还堆顶空闲空间；不修改 nginx 或 Sub-Store 的启动环境。已有的同名环境变量或 `GLIBC_TUNABLES` 中对应的 `glibc.malloc.arena_max`、`glibc.malloc.trim_threshold` 分别优先，设置 `CONFIGFLOW_MEMORY_TUNING=0` 可关闭这些默认设置。`LOG_LEVEL=DEBUG` 和非 glibc 环境不应用默认值。固定 trim 阈值也会停止 glibc 自动联动调整 mmap/trim 阈值，可能增加分配和归还内存的开销；不保证所有已释放空间立即归还系统。
+
+镜像将 Python 启动器独立安装在源码目录之外，自动更新或回退旧源码不会覆盖它。
+
 > 💡 **提示**：生产环境请务必修改默认密码和 JWT 密钥；镜像已内置 Sub-Store（订阅解析和节点格式转换），无需另外部署，可在「系统设置 → 第三方依赖」检测并在线更新
 >
 > 从旧版升级：compose 中的 `sub-store` 服务和 `SUB_STORE_URL` 环境变量已不再使用，可以删除。
