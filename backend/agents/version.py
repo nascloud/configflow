@@ -1,10 +1,17 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.4-go"
+LATEST_AGENT_VERSION = "1.8.5-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.5-go": {
+        "date": "2026-10-17",
+        "features": [
+            "回流发布检查路由、策略规则和 nft 资源占用；只管理具有归属记录的对象，不再自动接管旧手工规则",
+            "撤销按精确路由、规则和 nft 句柄执行，不清空路由表或删除 nft 表；兼容部分 iproute2 版本的 VRF 读取差异"
+        ]
+    },
     "1.8.4-go": {
         "date": "2026-10-17",
         "features": [

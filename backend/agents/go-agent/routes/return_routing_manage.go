@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -20,15 +19,12 @@ import (
 
 // Managed return routing: ConfigFlow publishes the desired state, the Agent
 // renders it into its own nft table plus a policy routing table and keeps it
-// applied across restarts. Manual setups using the same mark/table can be
-// adopted: their nft table is removed and their boot scripts are disabled, with
-// enough saved to restore them on rollback.
+// applied across restarts. Existing objects need a versioned ownership journal;
+// manual/legacy setups are preserved and never automatically adopted.
 
 const (
-	managedReturnTable  = "configflow_return"
-	returnStateFile     = "return-routing.json"
-	returnLegacyDump    = "return-routing-legacy.nft"
-	disabledScriptSufix = ".configflow-disabled"
+	managedReturnTable = "configflow_return"
+	returnStateFile    = "return-routing.json"
 )
 
 // runCommandInput runs a command with stdin; replaceable in tests.
@@ -44,21 +40,16 @@ var runCommandInput = func(input string, name string, args ...string) (string, e
 	return string(out), nil
 }
 
-// writeSysctl and the local.d directory are replaceable in tests.
-var (
-	writeSysctl = func(path, value string) error { return os.WriteFile(path, []byte(value), 0644) }
-	localDDir   = "/etc/local.d"
-)
-
 type ReturnRoutingSpec struct {
-	RouterIP     string   `json:"router_ip"`
-	ProxyDst     []string `json:"proxy_dst"`
-	Mark         string   `json:"mark"`
-	Table        int      `json:"table"`
-	Priority     int      `json:"priority"`
-	LanInterface string   `json:"lan_interface,omitempty"`
-	TunDevice    string   `json:"tun_device,omitempty"`
-	// AdoptLegacy lists manual nft tables ("inet mihomo_return") replaced by the managed one.
+	SafetyVersion int      `json:"safety_version"`
+	RouterIP      string   `json:"router_ip"`
+	ProxyDst      []string `json:"proxy_dst"`
+	Mark          string   `json:"mark"`
+	Table         int      `json:"table"`
+	Priority      int      `json:"priority"`
+	LanInterface  string   `json:"lan_interface,omitempty"`
+	TunDevice     string   `json:"tun_device,omitempty"`
+	// Kept only to explicitly reject legacy adoption requests from old clients.
 	AdoptLegacy []string `json:"adopt_legacy,omitempty"`
 }
 
@@ -69,9 +60,23 @@ type legacyBackup struct {
 }
 
 type returnRoutingState struct {
+	Active    bool              `json:"active"`
 	Spec      ReturnRoutingSpec `json:"spec"`
 	Legacy    *legacyBackup     `json:"legacy,omitempty"`
 	AppliedAt string            `json:"applied_at"`
+	Ownership *returnOwnership  `json:"ownership,omitempty"`
+}
+
+// A versioned journal is the only evidence that a resource belongs to us.
+// Names, marks and table numbers by themselves never confer ownership.
+type returnOwnership struct {
+	Version int                      `json:"version"`
+	Token   string                   `json:"token"`
+	Metric  int                      `json:"metric"`
+	Routes  []map[string]interface{} `json:"routes"`
+	Rules   []map[string]interface{} `json:"rules"`
+	NFT     []map[string]interface{} `json:"nft"`
+	Pending bool                     `json:"pending"`
 }
 
 type resolvedSpec struct {
@@ -93,6 +98,12 @@ func parseMark(text string) (uint32, error) {
 
 func validateSpec(spec ReturnRoutingSpec) (resolvedSpec, error) {
 	resolved := resolvedSpec{ReturnRoutingSpec: spec}
+	if spec.SafetyVersion != 1 {
+		return resolved, fmt.Errorf("需要回流安全协议 1；请更新 ConfigFlow 后重新预览")
+	}
+	if len(spec.AdoptLegacy) != 0 {
+		return resolved, fmt.Errorf("不允许接管其他程序或手工回流规则，请保留原配置并先处理冲突")
+	}
 	if ip := net.ParseIP(spec.RouterIP); ip == nil || ip.To4() == nil {
 		return resolved, fmt.Errorf("router_ip 必须是 IPv4 地址")
 	}
@@ -138,21 +149,62 @@ type mihomoRouting struct {
 }
 
 func readMihomoRouting(configPath string) mihomoRouting {
+	result, _ := readMihomoRoutingStrict(configPath)
+	return result
+}
+
+func readMihomoRoutingStrict(configPath string) (mihomoRouting, error) {
 	result := mihomoRouting{marks: map[string]uint32{}, tunDevice: "Meta", tableIndex: 2022, ruleIndex: 9000}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return result
+		return result, fmt.Errorf("无法读取 mihomo 配置以检查冲突：%w", err)
 	}
 	var doc map[string]interface{}
-	if yaml.Unmarshal(data, &doc) != nil {
-		return result
+	if yaml.Unmarshal(data, &doc) != nil || doc == nil {
+		return result, fmt.Errorf("mihomo 配置格式无效，无法确认标记和路由表占用")
 	}
-	if mark, ok := yamlUint(doc["routing-mark"]); ok {
-		result.marks["routing-mark"] = mark
+	if value, exists := doc["routing-mark"]; exists {
+		var mark uint64
+		var parseErr error
+		switch v := value.(type) {
+		case int:
+			if v < 0 {
+				parseErr = fmt.Errorf("negative mark")
+			} else {
+				mark = uint64(v)
+			}
+		case string:
+			mark, parseErr = strconv.ParseUint(strings.TrimSpace(v), 0, 32)
+		default:
+			parseErr = fmt.Errorf("invalid mark type")
+		}
+		if parseErr != nil || mark > uint64(^uint32(0)) {
+			return result, fmt.Errorf("mihomo routing-mark 无法解析")
+		}
+		if mark != 0 {
+			result.marks["routing-mark"] = uint32(mark)
+		}
 	}
 	tun, _ := doc["tun"].(map[string]interface{})
 	if tun == nil {
-		return result
+		if value, exists := doc["tun"]; exists && value != nil {
+			return result, fmt.Errorf("mihomo tun 配置无效")
+		}
+		return result, nil
+	}
+	for _, key := range []string{"auto-redirect-input-mark", "auto-redirect-output-mark", "iproute2-table-index", "iproute2-rule-index"} {
+		if value, exists := tun[key]; exists {
+			if _, ok := yamlUint(value); !ok {
+				return result, fmt.Errorf("mihomo tun.%s 无法解析", key)
+			}
+		}
+	}
+	for _, key := range []string{"enable", "auto-redirect"} {
+		if value, exists := tun[key]; exists {
+			if _, ok := value.(bool); !ok {
+				return result, fmt.Errorf("mihomo tun.%s 无法解析", key)
+			}
+		}
 	}
 	result.tunEnabled, _ = tun["enable"].(bool)
 	if device, ok := tun["device"].(string); ok && device != "" {
@@ -173,13 +225,13 @@ func readMihomoRouting(configPath string) mihomoRouting {
 			}
 		}
 	}
-	return result
+	return result, nil
 }
 
 func yamlUint(value interface{}) (uint32, bool) {
 	switch v := value.(type) {
 	case int:
-		return uint32(v), v > 0
+		return uint32(v), v > 0 && uint64(v) <= uint64(^uint32(0))
 	case string:
 		mark, err := parseMark(v)
 		return mark, err == nil
@@ -264,168 +316,6 @@ func resolveInterfaces(spec *resolvedSpec, routing mihomoRouting) error {
 	return resolveRouterMAC(spec)
 }
 
-// renderReturnTable builds an atomic nft script that replaces the managed table.
-func renderReturnTable(spec resolvedSpec) string {
-	mark := fmt.Sprintf("0x%x", spec.mark)
-	var b strings.Builder
-	fmt.Fprintf(&b, "table inet %s {}\ndelete table inet %s\n", managedReturnTable, managedReturnTable)
-	fmt.Fprintf(&b, "table inet %s {\n", managedReturnTable)
-	fmt.Fprintf(&b, "\tset proxy_dst {\n\t\ttype ipv4_addr\n\t\tflags interval\n\t\telements = { %s }\n\t}\n",
-		strings.Join(spec.ProxyDst, ", "))
-	b.WriteString("\tchain prerouting {\n\t\ttype filter hook prerouting priority mangle; policy accept;\n")
-	fmt.Fprintf(&b, "\t\tiifname %q ether saddr %s ip daddr @proxy_dst ct state new ct mark set ct mark | %s comment \"configflow-return-mark\"\n",
-		spec.LanInterface, spec.routerMAC, mark)
-	if spec.TunDevice != "" {
-		fmt.Fprintf(&b, "\t\tiifname %q ct mark & %s == %s meta mark set meta mark | %s comment \"configflow-return-tun\"\n",
-			spec.TunDevice, mark, mark, mark)
-	}
-	b.WriteString("\t}\n")
-	b.WriteString("\tchain output {\n\t\ttype route hook output priority mangle; policy accept;\n")
-	fmt.Fprintf(&b, "\t\tct mark & %s == %s meta mark set meta mark | %s comment \"configflow-return-local\"\n", mark, mark, mark)
-	b.WriteString("\t}\n}\n")
-	return b.String()
-}
-
-func deleteRulesAtPriority(priority int) {
-	for i := 0; i < 16; i++ {
-		if _, err := runCommand("ip", "rule", "del", "priority", strconv.Itoa(priority)); err != nil {
-			return
-		}
-	}
-}
-
-func applyResolved(spec resolvedSpec) error {
-	if _, err := runCommandInput(renderReturnTable(spec), "nft", "-f", "-"); err != nil {
-		return err
-	}
-	table := strconv.Itoa(spec.Table)
-	for _, dst := range []string{"default", spec.lanCIDR} {
-		if _, err := runCommand("ip", "route", "replace", dst, "via", spec.RouterIP, "dev", spec.LanInterface, "table", table); err != nil {
-			return fmt.Errorf("写入路由表 %s 失败：%v", table, err)
-		}
-	}
-	deleteRulesAtPriority(spec.Priority)
-	mark := fmt.Sprintf("0x%x", spec.mark)
-	if _, err := runCommand("ip", "rule", "add", "fwmark", mark+"/"+mark, "lookup", table, "priority", strconv.Itoa(spec.Priority)); err != nil {
-		return fmt.Errorf("添加策略路由失败：%v", err)
-	}
-	// Without this the gateway answers clients with ICMP redirects to the router.
-	for _, iface := range []string{"all", spec.LanInterface} {
-		if err := writeSysctl("/proc/sys/net/ipv4/conf/"+iface+"/send_redirects", "0"); err != nil {
-			log.Printf("return routing: disable send_redirects on %s: %v", iface, err)
-		}
-	}
-	return nil
-}
-
-func removeManaged(spec ReturnRoutingSpec) {
-	runCommand("nft", "delete", "table", "inet", managedReturnTable)
-	if spec.Priority > 0 {
-		deleteRulesAtPriority(spec.Priority)
-	}
-	if spec.Table > 0 {
-		runCommand("ip", "route", "flush", "table", strconv.Itoa(spec.Table))
-	}
-}
-
-// adoptLegacy saves and removes manual tables, and disables boot scripts that recreate them.
-func adoptLegacy(dir string, tables []string, previous *legacyBackup) (*legacyBackup, error) {
-	if previous != nil && len(tables) == 0 {
-		return previous, nil
-	}
-	backup := &legacyBackup{}
-	if previous != nil {
-		backup = previous
-	}
-	var dumps []string
-	for _, table := range tables {
-		parts := strings.Fields(table)
-		dump, err := runCommand("nft", "list", "table", parts[0], parts[1])
-		if err != nil {
-			continue // already gone
-		}
-		dumps = append(dumps, dump)
-		backup.Tables = append(backup.Tables, table)
-	}
-	if len(dumps) > 0 {
-		backup.Dump = filepath.Join(dir, returnLegacyDump)
-		if err := os.WriteFile(backup.Dump, []byte(strings.Join(dumps, "\n")), 0600); err != nil {
-			return nil, fmt.Errorf("保存原有回流规则失败：%v", err)
-		}
-	}
-	starts, _ := filepath.Glob(filepath.Join(localDDir, "*.start"))
-	stops, _ := filepath.Glob(filepath.Join(localDDir, "*.stop"))
-	for _, script := range append(starts, stops...) {
-		if scriptManagesTables(script, backup.Tables) {
-			if err := os.Rename(script, script+disabledScriptSufix); err == nil {
-				backup.Scripts = append(backup.Scripts, script)
-			}
-		}
-	}
-	for _, table := range tables {
-		parts := strings.Fields(table)
-		runCommand("nft", "delete", "table", parts[0], parts[1])
-	}
-	if len(backup.Tables) == 0 && len(backup.Scripts) == 0 {
-		return previous, nil
-	}
-	return backup, nil
-}
-
-var nftFileRef = regexp.MustCompile(`\S+\.nft\b`)
-
-// scriptManagesTables reports whether a boot script names one of the tables,
-// directly or through an nft file it loads.
-func scriptManagesTables(script string, tables []string) bool {
-	data, err := os.ReadFile(script)
-	if err != nil {
-		return false
-	}
-	texts := []string{string(data)}
-	for _, ref := range nftFileRef.FindAllString(string(data), -1) {
-		if content, err := os.ReadFile(ref); err == nil {
-			texts = append(texts, string(content))
-		}
-	}
-	for _, table := range tables {
-		name := strings.Fields(table)[1]
-		pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
-		for _, text := range texts {
-			if pattern.MatchString(text) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func restoreLegacy(backup *legacyBackup) []string {
-	var problems []string
-	if backup == nil {
-		return problems
-	}
-	if backup.Dump != "" {
-		if data, err := os.ReadFile(backup.Dump); err == nil {
-			if _, err := runCommandInput(string(data), "nft", "-f", "-"); err != nil {
-				problems = append(problems, err.Error())
-			}
-		}
-	}
-	for _, script := range backup.Scripts {
-		if err := os.Rename(script+disabledScriptSufix, script); err != nil {
-			problems = append(problems, err.Error())
-			continue
-		}
-		if !strings.HasSuffix(script, ".start") {
-			continue
-		}
-		if _, err := runCommand("sh", script); err != nil {
-			problems = append(problems, err.Error())
-		}
-	}
-	return problems
-}
-
 func returnStatePath(cfg *Config) (string, error) {
 	if cfg == nil || cfg.AgentConfigFile == "" {
 		return "", fmt.Errorf("Agent 配置文件路径未知，无法保存回流规则")
@@ -476,7 +366,10 @@ func prepareSpec(cfg *Config, spec ReturnRoutingSpec) (resolvedSpec, error) {
 	if _, err := runCommand("ip", "-V"); err != nil {
 		return resolved, fmt.Errorf("缺少 ip（iproute2），无法管理回流规则")
 	}
-	routing := readMihomoRouting(cfg.ConfigPath)
+	routing, err := readMihomoRoutingStrict(cfg.ConfigPath)
+	if err != nil {
+		return resolved, err
+	}
 	if err := checkMihomoConflicts(resolved, routing); err != nil {
 		return resolved, err
 	}
@@ -484,105 +377,6 @@ func prepareSpec(cfg *Config, spec ReturnRoutingSpec) (resolvedSpec, error) {
 		return resolved, err
 	}
 	return resolved, nil
-}
-
-// ApplyReturnRouting applies the spec, adopts legacy tables and persists the state.
-func ApplyReturnRouting(cfg *Config, spec ReturnRoutingSpec) (map[string]interface{}, error) {
-	resolved, err := prepareSpec(cfg, spec)
-	if err != nil {
-		return nil, err
-	}
-	previous, err := loadReturnState(cfg)
-	if err != nil {
-		return nil, err
-	}
-	statePath, _ := returnStatePath(cfg)
-	if err := applyResolved(resolved); err != nil {
-		removeManaged(resolved.ReturnRoutingSpec)
-		if previous != nil {
-			if prev, perr := prepareSpec(cfg, previous.Spec); perr == nil {
-				applyResolved(prev)
-			}
-		}
-		return nil, err
-	}
-	// The managed table now marks the same traffic, so dropping the manual one is lossless.
-	var legacy *legacyBackup
-	if previous != nil {
-		legacy = previous.Legacy
-	}
-	legacy, err = adoptLegacy(filepath.Dir(statePath), spec.AdoptLegacy, legacy)
-	if err != nil {
-		return nil, err
-	}
-	if previous != nil && previous.Spec.Priority != spec.Priority {
-		deleteRulesAtPriority(previous.Spec.Priority)
-	}
-	if previous != nil && previous.Spec.Table != spec.Table {
-		runCommand("ip", "route", "flush", "table", strconv.Itoa(previous.Spec.Table))
-	}
-	saved := spec
-	saved.AdoptLegacy = nil
-	state := &returnRoutingState{Spec: saved, Legacy: legacy, AppliedAt: time.Now().Format(time.RFC3339)}
-	if err := saveReturnState(cfg, state); err != nil {
-		return nil, fmt.Errorf("回流规则已生效，但保存状态失败（重启后不会自动恢复）：%v", err)
-	}
-	return map[string]interface{}{
-		"success": true, "lan_interface": resolved.LanInterface, "lan_cidr": resolved.lanCIDR,
-		"router_mac": resolved.routerMAC,
-		"tun_device": resolved.TunDevice, "adopted": legacy,
-	}, nil
-}
-
-// RemoveReturnRouting deletes the managed rules; restoreLegacy brings back adopted manual rules.
-func RemoveReturnRouting(cfg *Config, restore bool) (map[string]interface{}, error) {
-	state, err := loadReturnState(cfg)
-	if err != nil {
-		return nil, err
-	}
-	if state == nil {
-		return map[string]interface{}{"success": true, "removed": false}, nil
-	}
-	removeManaged(state.Spec)
-	var problems []string
-	if restore {
-		problems = restoreLegacy(state.Legacy)
-	}
-	path, _ := returnStatePath(cfg)
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		problems = append(problems, err.Error())
-	}
-	if state.Legacy != nil && state.Legacy.Dump != "" && restore {
-		os.Remove(state.Legacy.Dump)
-	}
-	return map[string]interface{}{"success": len(problems) == 0, "removed": true, "problems": problems,
-		"message": strings.Join(problems, "; ")}, nil
-}
-
-// ReapplyReturnRouting restores persisted rules at Agent start; retries while the network settles.
-func ReapplyReturnRouting(cfg *Config) {
-	state, err := loadReturnState(cfg)
-	if err != nil {
-		log.Printf("return routing: %v", err)
-		return
-	}
-	if state == nil {
-		return
-	}
-	go func() {
-		for attempt := 1; attempt <= 6; attempt++ {
-			resolved, err := prepareSpec(cfg, state.Spec)
-			if err == nil {
-				err = applyResolved(resolved)
-			}
-			if err == nil {
-				log.Printf("return routing: re-applied (table %d, mark %s)", state.Spec.Table, state.Spec.Mark)
-				return
-			}
-			log.Printf("return routing: re-apply attempt %d failed: %v", attempt, err)
-			time.Sleep(10 * time.Second)
-		}
-	}()
 }
 
 func managedReturnStatus(cfg *Config) map[string]interface{} {
@@ -593,9 +387,10 @@ func managedReturnStatus(cfg *Config) map[string]interface{} {
 	if state == nil {
 		return nil
 	}
-	_, tableErr := runCommand("nft", "list", "table", "inet", managedReturnTable)
+	complete := returnResourcesComplete(state)
 	return map[string]interface{}{"spec": state.Spec, "applied_at": state.AppliedAt,
-		"table_present": tableErr == nil, "legacy": state.Legacy}
+		"table_present": complete, "legacy": state.Legacy,
+		"safety_version": 1, "active": state.Active}
 }
 
 func returnRoutingWrite(cfg *Config, w http.ResponseWriter, r *http.Request) {

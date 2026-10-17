@@ -5,12 +5,16 @@ Statuses per desired item:
 - ``adoptable``  correct but created manually; P1 adopts it (tags it) instead of recreating
 - ``conflict``   same destination exists but differs (wrong gateway / disabled)
 - ``missing``    not present
+- ``not_required`` ROS forwarding cannot match any potential source-NAT rule
+- ``unknown``    ROS source-NAT requirement cannot be safely determined
 Managed objects that are no longer desired are reported as ``extra``.
 """
 import ipaddress
 from typing import Any, Dict, Iterable, List
 
 from backend.routers.base import RouterState, is_managed
+from backend.routers.dhcp_dns import build_dns_report
+from backend.routers.routeros_nat import assess_nat
 
 
 def _networks(values: Iterable[str]) -> List[ipaddress.IPv4Network]:
@@ -71,8 +75,11 @@ def _nat_items(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
             status, detail = 'synced', ''
         elif covering:
             status, detail = 'adoptable', f'已被手工规则「{covering[0].comment or covering[0].id}」覆盖，将直接接管'
+        elif state.nat_context is not None:
+            assessment = assess_nat(entry['cidr'], desired.get('proxy_gateway') or '', state)
+            status, detail = assessment['status'], assessment['detail']
         else:
-            status, detail = 'missing', '该网段的流量仍会被主路由做源地址转换，mihomo 看不到真实客户端 IP'
+            status, detail = 'missing', '未发现覆盖该网段的 NAT 免转换规则，需结合源 NAT 配置确认是否影响客户端 IP'
         items.append({'cidr': entry['cidr'], 'status': status, 'detail': detail,
                       'rule_ids': [rule.id for rule in covering]})
     disabled = [{'rule_id': rule.id, 'comment': rule.comment, 'dst': rule.dst}
@@ -83,10 +90,16 @@ def _nat_items(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
 def build_report(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
     routes = _route_items(desired, state)
     nat = _nat_items(desired, state)
+    dns = build_dns_report(desired, state.dhcp_dns)
     summary: Dict[str, int] = {}
     for section in (routes['items'], nat['items']):
         for item in section:
             summary[item['status']] = summary.get(item['status'], 0) + 1
     summary['extra'] = len(routes['extra'])
-    in_sync = all(item['status'] == 'synced' for item in routes['items'] + nat['items']) and not routes['extra']
-    return {'desired': desired, 'routes': routes, 'nat_bypass': nat, 'summary': summary, 'in_sync': in_sync}
+    if dns['status'] != 'disabled':
+        summary[dns['status']] = summary.get(dns['status'], 0) + 1
+    in_sync = all(item['status'] in {'synced', 'not_required'}
+                  for item in routes['items'] + nat['items']) and not routes['extra']
+    in_sync = in_sync and dns['status'] in {'disabled', 'synced'}
+    return {'desired': desired, 'routes': routes, 'nat_bypass': nat, 'dhcp_dns': dns,
+            'summary': summary, 'in_sync': in_sync}

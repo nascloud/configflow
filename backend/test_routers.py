@@ -176,6 +176,8 @@ class FakeROSSession:
                                   'disabled': 'false', 'comment': 'cf:return'},
                                  {'.id': '*4', 'chain': 'srcnat', 'action': 'masquerade', 'disabled': 'false'}],
             '/ip/firewall/address-list': [{'list': 'cf-proxy', 'address': '198.18.0.0/16', 'disabled': 'false'}],
+            '/routing/rule': [], '/ip/firewall/mangle': [], '/ip/vrf': [],
+            '/interface/list': [], '/interface/list/member': [],
         }[path]
         return FakeResponse(data)
 
@@ -187,6 +189,8 @@ def test_routeros_driver_probe_and_state():
     state = driver.read_state()
     assert [route.dst for route in state.routes] == ['198.18.0.0/16', '0.0.0.0/0']
     assert state.nat_bypass[0].dst == ['198.18.0.0/16']
+    assert state.nat_context is not None
+    assert any(rule['action'] == 'masquerade' for rule in state.nat_context['rules'])
 
 
 def test_routeros_requires_7_1():
@@ -220,7 +224,7 @@ def test_router_api_crud_probe_report_and_export(authenticated_app, monkeypatch)
     agent = agents[0]
     created = client.post('/api/routers', headers=admin, json={
         'name': '主路由', 'type': 'ikuai', 'endpoint': 'http://192.168.1.1', 'username': 'admin',
-        'password': 'router-secret', 'proxy_gateway_agent_id': agent['id']})
+        'password': 'router-secret', 'proxy_gateway_agent_id': agent['id'], 'manage_return_routing': True})
     assert created.status_code == 200, created.get_json()
     router_id = created.get_json()['router']['id']
 
@@ -272,3 +276,26 @@ def test_router_api_validation_and_not_found(authenticated_app):  # noqa: F811
     assert bad.status_code == 400 and bad.get_json()['message']
     assert client.post('/api/routers/missing/probe', headers=admin).status_code == 404
     assert client.get('/api/routers/missing/report', headers=admin).status_code == 404
+
+
+def test_return_routing_setting_defaults_off_and_is_preserved_on_partial_update():
+    payload = {'name': '主路由', 'type': 'ikuai', 'endpoint': 'http://router.local',
+               'username': 'admin', 'password': 'pw'}
+    router = normalize(payload)
+    assert router['manage_return_routing'] is False
+    assert public_view({key: value for key, value in router.items() if key != 'manage_return_routing'})[
+        'manage_return_routing'] is False
+    enabled = normalize({'manage_return_routing': True}, router)
+    assert enabled['manage_return_routing'] is True
+    assert normalize({'name': '新名字'}, enabled)['manage_return_routing'] is True
+    assert normalize({'manage_return_routing': False}, enabled)['manage_return_routing'] is False
+
+
+@pytest.mark.parametrize('value', ['true', 'false', 1, 0, None, {}, []])
+def test_return_routing_setting_rejects_non_boolean_values(value):
+    payload = {'name': '主路由', 'type': 'ikuai', 'endpoint': 'http://router.local',
+               'username': 'admin', 'password': 'pw'}
+    with pytest.raises(RouterValidationError):
+        normalize({**payload, 'manage_return_routing': value})
+    with pytest.raises(RouterValidationError):
+        normalize({'manage_return_routing': value}, normalize(payload))
