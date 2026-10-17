@@ -3,6 +3,7 @@ from copy import deepcopy
 import hashlib
 import ipaddress
 import json
+import re
 
 import yaml
 
@@ -17,28 +18,49 @@ DIRECT = {'tag': DIRECT_TAG, 'type': 'sequence', 'args': [
 ]}
 
 
+def normalize_client_range(raw):
+    """Canonicalize hosts/CIDRs, including IPv4-mapped peers and host prefixes."""
+    try:
+        if not isinstance(raw, str):
+            raise ValueError()
+        parts = raw.strip().split('/')
+        if len(parts) > 2 or not re.fullmatch(r'[0-9a-fA-F:.]+', parts[0]):
+            raise ValueError()
+        address = ipaddress.ip_address(parts[0])
+        prefix = address.max_prefixlen
+        if len(parts) == 2:
+            if not re.fullmatch(r'[0-9]{1,3}', parts[1]):
+                raise ValueError()
+            prefix = int(parts[1])
+        if not 0 <= prefix <= address.max_prefixlen:
+            raise ValueError()
+        # OxiDNS sees IPv4-mapped peers as the same IPv4 client.
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            if prefix < 96:
+                raise ValueError()
+            address, prefix = address.ipv4_mapped, prefix - 96
+        network = ipaddress.ip_network(f'{address}/{prefix}', strict=False)
+        if network.is_multicast:
+            raise ValueError()
+        if prefix == address.max_prefixlen:
+            if address.is_unspecified:
+                raise ValueError()
+            return str(address)
+        return str(network)
+    except ValueError:
+        raise OxidnsSettingsError('请输入有效的客户端 IPv4、IPv6 或 CIDR 网段，例如 192.168.50.0/24。') from None
+
+
 def normalize_policies(value):
     if not isinstance(value, list) or len(value) > 512:
-        raise OxidnsSettingsError('设备策略必须为列表，最多 512 个设备。')
+        raise OxidnsSettingsError('设备策略必须为列表，最多 512 条策略。')
     result, seen = [], set()
     for row in value:
         if not isinstance(row, dict) or set(row) - {'ip', 'name', 'mode'}:
-            raise OxidnsSettingsError('设备策略仅支持 IP、备注和策略。')
-        raw = row.get('ip')
-        try:
-            if not isinstance(raw, str) or '%' in raw:
-                raise ValueError()
-            address = ipaddress.ip_address(raw.strip())
-            # OxiDNS sees IPv4-mapped peers as the same IPv4 client.
-            if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-                address = address.ipv4_mapped
-            if address.is_unspecified or address.is_multicast:
-                raise ValueError()
-        except ValueError:
-            raise OxidnsSettingsError('请输入单个有效的客户端 IPv4 或 IPv6 地址。') from None
-        ip = str(address)
+            raise OxidnsSettingsError('设备策略仅支持 IP / 网段、备注和策略。')
+        ip = normalize_client_range(row.get('ip'))
         if ip in seen:
-            raise OxidnsSettingsError(f'客户端 IP 重复：{ip}')
+            raise OxidnsSettingsError(f'客户端 IP / 网段重复：{ip}')
         seen.add(ip)
         name, mode = row.get('name', ''), row.get('mode')
         if not isinstance(name, str) or len(name) > 80 or any(ord(c) < 32 for c in name):
@@ -58,6 +80,18 @@ def _policy_plugin(rows):
     direct = [row['ip'] for row in rows if row['mode'] == 'direct']
     if not direct:
         return None
+    if any('/' in row['ip'] for row in rows):
+        # More specific ranges (including individual clients) override broader ones.
+        # A smart exception must return to the caller before a broader direct rule.
+        def specificity(row):
+            network = ipaddress.ip_network(row['ip'])
+            return (-network.prefixlen, network.version, int(network.network_address))
+
+        args = [{'matches': ['client_ip ' + row['ip']],
+                 'exec': f'goto {DIRECT_TAG}' if row['mode'] == 'direct' else 'return'}
+                for row in sorted(rows, key=specificity)]
+        return {'tag': POLICY_TAG, 'type': 'sequence', 'args': args + [{'exec': 'return'}]}
+    # Preserve the original host-only shape so existing drafts stay editable.
     return {'tag': POLICY_TAG, 'type': 'sequence', 'args': [
         {'matches': ['client_ip ' + ' '.join(direct)], 'exec': f'goto {DIRECT_TAG}'},
         {'exec': 'return'},

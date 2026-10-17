@@ -18,7 +18,7 @@
       <p v-if="state.agents.length > 1" class="m-0 break-words">共用草稿：{{ state.agents.map(agent => agent.name).join('、') }}</p>
       <details>
         <summary class="min-h-11 cursor-pointer content-center text-foreground focus-visible:outline-2 focus-visible:outline-primary-accent">使用说明</summary>
-        <p class="m-0">智能分流沿用现有规则，未设置的设备保持默认；直连使用本地 DNS，不改变代理路由。设备需通过 OxiDNS 查询，并保留真实客户端 IP。</p>
+        <p class="m-0">智能分流沿用现有规则，未匹配策略的设备保持默认；直连使用本地 DNS，不改变代理路由。设备需通过 OxiDNS 查询，并保留真实客户端 IP。</p>
       </details>
     </div>
     <p v-if="!state.editable" role="alert" class="mb-4 rounded-lg bg-warning-soft p-3 text-sm text-warning-accent">{{ state.reason }}</p>
@@ -26,23 +26,27 @@
     <fieldset :disabled="!state.editable || saving || publishing || loading" class="m-0 min-w-0 border-0 p-0">
       <div class="mb-4 grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
         <div class="min-w-0">
-          <p class="mb-1.5 mt-0 text-xs text-muted-foreground">从查询记录选择</p>
+          <p class="mb-2 mt-0 flex min-h-6 items-center text-xs text-muted-foreground">从查询记录选择</p>
           <OxiDNSClientSelect :model-value="''" :agent-id="agentId" :recorder="recorder" range="all" :allow-all="false" placeholder="选择已有客户端…" @update:model-value="add" />
-          <p v-if="!recorder" class="mb-0 mt-1.5 text-xs text-muted-foreground">暂无可读取的查询记录，可手动添加 IP。</p>
+          <p v-if="!recorder" class="mb-0 mt-1.5 text-xs text-muted-foreground">暂无可读取的查询记录，可手动添加 IP 或网段。</p>
         </div>
         <div class="min-w-0">
-          <label for="policy-client-ip" class="mb-1.5 block text-xs text-muted-foreground">手动添加 IP</label>
-          <Input id="policy-client-ip" v-model="newIP" class="min-h-11 font-mono" placeholder="192.168.50.51 或 IPv6" @keydown.enter.prevent="add(newIP)" />
+          <div class="mb-2 flex min-h-6 items-center gap-1">
+            <label for="policy-client-ip" class="text-xs text-muted-foreground">手动添加 IP / 网段</label>
+            <FieldHelp label="手动添加 IP / 网段" :text="clientRangeHelp" />
+          </div>
+          <Input id="policy-client-ip" v-model="newIP" class="min-h-11 font-mono" placeholder="192.168.50.0/24 或 IPv6" aria-describedby="policy-range-help" @keydown.enter.prevent="add(newIP)" />
         </div>
-        <Button variant="outline" class="min-h-11 md:mt-6" :disabled="!newIP.trim() || rows.length >= 512" @click="add(newIP)"><Plus class="size-4" />添加设备</Button>
+        <Button variant="outline" class="min-h-11 md:mt-8" :disabled="!newIP.trim() || rows.length >= 512" @click="add(newIP)"><Plus class="size-4" />添加策略</Button>
       </div>
+      <p id="policy-range-help" class="mb-4 mt-0 text-xs leading-relaxed text-muted-foreground">支持单个 IPv4 / IPv6 和 CIDR 网段，网段地址会自动规范化。规则重叠时，单个 IP 优先，其次是范围更小的网段，与添加顺序无关。</p>
       <div v-if="rows.length" class="cf-table-wrap">
         <table class="cf-table w-full min-w-[540px]">
-          <thead><tr><th scope="col">客户端 IP</th><th scope="col">备注</th><th scope="col">策略</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead>
+          <thead><tr><th scope="col">客户端 IP / 网段</th><th scope="col">备注</th><th scope="col">策略</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead>
           <tbody>
             <tr v-for="(row, index) in rows" :key="row.ip">
               <td class="font-mono text-xs">{{ row.ip }}</td>
-              <td><Input v-model="row.name" :aria-label="row.ip + ' 备注'" maxlength="80" placeholder="设备名称（可选）" class="min-h-11 min-w-32" /></td>
+              <td><Input v-model="row.name" :aria-label="row.ip + ' 备注'" maxlength="80" placeholder="设备或网段名称（可选）" class="min-h-11 min-w-32" /></td>
               <td>
                 <Select v-model="row.mode"><SelectTrigger :aria-label="row.ip + ' 策略'" class="min-h-11 w-32"><SelectValue /></SelectTrigger>
                   <SelectContent><SelectItem value="smart">智能分流</SelectItem><SelectItem value="direct">直连</SelectItem></SelectContent>
@@ -53,7 +57,7 @@
           </tbody>
         </table>
       </div>
-      <EmptyState v-else :icon="Monitor" title="尚未添加设备策略" description="从已有客户端中选择，或输入 IP。添加后可选择智能分流或直连。" />
+      <EmptyState v-else :icon="Monitor" title="尚未添加设备策略" description="从已有客户端中选择，或输入 IP / CIDR 网段。添加后可选择智能分流或直连。" />
     </fieldset>
     <div class="mt-5 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
       <div class="min-w-0 text-xs text-muted-foreground" role="status" aria-live="polite">
@@ -79,13 +83,21 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import SectionCard from '@/components/common/SectionCard.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import FieldHelp from '@/components/common/FieldHelp.vue'
 import OxiDNSClientSelect from './OxiDNSClientSelect.vue'
 import { agentApi, oxidnsDevicePolicyApi } from '@/api'
 import { confirm, notify } from '@/lib/feedback'
+import { normalizeClientRange } from '@/lib/oxidnsClientRange'
 import { createDeploymentId, deploymentStatusLabel, useAgentDeployments } from '@/composables/useAgentDeployments'
 import type { OxiDNSDevicePolicies, OxiDNSDevicePolicy } from '@/types/oxidnsMonitor'
 
 const props = defineProps<{ agentId: string; recorder: string }>()
+const clientRangeHelp = [
+  '为指定设备或网段设置 DNS 解析策略，未出现在查询记录中的设备也可手动添加。',
+  '支持单个 IPv4 / IPv6 和 CIDR 网段，例如 192.168.50.50、192.168.50.0/24。重叠时单个 IP 优先，其次为更小的网段。',
+  '添加后选择智能分流（沿用现有规则）或直连（使用本地 DNS 上游），保存草稿并发布到当前设备后生效。',
+  '设备需使用 OxiDNS，且 OxiDNS 能识别真实客户端 IP；填写地址不会自动修改设备 DNS。',
+].join('\n\n')
 const emit = defineEmits<{ published: [] }>()
 const state = ref<OxiDNSDevicePolicies | null>(null)
 const rows = ref<OxiDNSDevicePolicy[]>([])
@@ -135,16 +147,13 @@ function add(value: string) {
   if (!state.value?.editable || saving.value || publishing.value) return
   let ip = value.trim()
   if (!ip || rows.value.length >= 512) return
-  // The server canonicalizes IPv6 and rejects ambiguous, duplicate or non-host addresses.
   try {
-    if (!/^[0-9a-fA-F:.]+$/.test(ip)) throw new Error()
-    if (ip.includes(':')) ip = new URL(`http://[${ip}]/`).hostname.slice(1, -1)
-    else if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || ip.split('.').some(part => Number(part) > 255 || (part.length > 1 && part.startsWith('0')))) throw new Error()
+    ip = normalizeClientRange(ip)
   } catch {
-    notify.error('请输入有效的客户端 IP，不支持域名或网段。')
+    notify.error('请输入有效的客户端 IPv4、IPv6 或 CIDR 网段，例如 192.168.50.0/24。')
     return
   }
-  if (rows.value.some(row => row.ip === ip)) { notify.info('此客户端已在列表中。'); return }
+  if (rows.value.some(row => row.ip === ip)) { notify.info('此客户端 IP 或网段已在列表中。'); return }
   rows.value.push({ ip, name: '', mode: 'smart' })
   newIP.value = ''
 }

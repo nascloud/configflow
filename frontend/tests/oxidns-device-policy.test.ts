@@ -27,7 +27,7 @@ async function render(props: any = {}) {
 }
 async function add(wrapper: VueWrapper, ip = '192.168.50.51') {
   await wrapper.get('#policy-client-ip').setValue(ip)
-  await button(wrapper, '添加设备').trigger('click')
+  await button(wrapper, '添加策略').trigger('click')
 }
 beforeEach(() => {
   vi.clearAllMocks()
@@ -71,16 +71,43 @@ describe('OxiDNS device policy editing', () => {
     expect(wrapper.findAll('tbody tr')).toHaveLength(1)
     await add(wrapper, '192.168.50.50')
     expect(wrapper.findAll('tbody tr')).toHaveLength(1)
-    expect(notify.info).toHaveBeenCalledWith('此客户端已在列表中。')
+    expect(notify.info).toHaveBeenCalledWith('此客户端 IP 或网段已在列表中。')
   })
   it('rejects malformed addresses and canonicalizes IPv6', async () => {
     const wrapper = await render()
-    for (const ip of ['999.168.1.1', '192.168.1.1/24', 'dns.example', '2001::::1']) await add(wrapper, ip)
+    for (const ip of ['999.168.1.1', '192.168.1.1/33', 'dns.example', '2001::::1']) await add(wrapper, ip)
     expect(wrapper.findAll('tbody tr')).toHaveLength(0)
     await add(wrapper, '2001:0db8:0:0:0:0:0:1')
     await add(wrapper, '2001:db8::1')
     expect(wrapper.findAll('tbody tr')).toHaveLength(1)
     expect(wrapper.text()).toContain('2001:db8::1')
+  })
+  it('adds canonical IPv4/IPv6 networks with host exceptions and prevents equivalent duplicates', async () => {
+    const wrapper = await render()
+    await add(wrapper, '192.168.50.51/24')
+    wrapper.getComponent(Select).vm.$emit('update:modelValue', 'direct')
+    await add(wrapper, '192.168.50.0/24')
+    await add(wrapper, '::ffff:192.168.50.99/120')
+    await add(wrapper, '192.168.50.50')
+    await add(wrapper, '192.168.50.50/32')
+    await add(wrapper, '2001:0DB8:abcd::1234/48')
+    await add(wrapper, '2001:db8:abcd::/48')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(3)
+    expect(wrapper.text()).toContain('单个 IP 优先')
+    expect(wrapper.text()).toContain('192.168.50.0/24')
+    expect(wrapper.text()).toContain('2001:db8:abcd::/48')
+    await button(wrapper, '保存草稿').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(oxidnsDevicePolicyApi.save).mock.lastCall?.[1].policies).toEqual([
+      { ip: '192.168.50.0/24', name: '', mode: 'direct' },
+      { ip: '192.168.50.50', name: '', mode: 'smart' },
+      { ip: '2001:db8:abcd::/48', name: '', mode: 'smart' }
+    ])
+    await wrapper.get('[aria-label="移除 192.168.50.0/24"]').trigger('click')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(2)
+    await button(wrapper, '保存草稿').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(oxidnsDevicePolicyApi.save).mock.lastCall?.[1].policies.map(row => row.ip)).toEqual(['192.168.50.50', '2001:db8:abcd::/48'])
   })
   it('keeps edits after a conflicting save and requires confirmation to discard them', async () => {
     vi.mocked(oxidnsDevicePolicyApi.save).mockRejectedValue({ response: { status: 409, data: { message: '配置已更新，请重新载入' } } })
