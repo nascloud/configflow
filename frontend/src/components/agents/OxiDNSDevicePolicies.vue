@@ -5,7 +5,7 @@
       <Button variant="outline" class="min-h-11" :disabled="loading" @click="load">重试</Button>
     </EmptyState>
   </SectionCard>
-  <SectionCard v-else class="[&>header]:items-start max-sm:[&>header>div:first-child]:basis-full" title="设备策略" description="智能分流沿用现有分流规则；直连使用本地 DNS 上游。未添加的设备保持默认分流。">
+  <SectionCard v-else class="[&>header]:items-start max-sm:[&>header>div:first-child]:basis-full" title="设备策略">
     <template #actions>
       <span v-if="dirty" class="text-xs text-warning-accent">未保存</span>
       <Button variant="outline" class="min-h-11" :disabled="saving || publishing || loading" @click="reload">重新载入</Button>
@@ -14,12 +14,13 @@
       </Button>
     </template>
     <div class="mb-4 space-y-2 text-xs leading-relaxed text-muted-foreground">
-      <p class="m-0 break-words">配置空间：<span class="font-medium text-foreground">{{ state.profile_name }}</span> · 保存后需发布到设备才能生效。</p>
-      <p v-if="state.agents.length > 1" class="m-0 break-words text-info-accent">共用此配置的设备：{{ state.agents.map(agent => agent.name).join('、') }}。保存会修改共同草稿，发布仅针对当前设备。</p>
+      <p class="m-0 break-words">配置：<span class="font-medium text-foreground">{{ state.profile_name }}</span> · 保存草稿，发布到当前设备后生效。</p>
+      <p v-if="state.agents.length > 1" class="m-0 break-words text-info-accent">共用草稿：{{ state.agents.map(agent => agent.name).join('、') }}</p>
       <details>
-        <summary class="min-h-11 cursor-pointer content-center text-foreground focus-visible:outline-2 focus-visible:outline-primary-accent">DNS 接入与直连说明</summary>
-        <p class="mb-2 mt-0">设备需通过 OxiDNS 查询，且 OxiDNS 能看到真实客户端 IP。可由路由器 DHCP 统一下发 DNS；建议为设备固定 IP。</p>
-        <p class="m-0">直连控制 DNS 解析，不改变路由器已有的全局代理路由；本地上游需填写运营商或其他直连 DNS。</p>
+        <summary class="min-h-11 cursor-pointer content-center text-foreground focus-visible:outline-2 focus-visible:outline-primary-accent">使用说明</summary>
+        <p class="mb-2 mt-0">智能分流沿用现有规则，未设置的设备保持默认。</p>
+        <p class="mb-2 mt-0">直连使用本地 DNS，仅影响解析，不改变代理路由。</p>
+        <p class="m-0">设备需使用 OxiDNS，且能识别其真实 IP。</p>
       </details>
     </div>
     <p v-if="!state.editable" role="alert" class="mb-4 rounded-lg bg-warning-soft p-3 text-sm text-warning-accent">{{ state.reason }}</p>
