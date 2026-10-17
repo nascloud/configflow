@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.10-go"
+LATEST_AGENT_VERSION = "1.8.11-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.11-go": {
+        "date": "2026-10-17",
+        "features": [
+            "定期磁盘清理增加 Agent 更新残留：更新结束后删除历次 worker/backup 程序、任务记录和日志，只保留当前更新的记录与上一版备份；更新进行中或回滚失败时不清理"
+        ]
+    },
     "1.8.10-go": {
         "date": "2026-10-17",
         "features": [
