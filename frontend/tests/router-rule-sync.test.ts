@@ -24,6 +24,9 @@ describe('remote rule synchronization', () => {
     const wrapper = await setup()
     expect(routerApi.ruleSync).toHaveBeenCalledWith('ros', 'home')
     expect(wrapper.text()).toContain('自动同步已关闭')
+    expect(wrapper.text()).toContain('先点「预览发布」，确认并成功发布一次，再开启自动同步。')
+    expect(wrapper.text()).not.toContain('同步基准')
+    expect(wrapper.find('dl').exists()).toBe(false)
     expect(wrapper.text()).toContain('最近读取版本')
     expect(wrapper.text()).toContain('new-version')
     expect(wrapper.text()).toContain('old-version')
@@ -42,7 +45,7 @@ describe('remote rule synchronization', () => {
     expect(button(wrapper, '立即同步').attributes('disabled')).toBeUndefined()
   })
   it('blocks automatic publication of malformed sources but permits manual preview', async () => {
-    vi.mocked(routerApi.ruleSync).mockResolvedValue(data('paused') as any)
+    vi.mocked(routerApi.ruleSync).mockResolvedValue(data('paused', false) as any)
     const wrapper = await setup()
     expect(wrapper.text()).toContain('已暂停，需核对')
     expect(wrapper.text()).toContain('保留原状态')
