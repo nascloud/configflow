@@ -1,11 +1,12 @@
 """订阅管理路由"""
-from flask import request, jsonify, current_app, Response
+from flask import request, jsonify, current_app, Response, make_response
 from datetime import datetime
 import uuid
 import yaml
 
 from backend.routes import subscriptions_bp
 from backend.common.auth import require_auth, validate_token_or_jwt
+from backend.common.profile_context import resolve_profile_id
 from backend.common.config import get_default_profile_id, get_resource_config, get_shared_config, save_shared_config, update_shared_config_transaction
 from backend.common.config_repository import ProfileRepositoryError
 from backend.utils.reorder import resolve_new_order
@@ -480,151 +481,156 @@ def get_subscription_proxies(sub_id):
 
         if not sub:
             return jsonify({'success': False, 'message': 'Subscription not found'}), 404
+    except Exception as e:
+        current_app.logger.error("获取订阅代理列表失败: %s", safe_exception_details(e))
+        return jsonify({'success': False, 'message': '获取订阅代理列表失败'}), 500
 
-        from backend.utils.provider_delivery import DeliverySnapshot
-        from backend.converters.mihomo import generate_mihomo_config
-        # Capture the originating graph before a remote fetch can change state.
-        snapshot = DeliverySnapshot.capture(config_data.get('profile_id') or get_default_profile_id(),
-            yaml.safe_load(generate_mihomo_config(config_data, preflight_providers=False)), profile=config_data)
-        if snapshot.has_chains:
-            from backend.utils.provider_delivery import prepare_provider_bundle, commit_provider_bundle
-            import json
-            bundle = prepare_provider_bundle(config_data, json.loads(snapshot.main_json), requested=('subscription', sub))
-            rendered = next(item for item in bundle if item['name'] == sub['name'])
-            if request.args.get('format') in ('surge', 'loon'):
-                from backend.utils.dialer_references import DialerReferenceError
-                client = 'Loon' if request.args.get('format') == 'loon' else 'Surge'
-                raise DialerReferenceError(f'{client} 暂不支持代理链，请使用 Mihomo')
-            commit_provider_bundle(snapshot.profile_id, bundle)
-            return Response(rendered['content'], mimetype='text/yaml; charset=utf-8')
-        sub_name = sub.get('name', 'Unknown')
-        sub_url = sub.get('url')
-        proxies = None
-        cache_updated = False
-        fetch_error = None
-
-        def validate_subscription_delivery(proxies):
-            snapshot.validate(proxies, provider_name=sub_name)
-            if any(p.get('dialer-proxy') is not None for p in proxies):
+    def render():
+        try:
+            from backend.utils.provider_delivery import DeliverySnapshot
+            from backend.converters.mihomo import generate_mihomo_config
+            # Capture the originating graph before a remote fetch can change state.
+            snapshot = DeliverySnapshot.capture(config_data.get('profile_id') or get_default_profile_id(),
+                yaml.safe_load(generate_mihomo_config(config_data, preflight_providers=False)), profile=config_data)
+            if snapshot.has_chains:
+                from backend.utils.provider_delivery import prepare_provider_bundle, commit_provider_bundle
                 import json
-                from backend.utils.provider_delivery import prepare_provider_bundle
-                prepare_provider_bundle(config_data, json.loads(snapshot.main_json), requested=('subscription', sub),
-                    prepared={sub_name: {'content': yaml.safe_dump({'proxies': proxies}), 'cache_updates': []}})
+                bundle = prepare_provider_bundle(config_data, json.loads(snapshot.main_json), requested=('subscription', sub))
+                rendered = next(item for item in bundle if item['name'] == sub['name'])
+                if request.args.get('format') in ('surge', 'loon'):
+                    from backend.utils.dialer_references import DialerReferenceError
+                    client = 'Loon' if request.args.get('format') == 'loon' else 'Surge'
+                    raise DialerReferenceError(f'{client} 暂不支持代理链，请使用 Mihomo')
+                commit_provider_bundle(snapshot.profile_id, bundle)
+                return Response(rendered['content'], mimetype='text/yaml; charset=utf-8')
+            sub_name = sub.get('name', 'Unknown')
+            sub_url = sub.get('url')
+            proxies = None
+            cache_updated = False
+            fetch_error = None
+
+            def validate_subscription_delivery(proxies):
+                snapshot.validate(proxies, provider_name=sub_name)
+                if any(p.get('dialer-proxy') is not None for p in proxies):
+                    import json
+                    from backend.utils.provider_delivery import prepare_provider_bundle
+                    prepare_provider_bundle(config_data, json.loads(snapshot.main_json), requested=('subscription', sub),
+                        prepared={sub_name: {'content': yaml.safe_dump({'proxies': proxies}), 'cache_updates': []}})
 
 
-        # 优先通过 Sub-Store 获取
-        if sub_url:
-            try:
-                current_app.logger.info(f"尝试获取最新配置: {sub_name} (id: {sub_id})")
-                yaml_text, source = get_subscription_proxies_yaml(sub_id, sub_url)
-                from backend.utils.provider_delivery import parse_provider_proxies
-                raw_proxies = parse_provider_proxies(yaml_text)
-                proxies = filter_subscription_items(sub, raw_proxies)
-                # Reject the actual raw graph before node transforms/cache writes.
-                if request.args.get('format') == 'surge':
-                    from backend.converters.surge import convert_proxies_to_surge_text
-                    convert_proxies_to_surge_text(proxies)
-                elif request.args.get('format') == 'loon':
-                    from backend.converters.loon import convert_proxies_to_loon_text
-                    convert_proxies_to_loon_text(proxies)
-                validate_subscription_delivery(proxies)
-
-                if raw_proxies:
-                    # 更新本地缓存（转换为 node 格式存储，保留筛选前的原始节点）
-                    nodes = proxies_to_nodes(raw_proxies)
-                    for node in nodes:
-                        node['subscription_id'] = sub_id
-                        node['subscription_name'] = sub_name
-                        if 'id' not in node:
-                            node['id'] = f"node_{uuid.uuid4().hex[:8]}"
-                    save_subscription_nodes(sub_id, nodes, {
-                        'subscription_name': sub_name,
-                        'url': sub_url
-                    })
-                    cache_updated = True
-                    subscription_health.record_fetch(sub_id, ok=True, count=len(proxies))
-                    if source == 'rendered_yaml':
-                        current_app.logger.info(f"成功直接复用订阅 URL 返回的 Sub-Store YAML 并更新缓存: {sub_name}, 节点数: {len(proxies)}")
-                    elif source == 'sub_store':
-                        current_app.logger.info(f"成功通过 Sub-Store 转换订阅并更新缓存: {sub_name}, 节点数: {len(proxies)}")
-                    elif source == 'direct_url_fallback':
-                        current_app.logger.info(f"Sub-Store 获取失败后，成功直接拉取原始订阅并更新缓存: {sub_name}, 节点数: {len(proxies)}")
-                    else:
-                        current_app.logger.info(f"成功获取订阅并更新缓存: {sub_name}, 节点数: {len(proxies)}")
-            except Exception as e:
-                from backend.utils.strategy_references import StrategyReferenceError
-                if isinstance(e, StrategyReferenceError):
-                    raise
-                fetch_error = f"request_failed ({safe_exception_details(e)})"
-                current_app.logger.warning("通过 Sub-Store 获取配置失败: %s, 将使用本地缓存: %s", sub_name, safe_exception_details(e))
-
-        # 如果从 Sub-Store 获取失败或没有URL，则从本地缓存加载并转换
-        if proxies is None:
-            cache = load_subscription_cache(sub_id)
+            # 优先通过 Sub-Store 获取
             if sub_url:
-                subscription_health.record_fetch(
-                    sub_id,
-                    ok=False,
-                    from_cache=bool(cache),
-                    count=(cache or {}).get('count') or 0,
-                )
-            if not cache:
-                return jsonify({
-                    'success': False,
-                    'message': f"订阅 '{sub_name}' 没有缓存数据，且从 Sub-Store 获取失败: {fetch_error or '未知错误'}"
-                }), 404
-
-            nodes = cache.get('nodes', [])
-            if not nodes:
-                return jsonify({
-                    'success': False,
-                    'message': f"订阅 '{sub_name}' 缓存中没有节点"
-                }), 404
-            nodes = filter_subscription_items(sub, nodes)
-
-            current_app.logger.info(f"使用本地缓存数据: {sub_name}, 节点数: {len(nodes)}")
-            # 降级：从缓存节点转换为 proxies
-            from backend.utils.dialer_references import validate_shapes
-            validate_shapes({'nodes': nodes}, require_ids=False)
-            from backend.converters.mihomo import convert_node_to_mihomo
-            proxies = []
-            for node in nodes:
                 try:
-                    proxy = convert_node_to_mihomo(node)
-                    if proxy:
-                        proxies.append(proxy)
+                    current_app.logger.info(f"尝试获取最新配置: {sub_name} (id: {sub_id})")
+                    yaml_text, source = get_subscription_proxies_yaml(sub_id, sub_url)
+                    from backend.utils.provider_delivery import parse_provider_proxies
+                    raw_proxies = parse_provider_proxies(yaml_text)
+                    proxies = filter_subscription_items(sub, raw_proxies)
+                    # Reject the actual raw graph before node transforms/cache writes.
+                    if request.args.get('format') == 'surge':
+                        from backend.converters.surge import convert_proxies_to_surge_text
+                        convert_proxies_to_surge_text(proxies)
+                    elif request.args.get('format') == 'loon':
+                        from backend.converters.loon import convert_proxies_to_loon_text
+                        convert_proxies_to_loon_text(proxies)
+                    validate_subscription_delivery(proxies)
+
+                    if raw_proxies:
+                        # 更新本地缓存（转换为 node 格式存储，保留筛选前的原始节点）
+                        nodes = proxies_to_nodes(raw_proxies)
+                        for node in nodes:
+                            node['subscription_id'] = sub_id
+                            node['subscription_name'] = sub_name
+                            if 'id' not in node:
+                                node['id'] = f"node_{uuid.uuid4().hex[:8]}"
+                        save_subscription_nodes(sub_id, nodes, {
+                            'subscription_name': sub_name,
+                            'url': sub_url
+                        })
+                        cache_updated = True
+                        subscription_health.record_fetch(sub_id, ok=True, count=len(proxies))
+                        if source == 'rendered_yaml':
+                            current_app.logger.info(f"成功直接复用订阅 URL 返回的 Sub-Store YAML 并更新缓存: {sub_name}, 节点数: {len(proxies)}")
+                        elif source == 'sub_store':
+                            current_app.logger.info(f"成功通过 Sub-Store 转换订阅并更新缓存: {sub_name}, 节点数: {len(proxies)}")
+                        elif source == 'direct_url_fallback':
+                            current_app.logger.info(f"Sub-Store 获取失败后，成功直接拉取原始订阅并更新缓存: {sub_name}, 节点数: {len(proxies)}")
+                        else:
+                            current_app.logger.info(f"成功获取订阅并更新缓存: {sub_name}, 节点数: {len(proxies)}")
                 except Exception as e:
-                    current_app.logger.error("转换节点失败: %s", safe_exception_details(e))
-                    continue
+                    from backend.utils.strategy_references import StrategyReferenceError
+                    if isinstance(e, StrategyReferenceError):
+                        raise
+                    fetch_error = f"request_failed ({safe_exception_details(e)})"
+                    current_app.logger.warning("通过 Sub-Store 获取配置失败: %s, 将使用本地缓存: %s", sub_name, safe_exception_details(e))
 
-        # Alternate-format fallback responses must also pass the publication
-        # gate; preserve the explicit Surge unsupported-chain error first.
-        if request.args.get('format') == 'surge':
-            from backend.converters.surge import convert_proxies_to_surge_text
-            surge_text = convert_proxies_to_surge_text(proxies)
+            # 如果从 Sub-Store 获取失败或没有URL，则从本地缓存加载并转换
+            if proxies is None:
+                cache = load_subscription_cache(sub_id)
+                if sub_url:
+                    subscription_health.record_fetch(
+                        sub_id,
+                        ok=False,
+                        from_cache=bool(cache),
+                        count=(cache or {}).get('count') or 0,
+                    )
+                if not cache:
+                    return jsonify({
+                        'success': False,
+                        'message': f"订阅 '{sub_name}' 没有缓存数据，且从 Sub-Store 获取失败: {fetch_error or '未知错误'}"
+                    }), 404
+
+                nodes = cache.get('nodes', [])
+                if not nodes:
+                    return jsonify({
+                        'success': False,
+                        'message': f"订阅 '{sub_name}' 缓存中没有节点"
+                    }), 404
+                nodes = filter_subscription_items(sub, nodes)
+
+                current_app.logger.info(f"使用本地缓存数据: {sub_name}, 节点数: {len(nodes)}")
+                # 降级：从缓存节点转换为 proxies
+                from backend.utils.dialer_references import validate_shapes
+                validate_shapes({'nodes': nodes}, require_ids=False)
+                from backend.converters.mihomo import convert_node_to_mihomo
+                proxies = []
+                for node in nodes:
+                    try:
+                        proxy = convert_node_to_mihomo(node)
+                        if proxy:
+                            proxies.append(proxy)
+                    except Exception as e:
+                        current_app.logger.error("转换节点失败: %s", safe_exception_details(e))
+                        continue
+
+            # Alternate-format fallback responses must also pass the publication
+            # gate; preserve the explicit Surge unsupported-chain error first.
+            if request.args.get('format') == 'surge':
+                from backend.converters.surge import convert_proxies_to_surge_text
+                surge_text = convert_proxies_to_surge_text(proxies)
+                if not cache_updated:
+                    validate_subscription_delivery(proxies)
+                return Response(surge_text, mimetype='text/plain')
+            if request.args.get('format') == 'loon':
+                from backend.converters.loon import convert_proxies_to_loon_text
+                loon_text = convert_proxies_to_loon_text(proxies)
+                if not cache_updated:
+                    validate_subscription_delivery(proxies)
+                return Response(loon_text, mimetype='text/plain')
             if not cache_updated:
                 validate_subscription_delivery(proxies)
-            return Response(surge_text, mimetype='text/plain')
-        if request.args.get('format') == 'loon':
-            from backend.converters.loon import convert_proxies_to_loon_text
-            loon_text = convert_proxies_to_loon_text(proxies)
-            if not cache_updated:
-                validate_subscription_delivery(proxies)
-            return Response(loon_text, mimetype='text/plain')
-        if not cache_updated:
-            validate_subscription_delivery(proxies)
 
-        # 构建 YAML 响应
-        yaml_data = {
-            'proxies': proxies
-        }
+            # 构建 YAML 响应
+            yaml_data = {
+                'proxies': proxies
+            }
 
-        # 添加元数据注释（英文，避免编码问题）
-        source_info = "from Sub-Store (cache updated)" if cache_updated else "from local cache"
-        if fetch_error and not cache_updated:
-            source_info += f" (fetch error: {fetch_error})"
+            # 添加元数据注释（英文，避免编码问题）
+            source_info = "from Sub-Store (cache updated)" if cache_updated else "from local cache"
+            if fetch_error and not cache_updated:
+                source_info += f" (fetch error: {fetch_error})"
 
-        yaml_output = f"""# ConfigFlow Subscription Proxies
+            yaml_output = f"""# ConfigFlow Subscription Proxies
 # Subscription: {sub_name}
 # ID: {sub_id}
 # Generated: {datetime.now().isoformat()}Z
@@ -632,31 +638,35 @@ def get_subscription_proxies(sub_id):
 # Source: {source_info}
 
 """
-        # 使用 IndentDumper 确保正确的缩进格式
-        from backend.converters.mihomo import IndentDumper
-        yaml_output += yaml.dump(
-            yaml_data,
-            Dumper=IndentDumper,
-            allow_unicode=True,
-            default_flow_style=False,
-            sort_keys=False,
-            indent=2
-        )
+            # 使用 IndentDumper 确保正确的缩进格式
+            from backend.converters.mihomo import IndentDumper
+            yaml_output += yaml.dump(
+                yaml_data,
+                Dumper=IndentDumper,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+                indent=2
+            )
 
-        # 使用 ASCII 安全的文件名
-        safe_filename = f"proxies_{sub_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml"
+            # 使用 ASCII 安全的文件名
+            safe_filename = f"proxies_{sub_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml"
 
-        return Response(
-            yaml_output,
-            mimetype='text/yaml; charset=utf-8',
-            headers={
-                'Content-Disposition': f'inline; filename="{safe_filename}"'
-            }
-        )
+            return Response(
+                yaml_output,
+                mimetype='text/yaml; charset=utf-8',
+                headers={
+                    'Content-Disposition': f'inline; filename="{safe_filename}"'
+                }
+            )
 
-    except Exception as e:
-        from backend.utils.strategy_references import StrategyReferenceError
-        if isinstance(e, StrategyReferenceError):
-            return jsonify({'success': False, 'message': str(e)}), 400
-        current_app.logger.error("获取订阅代理列表失败: %s", safe_exception_details(e))
-        return jsonify({'success': False, 'message': '获取订阅代理列表失败'}), 500
+        except Exception as e:
+            from backend.utils.strategy_references import StrategyReferenceError
+            if isinstance(e, StrategyReferenceError):
+                return jsonify({'success': False, 'message': str(e)}), 400
+            current_app.logger.error("获取订阅代理列表失败: %s", safe_exception_details(e))
+            return jsonify({'success': False, 'message': '获取订阅代理列表失败'}), 500
+
+    from backend.utils.provider_response import serve_provider
+    return serve_provider('subscription', sub_id, resolve_profile_id(config_data.get('profile_id')),
+                          config_data, lambda: make_response(render()))

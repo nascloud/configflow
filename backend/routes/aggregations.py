@@ -11,7 +11,7 @@ import uuid
 import yaml
 from typing import Dict, Any
 from datetime import datetime
-from flask import request, jsonify, current_app, Response
+from flask import request, jsonify, current_app, Response, make_response
 
 from backend.common.config import (
     get_default_profile_id,
@@ -522,32 +522,41 @@ def get_aggregation_provider(agg_id):
 
         if not aggregation.get('enabled', True):
             return jsonify({'success': False, 'message': 'Aggregation is disabled'}), 403
-
-        # 生成 provider 文件（优先从URL获取订阅新数据并更新缓存，失败则使用本地缓存）
-        result = generate_aggregation_provider(aggregation, config=config_data)
-
-        # 如果请求 Surge 格式，转换为 Surge 纯文本
-        if request.args.get('format') == 'surge':
-            provider_data = yaml.safe_load(result['content'])
-            proxies = provider_data.get('proxies', [])
-            from backend.converters.surge import convert_proxies_to_surge_text
-            surge_text = convert_proxies_to_surge_text(proxies)
-            return Response(surge_text, mimetype='text/plain')
-
-        if request.args.get('format') == 'loon':
-            provider_data = yaml.safe_load(result['content'])
-            from backend.converters.loon import convert_proxies_to_loon_text
-            loon_text = convert_proxies_to_loon_text(provider_data.get('proxies', []))
-            return Response(loon_text, mimetype='text/plain')
-
-        # Serve the exact validated snapshot, not a concurrently replaced artifact.
-        return Response(result['content'], mimetype='text/yaml')
-
-    except StrategyReferenceError as e:
-        return jsonify({'success': False, 'message': str(e)}), 400
     except Exception as e:
         logger.error("聚合操作失败: %s", safe_exception_details(e))
         return jsonify({'success': False, 'message': '聚合操作失败'}), 500
+
+    def render():
+        try:
+            # 生成 provider 文件（优先从URL获取订阅新数据并更新缓存，失败则使用本地缓存）
+            result = generate_aggregation_provider(aggregation, config=config_data)
+
+            # 如果请求 Surge 格式，转换为 Surge 纯文本
+            if request.args.get('format') == 'surge':
+                provider_data = yaml.safe_load(result['content'])
+                proxies = provider_data.get('proxies', [])
+                from backend.converters.surge import convert_proxies_to_surge_text
+                surge_text = convert_proxies_to_surge_text(proxies)
+                return Response(surge_text, mimetype='text/plain')
+
+            if request.args.get('format') == 'loon':
+                provider_data = yaml.safe_load(result['content'])
+                from backend.converters.loon import convert_proxies_to_loon_text
+                loon_text = convert_proxies_to_loon_text(provider_data.get('proxies', []))
+                return Response(loon_text, mimetype='text/plain')
+
+            # Serve the exact validated snapshot, not a concurrently replaced artifact.
+            return Response(result['content'], mimetype='text/yaml')
+
+        except StrategyReferenceError as e:
+            return jsonify({'success': False, 'message': str(e)}), 400
+        except Exception as e:
+            logger.error("聚合操作失败: %s", safe_exception_details(e))
+            return jsonify({'success': False, 'message': '聚合操作失败'}), 500
+
+    from backend.utils.provider_response import serve_provider
+    return serve_provider('aggregation', agg_id, resolve_profile_id(config_data.get('profile_id')),
+                          config_data, lambda: make_response(render()))
 
 
 @bp.route('/reorder', methods=['POST'])
