@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.1-go"
+LATEST_AGENT_VERSION = "1.8.2-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.2-go": {
+        "date": "2026-10-17",
+        "features": [
+            "回流规则只标记经主路由转发进来的连接（匹配主路由 MAC），直连或收到 ICMP 重定向的客户端回包直接返回，不再被主路由丢弃"
+        ]
+    },
     "1.8.1-go": {
         "date": "2026-10-17",
         "features": [

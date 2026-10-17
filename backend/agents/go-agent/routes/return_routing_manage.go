@@ -76,8 +76,9 @@ type returnRoutingState struct {
 
 type resolvedSpec struct {
 	ReturnRoutingSpec
-	mark    uint32
-	lanCIDR string
+	mark      uint32
+	lanCIDR   string
+	routerMAC string
 }
 
 var tableNamePattern = regexp.MustCompile(`^(ip|ip6|inet) [A-Za-z0-9_-]+$`)
@@ -204,7 +205,28 @@ func checkMihomoConflicts(spec resolvedSpec, routing mihomoRouting) error {
 var (
 	defaultRouteDev = regexp.MustCompile(`\bdev\s+(\S+)`)
 	inetAddr        = regexp.MustCompile(`\binet\s+(\d+\.\d+\.\d+\.\d+/\d+)`)
+	neighLLAddr     = regexp.MustCompile(`\blladdr\s+([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})\b`)
 )
+
+// resolveRouterMAC reads the router's MAC from the neighbor table, pinging once
+// to populate it. Only connections forwarded by the router are marked: clients
+// that reach the gateway directly (static gateway, or after an ICMP redirect
+// from the router) must get replies directly, or the router drops them.
+func resolveRouterMAC(spec *resolvedSpec) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		out, err := runCommand("ip", "neigh", "show", spec.RouterIP, "dev", spec.LanInterface)
+		if err == nil {
+			if m := neighLLAddr.FindStringSubmatch(out); m != nil {
+				spec.routerMAC = strings.ToLower(m[1])
+				return nil
+			}
+		}
+		if attempt == 0 {
+			runCommand("ping", "-c", "1", "-W", "1", spec.RouterIP)
+		}
+	}
+	return fmt.Errorf("无法获取主路由 %s 的 MAC 地址", spec.RouterIP)
+}
 
 // resolveInterfaces fills the LAN interface (the default route's device) and its CIDR.
 func resolveInterfaces(spec *resolvedSpec, routing mihomoRouting) error {
@@ -239,7 +261,7 @@ func resolveInterfaces(spec *resolvedSpec, routing mihomoRouting) error {
 	if spec.TunDevice == "" && routing.tunEnabled {
 		spec.TunDevice = routing.tunDevice
 	}
-	return nil
+	return resolveRouterMAC(spec)
 }
 
 // renderReturnTable builds an atomic nft script that replaces the managed table.
@@ -251,8 +273,8 @@ func renderReturnTable(spec resolvedSpec) string {
 	fmt.Fprintf(&b, "\tset proxy_dst {\n\t\ttype ipv4_addr\n\t\tflags interval\n\t\telements = { %s }\n\t}\n",
 		strings.Join(spec.ProxyDst, ", "))
 	b.WriteString("\tchain prerouting {\n\t\ttype filter hook prerouting priority mangle; policy accept;\n")
-	fmt.Fprintf(&b, "\t\tiifname %q ip daddr @proxy_dst ct state new ct mark set ct mark | %s comment \"configflow-return-mark\"\n",
-		spec.LanInterface, mark)
+	fmt.Fprintf(&b, "\t\tiifname %q ether saddr %s ip daddr @proxy_dst ct state new ct mark set ct mark | %s comment \"configflow-return-mark\"\n",
+		spec.LanInterface, spec.routerMAC, mark)
 	if spec.TunDevice != "" {
 		fmt.Fprintf(&b, "\t\tiifname %q ct mark & %s == %s meta mark set meta mark | %s comment \"configflow-return-tun\"\n",
 			spec.TunDevice, mark, mark, mark)
@@ -507,6 +529,7 @@ func ApplyReturnRouting(cfg *Config, spec ReturnRoutingSpec) (map[string]interfa
 	}
 	return map[string]interface{}{
 		"success": true, "lan_interface": resolved.LanInterface, "lan_cidr": resolved.lanCIDR,
+		"router_mac": resolved.routerMAC,
 		"tun_device": resolved.TunDevice, "adopted": legacy,
 	}, nil
 }

@@ -10,7 +10,7 @@ import (
 	"syscall"
 )
 
-const Version = "1.8.1-go"
+const Version = "1.8.2-go"
 
 type Config struct {
 	Path   string

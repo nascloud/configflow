@@ -13,6 +13,7 @@ import (
 )
 
 type fakeHost struct {
+	noNeigh  bool
 	commands []string
 	inputs   []string
 	tables   map[string]string // "inet name" -> dump
@@ -34,6 +35,11 @@ func installFakeHost(t *testing.T, host *fakeHost) {
 			return "default via 192.168.1.1 dev eth0 \n", nil
 		case line == "ip -4 -o addr show dev eth0":
 			return "2: eth0    inet 192.168.1.4/24 brd 192.168.1.255 scope global eth0\n", nil
+		case line == "ip neigh show 192.168.1.1 dev eth0":
+			if host.noNeigh {
+				return "", nil
+			}
+			return "192.168.1.1 lladdr 00:E0:B4:66:D5:F9 REACHABLE\n", nil
 		case strings.HasPrefix(line, "nft list table "):
 			if dump, ok := host.tables[strings.TrimPrefix(line, "nft list table ")]; ok {
 				return dump, nil
@@ -128,12 +134,13 @@ func TestMihomoConflicts(t *testing.T) {
 
 func TestRenderReturnTable(t *testing.T) {
 	spec, _ := validateSpec(sampleSpec())
-	spec.LanInterface, spec.TunDevice = "eth0", "Meta"
+	spec.LanInterface, spec.TunDevice, spec.routerMAC = "eth0", "Meta", "00:e0:b4:66:d5:f9"
 	script := renderReturnTable(spec)
 	for _, want := range []string{
 		"table inet configflow_return {}\ndelete table inet configflow_return\n",
 		"elements = { 198.18.0.0/16, 91.108.0.0/16 }",
-		`iifname "eth0" ip daddr @proxy_dst ct state new ct mark set ct mark | 0x400000`,
+		// Only router-forwarded connections; redirected/direct clients reply directly.
+		`iifname "eth0" ether saddr 00:e0:b4:66:d5:f9 ip daddr @proxy_dst ct state new ct mark set ct mark | 0x400000`,
 		`iifname "Meta" ct mark & 0x400000 == 0x400000 meta mark set meta mark | 0x400000`,
 		"type route hook output priority mangle",
 	} {
@@ -165,7 +172,7 @@ func TestApplyAdoptsLegacyAndRemoveRestores(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["lan_interface"] != "eth0" || result["lan_cidr"] != "192.168.1.0/24" || result["tun_device"] != "Meta" {
+	if result["lan_interface"] != "eth0" || result["lan_cidr"] != "192.168.1.0/24" || result["tun_device"] != "Meta" || result["router_mac"] != "00:e0:b4:66:d5:f9" {
 		t.Fatalf("result = %v", result)
 	}
 	joined := strings.Join(host.commands, "\n")
@@ -260,5 +267,22 @@ func TestReturnRoutingHandlerPutAndDelete(t *testing.T) {
 	ReturnRoutingHandler(cfg)(recorder, httptest.NewRequest(http.MethodDelete, "/api/return-routing", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"removed":true`) {
 		t.Fatalf("delete code = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestApplyRequiresRouterMAC(t *testing.T) {
+	host := &fakeHost{tables: map[string]string{}, noNeigh: true}
+	installFakeHost(t, host)
+	localDDir = t.TempDir()
+	cfg := testConfig(t, tunConfig)
+	if _, err := ApplyReturnRouting(cfg, sampleSpec()); err == nil || !strings.Contains(err.Error(), "MAC") {
+		t.Fatalf("expected MAC resolution error, got %v", err)
+	}
+	joined := strings.Join(host.commands, "\n")
+	if !strings.Contains(joined, "ping -c 1 -W 1 192.168.1.1") {
+		t.Error("router MAC lookup should ping once to populate the neighbor table")
+	}
+	if strings.Contains(joined, "ip rule add") || len(host.inputs) != 0 {
+		t.Error("nothing may be applied without the router MAC")
 	}
 }
