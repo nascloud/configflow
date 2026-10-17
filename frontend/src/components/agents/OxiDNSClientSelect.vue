@@ -4,7 +4,7 @@
     <PopoverTrigger as-child>
       <Button type="button" variant="outline" role="combobox" aria-label="客户端 IP" :aria-expanded="open"
         class="min-h-11 w-full min-w-0 justify-between gap-2 bg-card font-normal" :disabled="!agentId || !recorder">
-        <span :class="['min-w-0 truncate', modelValue ? 'font-mono' : 'text-muted-foreground']" :title="modelValue || '全部客户端'">{{ modelValue || '全部客户端' }}</span>
+        <span :class="['min-w-0 truncate', modelValue ? 'font-mono' : 'text-muted-foreground']" :title="modelValue || placeholder">{{ modelValue || placeholder }}</span>
         <ChevronsUpDown class="size-4 shrink-0 text-muted-foreground" />
       </Button>
     </PopoverTrigger>
@@ -16,7 +16,7 @@
             <Input class="min-h-11 border-0 bg-transparent px-0 font-mono shadow-none focus-visible:ring-0" aria-label="搜索已有客户端 IP" placeholder="搜索已有 IP…" />
           </ListboxFilter>
         </div>
-        <div class="border-b px-1 py-1">
+        <div v-if="allowAll" class="border-b px-1 py-1">
           <Button type="button" variant="ghost" class="min-h-11 w-full justify-start font-normal" @click="select('')">
             <Check :class="['size-4', modelValue ? 'opacity-0' : 'text-primary-accent']" />全部客户端
           </Button>
@@ -54,7 +54,7 @@ import { Input } from '@/components/ui/input'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 
-const props = defineProps<{ modelValue: string; agentId: string; recorder: string; range: OxiDNSQueryFilters['range'] }>()
+const props = withDefaults(defineProps<{ modelValue: string; agentId: string; recorder: string; range: OxiDNSQueryFilters['range']; allowAll?: boolean; placeholder?: string }>(), { allowAll: true, placeholder: '全部客户端' })
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 const open = ref(false)
 const search = ref('')

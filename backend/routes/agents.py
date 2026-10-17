@@ -974,6 +974,11 @@ def push_config_to_agent(agent_id):
             return jsonify({'success': False, 'message': f'Agent profile unavailable: {exc}'}), 409
         config_revision = _profile_revision(profile_id)
         service_type = agent.get('service_type', 'mihomo')
+        if 'expected_profile_id' in data or 'expected_oxidns_revision' in data:
+            from backend.common.oxidns_device_policy import revision
+            if service_type != 'oxidns' or data.get('expected_profile_id') != profile_id or \
+                    data.get('expected_oxidns_revision') != revision(config_data.get('oxidns', {})):
+                return jsonify(success=False, message='配置或设备绑定已改变，请重新载入设备策略后发布。'), 409
         if service_type == 'surge':
             content = generate_surge_config(config_data, base_url=base_url)
             restart = data.get('restart', True)
@@ -1288,3 +1293,65 @@ def get_oxidns_queries(agent_id):
 @require_auth
 def get_oxidns_query(agent_id, record_id):
     return _oxidns_monitor_response('query', agent_id, record_id, request.args)
+
+
+@bp.route('/<agent_id>/oxidns/device-policies', methods=['GET', 'PUT'])
+@require_auth
+def oxidns_device_policies(agent_id):
+    """Edit only the bound profile, independently of the global UI selection."""
+    from backend.common.config import update_config_transaction
+    from backend.common.oxidns_device_policy import apply_policies, read_policies, revision
+    from backend.common.oxidns_settings import OxidnsSettingsError
+
+    def response(data, status=200):
+        result = jsonify(data)
+        result.headers['Cache-Control'] = 'no-store'
+        return result, status
+
+    manager = get_agent_manager()
+    agent = manager.get_agent_by_id(agent_id)
+    if not agent:
+        return response({'message': 'Agent 不存在。'}, 404)
+    if agent.get('service_type') != 'oxidns':
+        return response({'message': '设备策略仅支持 OxiDNS Agent。'}, 400)
+    profile_id = agent.get('profile_id') or get_default_profile_id()
+    try:
+        if request.method == 'PUT':
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict) or set(body) - {'profile_id', 'revision', 'policies', 'base_url'} or \
+                    not isinstance(body.get('base_url', ''), str):
+                return response({'message': '设备策略请求格式无效。'}, 400)
+            if body.get('profile_id') != profile_id:
+                return response({'message': 'Agent 绑定的配置空间已改变，请重新载入。'}, 409)
+
+            def update(config):
+                # Recheck binding under the repository transaction lock.
+                latest = manager.get_agent_by_id(agent_id)
+                if not latest or latest.get('service_type') != 'oxidns' or \
+                        (latest.get('profile_id') or get_default_profile_id()) != profile_id or \
+                        body.get('revision') != revision(config.get('oxidns', {})):
+                    raise PolicyConflict('配置或设备绑定已更新，请重新载入后再保存。')
+                config['oxidns'] = apply_policies(config.get('oxidns', {}), config,
+                                                 body.get('policies'), body.get('base_url', ''))
+
+            update_config_transaction(update, profile_id)
+        config = get_config(profile_id)
+        settings = config.get('oxidns', {})
+        profile = get_repository().get_profile(profile_id)
+        peers = [{'id': item['id'], 'name': item.get('name') or item['id']}
+                 for item in manager.get_all_agents()
+                 if item.get('service_type') == 'oxidns' and
+                 (item.get('profile_id') or get_default_profile_id()) == profile_id]
+        return response({'success': True, 'draft': True, 'profile_id': profile_id,
+                         'profile_name': profile.get('name') or profile_id,
+                         'revision': revision(settings), 'agents': peers,
+                         'deployment': _public_deployment(agent['latest_deployment']) if agent.get('latest_deployment') else None,
+                         **read_policies(settings, config)})
+    except PolicyConflict as exc:
+        return response({'message': str(exc)}, 409)
+    except (OxidnsSettingsError, ProfileRepositoryError) as exc:
+        return response({'message': str(exc)}, 400)
+
+
+class PolicyConflict(ValueError):
+    pass

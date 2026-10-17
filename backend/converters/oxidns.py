@@ -379,4 +379,7 @@ def generate_oxidns_config(config_data, base_url=''):
             raise OxidnsSettingsError(f'OxiDNS 插件 tag 重复：{tag}')
         tags.add(tag)
     result['plugins'] = plugins
+    if s.get('device_policies'):
+        from backend.common.oxidns_device_policy import patch_document
+        result = patch_document(result, [], s['device_policies'])
     return yaml.safe_dump(result, allow_unicode=True, sort_keys=False)

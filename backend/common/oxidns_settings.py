@@ -14,7 +14,7 @@ def get_default_oxidns_settings():
         'direct_rulesets': [], 'proxy_rulesets': [], 'direct_rules': [], 'proxy_rules': [],
         'local_dns': '', 'remote_dns': '', 'fallback_dns': '',
         'default_forward': 'forward_remote', 'custom_hosts': '', 'custom_config': '',
-        'custom_matches': [], 'custom_match_position': 'tail',
+        'custom_matches': [], 'custom_match_position': 'tail', 'device_policies': [],
         'worker_threads': 2, 'listen': '0.0.0.0:53', 'tcp_enabled': True,
         'prefer_ipv4': True, 'block_qtypes': [65, 255], 'metrics_enabled': True,
         'aggregate_rules': True, 'local_concurrent': 2, 'remote_concurrent': 1,
@@ -84,6 +84,8 @@ def normalize_oxidns_settings(value=None, *, validate_native_arguments=True):
     if not isinstance(value, dict):
         raise OxidnsSettingsError('OxiDNS 设置必须是对象')
     settings = _merge(get_default_oxidns_settings(), value)
+    from backend.common.oxidns_device_policy import normalize_policies
+    settings['device_policies'] = normalize_policies(settings['device_policies'])
     if settings['config_mode'] not in ('template', 'native'):
         raise OxidnsSettingsError('OxiDNS 配置模式必须为 template 或 native')
     if not isinstance(settings['native_config'], str):

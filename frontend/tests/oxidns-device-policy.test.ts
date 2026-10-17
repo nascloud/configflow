@@ -1,0 +1,144 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
+import { agentApi, oxidnsDevicePolicyApi, oxidnsMonitorApi } from '@/api'
+import { confirm, notify } from '@/lib/feedback'
+import OxiDNSDevicePolicies from '@/components/agents/OxiDNSDevicePolicies.vue'
+import OxiDNSMonitor from '@/views/OxiDNSMonitor.vue'
+import OxiDNSClientSelect from '@/components/agents/OxiDNSClientSelect.vue'
+import { Select } from '@/components/ui/select'
+
+vi.mock('@/api', () => ({
+  oxidnsDevicePolicyApi: { get: vi.fn(), save: vi.fn() },
+  oxidnsMonitorApi: { overview: vi.fn(), clients: vi.fn(), queries: vi.fn() },
+  agentApi: { getAll: vi.fn(), pushConfig: vi.fn(), getDeployment: vi.fn(), activateDeployment: vi.fn() }
+}))
+vi.mock('@/lib/feedback', () => ({ confirm: vi.fn(), notify: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
+const wrappers: VueWrapper[] = []
+const response = (data: any) => ({ data } as any)
+const state = (policies: any[] = []) => ({ success: true, draft: true, profile_id: 'office', profile_name: '办公室', revision: 'v1',
+  policies, editable: true, reason: '', agents: [{ id: 'one', name: 'DNS 1' }, { id: 'two', name: 'DNS 2' }] })
+const button = (wrapper: VueWrapper, text: string) => wrapper.findAll('button').find(item => item.text() === text)!
+async function render(props: any = {}) {
+  const wrapper = mount(OxiDNSDevicePolicies, { props: { agentId: 'one', recorder: '', ...props }, attachTo: document.body })
+  wrappers.push(wrapper)
+  await flushPromises()
+  return wrapper
+}
+async function add(wrapper: VueWrapper, ip = '192.168.50.51') {
+  await wrapper.get('#policy-client-ip').setValue(ip)
+  await button(wrapper, '添加设备').trigger('click')
+}
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })))
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem: vi.fn() })
+  Element.prototype.scrollIntoView = vi.fn()
+  vi.mocked(oxidnsDevicePolicyApi.get).mockResolvedValue(response(state()))
+  vi.mocked(oxidnsDevicePolicyApi.save).mockImplementation(async (_id, data) => response({ ...state(data.policies), revision: 'v2' }))
+  vi.mocked(agentApi.pushConfig).mockImplementation(async (_id, id) => response({ deployment_id: id, status: 'succeeded' }))
+  vi.mocked(confirm).mockResolvedValue(true)
+})
+afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ''; vi.unstubAllGlobals() })
+
+describe('OxiDNS device policy editing', () => {
+  it('adds an offline client, saves to the bound profile and publishes the saved revision', async () => {
+    const wrapper = await render()
+    expect(wrapper.text()).toContain('DNS 1、DNS 2')
+    expect(wrapper.text()).toContain('可手动添加 IP')
+    await add(wrapper)
+    wrapper.getComponent(Select).vm.$emit('update:modelValue', 'direct')
+    await wrapper.get('input[aria-label="192.168.50.51 备注"]').setValue('电视')
+    expect(button(wrapper, '发布到当前设备').attributes('disabled')).toBeDefined()
+    await button(wrapper, '保存草稿').trigger('click')
+    await flushPromises()
+    expect(oxidnsDevicePolicyApi.save).toHaveBeenCalledWith('one', { profile_id: 'office', revision: 'v1', policies: [{ ip: '192.168.50.51', name: '电视', mode: 'direct' }] })
+    await button(wrapper, '发布到当前设备').trigger('click')
+    await flushPromises()
+    expect(agentApi.pushConfig).toHaveBeenCalledWith('one', expect.any(String), { expected_profile_id: 'office', expected_oxidns_revision: 'v2' })
+    expect(wrapper.text()).toContain('上次配置推送：成功')
+  })
+  it('selects existing clients without an all-clients option and prevents duplicates', async () => {
+    vi.mocked(oxidnsMonitorApi.clients).mockResolvedValue(response({ success: true, clients: [{ ip: '192.168.50.50', count: 4 }], sample_limited: false }))
+    const wrapper = await render({ recorder: 'queries' })
+    await wrapper.getComponent(OxiDNSClientSelect).get('button').trigger('click')
+    await flushPromises()
+    expect(document.body.textContent).not.toContain('全部客户端')
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent?.includes('192.168.50.50'))!
+    option.click()
+    await flushPromises()
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    await add(wrapper, '192.168.50.50')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(notify.info).toHaveBeenCalledWith('此客户端已在列表中。')
+  })
+  it('rejects malformed addresses and canonicalizes IPv6', async () => {
+    const wrapper = await render()
+    for (const ip of ['999.168.1.1', '192.168.1.1/24', 'dns.example', '2001::::1']) await add(wrapper, ip)
+    expect(wrapper.findAll('tbody tr')).toHaveLength(0)
+    await add(wrapper, '2001:0db8:0:0:0:0:0:1')
+    await add(wrapper, '2001:db8::1')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.text()).toContain('2001:db8::1')
+  })
+  it('keeps edits after a conflicting save and requires confirmation to discard them', async () => {
+    vi.mocked(oxidnsDevicePolicyApi.save).mockRejectedValue({ response: { status: 409, data: { message: '配置已更新，请重新载入' } } })
+    const wrapper = await render()
+    await add(wrapper)
+    await button(wrapper, '保存草稿').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('配置已更新，请重新载入')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    vi.mocked(confirm).mockResolvedValueOnce(false)
+    await button(wrapper, '重新载入').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    await button(wrapper, '重新载入').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('tbody tr')).toHaveLength(0)
+  })
+  it('saves an empty list when removing the last device', async () => {
+    vi.mocked(oxidnsDevicePolicyApi.get).mockResolvedValue(response(state([{ ip: '192.168.50.51', name: '', mode: 'direct' }])))
+    const wrapper = await render()
+    await wrapper.get('[aria-label="移除 192.168.50.51"]').trigger('click')
+    await button(wrapper, '保存草稿').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(oxidnsDevicePolicyApi.save).mock.lastCall?.[1].policies).toEqual([])
+  })
+  it('makes unrecognized native configuration read-only with an explanation', async () => {
+    vi.mocked(oxidnsDevicePolicyApi.get).mockResolvedValue(response({ ...state(), editable: false, reason: '处理链已手动修改' }))
+    const wrapper = await render()
+    expect(wrapper.text()).toContain('处理链已手动修改')
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
+    expect(button(wrapper, '发布到当前设备').attributes('disabled')).toBeDefined()
+  })
+  it('ignores a late policy response when the selected Agent changes', async () => {
+    let resolve!: (value: any) => void
+    vi.mocked(oxidnsDevicePolicyApi.get).mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const wrapper = await render()
+    await wrapper.setProps({ agentId: 'two' })
+    await flushPromises()
+    resolve(response({ ...state(), profile_name: '旧设备' }))
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('旧设备')
+  })
+  it('keeps the policy tab accessible without monitor data and guards device switches', async () => {
+    vi.mocked(agentApi.getAll).mockResolvedValue(response([{ id: 'one', name: 'DNS 1', service_type: 'oxidns' }, { id: 'two', name: 'DNS 2', service_type: 'oxidns' }]))
+    vi.mocked(oxidnsMonitorApi.overview).mockRejectedValue(new Error('核心离线'))
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/agents/:agentId/oxidns', component: OxiDNSMonitor }] })
+    await router.push('/agents/one/oxidns?tab=devices')
+    const wrapper = mount({ template: '<RouterView />' }, { global: { plugins: [router] } })
+    wrappers.push(wrapper)
+    await flushPromises()
+    expect(wrapper.findComponent(OxiDNSDevicePolicies).exists()).toBe(true)
+    await add(wrapper)
+    vi.mocked(confirm).mockResolvedValueOnce(false)
+    await router.push('/agents/two/oxidns?tab=devices')
+    expect(router.currentRoute.value.params.agentId).toBe('one')
+    await router.push('/agents/two/oxidns?tab=devices')
+    await flushPromises()
+    expect(router.currentRoute.value.params.agentId).toBe('two')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(0)
+  })
+})
