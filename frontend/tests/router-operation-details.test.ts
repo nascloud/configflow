@@ -1,0 +1,56 @@
+import { afterEach, describe, expect, it } from 'vitest'
+import { mount, type VueWrapper } from '@vue/test-utils'
+import RouterOperationPreview from '@/components/routers/RouterOperationPreview.vue'
+import { operationDetails, type RouterPlanOperation } from '@/lib/routerOperationDetails'
+const address = '/ip/firewall/address-list'
+const fixture = (): RouterPlanOperation => ({ kind: 'ros_policy_replace', summary: '发布来源策略',
+  previous: { spec: { sources: ['192.0.2.101/32'], destinations: ['203.0.113.0/24'], gateway: '192.0.2.3' }, resources: [{ id: '*missing', path: address, config: { address: '192.0.2.51' } }] },
+  spec: { sources: ['192.0.2.105/32'], destinations: ['203.0.113.0/24', '198.51.100.0/24'], gateway: '192.0.2.4', egress_interface: 'lan' },
+  bundle: [{ path: address, values: { list: 'CF_Source_Proxy_IP_02', address: '192.0.2.105/32', disabled: 'false' } },
+    { path: '/ip/firewall/mangle', values: { chain: 'CF_Proxy_Routing_02', action: 'mark-routing', 'new-routing-mark': 'CF_Proxy_Routing_02', passthrough: 'false' } }],
+  owned: [{ id: '*owned', path: address, config: { list: 'CF_Source_Proxy_IP_01', address: '192.0.2.101/32' } }],
+  migrations: [{ id: '*static', path: '/ip/route', config: { 'dst-address': '198.51.100.0/24', gateway: '192.0.2.4', 'routing-table': 'main' } }],
+  evidence: { unrelated_rule: 'do-not-render-evidence' }
+})
+const wrappers: VueWrapper[] = []
+afterEach(() => wrappers.splice(0).forEach(w => w.unmount()))
+describe('reviewable release operation details', () => {
+  it('distinguishes logical address changes from exact object replacement and excludes unrelated evidence', () => {
+    const groups = operationDetails(fixture())
+    expect(groups.find(g => g.title === '来源范围')!.rows).toEqual([
+      { label: '新增', value: '192.0.2.105/32', action: '新增' }, { label: '移除', value: '192.0.2.101/32', action: '移除' }])
+    expect(groups.find(g => g.title === '目的网段')!.rows).toContainEqual({ label: '保留', value: '203.0.113.0/24', action: '保留' })
+    expect(groups.find(g => g.title === '网关与出口')!.rows[0]).toEqual({ label: '下一跳', before: '192.0.2.3', value: '192.0.2.4' })
+    expect(groups.find(g => g.title === '新增Mangle')!.rows[0].value).toContain('new-routing-mark: CF_Proxy_Routing_02')
+    expect(groups.find(g => g.title === '删除旧受管对象')!.rows).toHaveLength(1)
+    expect(groups.find(g => g.title === '迁移主表静态路由')!.rows[0].label).toContain('*static')
+    expect(JSON.stringify(groups)).not.toContain('*missing'); expect(JSON.stringify(groups)).not.toContain('do-not-render-evidence')
+  })
+  it('shows withdrawal as removals without inventing new objects', () => {
+    const op = fixture(); op.bundle = []; op.spec = null; op.migrations = []
+    const groups = operationDetails(op)
+    expect(groups.find(g => g.title === '来源范围')!.rows.every(r => r.action === '移除')).toBe(true)
+    expect(groups.some(g => g.title.startsWith('新增'))).toBe(false)
+    expect(groups.find(g => g.title === '删除旧受管对象')!.note).toContain('撤销策略')
+  })
+  it('retains NAT source restrictions and separates appended destinations from existing matchers', () => {
+    const groups = operationDetails({ kind: 'nat_update', summary: '扩充 NAT', expected: { 'src-address': '192.0.2.0/24', protocol: 'tcp', 'out-interface': 'lan', password: 'not-public' }, add_dst: ['203.0.113.0/24'], comment: 'cf-test' })
+    expect(groups.find(g => g.title === '现有匹配条件')!.rows.map(row => row.value)).toEqual(['192.0.2.0/24', 'tcp', 'lan'])
+    expect(groups.find(g => g.title === '新增目的网段')!.rows[0].value).toBe('203.0.113.0/24')
+    expect(JSON.stringify(groups)).not.toContain('not-public')
+  })
+  it('mounts detail rows only when expanded, searches every address and paginates large plans', async () => {
+    const op = fixture(); op.previous = null
+    op.spec = { sources: Array.from({ length: 120 }, (_, i) => `192.0.2.${i + 1}/32`), destinations: [], gateway: '192.0.2.3' }
+    const w = mount(RouterOperationPreview, { props: { op } }); wrappers.push(w)
+    expect(w.findAll('dd')).toHaveLength(0)
+    await w.get('button').trigger('click')
+    expect(w.findAll('dd')).toHaveLength(50)
+    await w.findAll('button').find(b => b.text() === '下一页')!.trigger('click')
+    expect(w.find('dd').text()).toBe('192.0.2.51/32')
+    await w.get('[aria-label="搜索变更详情"]').setValue('192.0.2.120/32')
+    expect(w.findAll('dd')).toHaveLength(1); expect(w.find('dd').text()).toBe('192.0.2.120/32')
+    await w.setProps({ op: { kind: 'route_add', summary: '新预览', cidr: '198.51.100.0/24', gateway: '192.0.2.4' } })
+    expect(w.findAll('dd')).toHaveLength(0); expect(w.text()).toContain('新预览')
+  })
+})

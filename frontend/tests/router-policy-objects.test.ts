@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import PolicyRoutingPanel from '@/components/routers/PolicyRoutingPanel.vue'
+import PolicyRoutingObjects from '@/components/routers/PolicyRoutingObjects.vue'
 import { routerApi } from '@/api'
 
 vi.mock('@/api', () => ({ routerApi: { policy: vi.fn() } }))
@@ -12,18 +12,20 @@ const response = (objects: any[] = []) => ({ data: { success: true, generated_at
 const setup = async () => {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
   await router.push('/')
-  const wrapper = mount(PolicyRoutingPanel, { props: { id: 'ros', name: '主路由', profile: 'office', ruleSets: ['Telegram'], gateway: '192.168.0.3' }, global: { plugins: [router] } })
+  const wrapper = mount(PolicyRoutingObjects, { props: { id: 'ros', profile: 'office' }, global: { plugins: [router] } })
   wrappers.push(wrapper)
   await flushPromises()
   return wrapper
 }
 const click = async (wrapper: VueWrapper, label: string) => {
-  await wrapper.findAll('button').find(button => button.text().startsWith(label))!.trigger('click')
+  const button = wrapper.findAll('button').find(button => button.text().startsWith(label))!
+  if (button.attributes('role') === 'tab') await button.trigger('mousedown', { button: 0 })
+  await button.trigger('click')
   await flushPromises()
 }
 
 describe('RouterOS policy objects', () => {
-  it('pages large address lists, searches fields and opens the existing source editor', async () => {
+  it('pages large address lists, searches fields without loading source editors', async () => {
     vi.mocked(routerApi.policy).mockResolvedValue(response(Array.from({ length: 123 }, (_, i) => ({
       id: `*${i}`, kind: 'addresses', status: 'matched', fields: { list: 'CF_Destination_Proxy_IP_01', address: `10.0.0.${i}/32` }
     }))) as any)
@@ -35,9 +37,6 @@ describe('RouterOS policy objects', () => {
     await wrapper.find('input').setValue('10.0.0.122/32')
     expect(wrapper.findAll('tbody tr')).toHaveLength(1)
     expect(wrapper.text()).toContain('第 1 / 1 页')
-    expect(wrapper.find('a').attributes('href')).toBe('/agents/dns/oxidns?tab=devices')
-    await click(wrapper, '编辑规则集与网关')
-    expect(wrapper.emitted('edit')).toHaveLength(1)
   })
 
   it('distinguishes live edits from missing objects and shows runtime next hop', async () => {

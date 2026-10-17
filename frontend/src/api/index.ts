@@ -229,6 +229,20 @@ export interface PolicyRoutingView {
   objects: PolicyRoutingObject[]
   source_agents: { id: string; name: string }[]
 }
+export interface PolicyWorkspace {
+  profile_id: string; profile_name: string; revision: string; oxidns_revision: string
+  router: { id: string; name: string; ip_rule_sets: string[]; ros_policy_rule_sets: string[]; proxy_gateway_agent_id: string }
+  sources: { policies: import('@/types/oxidnsMonitor').OxiDNSDevicePolicy[]; editable: boolean; reason: string }
+  source_agents: { id: string; name: string; host: string; status: string }[]
+  gateways: { id: string; name: string; host: string }[]
+  rule_sets: { id: string; name: string; policy: string }[]
+}
+export interface PolicyWorkspacePreview {
+  revision: string; profile_id: string; config_revision: number; oxidns_revision: string
+  targets: PolicyWorkspace['source_agents']; dns_content: string
+  router_plan: { fingerprint: string; empty: boolean; blockers: string[]; warnings: string[];
+    stages: { key: string; title: string; enabled?: boolean; note?: string; ops: import('@/lib/routerOperationDetails').RouterPlanOperation[] }[] }
+}
 export const routerApi = {
   list: () => api.get('/routers'),
   create: (data: unknown) => api.post('/routers', data),
@@ -237,12 +251,18 @@ export const routerApi = {
   probe: (id: string) => api.post(`/routers/${id}/probe`, null, { timeout: 60000 }),
   report: (id: string) => api.get(`/routers/${id}/report`, { timeout: 90000 }),
   plan: (id: string) => api.post(`/routers/${id}/plan`, null, { timeout: 90000 }),
-  apply: (id: string, fingerprint: string) =>
-    api.post(`/routers/${id}/apply`, { fingerprint }, { timeout: 300000 }),
+  apply: (id: string, fingerprint: string, profileId = getActiveProfileId()) =>
+    api.post(`/routers/${id}/apply`, { fingerprint }, { ...profileOptions(profileId), timeout: 300000 }),
   routes: (id: string, profileId = getActiveProfileId()) =>
     api.get(`/routers/${id}/routes`, { ...profileOptions(profileId), timeout: 60000 }),
   policy: (id: string, profileId = getActiveProfileId()) =>
     api.get(`/routers/${id}/policy`, { ...profileOptions(profileId), timeout: 60000 }),
+  policySettings: (id: string, profileId: string) =>
+    api.get<{ success: boolean; message?: string; workspace: PolicyWorkspace }>(`/routers/${id}/policy-settings`, profileOptions(profileId)),
+  savePolicySettings: (id: string, draft: { revision: string; router: Pick<PolicyWorkspace['router'], 'ip_rule_sets' | 'ros_policy_rule_sets' | 'proxy_gateway_agent_id'>; policies: PolicyWorkspace['sources']['policies'] }, profileId: string) =>
+    api.put<{ success: boolean; message?: string; workspace: PolicyWorkspace }>(`/routers/${id}/policy-settings`, { ...draft, base_url: getBaseUrl() }, profileOptions(profileId)),
+  previewPolicySettings: (id: string, revision: string, targets: string[], profileId: string) =>
+    api.post<{ success: boolean; message?: string; preview: PolicyWorkspacePreview }>(`/routers/${id}/policy-settings/preview`, { revision, targets, base_url: getBaseUrl() }, { ...profileOptions(profileId), timeout: 90000 }),
   routePlan: (id: string, change: StaticRouteChange, profileId = getActiveProfileId()) =>
     api.post(`/routers/${id}/routes/plan`, change, { ...profileOptions(profileId), timeout: 60000 }),
   routeApply: (id: string, change: StaticRouteChange & { fingerprint: string }, profileId = getActiveProfileId()) =>
@@ -306,7 +326,7 @@ export const agentApi = {
   validateLogPath: (id: string, path: string) => api.post(`/agents/${id}/logs/validate`, { path }),
   getLoggingConfig: (id: string) => api.get(`/agents/${id}/config/logging`),
   setLoggingConfig: (id: string, enabled: boolean) => api.post(`/agents/${id}/config/logging`, { enabled }),
-  pushConfig: (id: string, deploymentId?: string, expected?: PublishGuard | { expected_profile_id: string; expected_oxidns_revision: string }) => api.post(`/agents/${id}/push-config`, {
+  pushConfig: (id: string, deploymentId?: string, expected?: PublishGuard | { expected_profile_id: string; expected_oxidns_revision: string; expected_config_revision?: number }) => api.post(`/agents/${id}/push-config`, {
     base_url: getBaseUrl(), deployment_id: deploymentId, ...expected
   }, { timeout: 120000 }),
   getDeployment: (id: string, deploymentId: string) => api.get(`/agents/${id}/deployments/${deploymentId}`),

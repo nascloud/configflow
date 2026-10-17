@@ -13,11 +13,11 @@ import { notify } from '@/lib/feedback'
 vi.mock('@/api', () => ({
   agentApi: { getAll: vi.fn() },
   routerApi: {
-    list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), probe: vi.fn(), report: vi.fn(), plan: vi.fn(), apply: vi.fn(), routes: vi.fn(), routePlan: vi.fn(), routeApply: vi.fn(), policy: vi.fn()
+    list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), probe: vi.fn(), report: vi.fn(), plan: vi.fn(), apply: vi.fn(), routes: vi.fn(), routePlan: vi.fn(), routeApply: vi.fn(), policy: vi.fn(), policySettings: vi.fn(), savePolicySettings: vi.fn(), previewPolicySettings: vi.fn()
   },
-  ruleApi: { getAll: vi.fn() }
+  ruleApi: { getAll: vi.fn() }, oxidnsMonitorApi: { overview: vi.fn() }
 }))
-vi.mock('@/lib/feedback', () => ({ notify: { success: vi.fn(), error: vi.fn() }, confirmDanger: vi.fn(), confirm: vi.fn(), confirmState: { resolve: null }, settleConfirm: vi.fn() }))
+vi.mock('@/lib/feedback', () => ({ notify: { success: vi.fn(), error: vi.fn(), info: vi.fn() }, confirmDanger: vi.fn(), confirm: vi.fn(), confirmState: { resolve: null }, settleConfirm: vi.fn() }))
 
 const wrappers: VueWrapper[] = []
 beforeEach(() => {
@@ -75,6 +75,7 @@ const mountRouter = async (router: Record<string, unknown> | null = ROUTER, agen
   vi.mocked(routerApi.list).mockResolvedValue({ data: { success: true, routers: router ? [router] : [] } } as any)
   vi.mocked(agentApi.getAll).mockResolvedValue({ data: agents } as any)
   vi.mocked(ruleApi.getAll).mockResolvedValue({ data: [] } as any)
+  vi.mocked(routerApi.policySettings).mockResolvedValue({ data: { success: true, workspace: { profile_id: 'default', profile_name: '默认配置', revision: 'one', oxidns_revision: 'dns-one', router: { id: 'router_1', name: '主路由', ip_rule_sets: [], ros_policy_rule_sets: ['telegram'], proxy_gateway_agent_id: 'a1' }, sources: { policies: [], editable: true, reason: '' }, source_agents: [], gateways: [], rule_sets: [] } } } as any)
   const wrapper = mount(Routers, { attachTo: document.body })
   wrappers.push(wrapper)
   await flushPromises()
@@ -82,70 +83,14 @@ const mountRouter = async (router: Record<string, unknown> | null = ROUTER, agen
 }
 
 describe('routers view', () => {
-  it.each(['unmount', 'profile round trip'])('does not start a preview after a pending policy save and %s', async change => {
-    let finish!: (value: any) => void
-    vi.mocked(routerApi.policy).mockResolvedValue({ data: { success: true, policy: { objects: [], source_agents: [] } } } as any)
-    vi.mocked(routerApi.update).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-    const wrapper = await mountRouter({ ...ROUTER, type: 'routeros' })
-    buttonInDocument('策略路由').click()
-    await flushPromises()
-    buttonInDocument('编辑规则集与网关').click()
-    await flushPromises()
-    buttonInDocument('保存并预览').click()
-    await flushPromises()
-    const reads = vi.mocked(routerApi.list).mock.calls.length
-    if (change === 'unmount') wrapper.unmount()
-    else {
-      activeProfileId.value = 'other'
-      activeProfileId.value = 'default'
-    }
-    finish({ data: { success: true } })
-    await flushPromises()
-    expect(routerApi.list).toHaveBeenCalledTimes(reads)
-    expect(routerApi.report).not.toHaveBeenCalled()
-    expect(routerApi.plan).not.toHaveBeenCalled()
-    expect(notify.success).not.toHaveBeenCalled()
-  })
-
-  it('does not preview after leaving during the refresh following a policy save', async () => {
-    let finish!: (value: any) => void
-    vi.mocked(routerApi.policy).mockResolvedValue({ data: { success: true, policy: { objects: [], source_agents: [] } } } as any)
-    vi.mocked(routerApi.update).mockResolvedValue({ data: { success: true } } as any)
-    const wrapper = await mountRouter({ ...ROUTER, type: 'routeros' })
-    buttonInDocument('策略路由').click()
-    await flushPromises()
-    buttonInDocument('编辑规则集与网关').click()
-    await flushPromises()
-    vi.mocked(routerApi.list).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-    buttonInDocument('保存并预览').click()
-    await flushPromises()
-    wrapper.unmount()
-    finish({ data: { success: true, routers: [{ ...ROUTER, type: 'routeros' }] } })
-    await flushPromises()
-    expect(routerApi.report).not.toHaveBeenCalled()
-    expect(routerApi.plan).not.toHaveBeenCalled()
-  })
-
-  it('opens ROS policy objects and edits only saved rule sets and gateway before preview', async () => {
-    vi.mocked(routerApi.policy).mockResolvedValue({ data: { success: true, policy: { objects: [], source_agents: [] }, generated_at: '2026-10-17T10:00:00' } } as any)
-    vi.mocked(routerApi.update).mockResolvedValue({ data: { success: true } } as any)
-    vi.mocked(routerApi.report).mockResolvedValue({ data: { report: REPORT, generated_at: '2026-10-17T10:00:00' } } as any)
-    vi.mocked(routerApi.plan).mockResolvedValue({ data: { plan: { stages: [], blockers: [], warnings: [], empty: true, fingerprint: 'p' } } } as any)
+  it('opens the unified policy workspace without opening another editor or publishing', async () => {
     await mountRouter({ ...ROUTER, type: 'routeros', ros_policy_rule_sets: ['telegram'] })
     buttonInDocument('策略路由').click()
     await flushPromises()
-    expect(routerApi.policy).toHaveBeenCalledWith('router_1', 'default')
-    expect(document.body.textContent).toContain('尚无已下发的策略对象')
-    buttonInDocument('编辑规则集与网关').click()
-    await flushPromises()
-    expect(document.body.textContent).toContain('编辑策略路由设置')
+    expect(routerApi.policySettings).toHaveBeenCalledWith('router_1', 'default')
+    expect(document.body.textContent).toContain('共用来源设备')
+    expect(document.body.textContent).toContain('规则集与网关')
     expect(document.body.querySelector('#router-password')).toBeNull()
-    buttonInDocument('保存并预览').click()
-    await flushPromises()
-    expect(routerApi.update).toHaveBeenCalledWith('router_1', {
-      ip_rule_sets: [], ros_policy_rule_sets: ['telegram'], proxy_gateway_agent_id: 'a1'
-    }, 'default')
-    expect(routerApi.plan).toHaveBeenCalledWith('router_1')
     expect(routerApi.apply).not.toHaveBeenCalled()
   })
 
