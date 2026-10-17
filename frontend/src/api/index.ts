@@ -219,10 +219,20 @@ export interface StaticRoutePlan {
 }
 
 // 上游路由器：接入管理、探测、差异报告与预览确认发布
+export interface PolicyRoutingObject {
+  id: string
+  kind: 'addresses' | 'mangle' | 'tables' | 'routes' | 'nat'
+  status: 'matched' | 'changed' | 'missing'
+  fields: Record<string, string | number | boolean>
+}
+export interface PolicyRoutingView {
+  objects: PolicyRoutingObject[]
+  source_agents: { id: string; name: string }[]
+}
 export const routerApi = {
   list: () => api.get('/routers'),
   create: (data: unknown) => api.post('/routers', data),
-  update: (id: string, data: unknown) => api.put(`/routers/${id}`, data),
+  update: (id: string, data: unknown, profileId = getActiveProfileId()) => api.put(`/routers/${id}`, data, profileOptions(profileId)),
   remove: (id: string) => api.delete(`/routers/${id}`),
   probe: (id: string) => api.post(`/routers/${id}/probe`, null, { timeout: 60000 }),
   report: (id: string) => api.get(`/routers/${id}/report`, { timeout: 90000 }),
@@ -231,6 +241,8 @@ export const routerApi = {
     api.post(`/routers/${id}/apply`, { fingerprint }, { timeout: 300000 }),
   routes: (id: string, profileId = getActiveProfileId()) =>
     api.get(`/routers/${id}/routes`, { ...profileOptions(profileId), timeout: 60000 }),
+  policy: (id: string, profileId = getActiveProfileId()) =>
+    api.get(`/routers/${id}/policy`, { ...profileOptions(profileId), timeout: 60000 }),
   routePlan: (id: string, change: StaticRouteChange, profileId = getActiveProfileId()) =>
     api.post(`/routers/${id}/routes/plan`, change, { ...profileOptions(profileId), timeout: 60000 }),
   routeApply: (id: string, change: StaticRouteChange & { fingerprint: string }, profileId = getActiveProfileId()) =>
