@@ -1,6 +1,10 @@
 """Mihomo (Clash Meta) 配置生成器"""
 import re
 import yaml
+from collections import OrderedDict
+from copy import deepcopy
+from sys import getsizeof
+from threading import RLock
 from urllib.parse import urlsplit
 from typing import Dict, Any, List, Optional
 from backend.utils.logger import get_logger
@@ -913,6 +917,67 @@ def get_mihomo_ruleset_downloads(config_data: Dict[str, Any], base_url: str = ''
     return downloads
 
 
+# Only the YAML branch is cached: URI/JSON already have cheap fast paths.
+_PROXY_YAML_CACHE_SIZE = 128
+_PROXY_YAML_MAX_INPUT_BYTES = 64 * 1024
+_PROXY_YAML_MAX_RESULT_BYTES = 64 * 1024
+_PROXY_YAML_MAX_OBJECTS = 2048
+_PROXY_YAML_MAX_DEPTH = 32
+_PROXY_YAML_CACHE = OrderedDict()
+_PROXY_YAML_CACHE_LOCK = RLock()
+
+
+def _cacheable_proxy_yaml(data):
+    """Bound ordinary result trees; aliases/cycles and special YAML bypass cache.
+
+    Repeated containers are rejected rather than expanded. The original loader
+    result then goes straight to the caller, preserving alias identity/types.
+    """
+    seen, pending, size = set(), [(data, 0)], 0
+    while pending:
+        value, depth = pending.pop()
+        kind = type(value)
+        if depth > _PROXY_YAML_MAX_DEPTH or kind not in (dict, list, str, bool, int, float, type(None)):
+            return False
+        identity = id(value)
+        if identity in seen:
+            if kind in (dict, list):
+                return False
+            continue
+        seen.add(identity)
+        size += getsizeof(value)
+        if len(seen) > _PROXY_YAML_MAX_OBJECTS or size > _PROXY_YAML_MAX_RESULT_BYTES:
+            return False
+        if kind is dict:
+            if any(type(key) is not str for key in value):
+                return False
+            pending.extend((child, depth + 1) for pair in value.items() for child in pair)
+        elif kind is list:
+            pending.extend((child, depth + 1) for child in value)
+    return True
+
+
+def _load_proxy_yaml(text):
+    # Avoid encoding an arbitrarily large input just to decide not to cache it.
+    if (len(text) > _PROXY_YAML_MAX_INPUT_BYTES
+            or len(text.encode('utf-8')) > _PROXY_YAML_MAX_INPUT_BYTES):
+        return yaml.safe_load(text)
+    with _PROXY_YAML_CACHE_LOCK:
+        data = _PROXY_YAML_CACHE.get(text)
+        if data is None:
+            data = yaml.safe_load(text)
+            if not (isinstance(data, dict) and data.get('type') and _cacheable_proxy_yaml(data)):
+                return data
+            _PROXY_YAML_CACHE[text] = data
+            while len(_PROXY_YAML_CACHE) > _PROXY_YAML_CACHE_SIZE:
+                _PROXY_YAML_CACHE.popitem(last=False)
+        else:
+            _PROXY_YAML_CACHE.move_to_end(text)
+    # Cached objects stay private. Conversion changes name/nested proxy fields;
+    # copying outside the lock keeps independent hits from blocking each other.
+    return deepcopy(data)
+
+
 def _parse_structured_proxy_string(proxy_string: str) -> Optional[Dict[str, Any]]:
     """尝试将 proxy_string 解析为结构化的 mihomo proxy dict（JSON/YAML 格式）。
 
@@ -943,7 +1008,7 @@ def _parse_structured_proxy_string(proxy_string: str) -> Optional[Dict[str, Any]
 
     # 尝试 YAML 解析
     try:
-        data = yaml.safe_load(stripped)
+        data = _load_proxy_yaml(stripped)
         if isinstance(data, dict) and data.get('type'):
             return data
     except Exception:
