@@ -62,8 +62,6 @@ def normalize(payload: Dict[str, Any], existing: Optional[Dict[str, Any]] = None
     parsed = urlparse(router['endpoint'])
     if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.path not in ('', '/'):
         raise RouterValidationError('管理地址格式应为 http(s)://主机[:端口]')
-    if router['type'] == 'routeros' and parsed.scheme != 'https':
-        raise RouterValidationError('RouterOS REST API 需要 HTTPS 地址')
     if not router['username']:
         raise RouterValidationError('请填写用户名')
     if not router.get('password'):

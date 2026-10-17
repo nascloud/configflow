@@ -305,7 +305,7 @@
         <DialogHeader>
           <DialogTitle>{{ editingId ? '编辑路由器' : '添加路由器' }}</DialogTitle>
           <DialogDescription>
-            ConfigFlow 通过路由器的管理接口读取配置，iKuai 发布时也通过它写入（需要管理员账号）。RouterOS 需要启用 HTTPS（www-ssl）及有 rest-api、read 权限的用户，变更以脚本形式交给你导入。
+            ConfigFlow 通过路由器的管理接口读取配置，iKuai 发布时也通过它写入（需要管理员账号）。RouterOS 支持 HTTPS（www-ssl）和 HTTP（www，需 7.9+），用户需有 rest-api、read 权限，变更以脚本形式交给你导入。
           </DialogDescription>
         </DialogHeader>
 
