@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 ROUTER_TYPES = ('ikuai', 'routeros')
 EDITABLE_FIELDS = ('name', 'type', 'endpoint', 'username', 'verify_tls', 'proxy_gateway_agent_id', 'dns_agent_id',
-                   'ip_rule_sets', 'manage_return_routing', 'ros_policy_rule_sets')
+                   'ip_rule_sets', 'manage_return_routing', 'ros_policy_rule_sets', 'auto_rule_sync', 'rule_sync_interval')
 
 
 class RouterValidationError(ValueError):
@@ -33,6 +33,8 @@ def public_view(router: Dict[str, Any]) -> Dict[str, Any]:
     """Router as returned to the UI: never expose the password."""
     result = {key: router.get(key) for key in ('id', *EDITABLE_FIELDS, 'last_probe', 'last_release')}
     result['manage_return_routing'] = router.get('manage_return_routing') is True
+    result['auto_rule_sync'] = router.get('auto_rule_sync') is True
+    result['rule_sync_interval'] = router.get('rule_sync_interval', 60)
     result['ros_policy_rule_sets'] = list(router.get('ros_policy_rule_sets') or [])
     result['ip_rule_sets'] = static_rule_sets(router)
     result['has_password'] = bool(router.get('password'))
@@ -65,6 +67,13 @@ def normalize(payload: Dict[str, Any], existing: Optional[Dict[str, Any]] = None
     if not isinstance(manage_return, bool):
         raise RouterValidationError('自动配置回流必须为布尔值')
     router['manage_return_routing'] = manage_return
+    auto_sync = router.get('auto_rule_sync', False)
+    interval = router.get('rule_sync_interval', 60)
+    if type(auto_sync) is not bool or (auto_sync and router['type'] != 'routeros'):
+        raise RouterValidationError('远程规则自动同步仅支持 RouterOS，开关必须为布尔值')
+    if type(interval) is not int or interval not in (15, 30, 60, 180, 360, 720, 1440):
+        raise RouterValidationError('请选择有效的规则检查间隔')
+    router.update(auto_rule_sync=auto_sync, rule_sync_interval=interval)
     for key in ('proxy_gateway_agent_id', 'dns_agent_id'):
         router[key] = str(router.get(key) or '')
     rule_sets = router.get('ip_rule_sets') or []
