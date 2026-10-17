@@ -5,7 +5,7 @@ import pytest
 import requests
 
 from backend.routers.base import RouterError
-from backend.routers.routeros import RouterOSDriver
+from backend.routers.routeros import RouterOSDriver, UncertainWrite
 
 
 @pytest.fixture
@@ -23,18 +23,21 @@ def respond(monkeypatch, driver, status, body):
 
 
 @pytest.mark.parametrize('status', [400, 500])
-def test_permission_failure_explains_group_setup_and_keeps_original_error(monkeypatch, driver, status):
+@pytest.mark.parametrize('method', ['GET', 'PATCH'])
+def test_permission_failure_explains_group_setup_and_keeps_original_error(monkeypatch, driver, status, method):
     respond(monkeypatch, driver, status, {
         'error': status, 'message': 'Internal Server Error', 'detail': 'not enough permissions (9)',
     })
     with pytest.raises(RouterError) as caught:
-        driver._get('/ip/route')
+        driver._request(method, '/ip/route/*80000035', {'comment': 'cf'} if method == 'PATCH' else None)
     message = str(caught.value)
     for detail in ('账号权限不足', 'System → Users', 'Groups', 'read、write、api、rest-api',
-                   '重点检查 write', '重新生成发布预览', '/ip/route',
+                   '重点检查 write', '重新生成发布预览', '/ip/route/*80000035',
                    f'HTTP {status}', 'not enough permissions (9)'):
         assert detail in message
     assert 'private-test-password' not in message
+    # Permission guidance must preserve the uncertainty signal used for compensation.
+    assert isinstance(caught.value, UncertainWrite) is (status == 500 and method == 'PATCH')
 
 
 @pytest.mark.parametrize('status, expected', [
@@ -49,13 +52,15 @@ def test_access_failures_offer_relevant_checks(monkeypatch, driver, status, expe
     assert 'private-test-password' not in str(caught.value)
 
 
-def test_unrelated_server_error_does_not_suggest_permission_changes(monkeypatch, driver):
+@pytest.mark.parametrize('method', ['GET', 'PATCH'])
+def test_unrelated_server_error_does_not_suggest_permission_changes(monkeypatch, driver, method):
     respond(monkeypatch, driver, 500, {'message': 'Internal Server Error', 'detail': 'routing process failed'})
     with pytest.raises(RouterError) as caught:
-        driver._get('/ip/route')
+        driver._request(method, '/ip/route/*1', {'comment': 'cf'} if method == 'PATCH' else None)
     assert 'routing process failed' in str(caught.value)
     assert '账号权限不足' not in str(caught.value)
     assert 'Groups' not in str(caught.value)
+    assert isinstance(caught.value, UncertainWrite) is (method == 'PATCH')
 
 
 def test_non_json_error_keeps_http_status(monkeypatch, driver):
