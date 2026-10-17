@@ -3,6 +3,7 @@ import copy
 import os
 import requests
 from flask import g, request, jsonify, make_response
+from backend.common.json_response import jsonify_external
 from backend.routes import rules_bp as bp, rule_sets_bp as rule_sets_bp
 from backend.common.auth import require_auth
 from backend.common.config import (
@@ -501,6 +502,47 @@ def match_test_rule():
         return jsonify({'success': False, 'message': '查询失败'}), 500
 
 
+class _DuplicateOccurrences:
+    """Keep single occurrences compact until a rule actually repeats."""
+
+    __slots__ = ('value', 'first', 'additional')
+
+    def __init__(self, value, first):
+        self.value = value
+        self.first = first
+        self.additional = None
+
+    def add(self, position):
+        if self.additional is None:
+            self.additional = []
+        self.additional.append(position)
+
+    def result(self, rule_type):
+        """Consume positions once, reusing their list for the response records."""
+        if self.additional is None:
+            return None
+        items = self.additional
+        items.insert(0, self.first)
+        self.first = None
+        self.additional = None
+        # Release each compact tuple as its final record is built, including
+        # when one duplicate group contains nearly every rule in the scan.
+        for index, position in enumerate(items):
+            source_type, source, rule_id, policy, priority, line, line_no = position
+            item = {
+                'source_type': source_type, 'source': source, 'rule_id': rule_id,
+                'policy': policy, 'priority': priority, 'line': line,
+            }
+            if line_no is not None:
+                item['line_no'] = line_no
+            items[index] = item
+        return {
+            'rule_type': rule_type, 'value': self.value, 'count': len(items),
+            'policy_conflict': len({item['policy'] for item in items}) > 1,
+            'occurrences': items,
+        }
+
+
 @bp.route('/find-duplicates', methods=['POST'])
 @require_auth
 def find_duplicate_rules():
@@ -518,7 +560,7 @@ def find_duplicate_rules():
         rule_library = config_data.get('rule_library', [])
         logger.info('Duplicate scan %s started: %d configured items', scan_id, len(rule_configs))
 
-        # key: (规则类型, 归一化规则值) -> {'value': 首次出现的原始值, 'items': 出现位置列表}
+        # Keep first-appearance order for stable ties in the final sort.
         occurrences = {}
         rules_checked = 0
         rulesets_checked = 0
@@ -527,10 +569,16 @@ def find_duplicate_rules():
         # 正则类规则值大小写敏感，不做小写归一
         case_sensitive_types = {'REGEX', 'REGEXP'}
 
-        def add_occurrence(rule_type, rule_value, item):
+        def add_occurrence(rule_type, rule_value, position):
             normalized = rule_value if rule_type in case_sensitive_types else rule_value.lower()
-            entry = occurrences.setdefault((rule_type, normalized), {'value': rule_value, 'items': []})
-            entry['items'].append(item)
+            key = (rule_type, normalized)
+            entry = occurrences.get(key)
+            if entry is None:
+                # Share an equal normalized value instead of retaining both strings.
+                value = normalized if rule_value == normalized else rule_value
+                occurrences[key] = _DuplicateOccurrences(value, position)
+            else:
+                entry.add(position)
 
         for index, rule_item in enumerate(rule_configs, start=1):
             # 跳过禁用的规则（与生成配置、规则索引行为一致）
@@ -546,14 +594,11 @@ def find_duplicate_rules():
                     continue
 
                 rules_checked += 1
-                add_occurrence(rule_type, rule_value, {
-                    'source_type': 'rule',
-                    'source': '直接配置的规则',
-                    'rule_id': rule_item.get('id', ''),
-                    'policy': rule_item.get('policy', 'DIRECT'),
-                    'priority': index,
-                    'line': f'{rule_type},{rule_value}'
-                })
+                add_occurrence(rule_type, rule_value, (
+                    'rule', '直接配置的规则', rule_item.get('id', ''),
+                    rule_item.get('policy', 'DIRECT'), index,
+                    f'{rule_type},{rule_value}', None,
+                ))
 
             elif item_type == 'ruleset':
                 rule_set_name = rule_item.get('name', '规则集')
@@ -583,31 +628,22 @@ def find_duplicate_rules():
                         continue
 
                     source_entries += 1
-                    add_occurrence(rule_type, rule_value, {
-                        'source_type': 'ruleset',
-                        'source': rule_set_name,
-                        'rule_id': rule_item.get('id', ''),
-                        'policy': policy,
-                        'priority': index,
-                        'line': line.strip(),
-                        'line_no': line_no
-                    })
+                    add_occurrence(rule_type, rule_value, (
+                        'ruleset', rule_set_name, rule_item.get('id', ''),
+                        policy, index, line.strip(), line_no,
+                    ))
                 logger.info('Duplicate scan %s scanned ruleset "%s": %d entries in %.1f ms',
                             scan_id, rule_set_name, source_entries, (time.perf_counter() - source_started) * 1000)
 
         # 同一规则集内部与跨来源的重复都算重复
         duplicates = []
         for (rule_type, _), entry in occurrences.items():
-            items = entry['items']
-            if len(items) < 2:
-                continue
-            duplicates.append({
-                'rule_type': rule_type,
-                'value': entry['value'],  # 首次出现的原始值，保留大小写用于展示
-                'count': len(items),
-                'policy_conflict': len({i['policy'] for i in items}) > 1,
-                'occurrences': items
-            })
+            duplicate = entry.result(rule_type)
+            if duplicate is not None:
+                duplicates.append(duplicate)
+        # The scan index is no longer needed while the response is encoded.
+        occurrences.clear()
+        entry = None
 
         # 策略冲突的排前面，其余按出现次数降序、优先级升序
         duplicates.sort(key=lambda d: (not d['policy_conflict'], -d['count'], d['occurrences'][0]['priority']))
@@ -615,7 +651,7 @@ def find_duplicate_rules():
         elapsed_time = time.perf_counter() - start_time
         logger.info('Duplicate scan %s matched: %d duplicate groups in %.1f ms; preparing response',
                     scan_id, len(duplicates), elapsed_time * 1000)
-        return jsonify({
+        return jsonify_external({
             'success': True,
             'duplicates': duplicates,
             'stats': {

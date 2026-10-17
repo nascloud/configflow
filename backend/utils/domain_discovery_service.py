@@ -382,7 +382,8 @@ def agents_payload(profile_id):
     """Read collection status independently of rule matching."""
     store = get_traffic_store()
     return {
-        'agents': [_agent_status(agent, store.load(agent['id'])) for agent in profile_agents(profile_id)],
+        'agents': [_agent_status(agent, {'status': store.load_status(agent['id'])})
+                   for agent in profile_agents(profile_id)],
         'min_agent_version': MIN_AGENT_VERSION,
         'min_probe_agent_version': MIN_PROBE_AGENT_VERSION,
     }
@@ -395,7 +396,9 @@ def load_domains(profile_id, *, days=7, view='uncovered', agent_id=None):
     settings = read_settings(config)
     agents = profile_agents(profile_id)
     store = get_traffic_store()
-    reports = [(agent, store.load(agent['id'])) for agent in agents]
+    # Keep every Agent's status in the response, but only retain selected traffic.
+    reports = [(agent, store.load(agent['id']) if not agent_id or agent['id'] == agent_id
+                else {'status': store.load_status(agent['id'])}) for agent in agents]
     matcher = local_matcher(config, profile_id)
     result = summarize(reports, days=days, ignored=settings['ignored'],
                        match_rule=matcher.match, view=view, agent_id=agent_id)
@@ -860,7 +863,7 @@ def _start_job(profile_id, kind, run: Callable[[Callable[[int, int], None]], Dic
         job = {
             'id': uuid.uuid4().hex, 'profile_id': profile_id, 'kind': kind, 'status': 'running', 'total': 0, 'done': 0,
             'errors': [], 'message': '', 'started_at': datetime.now().isoformat(timespec='seconds'),
-            'finished_at': None, 'results': {},
+            'finished_at': None,
         }
         _JOBS[job['id']] = job
         finished = [key for key, item in _JOBS.items() if item['status'] != 'running']
@@ -868,28 +871,36 @@ def _start_job(profile_id, kind, run: Callable[[Callable[[int, int], None]], Dic
             del _JOBS[key]
 
     def progress(done, total):
-        job['done'], job['total'] = done, total
+        with _JOBS_LOCK:
+            job['done'], job['total'] = done, total
 
     def work():
         from backend.common.config import reset_config_context
         reset_config_context()
+        results, errors, status, message = {}, [], 'done', ''
         try:
             outcome = run(progress)
-            job['errors'] = outcome.get('errors', [])
-            job['results'] = outcome.get('results', {})
-            job['status'] = 'done'
+            errors = outcome.get('errors', [])
+            results = outcome.get('results', {})
         except ProbeError as error:
-            job['status'], job['message'] = 'failed', str(error)
+            status, message = 'failed', str(error)
         except Exception as error:  # 后台线程不能把异常吞掉而不留痕
             logger.error('Domain discovery %s job failed: %s', kind, safe_exception_details(error))
-            job['status'], job['message'] = 'failed', '执行失败，请查看服务端日志'
+            status, message = 'failed', '执行失败，请查看服务端日志'
         finally:
-            job['finished_at'] = datetime.now().isoformat(timespec='seconds')
+            reset_config_context()
+            with _JOBS_LOCK:
+                job.update(errors=errors, status=status, message=message,
+                           finished_at=datetime.now().isoformat(timespec='seconds'))
+        # Results are persisted by the probe stores. Polling needs only metadata;
+        # a synchronous caller still receives its immediate result separately.
+        return results
 
     if wait:
-        work()
+        results = work()
         if job['status'] == 'failed':
             raise ProbeError(job['message'])
+        return {**job, 'results': results}
     else:
         threading.Thread(target=work, name=f'domain-{kind}-{job["id"][:8]}', daemon=True).start()
     return job
@@ -1019,6 +1030,8 @@ def start_auto_loop(lock_dir):
                 except Exception as error:
                     logger.error('Domain discovery auto round failed for %s: %s',
                                  profile['id'], safe_exception_details(error))
+                finally:
+                    reset_config_context()
             time.sleep(AUTO_INTERVAL_SECONDS)
 
     threading.Thread(target=loop, name='domain-discovery-auto', daemon=True).start()

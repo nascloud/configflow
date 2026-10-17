@@ -5,7 +5,9 @@
 """
 
 import copy
+import json
 import os
+from collections import OrderedDict
 import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
@@ -36,6 +38,33 @@ _MAX_COUNT = 2 ** 53
 _ROUTE_SEPARATOR = '\t'
 # 存储实例按请求创建，锁必须是模块级的才能串行化同一进程内的读改写
 _LOCK = threading.Lock()
+_STATUS_CACHE = OrderedDict()
+_STATUS_CACHE_LIMIT = 128
+_STATUS_MAX_BYTES = 1024
+_STATUS_FIELDS = frozenset({'value', 'at', 'mihomo_version'})
+
+
+def _status_signature(path):
+    # Windows ctime is creation time, so same-size external edits can escape it.
+    if os.name == 'nt':
+        return None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _cacheable_status(status):
+    if not isinstance(status, dict) or set(status) - _STATUS_FIELDS:
+        return False
+    if any(value is not None and (not isinstance(value, str) or len(value) > _STATUS_MAX_BYTES)
+           for value in status.values()):
+        return False
+    try:
+        return len(json.dumps(status, ensure_ascii=False).encode('utf-8')) <= _STATUS_MAX_BYTES
+    except (ValueError, UnicodeError):
+        return False
 
 
 def _bounded_text(value, max_length, *, required=False):
@@ -169,8 +198,35 @@ class TrafficStore(JsonFileStore):
                     del hosts[host]
                     day['dropped'] += 1
             self._prune(data, now)
+            # Invalidate before writing, including a failed/partial write.
+            _STATUS_CACHE.pop(os.path.abspath(self._path(agent_id)), None)
             self._write_json(agent_id, data)
             return copy.deepcopy(data['status'])
+
+    def load_status(self, agent_id):
+        """Read collection metadata without retaining the full traffic history.
+
+        Cache only bounded status fields from a complete, valid read. A file
+        replacement or external edit invalidates it; failures are never cached.
+        """
+        path = os.path.abspath(self._path(agent_id))
+        with _LOCK:
+            signature = _status_signature(path)
+            cached = _STATUS_CACHE.get(path)
+            if signature is not None and cached is not None and cached[0] == signature:
+                _STATUS_CACHE.move_to_end(path)
+                return copy.deepcopy(cached[1])
+            _STATUS_CACHE.pop(path, None)
+            data = self._read_json(agent_id)
+            if data is None or not isinstance(data.get('days'), dict):
+                return None
+            status = data.get('status')
+            if (signature is not None and _cacheable_status(status)
+                    and signature == _status_signature(path)):
+                _STATUS_CACHE[path] = (signature, copy.deepcopy(status))
+                while len(_STATUS_CACHE) > _STATUS_CACHE_LIMIT:
+                    _STATUS_CACHE.popitem(last=False)
+            return status
 
     def load(self, agent_id, now: Optional[datetime] = None):
         with _LOCK:
@@ -180,6 +236,7 @@ class TrafficStore(JsonFileStore):
 
     def delete(self, agent_id):
         with _LOCK:
+            _STATUS_CACHE.pop(os.path.abspath(self._path(agent_id)), None)
             self._remove(agent_id)
 
 
