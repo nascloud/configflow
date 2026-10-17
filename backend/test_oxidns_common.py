@@ -105,7 +105,9 @@ def test_feature_enable_connects_expected_chains_disable_preserves_arguments(fea
     existing = deepcopy(plugin(document, feature))
     result = apply(result['settings'], {f'{feature}.enabled': False})
     document = doc(result['settings'])
-    assert plugin(document, feature) == existing
+    assert not any(item['tag'] == feature for item in document['plugins'])
+    assert result['settings']['_common_disabled'][feature] == existing
+    assert not [issue for issue in validate_native_config(document) if issue['severity'] == 'error']
     assert result['values'][feature]['enabled'] is False
     for chain in chains:
         assert {'exec': f'${feature}'} not in plugin(document, chain)['args']
@@ -200,8 +202,13 @@ def test_dynamic_learning_tracks_route_and_preserves_existing_args():
     assert {'exec': '$learn_classified_domain'} in plugin(document, 'ip_requery_proxy')['args']
     off = apply(moved['settings'], {'dynamic_domain_set.enabled': False})
     document = doc(off['settings'])
-    assert plugin(document, 'dynamic_domains')['args']['path'] == './state/learning.txt'
+    assert not any(item['tag'] in ('dynamic_domains', 'learn_classified_domain') for item in document['plugins'])
+    assert off['settings']['_common_disabled']['dynamic_domains']['args']['path'] == './state/learning.txt'
     assert off['values']['dynamic_domain_set']['enabled'] is False
+    restored = apply(off['settings'], {'dynamic_domain_set.enabled': True})
+    assert restored['values']['dynamic_domain_set']['route'] == 'proxy'
+    assert restored['values']['dynamic_domain_set']['learn'] is True
+    assert plugin(doc(restored['settings']), 'dynamic_domains')['args']['path'] == './state/learning.txt'
 
 
 def test_resource_content_reflects_actual_provider_references():
@@ -312,6 +319,64 @@ def test_unfinished_listener_does_not_block_common_draft_edits():
     settings = edited(prepared(), lambda value: value['plugins'].append({'tag': 'http_incomplete', 'type': 'http_server', 'args': {}}))
     result = apply(settings, {'worker_threads': 6})
     assert plugin(doc(result['settings']), 'http_incomplete')['args'] == {}
+
+
+def test_disabling_last_rule_update_job_removes_cron_and_restores_its_settings():
+    settings = prepared(adguard={'enabled': True, 'urls': ['https://example.test/filter.txt']})
+    enabled = apply(settings, {'rule_update.enabled': True, 'rule_update.args.schedule': '5 2 * * *',
+                               'rule_update.args.timezone': 'UTC'})['settings']
+    enabled = edited(enabled, lambda value: plugin(value, 'rules_cron').update(description='keep metadata'))
+    original = doc(enabled)
+    for _ in range(2):
+        before = deepcopy(enabled)
+        disabled = apply(enabled, {'rule_update.enabled': False})
+        assert enabled == before
+        expected = deepcopy(original)
+        expected['plugins'].remove(plugin(expected, 'rules_cron'))
+        assert doc(disabled['settings']) == expected
+        assert disabled['values']['rule_update']['enabled'] is False
+        assert not [issue for issue in validate_native_config(doc(disabled['settings'])) if issue['severity'] == 'error']
+        enabled = apply(disabled['settings'], {'rule_update.enabled': True})['settings']
+        assert doc(enabled) == original
+
+
+@pytest.mark.parametrize('changes', [
+    {'rule_update.enabled': False, 'rule_update.args.timezone': 'UTC', 'rule_update.args.schedule': '5 2 * * *'},
+    {'rule_update.args.schedule': '5 2 * * *', 'rule_update.args.timezone': 'UTC', 'rule_update.enabled': False},
+])
+def test_disabling_rule_update_with_argument_changes_does_not_recreate_empty_cron(changes):
+    settings = prepared(adguard={'enabled': True, 'urls': ['https://example.test/filter.txt']})
+    enabled = apply(settings, {'rule_update.enabled': True})['settings']
+    disabled = apply(enabled, changes)['settings']
+    assert not any(item['tag'] == 'rules_cron' for item in doc(disabled)['plugins'])
+    restored = apply(disabled, {'rule_update.enabled': True})['settings']
+    args = plugin(doc(restored), 'rules_cron')['args']
+    assert args['timezone'] == 'UTC'
+    assert args['jobs'] == [{'name': 'refresh_rules', 'schedule': '5 2 * * *', 'executors': ['$rules_refresh']}]
+
+
+def test_rule_update_timezone_edits_while_disabled_remain_parked():
+    settings = prepared(adguard={'enabled': True, 'urls': ['https://example.test/filter.txt']})
+    enabled = apply(settings, {'rule_update.enabled': True})['settings']
+    enabled = edited(enabled, lambda value: plugin(value, 'rules_cron').update(description='keep metadata'))
+    disabled = apply(enabled, {'rule_update.enabled': False})['settings']
+    changed = apply(disabled, {'rule_update.args.timezone': 'UTC'})['settings']
+    assert not any(item['tag'] == 'rules_cron' for item in doc(changed)['plugins'])
+    restored = apply(changed, {'rule_update.enabled': True})['settings']
+    cron = plugin(doc(restored), 'rules_cron')
+    assert cron['description'] == 'keep metadata'
+    assert cron['args']['timezone'] == 'UTC'
+    assert len(cron['args']['jobs']) == 1
+
+
+def test_disabling_rule_update_repairs_legacy_empty_cron():
+    settings = edited(prepared(), lambda value: value['plugins'].append(
+        {'tag': 'rules_cron', 'type': 'cron', 'args': {'timezone': 'UTC', 'jobs': []}}))
+    before = deepcopy(settings)
+    result = apply(settings, {'rule_update.enabled': False})
+    assert not any(item['tag'] == 'rules_cron' for item in doc(result['settings'])['plugins'])
+    assert not [issue for issue in validate_native_config(doc(result['settings'])) if issue['severity'] == 'error']
+    assert settings == before
 
 
 def test_rule_update_reads_actual_job_and_preserves_other_jobs(oxidns_app):

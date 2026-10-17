@@ -41,3 +41,40 @@ def test_common_api_is_lossless_profile_scoped_and_does_not_persist(oxidns_app, 
     assert enabled.status_code == 200, enabled.get_json()
     assert enabled.get_json()['values']['api']['password'] == token
     assert repository.get_profile('office') == before
+
+
+@pytest.mark.parametrize('prefix', ['/api/oxidns', '/api/profiles/office/oxidns'])
+def test_disabling_rule_updates_after_enabling_keeps_draft_renderable(oxidns_app, prefix):
+    app, repository = oxidns_app
+    client = app.test_client()
+    config = repository.get_compat_config('office')
+    settings = prepare_editor({**config['oxidns'], 'rule_update': {'enabled': False}},
+                              config, 'http://config.test')
+    before = deepcopy(repository.get_profile('office'))
+
+    enabled = client.post(prefix + '/common-settings/apply?profile=office',
+                          json={'settings': settings, 'changes': {'rule_update.enabled': True}})
+    assert enabled.status_code == 200, enabled.get_json()
+    enabled_draft = enabled.get_json()['settings']
+    assert enabled.get_json()['values']['rule_update']['enabled'] is True
+    enabled_render = client.post(prefix + '/render?profile=office', json={'settings': enabled_draft})
+    assert enabled_render.status_code == 200, enabled_render.get_json()
+    enabled_document = yaml.safe_load(enabled_render.get_json()['config'])
+    assert any(plugin.get('tag') == 'rules_cron' and plugin['args']['jobs']
+               for plugin in enabled_document['plugins'])
+    assert repository.get_profile('office') == before
+
+    disabled = client.post(prefix + '/common-settings/apply?profile=office',
+                           json={'settings': enabled_draft, 'changes': {'rule_update.enabled': False}})
+    assert disabled.status_code == 200, disabled.get_json()
+    disabled_draft = disabled.get_json()['settings']
+    assert disabled.get_json()['values']['rule_update']['enabled'] is False
+    rendered = client.post(prefix + '/render?profile=office', json={'settings': disabled_draft})
+    assert rendered.status_code == 200, rendered.get_json()
+    for document in (yaml.safe_load(disabled_draft['native_config']),
+                     yaml.safe_load(rendered.get_json()['config'])):
+        assert not any(plugin.get('tag') == 'rules_cron' for plugin in document['plugins'])
+        assert all(plugin['args']['jobs'] for plugin in document['plugins']
+                   if plugin.get('type') == 'cron')
+    assert rendered.headers['Cache-Control'] == 'no-store'
+    assert repository.get_profile('office') == before

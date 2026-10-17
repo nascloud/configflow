@@ -125,9 +125,9 @@ function applyPerformance() {
   for (const [path, value] of Object.entries(availablePerformance.value)) write(path, value)
   emit('change', clone(availablePerformance.value))
 }
-let previous = clone(props.values)
-// Parent replaces this projection once its patch queue is drained. Keep unrelated
-// incomplete input mounted and untouched while applying external YAML changes.
+// Parent replaces this projection once its patch queue is drained. Reconcile the
+// current draft even when the server returns the same values as before (for
+// example, restoring TLS after a coalesced off/on). Keep incomplete input intact.
 watch(() => props.values, value => {
   const sync = (before: any, after: any, path = '') => {
     if (JSON.stringify(before) === JSON.stringify(after)) return
@@ -136,8 +136,7 @@ watch(() => props.values, value => {
       for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) sync(before[key], after[key], path ? `${path}.${key}` : key)
     } else if (path) write(path, after)
   }
-  sync(previous, value)
-  previous = clone(value)
+  sync(draft, value)
 }, { deep: true })
 onUnmounted(() => emit('error', ''))
 </script>

@@ -211,6 +211,32 @@ describe('unified OxiDNS profile settings', () => {
     expect((loadYaml(savedPayload().native_config) as any).runtime.worker_threads).toBe(4)
   })
 
+  it('keeps TLS controls and the saved draft consistent after off/on clicks share one patch', async () => {
+    const tls = {server_name: 'router.example.test', ca: 'certs/router-ca.pem', insecure: false}
+    const args = {address: '192.0.2.1:8729', tls}
+    const doc = loadYaml(config) as any
+    doc.plugins.push({tag: 'ros_route', type: 'ros_route', args})
+    const original = {...settings(), native_config: dumpYaml(doc)}
+    const common = () => ({values: {...projection(original).values, ros_route: {enabled: true, args: structuredClone(args)}}, capabilities: {}})
+    vi.mocked(oxidnsApi.getSettings).mockResolvedValue({data: original} as any)
+    vi.mocked(oxidnsApi.readCommonSettings).mockImplementation(async () => ({data: common()}) as any)
+    vi.mocked(oxidnsApi.applyCommonSettings).mockImplementationOnce(async value => ({data: {settings: JSON.parse(JSON.stringify(value)), ...common()}}) as any)
+    await render()
+    await click('特色功能')
+    ;(document.querySelector('[aria-label="RouterOS 主机路由设置"]') as HTMLButtonElement).click()
+    await flushPromises()
+    const toggle = () => document.getElementById('oxi-ros_route.args.tls') as HTMLButtonElement
+    toggle().click(); await flushPromises()
+    toggle().click(); await flushPromises()
+    await new Promise(resolve => setTimeout(resolve, 180)); await flushPromises(); await settleValidation()
+    expect(oxidnsApi.applyCommonSettings).toHaveBeenCalledTimes(1)
+    expect(oxidnsApi.applyCommonSettings).toHaveBeenCalledWith(expect.anything(), {'ros_route.args.tls': {}}, 'oxi-profile')
+    expect((document.getElementById('oxi-ros_route.args.tls.server_name') as HTMLInputElement).value).toBe(tls.server_name)
+    expect((document.getElementById('oxi-ros_route.args.tls.ca') as HTMLInputElement).value).toBe(tls.ca)
+    await click('保存草稿')
+    expect((loadYaml(savedPayload().native_config) as any).plugins.find((plugin: any) => plugin.tag === 'ros_route').args.tls).toEqual(tls)
+  })
+
   it('retains invalid drafts without turning an empty number into zero', async () => {
     await render()
     await input(worker, '')
