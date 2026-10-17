@@ -104,3 +104,21 @@ export const formatDNSCode = (value: string | number | null) => {
   return dnsCodeLabels.get(normalized) || original
 }
 export const formatQueryTime = (value: number) => Number.isFinite(value) ? new Date(value).toLocaleString() : '—'
+export interface OxiDNSDevicePolicy {
+  ip: string
+  name: string
+  mode: 'smart' | 'direct'
+}
+
+export interface OxiDNSDevicePolicies {
+  success: true
+  draft: true
+  profile_id: string
+  profile_name: string
+  revision: string
+  policies: OxiDNSDevicePolicy[]
+  editable: boolean
+  reason: string
+  agents: Array<{ id: string; name: string }>
+  deployment?: import('@/composables/useAgentDeployments').AgentDeployment | null
+}

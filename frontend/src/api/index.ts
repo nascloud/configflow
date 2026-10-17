@@ -252,8 +252,8 @@ export const agentApi = {
   validateLogPath: (id: string, path: string) => api.post(`/agents/${id}/logs/validate`, { path }),
   getLoggingConfig: (id: string) => api.get(`/agents/${id}/config/logging`),
   setLoggingConfig: (id: string, enabled: boolean) => api.post(`/agents/${id}/config/logging`, { enabled }),
-  pushConfig: (id: string, deploymentId?: string) => api.post(`/agents/${id}/push-config`, {
-    base_url: getBaseUrl(), deployment_id: deploymentId
+  pushConfig: (id: string, deploymentId?: string, expected?: { expected_profile_id: string; expected_oxidns_revision: string }) => api.post(`/agents/${id}/push-config`, {
+    base_url: getBaseUrl(), deployment_id: deploymentId, ...expected
   }, { timeout: 120000 }),
   getDeployment: (id: string, deploymentId: string) => api.get(`/agents/${id}/deployments/${deploymentId}`),
   activateDeployment: (id: string, deploymentId: string) => api.post(`/agents/${id}/deployments/${deploymentId}/activate`),
@@ -273,6 +273,13 @@ export const agentApi = {
 }
 
 // OxiDNS monitoring never sends core credentials or addresses from the browser.
+export const oxidnsDevicePolicyApi = {
+  get: (id: string, options: { signal?: AbortSignal } = {}) =>
+    api.get(`/agents/${encodeURIComponent(id)}/oxidns/device-policies`, options),
+  save: (id: string, data: { profile_id: string; revision: string; policies: import('@/types/oxidnsMonitor').OxiDNSDevicePolicy[] }) =>
+    api.put(`/agents/${encodeURIComponent(id)}/oxidns/device-policies`, { ...data, base_url: getBaseUrl() })
+}
+
 export const oxidnsMonitorApi = {
   clients: (id: string, params: Record<string, string | number | undefined>, options: { signal?: AbortSignal } = {}) =>
     api.get(`/agents/${encodeURIComponent(id)}/oxidns/clients`, { params, ...options }),

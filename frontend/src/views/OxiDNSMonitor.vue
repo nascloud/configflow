@@ -49,26 +49,30 @@
       <p v-if="overviewError && overview" role="alert" class="mb-4 rounded-lg border border-warning-accent/30 bg-warning-soft p-3 text-sm text-warning-accent">
         {{ overviewError }} 保留上次成功读取的数据，采样时间见上方。
       </p>
-      <LoadingRows v-if="overviewLoading && !overview" :rows="5" />
-      <SectionCard v-else-if="!overview">
-        <EmptyState :icon="TriangleAlert" title="暂时无法读取 OxiDNS 监控" :description="overviewError || '等待核心返回监控数据。'">
-          <Button variant="outline" class="min-h-11" :disabled="overviewLoading" @click="refresh(true)">重试</Button>
-        </EmptyState>
-      </SectionCard>
-      <Tabs v-else v-model="tab" class="min-w-0">
+      <Tabs :model-value="tab" class="min-w-0" @update:model-value="changeTab(String($event))">
         <TabsList class="mb-4 min-h-11">
-          <TabsTrigger value="overview" class="min-h-11 px-5">运行概览</TabsTrigger>
-          <TabsTrigger value="queries" class="min-h-11 px-5">查询记录</TabsTrigger>
+          <TabsTrigger value="overview" class="min-h-11 px-4">运行概览</TabsTrigger>
+          <TabsTrigger value="queries" class="min-h-11 px-4">查询记录</TabsTrigger>
+          <TabsTrigger value="devices" class="min-h-11 px-4">设备策略</TabsTrigger>
         </TabsList>
-        <TabsContent value="overview"><OxiDNSOverviewPanel :overview="overview" :qps="qps" /></TabsContent>
+        <template v-if="tab !== 'devices' && !overview">
+          <LoadingRows v-if="overviewLoading" :rows="5" />
+          <SectionCard v-else>
+            <EmptyState :icon="TriangleAlert" title="暂时无法读取 OxiDNS 监控" :description="overviewError || '等待核心返回监控数据。'">
+              <Button variant="outline" class="min-h-11" :disabled="overviewLoading" @click="refresh(true)">重试</Button>
+            </EmptyState>
+          </SectionCard>
+        </template>
+        <TabsContent value="overview"><OxiDNSOverviewPanel v-if="overview" :overview="overview" :qps="qps" /></TabsContent>
         <TabsContent value="queries">
-          <SectionCard v-if="!overview.recorders.length">
+          <SectionCard v-if="overview && !overview.recorders.length">
             <EmptyState :icon="Search" title="尚未启用查询记录" description="在此 Agent 绑定的配置空间中，进入「配置生成 → OxiDNS → 设置」启用查询记录，保存后推送到此 Agent。" />
           </SectionCard>
-          <OxiDNSQueryTable v-else :agent-id="agentId" :recorders="overview.recorders" :recorder="recorder" :filters="filters" :data="queries"
+          <OxiDNSQueryTable v-else-if="overview" :agent-id="agentId" :recorders="overview.recorders" :recorder="recorder" :filters="filters" :data="queries"
             :loading="queriesLoading" :error="queriesError" :page="page" :has-next="hasNext"
             @filter="applyFilters" @recorder="selectRecorder" @next="nextPage" @previous="previousPage" @retry="loadQueries(true)" @detail="selectedRecord = $event" />
         </TabsContent>
+        <TabsContent value="devices"><OxiDNSDevicePolicies ref="policyPanel" :agent-id="agentId" :recorder="recorder" @published="refresh(true)" /></TabsContent>
       </Tabs>
     </template>
     <OxiDNSQueryDetail v-if="selectedRecord" :agent-id="agentId" :record-id="selectedRecord.id" :recorder="recorder" @close="selectedRecord = null" />
@@ -76,7 +80,7 @@
 </template>
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { RefreshCw, Search, Server, TriangleAlert } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -90,13 +94,21 @@ import StatusDot from '@/components/common/StatusDot.vue'
 import OxiDNSOverviewPanel from '@/components/agents/OxiDNSOverview.vue'
 import OxiDNSQueryTable from '@/components/agents/OxiDNSQueryTable.vue'
 import OxiDNSQueryDetail from '@/components/agents/OxiDNSQueryDetail.vue'
+import OxiDNSDevicePolicies from '@/components/agents/OxiDNSDevicePolicies.vue'
 import { useOxiDNSMonitor } from '@/composables/useOxiDNSMonitor'
 import { oxidnsMonitorPath, rememberOxiDNSDevice, useOxiDNSDevices } from '@/composables/useOxiDNSDevices'
 import { monitorNumber, type OxiDNSQuery } from '@/types/oxidnsMonitor'
 const route = useRoute()
 const router = useRouter()
 const agentId = computed(() => String(route.params.agentId || ''))
-const tab = ref(route.query.tab === 'queries' ? 'queries' : 'overview')
+const tab = ref(['queries', 'devices'].includes(String(route.query.tab)) ? String(route.query.tab) : 'overview')
+const policyPanel = ref<InstanceType<typeof OxiDNSDevicePolicies> | null>(null)
+const canLeavePolicy = async () => await policyPanel.value?.canLeave() ?? true
+onBeforeRouteLeave(canLeavePolicy)
+onBeforeRouteUpdate(async (to, from) => to.params.agentId === from.params.agentId || await canLeavePolicy())
+async function changeTab(value: string) {
+  if (value !== tab.value && await canLeavePolicy()) tab.value = value
+}
 const selectedRecord = ref<OxiDNSQuery | null>(null)
 const { overview, overviewLoading, overviewError, qps, queries, queriesLoading, queriesError, recorder, filters,
   page, hasNext, autoRefresh, refresh, loadQueries, selectRecorder, applyFilters, nextPage, previousPage } = useOxiDNSMonitor(agentId, tab)
@@ -115,8 +127,8 @@ async function switchDevice(id: string) {
   switchingDevice.value = true
   switchError.value = ''
   try {
-    await router.replace({ path: oxidnsMonitorPath(id), query: { ...route.query, tab: tab.value } })
-    rememberOxiDNSDevice(id)
+    const failure = await router.replace({ path: oxidnsMonitorPath(id), query: { ...route.query, tab: tab.value } })
+    if (!failure) rememberOxiDNSDevice(id)
   } catch (failure: any) {
     switchError.value = failure?.message || '切换设备失败，请重试。'
   } finally {
