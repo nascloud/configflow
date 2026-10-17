@@ -29,7 +29,8 @@ export const NAV_GROUPS: NavGroup[] = [
     tabIcon: 'DataAnalysis',
     items: [
       { path: '/dashboard', label: '数据统计', icon: 'DataAnalysis' },
-      { path: '/oxidns', label: 'DNS 监控', icon: 'Monitor' }
+      { path: '/oxidns', label: 'DNS 监控', icon: 'Monitor' },
+      { path: '/mihomo', label: 'Mihomo 面板', icon: 'Gauge' }
     ]
   },
   {

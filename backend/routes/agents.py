@@ -1289,6 +1289,23 @@ def _oxidns_monitor_response(operation, agent_id, *args):
         return response, exc.status
 
 
+@bp.route('/<agent_id>/mihomo/<path:resource>', methods=['GET', 'PUT', 'PATCH', 'DELETE', 'POST'])
+@require_auth
+def mihomo_panel(agent_id, resource):
+    """Mihomo panel requests; the resource/method whitelist lives in backend.agents.mihomo_panel."""
+    from backend.agents import mihomo_panel as panel
+    from backend.agents.oxidns_monitor import MonitorError
+    try:
+        body = request.get_json(silent=True) if request.method in ('PUT', 'PATCH') else None
+        response = jsonify(panel.call(get_agent_manager(), agent_id, resource, request.method, request.args, body))
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except MonitorError as exc:
+        response = jsonify(success=False, code=exc.code, message=exc.message)
+        response.headers['Cache-Control'] = 'no-store'
+        return response, exc.status
+
+
 @bp.route('/<agent_id>/oxidns/overview', methods=['GET'])
 @require_auth
 def get_oxidns_overview(agent_id):
