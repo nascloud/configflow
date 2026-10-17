@@ -44,6 +44,10 @@ _STATUS_MAX_BYTES = 1024
 _STATUS_FIELDS = frozenset({'value', 'at', 'mihomo_version'})
 
 
+def _file_signature(stat):
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
 def _status_signature(path):
     # Windows ctime is creation time, so same-size external edits can escape it.
     if os.name == 'nt':
@@ -52,7 +56,7 @@ def _status_signature(path):
         stat = os.stat(path)
     except OSError:
         return None
-    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    return _file_signature(stat)
 
 
 def _cacheable_status(status):
@@ -65,6 +69,16 @@ def _cacheable_status(status):
         return len(json.dumps(status, ensure_ascii=False).encode('utf-8')) <= _STATUS_MAX_BYTES
     except (ValueError, UnicodeError):
         return False
+
+
+def _remember_status(path, signature, status):
+    """Reuse bounded metadata only while its source file is still unchanged."""
+    _STATUS_CACHE.pop(path, None)
+    if (signature is not None and _cacheable_status(status)
+            and signature == _status_signature(path)):
+        _STATUS_CACHE[path] = (signature, copy.deepcopy(status))
+        while len(_STATUS_CACHE) > _STATUS_CACHE_LIMIT:
+            _STATUS_CACHE.popitem(last=False)
 
 
 def _bounded_text(value, max_length, *, required=False):
@@ -150,10 +164,19 @@ def _host_weight(host_entry):
 class TrafficStore(JsonFileStore):
     """按 Agent 保存域名发现数据，按天分桶并自动过期。"""
 
+    def _write_json(self, agent_id, data):
+        return super()._write_json(agent_id, data, verify_signature=True)
+
     def _read(self, agent_id):
+        path = os.path.abspath(self._path(agent_id))
+        signature = _status_signature(path)
         data = self._read_json(agent_id)
         if data is None or not isinstance(data.get('days'), dict):
+            _STATUS_CACHE.pop(path, None)
             return {'status': None, 'days': {}}
+        # A history request has already paid for JSON decoding. Let subsequent
+        # status requests reuse its small metadata without retaining the history.
+        _remember_status(path, signature, data.get('status'))
         return data
 
     @staticmethod
@@ -199,15 +222,21 @@ class TrafficStore(JsonFileStore):
                     day['dropped'] += 1
             self._prune(data, now)
             # Invalidate before writing, including a failed/partial write.
-            _STATUS_CACHE.pop(os.path.abspath(self._path(agent_id)), None)
-            self._write_json(agent_id, data)
+            path = os.path.abspath(self._path(agent_id))
+            _STATUS_CACHE.pop(path, None)
+            written = self._write_json(agent_id, data)
+            signature = _file_signature(written) if written is not None else None
+            # Do not decode the just-written history again merely to obtain
+            # status. The descriptor signature belongs to our write, even if an
+            # external process replaces the path before this cache is populated.
+            _remember_status(path, signature, data['status'])
             return copy.deepcopy(data['status'])
 
     def load_status(self, agent_id):
         """Read collection metadata without retaining the full traffic history.
 
-        Cache only bounded status fields from a complete, valid read. A file
-        replacement or external edit invalidates it; failures are never cached.
+        Cache only bounded status fields from a valid read or successful write.
+        A file replacement or external edit invalidates it; failures are never cached.
         """
         path = os.path.abspath(self._path(agent_id))
         with _LOCK:
@@ -217,16 +246,7 @@ class TrafficStore(JsonFileStore):
                 _STATUS_CACHE.move_to_end(path)
                 return copy.deepcopy(cached[1])
             _STATUS_CACHE.pop(path, None)
-            data = self._read_json(agent_id)
-            if data is None or not isinstance(data.get('days'), dict):
-                return None
-            status = data.get('status')
-            if (signature is not None and _cacheable_status(status)
-                    and signature == _status_signature(path)):
-                _STATUS_CACHE[path] = (signature, copy.deepcopy(status))
-                while len(_STATUS_CACHE) > _STATUS_CACHE_LIMIT:
-                    _STATUS_CACHE.popitem(last=False)
-            return status
+            return self._read(agent_id).get('status')
 
     def load(self, agent_id, now: Optional[datetime] = None):
         with _LOCK:
