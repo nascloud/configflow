@@ -331,6 +331,35 @@ export const oxidnsMonitorApi = {
     api.get(`/agents/${encodeURIComponent(id)}/oxidns/queries/${encodeURIComponent(recordId)}`, { params: { recorder }, ...options })
 }
 
+// Mihomo 面板：经 Agent 访问本机 Mihomo 控制接口，浏览器不接触控制接口地址与 secret
+const mihomoPath = (id: string, resource: string) => `/agents/${encodeURIComponent(id)}/mihomo/${resource}`
+const mihomoName = (name: string) => ({ params: { name } })
+export const mihomoPanelApi = {
+  version: (id: string) => api.get(mihomoPath(id, 'version')),
+  configs: (id: string) => api.get(mihomoPath(id, 'configs')),
+  setMode: (id: string, mode: 'rule' | 'global' | 'direct') => api.patch(mihomoPath(id, 'configs'), { mode }),
+  proxies: (id: string) => api.get(mihomoPath(id, 'proxies')),
+  selectProxy: (id: string, group: string, name: string) => api.put(mihomoPath(id, 'proxy'), { name }, mihomoName(group)),
+  /** 取消自动策略组（url-test / fallback）的手动固定 */
+  unfixProxy: (id: string, group: string) => api.delete(mihomoPath(id, 'proxy'), mihomoName(group)),
+  proxyDelay: (id: string, name: string, url?: string, timeout = 5000) =>
+    api.get(mihomoPath(id, 'proxy/delay'), { params: { name, url, timeout }, timeout: 45000 }),
+  groupDelay: (id: string, name: string, url?: string, timeout = 5000) =>
+    api.get(mihomoPath(id, 'group/delay'), { params: { name, url, timeout }, timeout: 45000 }),
+  connections: (id: string, options: { signal?: AbortSignal } = {}) => api.get(mihomoPath(id, 'connections'), options),
+  closeConnection: (id: string, connectionId: string) => api.delete(mihomoPath(id, 'connection'), mihomoName(connectionId)),
+  closeAllConnections: (id: string) => api.delete(mihomoPath(id, 'connections')),
+  rules: (id: string) => api.get(mihomoPath(id, 'rules')),
+  proxyProviders: (id: string) => api.get(mihomoPath(id, 'providers/proxies')),
+  updateProxyProvider: (id: string, name: string) => api.put(mihomoPath(id, 'providers/proxy'), {}, { ...mihomoName(name), timeout: 60000 }),
+  healthcheckProxyProvider: (id: string, name: string) =>
+    api.get(mihomoPath(id, 'providers/proxy/healthcheck'), { ...mihomoName(name), timeout: 60000 }),
+  ruleProviders: (id: string) => api.get(mihomoPath(id, 'providers/rules')),
+  updateRuleProvider: (id: string, name: string) => api.put(mihomoPath(id, 'providers/rule'), {}, { ...mihomoName(name), timeout: 60000 }),
+  flushFakeIP: (id: string) => api.post(mihomoPath(id, 'cache/fakeip/flush')),
+  flushDNS: (id: string) => api.post(mihomoPath(id, 'cache/dns/flush'))
+}
+
 // 系统信息
 export const systemApi = {
   getVersion: () => api.get('/version')

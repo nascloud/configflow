@@ -20,6 +20,7 @@ func StartAPIServer(cfg *Config) {
 	mux.HandleFunc("/api/domain-probe", routes.AuthMiddleware(routesCfg, domainProbeHandler(cfg)))
 	mux.HandleFunc("/api/region-check", routes.AuthMiddleware(routesCfg, regionCheckHandler(cfg)))
 	mux.HandleFunc("/api/region-check/targets", routes.AuthMiddleware(routesCfg, regionTargetsHandler(cfg)))
+	mux.HandleFunc(mihomoPanelPrefix, routes.AuthMiddleware(routesCfg, mihomoPanelHandler(cfg)))
 
 	listenAddr := fmt.Sprintf("%s:%d", cfg.AgentHost, cfg.AgentPort)
 	log.Printf("Starting API server on %s", listenAddr)

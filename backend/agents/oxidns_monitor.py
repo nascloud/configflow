@@ -96,6 +96,11 @@ def _agent(manager, agent_id, min_version=MIN_AGENT_VERSION):
 
 
 def _base_url(agent):
+    return _agent_origin(agent) + '/api/oxidns/'
+
+
+def _agent_origin(agent):
+    """Validated http://host:port of a registered Agent; never taken from request input."""
     host = agent.get('host', '')
     if not isinstance(host, str) or not host or any(c in host for c in '/?#@\\'):
         raise MonitorError('AGENT_UNREACHABLE')
@@ -109,7 +114,7 @@ def _base_url(agent):
     port = agent.get('port')
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise MonitorError('AGENT_UNREACHABLE')
-    return f'http://{host}:{port}/api/oxidns/'
+    return f'http://{host}:{port}'
 
 
 def _request(agent, endpoint, params=None, *, min_version=MIN_AGENT_VERSION):

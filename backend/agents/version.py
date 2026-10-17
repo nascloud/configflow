@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.14-go"
+LATEST_AGENT_VERSION = "1.8.15-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.15-go": {
+        "date": "2026-10-17",
+        "features": [
+            "新增 Mihomo 面板接口：经 Agent 查看和切换策略组、测速，查看与断开连接，查看规则并更新 provider，可替代独立的 Mihomo Web 面板"
+        ]
+    },
     "1.8.14-go": {
         "date": "2026-10-17",
         "features": [

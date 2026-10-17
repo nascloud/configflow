@@ -12,6 +12,7 @@ import {
   Download,
   FileText,
   FolderOpen,
+  Gauge,
   GripVertical,
   IdCard,
   Layers,
@@ -60,6 +61,7 @@ const MAP: Record<string, LucideIcon> = {
   Moon,
   User,
   SwitchButton: LogOut,
+  Gauge,
   Router
 }
 

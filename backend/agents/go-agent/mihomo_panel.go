@@ -1,0 +1,155 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+
+	"agent/routes"
+)
+
+// Mihomo 面板：把服务端的面板请求转发到本机 Mihomo 控制接口，替代独立的 Web 面板。
+// 只放行面板用到的接口与方法，控制接口的 secret 由 Agent 自己从配置读取，不经过服务端。
+
+const (
+	mihomoPanelPrefix       = "/api/mihomo/"
+	mihomoPanelBodyLimit    = 16 * 1024
+	mihomoPanelReplyLimit   = 16 << 20
+	mihomoPanelTimeout      = 15 * time.Second
+	mihomoPanelDelayTimeout = 35 * time.Second
+)
+
+type mihomoPanelRoute struct {
+	pattern *regexp.Regexp
+	methods string
+	query   []string
+}
+
+// 名称段为 URL 编码后的单段路径（策略组、节点与 provider 名称可含中文和空格）
+const panelSegment = `[^/]+`
+
+var mihomoPanelRoutes = []mihomoPanelRoute{
+	{regexp.MustCompile(`^version$`), "GET", nil},
+	{regexp.MustCompile(`^configs$`), "GET PATCH", nil},
+	{regexp.MustCompile(`^proxies$`), "GET", nil},
+	{regexp.MustCompile(`^proxies/` + panelSegment + `$`), "GET PUT DELETE", nil},
+	{regexp.MustCompile(`^proxies/` + panelSegment + `/delay$`), "GET", []string{"url", "timeout"}},
+	{regexp.MustCompile(`^group/` + panelSegment + `/delay$`), "GET", []string{"url", "timeout"}},
+	{regexp.MustCompile(`^connections$`), "GET DELETE", nil},
+	{regexp.MustCompile(`^connections/` + panelSegment + `$`), "DELETE", nil},
+	{regexp.MustCompile(`^rules$`), "GET", nil},
+	{regexp.MustCompile(`^providers/proxies$`), "GET", nil},
+	{regexp.MustCompile(`^providers/proxies/` + panelSegment + `$`), "PUT", nil},
+	{regexp.MustCompile(`^providers/proxies/` + panelSegment + `/healthcheck$`), "GET", nil},
+	{regexp.MustCompile(`^providers/rules$`), "GET", nil},
+	{regexp.MustCompile(`^providers/rules/` + panelSegment + `$`), "PUT", nil},
+	{regexp.MustCompile(`^cache/fakeip/flush$`), "POST", nil},
+	{regexp.MustCompile(`^cache/dns/flush$`), "POST", nil},
+}
+
+func matchMihomoPanelRoute(path, method string) (*mihomoPanelRoute, bool) {
+	for i := range mihomoPanelRoutes {
+		route := &mihomoPanelRoutes[i]
+		if route.pattern.MatchString(path) {
+			for _, allowed := range strings.Fields(route.methods) {
+				if allowed == method {
+					return route, true
+				}
+			}
+			return route, false
+		}
+	}
+	return nil, false
+}
+
+func mihomoPanelFail(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Cache-Control", "no-store")
+	routes.JsonResponse(w, status, map[string]interface{}{"success": false, "code": code, "message": message})
+}
+
+func mihomoPanelHandler(cfg *Config) http.HandlerFunc {
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cfg.ServiceType != "mihomo" {
+			mihomoPanelFail(w, http.StatusBadRequest, "WRONG_SERVICE", "mihomo panel requires a mihomo agent")
+			return
+		}
+		// EscapedPath 保留名称里的 %2F 等编码，避免把一个名称拆成多段
+		path := strings.TrimPrefix(r.URL.EscapedPath(), mihomoPanelPrefix)
+		route, allowed := matchMihomoPanelRoute(path, r.Method)
+		if route == nil {
+			mihomoPanelFail(w, http.StatusNotFound, "NOT_ALLOWED", "endpoint is not available through the panel")
+			return
+		}
+		if !allowed {
+			mihomoPanelFail(w, http.StatusMethodNotAllowed, "NOT_ALLOWED", "method is not available through the panel")
+			return
+		}
+		query := url.Values{}
+		for _, key := range route.query {
+			if value := r.URL.Query().Get(key); value != "" {
+				query.Set(key, value)
+			}
+		}
+		var body []byte
+		if r.Method == http.MethodPut || r.Method == http.MethodPatch {
+			data, err := io.ReadAll(io.LimitReader(r.Body, mihomoPanelBodyLimit+1))
+			if err != nil || len(data) > mihomoPanelBodyLimit {
+				mihomoPanelFail(w, http.StatusBadRequest, "INVALID_REQUEST", "request body is too large")
+				return
+			}
+			body = data
+		}
+		controller, err := resolveMihomoController(cfg.ConfigPath)
+		if err != nil {
+			mihomoPanelFail(w, http.StatusConflict, "CONTROLLER_UNAVAILABLE", "mihomo controller unavailable: "+err.Error())
+			return
+		}
+		timeout := mihomoPanelTimeout
+		if strings.HasSuffix(path, "/delay") || strings.HasSuffix(path, "/healthcheck") || (strings.HasPrefix(path, "providers/") && r.Method == http.MethodPut) {
+			timeout = mihomoPanelDelayTimeout
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		target := "/" + path
+		if len(query) > 0 {
+			target += "?" + query.Encode()
+		}
+		req, err := controller.request(ctx, r.Method, target)
+		if err != nil {
+			mihomoPanelFail(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid panel request")
+			return
+		}
+		if body != nil {
+			req.Body = io.NopCloser(bytes.NewReader(body))
+			req.ContentLength = int64(len(body))
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			mihomoPanelFail(w, http.StatusBadGateway, "CORE_UNREACHABLE", "mihomo controller is unreachable")
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			mihomoPanelFail(w, http.StatusBadGateway, "CORE_AUTH_FAILED", "mihomo controller rejected the secret")
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(resp.Body, mihomoPanelReplyLimit+1))
+		if err != nil || len(data) > mihomoPanelReplyLimit {
+			mihomoPanelFail(w, http.StatusBadGateway, "INVALID_RESPONSE", "mihomo controller response is too large")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(data)
+	}
+}

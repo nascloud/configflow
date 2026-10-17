@@ -33,6 +33,11 @@ const routes = [
     component: () => import('@/views/OxiDNSMonitorEntry.vue')
   },
   {
+    path: '/mihomo',
+    name: 'MihomoPanel',
+    component: () => import('@/views/MihomoPanel.vue')
+  },
+  {
     path: '/profiles',
     name: 'Profiles',
     component: () => import('@/views/Profiles.vue')
