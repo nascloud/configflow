@@ -48,8 +48,14 @@ def _interface(value: Any) -> Optional[str]:
     return None
 
 
-def _egress(cidr: str, gateway: str, context: Dict[str, Any]) -> Tuple[Optional[str], str]:
-    """Find an unambiguous main-table egress, including a not-yet-added route."""
+def _egress(cidr: str, gateway: str, context: Dict[str, Any], *,
+            policy_routing: bool = False) -> Tuple[Optional[str], str]:
+    """Resolve static destinations or the next hop of a verified policy table.
+
+    Policy callers validate Mangle priority and their table separately. Its
+    gateway uses @main, so only the gateway lookup depends on the main table;
+    main-table routes to the traffic's destination do not select its egress.
+    """
     try:
         target = ipaddress.IPv4Network(cidr, strict=False)
         next_hop = ipaddress.IPv4Address(gateway)
@@ -92,6 +98,9 @@ def _egress(cidr: str, gateway: str, context: Dict[str, Any]) -> Tuple[Optional[
         return None, '主路由表包含无法识别的目的地址'
     main = [(row, network) for row, network in main if network is not None]
 
+    if policy_routing:
+        return _gateway_egress(next_hop, main)
+
     # A more-specific route can send part of this destination elsewhere. Do not
     # infer one egress from an aggregate route in that case.
     if any(_enabled(row) and network != target and network.subnet_of(target)
@@ -121,6 +130,10 @@ def _egress(cidr: str, gateway: str, context: Dict[str, Any]) -> Tuple[Optional[
             return None, '代理路由包含多个或无法识别的实际出口'
         return interface, ''
 
+    return _gateway_egress(next_hop, main)
+
+
+def _gateway_egress(next_hop, main):
     # The desired route has not been created. Infer its egress only from one
     # active directly connected route to the gateway, never from a default or
     # recursive route. Competing more-specific routes make this ambiguous.
@@ -189,7 +202,7 @@ def _selector_matches(value: Any, interface: str, context: Dict[str, Any], is_li
     return not result if negate and result is not None else result
 
 
-def assess_nat(cidr: str, gateway: str, state) -> Dict[str, str]:
+def assess_nat(cidr: str, gateway: str, state, *, policy_routing: bool = False) -> Dict[str, str]:
     """Return ``not_required``, ``missing`` or ``unknown`` for one proxy CIDR.
 
     ``missing`` means a source-NAT rule may match: source, destination, protocol
@@ -215,7 +228,7 @@ def assess_nat(cidr: str, gateway: str, state) -> Dict[str, str]:
         restricted = bool(row.get('out-interface') or row.get('out-interface-list'))
         if restricted:
             if egress_error is None:
-                interface, egress_error = _egress(cidr, gateway, context)
+                interface, egress_error = _egress(cidr, gateway, context, policy_routing=policy_routing)
             if interface is None:
                 unknown.append(egress_error)
                 continue

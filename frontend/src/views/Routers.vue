@@ -218,6 +218,35 @@
         </div>
       </SectionCard>
 
+      <SectionCard v-if="report.policy_routing" class="mt-4" :padded="false" title="按来源策略路由" description="单独核对所选规则集的来源、目的地址列表、标记规则和独立路由表。fake-ip 及其余规则集仍按静态路由核对。">
+        <div class="flex flex-col gap-2 px-5 pb-4 text-[12.5px] max-md:px-4">
+          <p v-if="report.policy_routing.enabled" class="m-0 text-muted-foreground">
+            当前配置空间的 OxiDNS 智能分流来源：<span class="num">{{ report.policy_routing.sources.length }}</span> 个 IPv4 范围，已排除更具体的直连设备和 Mihomo 网关。
+          </p>
+          <p v-else class="m-0 text-muted-foreground">已清空策略路由选择；发布后撤销本功能的策略配置，按上方选择恢复静态路由。</p>
+          <details v-if="report.policy_routing.sources.length" class="rounded-md border border-border">
+            <summary class="min-h-11 cursor-pointer rounded-md px-3 py-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accent">查看实际来源范围</summary>
+            <div class="max-h-40 overflow-y-auto px-3 pb-3 font-mono text-[12px]">
+              <p v-for="source in report.policy_routing.sources" :key="source" class="m-0">{{ source }}</p>
+            </div>
+          </details>
+          <p v-for="blocker in report.policy_routing.blockers" :key="blocker" role="alert" class="m-0 break-words text-warning-accent">{{ blocker }}</p>
+        </div>
+        <div v-if="report.policy_routing.items.length" class="cf-table-wrap">
+          <table class="cf-table min-w-[640px]">
+            <thead><tr><th>目的网段</th><th>规则集</th><th>状态</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr v-for="item in report.policy_routing.items" :key="item.cidr">
+                <td class="font-mono text-[12px]">{{ item.cidr }}</td>
+                <td class="text-[12px] text-muted-foreground">{{ item.sources.join('、') }}</td>
+                <td><span :class="['chip', statusInfo(item.status).chip]">{{ statusInfo(item.status).label }}</span></td>
+                <td class="min-w-[240px] whitespace-normal break-words text-[12px] text-muted-foreground">{{ item.detail }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </SectionCard>
+
       <SectionCard class="mt-4" :padded="false" title="NAT 免转换" description="先判断发往代理网段的流量是否可能受源 NAT 影响；未受影响时无需额外规则，证据不足时标为待确认。">
         <div class="cf-table-wrap">
           <table class="cf-table">
@@ -508,10 +537,24 @@
             </p>
           </div>
           <div class="flex flex-col gap-1.5">
-            <Label>按 IP 路由给 mihomo 的规则集</Label>
-            <MultiSelect v-model="form.ip_rule_sets" :options="ruleSetOptions" placeholder="只路由 fake-ip 网段" />
+            <Label for="router-ip-rule-sets">{{ form.type === 'routeros' ? '使用静态路由的 IP 规则集' : '按 IP 路由给 mihomo 的规则集' }}</Label>
+            <div class="[&_[role=combobox]]:min-h-11">
+              <MultiSelect :model-value="form.ip_rule_sets" trigger-id="router-ip-rule-sets" :options="ruleSetOptions" placeholder="仅 fake-ip 网段" @update:model-value="selectStaticRuleSets" />
+            </div>
             <p class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
               fake-ip 网段始终包含。只勾选客户端直接连 IP、不经过 DNS 的规则集（如 Telegram）；其余流量经 OxiDNS 解析成 fake-ip 后自然进入 mihomo。
+            </p>
+          </div>
+          <div v-if="form.type === 'routeros'" class="flex flex-col gap-1.5">
+            <Label for="router-policy-rule-sets">使用策略路由的 IP 规则集</Label>
+            <div class="[&_[role=combobox]]:min-h-11">
+              <MultiSelect :model-value="form.ros_policy_rule_sets" trigger-id="router-policy-rule-sets" :options="ruleSetOptions" placeholder="不使用策略路由" @update:model-value="selectPolicyRuleSets" />
+            </div>
+            <p class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
+              两组独立选择，同一规则集只能使用一种方式；选到另一组时自动移出原组。fake-ip 始终使用静态路由。取消选择后停止下发该规则集，保存后需预览并发布才生效。
+            </p>
+            <p v-if="form.ros_policy_rule_sets.length" class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
+              来源取当前配置空间已保存的 OxiDNS 设备策略，仅包含显式设为智能分流的 IPv4 地址或网段；保留更具体的直连例外并排除 Mihomo 自身。请同步发布 OxiDNS 设备策略。
             </p>
           </div>
           <div class="flex flex-col gap-1.5">
@@ -612,6 +655,7 @@ interface RouterItem {
   manage_return_routing?: boolean
   dns_agent_id: string
   ip_rule_sets?: string[]
+  ros_policy_rule_sets?: string[]
   has_password: boolean
   last_probe?: { ok: boolean; version?: string; message?: string; at: string }
 }
@@ -711,7 +755,8 @@ const emptyForm = () => ({
   proxy_gateway_agent_id: NONE,
   manage_return_routing: false,
   dns_agent_id: NONE,
-  ip_rule_sets: [] as string[]
+  ip_rule_sets: [] as string[],
+  ros_policy_rule_sets: [] as string[]
 })
 const form = reactive(emptyForm())
 
@@ -719,6 +764,16 @@ const typeLabel = (type: RouterType) => (type === 'routeros' ? 'RouterOS' : 'iKu
 const ruleSetOptions = computed(() =>
   ruleSets.value.map(rule => ({ value: rule.id, label: `${rule.name}（${rule.policy}）` }))
 )
+const selectStaticRuleSets = (selected: string[]) => {
+  form.ip_rule_sets = selected
+  if (form.type === 'routeros') {
+    form.ros_policy_rule_sets = form.ros_policy_rule_sets.filter(id => !selected.includes(id))
+  }
+}
+const selectPolicyRuleSets = (selected: string[]) => {
+  form.ros_policy_rule_sets = selected
+  form.ip_rule_sets = form.ip_rule_sets.filter(id => !selected.includes(id))
+}
 const agentsOf = (serviceType: string) => agents.value.filter(agent => agent.service_type === serviceType)
 const errorMessage = (error: any, fallback: string) => error?.response?.data?.message || fallback
 
@@ -941,7 +996,8 @@ const openEdit = (router: RouterItem) => {
     proxy_gateway_agent_id: router.proxy_gateway_agent_id || NONE,
     manage_return_routing: router.manage_return_routing === true,
     dns_agent_id: router.dns_agent_id || NONE,
-    ip_rule_sets: [...(router.ip_rule_sets || [])]
+    ip_rule_sets: (router.ip_rule_sets || []).filter(id => router.type !== 'routeros' || !router.ros_policy_rule_sets?.includes(id)),
+    ros_policy_rule_sets: [...(router.ros_policy_rule_sets || [])]
   })
   editingId.value = router.id
   editingHasPassword.value = router.has_password
@@ -971,6 +1027,7 @@ const submit = async () => {
   saving.value = true
   const payload = {
     ...form,
+    ros_policy_rule_sets: form.type === 'routeros' ? [...form.ros_policy_rule_sets] : [],
     manage_return_routing: form.manage_return_routing === true,
     proxy_gateway_agent_id: form.proxy_gateway_agent_id === NONE ? '' : form.proxy_gateway_agent_id,
     dns_agent_id: form.dns_agent_id === NONE ? '' : form.dns_agent_id

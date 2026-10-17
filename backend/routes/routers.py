@@ -19,7 +19,7 @@ from backend.routers.route_editor import (
 )
 from backend.routers.routeros import RouterOSDriver
 from backend.routers.store import (
-    RouterValidationError, find_router, normalize, public_view, routers_of,
+    RouterValidationError, find_router, normalize, public_view, routers_of, static_rule_sets,
 )
 from backend.routes import routers_bp
 
@@ -68,21 +68,26 @@ def update_or_delete_router(router_id):
     existing = find_router(config, router_id)
     if existing is None:
         return _not_found()
-    others = [item for item in routers_of(config) if item.get('id') != router_id]
-    if request.method == 'DELETE':
-        _save_items(config, others)
-        return jsonify({'success': True})
-    try:
-        router = normalize(request.get_json(silent=True), existing)
-    except RouterValidationError as error:
-        return jsonify({'success': False, 'message': str(error)}), 400
-    if any(router.get(key) != existing.get(key) for key in ('type', 'endpoint', 'username', 'password')):
-        router.pop('last_probe', None)   # stale once the connection changes
-    index = next(i for i, item in enumerate(routers_of(config)) if item.get('id') == router_id)
-    items = routers_of(config)
-    items[index] = router
-    _save_items(config, items)
-    return jsonify({'success': True, 'router': public_view(router)})
+    with router_operation_lock(existing):
+        config = get_config()
+        existing = find_router(config, router_id)
+        if existing is None:
+            return _not_found()
+        others = [item for item in routers_of(config) if item.get('id') != router_id]
+        if request.method == 'DELETE':
+            _save_items(config, others)
+            return jsonify({'success': True})
+        try:
+            router = normalize(request.get_json(silent=True), existing)
+        except RouterValidationError as error:
+            return jsonify({'success': False, 'message': str(error)}), 400
+        if any(router.get(key) != existing.get(key) for key in ('type', 'endpoint', 'username', 'password')):
+            router.pop('last_probe', None)   # stale once the connection changes
+        index = next(i for i, item in enumerate(routers_of(config)) if item.get('id') == router_id)
+        items = routers_of(config)
+        items[index] = router
+        _save_items(config, items)
+        return jsonify({'success': True, 'router': public_view(router)})
 
 
 @routers_bp.route('/<router_id>/probe', methods=['POST'])
@@ -112,11 +117,28 @@ def probe_router(router_id):
 def _inspect(config, router, driver):
     """Desired state, router state, drift report and Agent return-routing state."""
     gateway_agent = _agent(router.get('proxy_gateway_agent_id'))
-    desired = dict(compute_desired(config, gateway_agent.get('host') if gateway_agent else None,
-                                  router.get('ip_rule_sets') or []))
+    policy_sets = set(router.get('ros_policy_rule_sets') or []) if router['type'] == 'routeros' else set()
+    static_sets = static_rule_sets(router)
+    desired = dict(compute_desired(config, gateway_agent.get('host') if gateway_agent else None, static_sets))
     dns_id = router.get('dns_agent_id') or ''
     desired.update(dns_agent_settings(dns_id, _agent(dns_id) if dns_id else None))
+    if router['type'] == 'routeros' and (policy_sets or router.get('ros_policy_state')):
+        driver.ros_policy_manifest = router.get('ros_policy_state')
     state = driver.read_state()
+    if router['type'] == 'routeros' and (policy_sets or router.get('ros_policy_state')):
+        from backend.routers.ros_policy import inspect_desired, snapshot, owned_rows, MANGLE, RULES, VRFS, ROUTES
+        desired['ros_policy'] = inspect_desired(config, router, desired)
+        state.ros_policy = snapshot(driver)
+        # Only verified objects from our previous release may be disregarded
+        # when assessing the upcoming path's NAT requirements.
+        try:
+            owned = owned_rows(router.get('ros_policy_state'), state.ros_policy)
+        except RouterError:
+            owned = []
+        owned_mangle = {row['id'] for row in owned if row['path'] == MANGLE}
+        state.nat_context.update(
+            mangle=[row for row in state.ros_policy[MANGLE] if row.get('.id') not in owned_mangle],
+            routing_rules=state.ros_policy[RULES], vrfs=state.ros_policy[VRFS], routes=state.ros_policy[ROUTES])
     if dns_id and not desired['dns_error']:
         try:
             state.dhcp_dns = driver.read_dhcp_dns()
@@ -185,6 +207,9 @@ def router_apply(router_id):
     driver = _driver(router)
     try:
         with router_operation_lock(router):
+            config = get_config()
+            if find_router(config, router_id) != router:
+                return jsonify({'success': False, 'message': '路由器设置在等待发布期间发生变化，请重新预览'}), 409
             gateway_agent, desired, state, report = _inspect(config, router, driver)
             plan = build_plan(router, desired, state, report, report['return_routing'], driver)
             if plan['blockers']:
@@ -199,18 +224,23 @@ def router_apply(router_id):
                 from backend.common.agent_manager import get_agent_manager
                 agent_client = AgentReturnRouting(get_agent_manager(), gateway_agent)
             result = execute(plan, driver, agent_client)
+            config = get_config()   # reload: the release may have taken a while
+            items = routers_of(config)
+            for item in items:
+                if item.get('id') == router_id:
+                    if hasattr(driver, 'ros_policy_manifest'):
+                        if driver.ros_policy_manifest:
+                            item['ros_policy_state'] = driver.ros_policy_manifest
+                        else:
+                            item.pop('ros_policy_state', None)
+                    item['last_release'] = {'at': _now(), 'ok': result['ok'], 'fingerprint': plan['fingerprint'],
+                                            'failed_stage': result.get('failed_stage', '')}
+            _save_items(config, items)
     except RouterError as error:
         return jsonify({'success': False, 'message': str(error)}), 502
     finally:
         driver.close()
 
-    config = get_config()   # reload: the release may have taken a while
-    items = routers_of(config)
-    for item in items:
-        if item.get('id') == router_id:
-            item['last_release'] = {'at': _now(), 'ok': result['ok'], 'fingerprint': plan['fingerprint'],
-                                    'failed_stage': result.get('failed_stage', '')}
-    _save_items(config, items)
     message = ''
     if not result['ok']:
         rollback_failed = any(item['status'] == 'failed' for item in result['rollback'])

@@ -117,6 +117,9 @@ def _verify(stage: str, checks: Dict[str, Any], driver, agent: AgentReturnRoutin
         return
     state = driver.read_state()
     if stage == 'routes':
+        if checks.get('ros_policy') is not None:
+            from backend.routers.ros_policy_write import verify
+            verify(driver, checks['ros_policy'])
         for check in checks['routes']:
             if not any(route.dst == check['cidr'] and route.enabled and route.gateway == check['gateway']
                        and is_managed(route.comment) for route in state.routes):
@@ -168,6 +171,9 @@ def execute(plan: Dict[str, Any], driver, agent: Optional[AgentReturnRouting]) -
                     raise ReleaseError('未启用的发布阶段包含写入操作，请重新预览')
                 continue
             if not stage['ops']:
+                if current == 'routes' and plan.get('checks', {}).get('ros_policy') is not None:
+                    _verify(current, plan['checks'], driver, agent)
+                    record({'stage': current, 'summary': '回读确认来源策略路由与计划一致', 'status': 'verified'})
                 if current == 'return_routing' and plan.get('checks', {}).get('return_routing'):
                     _verify(current, plan['checks'], driver, agent)
                     record({'stage': current, 'summary': '回读确认受管回流配置与占用安全检查通过', 'status': 'verified'})

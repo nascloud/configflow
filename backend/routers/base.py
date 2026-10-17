@@ -108,6 +108,8 @@ class RouterState:
     # Routes the router is actually forwarding with (iKuai 当前路由表). None when
     # the vendor cannot report them; used to find kernel routes without config.
     active_routes: Optional[List[RouteEntry]] = None
+    ros_policy: Optional[Dict[str, Any]] = None
+    ros_policy_plan: Optional[Dict[str, Any]] = None
 
 
 class RouterDriver:

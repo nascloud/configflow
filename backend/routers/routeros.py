@@ -41,6 +41,10 @@ NAT_READ_ONLY = {'.id', 'dynamic', 'invalid', 'bytes', 'packets'}
 ROUTE_EVIDENCE_FIELDS = ROUTE_FIELDS | {'.id', 'immediate-gw', 'active', 'connect', 'ecmp', 'invalid'}
 
 
+class MissingResource(RouterError):
+    pass
+
+
 class UncertainWrite(RouterError):
     """The request may have reached RouterOS even though its reply was lost."""
 
@@ -74,7 +78,7 @@ class RouterOSDriver(RouterDriver):
         if response.status_code == 403:
             raise RouterError('RouterOS 拒绝访问，请先确认所用 HTTP/HTTPS 服务允许 REST API。' + PERMISSION_HELP)
         if response.status_code == 404 and method == 'GET':
-            raise RouterError('RouterOS 未提供 REST API（HTTPS 需要 7.1+ 并启用 www-ssl；HTTP 需要 7.9+ 并启用 www）')
+            raise MissingResource('RouterOS 未提供 REST API（HTTPS 需要 7.1+ 并启用 www-ssl；HTTP 需要 7.9+ 并启用 www）')
         if response.status_code == 404 and method == 'DELETE':
             return {}  # already absent during compensation
         if not 200 <= response.status_code < 300:
@@ -162,6 +166,8 @@ class RouterOSDriver(RouterDriver):
                         pass
         state.nat_context = context
         for row in routes:
+            if str(row.get('comment') or '').startswith('cf-ros-policy-'):
+                continue
             dst = str(row.get('dst-address') or '')
             try:
                 dst = str(ipaddress.ip_network(dst, strict=False))
@@ -171,6 +177,8 @@ class RouterOSDriver(RouterDriver):
                 id=str(row.get('.id', '')), dst=dst, gateway=str(row.get('gateway') or ''),
                 enabled=not _truthy(row.get('disabled')), comment=str(row.get('comment') or '')))
         for row in nats:
+            if str(row.get('comment') or '').startswith('cf-ros-policy-'):
+                continue
             if row.get('chain') != 'srcnat' or row.get('action') != 'accept':
                 continue
             dst = [str(row['dst-address'])] if row.get('dst-address') else []
@@ -184,6 +192,13 @@ class RouterOSDriver(RouterDriver):
                 enabled=not _truthy(row.get('disabled')), comment=str(row.get('comment') or ''),
                 attributes={key: value for key, value in row.items()
                             if key not in NAT_READ_ONLY and not key.startswith('.')}))
+        manifest = getattr(self, 'ros_policy_manifest', None)
+        if manifest and isinstance(context.get('mangle'), list):
+            from backend.routers.ros_policy import config_row, MANGLE
+            proven = {entry['id'] for entry in manifest.get('resources', []) if entry['path'] == MANGLE
+                      and any(row.get('.id') == entry['id'] and config_row(row) == entry['config']
+                              for row in context['mangle'])}
+            context['mangle'] = [row for row in context['mangle'] if row.get('.id') not in proven]
         return state
 
     def read_dhcp_dns(self) -> DhcpDnsState:
@@ -422,6 +437,9 @@ class RouterOSDriver(RouterDriver):
 
     def apply(self, op: Dict[str, Any]) -> Dict[str, Any]:
         kind = op['kind']
+        if kind in ('ros_policy_replace', 'ros_policy_restore'):
+            from backend.routers import ros_policy_write
+            return (ros_policy_write.apply if kind == 'ros_policy_replace' else ros_policy_write.restore)(self, op)
         if kind == 'ros_restore':
             return self._restore(op['changes'])
         if kind == 'dhcp_dns_update':
@@ -499,7 +517,7 @@ def _comparable(key: str, value: Any) -> str:
             return 'true'
         if text in ('false', 'no'):
             return 'false'
-    if key in ('src-address', 'dst-address'):
+    if key in ('src-address', 'dst-address', 'address'):
         try:
             return str(ipaddress.ip_network(text, strict=False))
         except ValueError:

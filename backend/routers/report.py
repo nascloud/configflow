@@ -136,6 +136,13 @@ def _nat_items(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
 
 def build_report(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
     routes = _route_items(desired, state)
+    if 'ros_policy' in desired:
+        from backend.routers.ros_policy import build, overlap_check
+        state.ros_policy_plan = build(desired, state)
+        policy_overlap = overlap_check(desired['ros_policy']['cidrs'])
+        # Policy migration owns these routes; the ordinary static cleanup must
+        # never delete them a second time or delete a conflicting manual route.
+        routes['extra'] = [item for item in routes['extra'] if not policy_overlap(item['cidr'])]
     nat = _nat_items(desired, state)
     dns = build_dns_report(desired, state.dhcp_dns)
     summary: Dict[str, int] = {}
@@ -149,5 +156,18 @@ def build_report(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
                   for item in routes['items'] + nat['items']) and not routes['extra']
     in_sync = in_sync and not any(item.get('migrate') for item in routes['unmanaged_other'])
     in_sync = in_sync and dns['status'] in {'disabled', 'synced'}
-    return {'desired': desired, 'routes': routes, 'nat_bypass': nat, 'dhcp_dns': dns,
-            'summary': summary, 'in_sync': in_sync}
+    result = {'desired': {key: value for key, value in desired.items() if key != 'ros_policy'},
+              'routes': routes, 'nat_bypass': nat, 'dhcp_dns': dns, 'summary': summary, 'in_sync': in_sync}
+    if state.ros_policy_plan is not None:
+        policy = state.ros_policy_plan
+        result['policy_routing'] = {key: policy[key] for key in ('items', 'blockers', 'warnings')}
+        result['policy_routing']['sources'] = desired['ros_policy']['sources']
+        result['policy_routing']['enabled'] = bool(desired['ros_policy']['selected'])
+        for item in policy['items']:
+            summary[item['status']] = summary.get(item['status'], 0) + 1
+        if policy['blockers']:
+            summary['unknown'] = summary.get('unknown', 0) + len(policy['blockers'])
+        if policy['ops'] and not policy['items']:
+            summary['pending'] = summary.get('pending', 0) + 1
+        result['in_sync'] = in_sync and not policy['ops'] and not policy['blockers']
+    return result
