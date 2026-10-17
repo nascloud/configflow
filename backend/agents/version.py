@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.7-go"
+LATEST_AGENT_VERSION = "1.8.8-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.8-go": {
+        "date": "2026-10-17",
+        "features": [
+            "Agent 重启时若受管回流资源完整且与当前规格（网卡、网段、主路由 MAC）一致，则跳过重放，避免先撤后加造成的短暂回流空档；缺失、漂移或 MAC 变化时仍按原逻辑重放"
+        ]
+    },
     "1.8.7-go": {
         "date": "2026-10-17",
         "features": [

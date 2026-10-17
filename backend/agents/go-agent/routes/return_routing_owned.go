@@ -419,14 +419,51 @@ func removeOwnedReturn(cfg *Config, spec resolvedSpec, state *returnRoutingState
 	return err
 }
 
+// ownedRouteExpectation and ownedRuleExpectation are the exact rows written
+// for spec; readback and replay comparisons use the same shapes.
+func ownedRouteExpectation(spec resolvedSpec, owner *returnOwnership, dst string) map[string]interface{} {
+	return map[string]interface{}{"dst": dst, "gateway": spec.RouterIP, "dev": spec.LanInterface,
+		"table": spec.Table, "protocol": returnProtocol, "metric": owner.Metric, "flags": []interface{}{}}
+}
+
+func ownedRuleExpectation(spec resolvedSpec) map[string]interface{} {
+	return map[string]interface{}{"priority": spec.Priority, "src": "all", "fwmark": fmt.Sprintf("0x%x", spec.mark),
+		"fwmask": fmt.Sprintf("0x%x", spec.mark), "table": spec.Table, "protocol": returnProtocol}
+}
+
+// ownedMatchesSpec reports whether the recorded resources are exactly what
+// spec renders today. Interfaces, LAN subnet and router MAC are resolved at
+// replay time, so a change there must still trigger a real replay.
+func ownedMatchesSpec(spec resolvedSpec, owner *returnOwnership) bool {
+	expected := []struct {
+		rows []map[string]interface{}
+		want []map[string]interface{}
+	}{
+		{owner.Routes, []map[string]interface{}{ownedRouteExpectation(spec, owner, "default"),
+			ownedRouteExpectation(spec, owner, spec.lanCIDR)}},
+		{owner.Rules, []map[string]interface{}{ownedRuleExpectation(spec)}},
+		{owner.NFT, desiredReturnNFT(spec, owner)},
+	}
+	for _, group := range expected {
+		if len(group.rows) != len(group.want) {
+			return false
+		}
+		for _, want := range group.want {
+			if match, err := matchingResource(want, group.rows); err != nil || match == nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func addOwnedReturn(cfg *Config, spec resolvedSpec, state *returnRoutingState) error {
 	owner := state.Ownership
 	for _, dst := range []string{"default", spec.lanCIDR} {
 		if _, err := checkedResources(spec, state); err != nil {
 			return err
 		}
-		expected := map[string]interface{}{"dst": dst, "gateway": spec.RouterIP, "dev": spec.LanInterface,
-			"table": spec.Table, "protocol": returnProtocol, "metric": owner.Metric, "flags": []interface{}{}}
+		expected := ownedRouteExpectation(spec, owner, dst)
 		args, err := routeArguments("add", expected)
 		if err != nil {
 			return err
@@ -456,8 +493,7 @@ func addOwnedReturn(cfg *Config, spec resolvedSpec, state *returnRoutingState) e
 	if _, err := checkedResources(spec, state); err != nil {
 		return err
 	}
-	expected := map[string]interface{}{"priority": spec.Priority, "src": "all", "fwmark": fmt.Sprintf("0x%x", spec.mark),
-		"fwmask": fmt.Sprintf("0x%x", spec.mark), "table": spec.Table, "protocol": returnProtocol}
+	expected := ownedRuleExpectation(spec)
 	args, err := ruleArguments("add", expected)
 	if err != nil {
 		return err
@@ -687,6 +723,15 @@ func reapplyReturnRouting(cfg *Config) {
 	}
 	if !state.Active {
 		return
+	}
+	// An Agent restart (upgrade, crash) usually finds everything still in place;
+	// replaying would remove and re-add it, briefly dropping return routing.
+	// Only a reboot or drift needs the real replay below.
+	if returnResourcesComplete(state) {
+		if spec, specErr := prepareSpec(cfg, state.Spec); specErr == nil && ownedMatchesSpec(spec, state.Ownership) {
+			log.Printf("return routing: owned resources complete and current, replay skipped")
+			return
+		}
 	}
 	if _, err = ApplyReturnRouting(cfg, state.Spec); err != nil {
 		log.Printf("return routing: safe replay refused: %v", err)
