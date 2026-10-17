@@ -195,8 +195,18 @@ body {
   font-size: 13px;
 }
 
+/* 默认对齐放入组件层，让列上的 text-* / align-* 和辅助类正常覆盖。 */
+@layer components {
+  .cf-table th {
+    text-align: left;
+  }
+
+  .cf-table td {
+    vertical-align: middle;
+  }
+}
+
 .cf-table th {
-  text-align: left;
   font-size: 12px;
   font-weight: 600;
   color: var(--cf-fg-2);
@@ -208,7 +218,6 @@ body {
 .cf-table td {
   padding: 13px var(--cf-sp-4);
   border-bottom: 1px solid var(--cf-bd);
-  vertical-align: middle;
 }
 
 .cf-table tbody tr:last-child td {

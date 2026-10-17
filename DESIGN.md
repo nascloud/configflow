@@ -79,7 +79,7 @@ Claude 暖色系的「配置流」控制台：炭黑 / 象牙底 + 陶土橙主�
 - **选择**：`Segmented`（定一个参数）、`ViewToggle`（列表 / 卡片切换）、`MultiSelect`、`button.chip[aria-pressed]`（筛选：点完列表变短）
 - **反馈**：只走 `@/lib/feedback`：`notify.*`（vue-sonner 轻提示）、`confirm()` / `confirmDanger()` / `choose()`（由 App.vue 里的 `ConfirmHost` 渲染）。不要在页面里单独挂确认框
 - **图标**：`@lucide/vue`，常规 16px（`size-4`），按钮内 14px（`size-3.5`）；纯图标按钮必须有 `aria-label`
-- **表格**：数据密集的区域用 `.cf-table` / `.cf-table-wrap` 列表，不要做成卡片墙；宽表在自身容器内横向滚动
+- **表格**：数据密集的区域用 `.cf-table` / `.cf-table-wrap` 列表，不要做成卡片墙；宽表在自身容器内横向滚动。表头与该列内容保持同向对齐，右侧操作列的表头用 `text-right`；默认对齐放在组件层，允许列上的对齐类覆盖
 
 ## 6. 动效
 
