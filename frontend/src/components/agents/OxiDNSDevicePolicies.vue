@@ -36,11 +36,10 @@
             <label for="policy-client-ip" class="text-xs text-muted-foreground">手动添加 IP / 网段</label>
             <FieldHelp label="手动添加 IP / 网段" :text="clientRangeHelp" />
           </div>
-          <Input id="policy-client-ip" v-model="newIP" class="min-h-11 font-mono md:col-start-2 md:row-start-2" placeholder="192.168.50.0/24 或 IPv6" aria-describedby="policy-range-help" @keydown.enter.prevent="add(newIP)" />
+          <Input id="policy-client-ip" v-model="newIP" class="min-h-11 font-mono md:col-start-2 md:row-start-2" placeholder="192.168.50.0/24 或 IPv6" @keydown.enter.prevent="add(newIP)" />
         </div>
         <Button variant="outline" class="min-h-11 md:col-start-3 md:row-start-2" :disabled="!newIP.trim() || rows.length >= 512" @click="add(newIP)"><Plus class="size-4" />添加策略</Button>
       </div>
-      <p id="policy-range-help" class="mb-4 mt-0 text-xs leading-relaxed text-muted-foreground">支持单个 IPv4 / IPv6 和 CIDR 网段，网段地址会自动规范化。规则重叠时，单个 IP 优先，其次是范围更小的网段，与添加顺序无关。</p>
       <div v-if="rows.length" class="cf-table-wrap">
         <table class="cf-table w-full min-w-[540px]">
           <thead><tr><th scope="col">客户端 IP / 网段</th><th scope="col">备注</th><th scope="col">策略</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead>
@@ -101,7 +100,8 @@ const devicePolicyHelp = [
 ].join('\n\n')
 const clientRangeHelp = [
   '为指定设备或网段设置 DNS 解析策略，未出现在查询记录中的设备也可手动添加。',
-  '支持单个 IPv4 / IPv6 和 CIDR 网段，例如 192.168.50.50、192.168.50.0/24。重叠时单个 IP 优先，其次为更小的网段。',
+  '支持单个 IPv4 / IPv6 和 CIDR 网段，例如 192.168.50.50、192.168.50.0/24。',
+  '网段会自动整理为标准写法。范围重叠时，单个 IP 优先，其次是更小的网段，与添加顺序无关。',
   '添加后选择智能分流（沿用现有规则）或直连（使用本地 DNS 上游），保存草稿并发布到当前设备后生效。',
   '设备需使用 OxiDNS，且 OxiDNS 能识别真实客户端 IP；填写地址不会自动修改设备 DNS。',
 ].join('\n\n')
