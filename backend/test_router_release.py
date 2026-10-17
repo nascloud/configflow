@@ -15,9 +15,11 @@ GATEWAY = '10.0.0.4'
 class StatefulIKuai:
     """Minimal iKuai 4.x: show/add/edit/del on static_rt, nat_rule and stream_ipport, strings stored encoded."""
 
-    def __init__(self, routes, nats, fail=None, policies=None):
+    def __init__(self, routes, nats, fail=None, policies=None, stale=None):
         self.rows = {'static_rt': copy.deepcopy(routes), 'nat_rule': copy.deepcopy(nats), 'route_object': [],
                      'stream_ipport': copy.deepcopy(policies or [])}
+        # 当前路由表 mirrors enabled static routes, plus kernel leftovers no config explains.
+        self.stale = copy.deepcopy(stale or [])
         self.writes = []
         self.fail = fail
         self.next_id = 100
@@ -31,6 +33,11 @@ class StatefulIKuai:
         if url.endswith('/Action/login'):
             return FakeResponse({'Result': 10000, 'code': 0})
         func, action, param = json['func_name'], json['action'], json['param']
+        if func == 'static_rt_table':
+            active = [{'id': row['id'], 'dst_addr': row['dst_addr'], 'netmask': row['netmask'],
+                       'gateway': row['gateway'], 'interface': 'lan1', 'prio': row.get('prio', 1)}
+                      for row in self.rows['static_rt'] if row.get('enabled', 'yes') == 'yes'] + self.stale
+            return FakeResponse({'code': 0, 'results': {'total': len(active), 'data': active}})
         rows = self.rows[func]
         if action == 'show':
             return FakeResponse({'code': 0, 'results': {'total': len(rows), 'data': copy.deepcopy(rows)}})
@@ -200,7 +207,7 @@ def test_execute_applies_in_order_and_verifies():
                    'dst_addr_inv': 0, 'type': 1, 'nexthop': GATEWAY, 'protocol': 'any', 'comment': 'cf-mihomo',
                    'time': {'custom': [{'type': 'weekly', 'weekdays': '1234567', 'start_time': '00:00',
                                         'end_time': '23:59'}], 'object': []},
-                   'prio': 31, 'mode': 0, 'area_code': '', 'dst_type': 0,
+                   'prio': 0, 'mode': 0, 'area_code': '', 'dst_type': 0,
                    'src_port': {'custom': [], 'object': []}, 'dst_port': {'custom': [], 'object': []}}
     assert add['tagname'].startswith('cf_pr_') and len(add['tagname']) <= 15
     assert session.rows['static_rt'] == []                  # every loop-prone route is gone
@@ -240,7 +247,7 @@ def test_execute_stops_before_router_when_agent_fails():
 
 def _policy(rule_id, comment, dst, **changes):
     row = {'id': rule_id, 'enabled': 'yes', 'tagname': f'cf_pr_{rule_id}', 'comment': comment, 'type': 1,
-           'nexthop': GATEWAY, 'protocol': 'any', 'interface': '', 'mode': 0, 'prio': 31, 'iface_band': 0,
+           'nexthop': GATEWAY, 'protocol': 'any', 'interface': '', 'mode': 0, 'prio': 0, 'iface_band': 0,
            'area_code': '', 'dst_type': 0, 'src_addr_inv': 1, 'dst_addr_inv': 0,
            'src_addr': {'custom': [GATEWAY], 'object': {}}, 'dst_addr': {'custom': list(dst), 'object': {}},
            'src_port': {'custom': {}, 'object': {}}, 'dst_port': {'custom': {}, 'object': {}},
@@ -284,7 +291,7 @@ def test_policy_routes_drop_stale_cidrs_but_keep_manual_ones():
     result = execute(plan, driver, FakeAgent(SAFE_RETURN_STATUS))
     assert result['ok'], result
     edit = next(param for func, action, param in session.writes if (func, action) == ('stream_ipport', 'edit'))
-    assert edit['tagname'] == 'cf_pr_1' and edit['prio'] == 31        # unrelated form fields are kept
+    assert edit['tagname'] == 'cf_pr_1' and edit['time']['custom'][0]['weekdays'] == '1234567'  # form kept
     assert [row['id'] for row in session.rows['static_rt']] == [8]
 
 
@@ -293,6 +300,42 @@ def test_policy_route_that_includes_the_gateway_is_repaired():
     driver = _driver(StatefulIKuai([], HOME_NATS, policies=policies))
     [op] = _plan(driver)['stages'][1]['ops']
     assert op['kind'] == 'policy_route_update' and op['id'] == '1'
+
+
+def test_policy_route_below_top_priority_is_raised():
+    # A lower 端口分流 priority lets multi-WAN or protocol rules take proxy traffic first.
+    policies = [_policy(1, 'cf-mihomo', ['91.108.0.0/16', '149.154.160.0/20', '198.18.0.0/16'], prio=31)]
+    session = StatefulIKuai([], HOME_NATS, policies=policies)
+    driver = _driver(session)
+    [op] = _plan(driver)['stages'][1]['ops']
+    assert op['kind'] == 'policy_route_update'
+    assert execute(_plan(driver), driver, FakeAgent(SAFE_RETURN_STATUS))['ok']
+    assert session.rows['stream_ipport'][0]['prio'] == 0
+
+
+def test_kernel_leftover_routes_are_reported_not_rolled_back():
+    # iKuai can keep a kernel route after its static route is deleted; it beats
+    # 端口分流 and keeps the loop alive, and no API call removes it.
+    stale = [{'id': 9, 'dst_addr': '8.8.8.8', 'netmask': '255.255.255.255', 'gateway': GATEWAY,
+              'interface': 'lan1', 'prio': 20}]
+    session = StatefulIKuai(HOME_ROUTES, HOME_NATS, stale=stale)
+    driver = _driver(session)
+    plan = _plan(driver)
+    assert any('8.8.8.8/32' in warning and '重启' in warning for warning in plan['warnings'])
+    result = execute(plan, driver, FakeAgent(SAFE_RETURN_STATUS))
+    assert result['ok'] and result['rollback'] == []
+    [warning] = [entry for entry in result['log'] if entry['status'] == 'warning']
+    assert warning['stage'] == 'routes' and '8.8.8.8/32' in warning['summary']
+    assert session.rows['static_rt'] == []           # the release itself still completes
+
+
+def test_routes_without_leftovers_need_no_warning():
+    session = StatefulIKuai(HOME_ROUTES, HOME_NATS)
+    driver = _driver(session)
+    plan = _plan(driver)
+    assert not any('残留' in warning for warning in plan['warnings'])
+    result = execute(plan, driver, FakeAgent(SAFE_RETURN_STATUS))
+    assert result['ok'] and not [entry for entry in result['log'] if entry['status'] == 'warning']
 
 
 def test_policy_route_verification_rejects_a_router_that_ignores_the_exclusion():

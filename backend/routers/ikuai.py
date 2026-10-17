@@ -14,8 +14,8 @@ from urllib.parse import unquote
 import requests
 
 from backend.routers.base import (
-    DhcpDnsEntry, DhcpDnsState, NatBypassEntry, PolicyRouteEntry, RouteEntry, RouterDriver, RouterError,
-    RouterInfo, RouterRollbackError, RouterState,
+    POLICY_PRIORITY, DhcpDnsEntry, DhcpDnsState, NatBypassEntry, PolicyRouteEntry, RouteEntry, RouterDriver,
+    RouterError, RouterInfo, RouterRollbackError, RouterState,
 )
 from backend.routers.dhcp_dns import checked_dns_target
 
@@ -202,8 +202,27 @@ class IKuaiDriver(RouterDriver):
                 enabled=row.get('enabled') == 'yes', comment=str(row.get('comment') or ''),
                 src=_addresses(row.get('src_addr'), state.address_sets),
                 src_invert=row.get('src_addr_inv') == 1, dst_invert=row.get('dst_addr_inv') == 1,
-                protocol=str(row.get('protocol') or '')))
+                protocol=str(row.get('protocol') or ''),
+                priority=row.get('prio') if type(row.get('prio')) is int else None))
+        state.active_routes = self._active_routes()
         return state
+
+    def _active_routes(self) -> Optional[List[RouteEntry]]:
+        """当前路由表: what the kernel forwards with, including routes no config explains."""
+        try:
+            rows = self._list('static_rt_table')
+        except RouterError:
+            return None
+        routes = []
+        for row in rows:
+            try:
+                network = ipaddress.ip_network(f'{row.get("dst_addr")}/{row.get("netmask")}', strict=False)
+            except ValueError:
+                continue
+            routes.append(RouteEntry(id=f'active:{row.get("id", "")}', dst=str(network),
+                                     gateway=str(row.get('gateway') or ''), enabled=True,
+                                     comment=f'{row.get("interface") or ""} prio {row.get("prio")}'))
+        return routes
 
     def _dhcp_list(self, func: str, prefix: str = '') -> List[Dict[str, Any]]:
         results = self.call(func, {'TYPE': f'{prefix}total,{prefix}data', 'limit': LIST_LIMIT})
@@ -408,13 +427,13 @@ class IKuaiDriver(RouterDriver):
 
     def _new_policy(self, gateway: str, dst: List[str], comment: str) -> Dict[str, Any]:
         return self._policy_payload({}, **self._policy_target(gateway, dst, comment), tagname=_tagname('pr', comment),
-                                    interface='', iface_band=0, time=POLICY_ALWAYS, prio=31, mode=0,
+                                    interface='', iface_band=0, time=POLICY_ALWAYS, mode=0,
                                     area_code='', dst_type=0)
 
     @staticmethod
     def _policy_target(gateway: str, dst: List[str], comment: str) -> Dict[str, Any]:
         """The fields that make a rule route ``dst`` to the gateway for every source but itself."""
-        return {'enabled': 'yes', 'type': POLICY_NEXTHOP, 'nexthop': gateway, 'protocol': 'any',
+        return {'enabled': 'yes', 'type': POLICY_NEXTHOP, 'nexthop': gateway, 'protocol': 'any', 'prio': POLICY_PRIORITY,
                 'src_addr': {'custom': [gateway], 'object': []}, 'src_addr_inv': 1,
                 'dst_addr': {'custom': list(dst), 'object': []}, 'dst_addr_inv': 0, 'comment': comment}
 

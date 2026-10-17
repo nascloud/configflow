@@ -644,6 +644,7 @@ const DHCP_DNS_STATUS = {
 const LOG_STATUS: Record<string, { label: string; chip: string }> = {
   ok: { label: '完成', chip: 'chip-ok' },
   verified: { label: '已校验', chip: 'chip-ok' },
+  warning: { label: '需处理', chip: 'chip-warn' },
   failed: { label: '失败', chip: 'chip-bad' }
 }
 

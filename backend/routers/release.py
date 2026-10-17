@@ -5,7 +5,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from backend.routers.base import (
-    RouterError, RouterRollbackError, RouterState, is_managed, policy_route, policy_route_ok,
+    RouterError, RouterRollbackError, RouterState, is_managed, policy_route, policy_route_ok, stale_route_warning,
+    stale_routes,
 )
 from backend.routers.dhcp_dns import checked_dns_target, verify_dns
 from backend.routers.plan import (
@@ -193,6 +194,13 @@ def execute(plan: Dict[str, Any], driver, agent: Optional[AgentReturnRouting]) -
                 record({'stage': current, 'summary': op['summary'], 'status': 'ok'})
             _verify(current, plan['checks'], driver, agent)
             record({'stage': current, 'summary': '回读校验通过', 'status': 'verified'})
+            if current == 'routes':
+                # Config readback cannot see kernel leftovers; the active table can.
+                # Rolling back would not remove them either, so report, don't fail.
+                stale = stale_routes(driver.read_state(), plan['checks'].get('gateway') or '')
+                if stale:
+                    record({'stage': current, 'summary': stale_route_warning(stale, plan['checks']['gateway']),
+                            'status': 'warning'})
     except (ReleaseError, RouterError, RuntimeError, requests.RequestException) as error:
         record({'stage': current, 'summary': str(error) or error.__class__.__name__, 'status': 'failed'})
         rollback = []

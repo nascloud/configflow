@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 from backend.routers.base import (
     POLICY_AUTO_COMMENT, POLICY_MANUAL_COMMENT, RouterState, as_dict, is_managed, managed_comment, policy_route,
-    policy_route_ok,
+    policy_route_ok, stale_route_warning, stale_routes,
 )
 from backend.routers.dhcp_dns import build_dns_report
 from backend.routers.report import _networks
@@ -298,6 +298,9 @@ def build_plan(router: Dict[str, Any], desired: Dict[str, Any], state: RouterSta
         route_ops, skipped, policy_checks = _policy_route_ops(report, state, gateway, warnings)
     else:
         route_ops, skipped = _route_ops(report, state, gateway, warnings)
+    stale = stale_routes(state, gateway)
+    if stale:
+        warnings.append(stale_route_warning(stale, gateway))
     manage_dns = bool(router.get('dns_agent_id'))
     dns = build_dns_report({**desired, 'dns_agent_id': router.get('dns_agent_id') or ''}, state.dhcp_dns)
     dns_ops = []
@@ -345,6 +348,7 @@ def build_plan(router: Dict[str, Any], desired: Dict[str, Any], state: RouterSta
                   if manage_dns else '未选择 DHCP DNS 服务器：本次保留现有 DNS 配置。')},
     ]
     checks = {
+        'gateway': gateway,
         'routes': [] if policy else [{'cidr': cidr, 'gateway': gateway} for cidr in proxy_cidrs],
         'removed_routes': [op['id'] for op in route_ops if op['kind'] == 'route_delete'],
         'nat_bypass': [item['cidr'] for item in nat_items if item['status'] not in {'not_required', 'unknown'}],

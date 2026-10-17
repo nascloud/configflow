@@ -59,6 +59,7 @@ class PolicyRouteEntry:
     src_invert: bool = False
     dst_invert: bool = False
     protocol: str = ''
+    priority: Optional[int] = None
 
 
 @dataclass
@@ -104,6 +105,9 @@ class RouterState:
     # None: the vendor routes proxy CIDRs with static routes. A list (possibly
     # empty) means proxy CIDRs are routed by policy rules excluding the gateway.
     policy_routes: Optional[List[PolicyRouteEntry]] = None
+    # Routes the router is actually forwarding with (iKuai 当前路由表). None when
+    # the vendor cannot report them; used to find kernel routes without config.
+    active_routes: Optional[List[RouteEntry]] = None
 
 
 class RouterDriver:
@@ -151,17 +155,40 @@ def managed_comment(comment: Optional[str]) -> str:
 # migrated from hand-made static routes are only ever added, never removed.
 POLICY_AUTO_COMMENT = f'{MANAGED_PREFIX}-mihomo'
 POLICY_MANUAL_COMMENT = f'{MANAGED_PREFIX}-mihomo-manual'
+# Highest 端口分流 priority, so no other 分流 rule (multi-WAN, protocol) can send
+# proxy traffic out a WAN line instead of to the gateway.
+POLICY_PRIORITY = 0
 
 
 def policy_route_ok(entry: 'PolicyRouteEntry', gateway: str) -> bool:
     """Enabled, any protocol, every source except the gateway, next hop the gateway."""
     return (entry.enabled and bool(gateway) and entry.gateway == gateway and entry.src == [gateway]
-            and entry.src_invert and not entry.dst_invert and entry.protocol == 'any')
+            and entry.src_invert and not entry.dst_invert and entry.protocol == 'any'
+            and entry.priority == POLICY_PRIORITY)
 
 
 def policy_route(state: 'RouterState', comment: str) -> Optional['PolicyRouteEntry']:
     """The first policy route carrying ``comment``; duplicates are left alone."""
     return next((entry for entry in state.policy_routes or [] if entry.comment == comment), None)
+
+
+def stale_routes(state: 'RouterState', gateway: str) -> List['RouteEntry']:
+    """Active routes to the gateway that no configured static route explains.
+
+    iKuai can keep a kernel route after its static route is edited or deleted.
+    Static routes take precedence over 端口分流, so such a leftover silently
+    brings back the loop the policy rules exist to prevent.
+    """
+    if not gateway or state.active_routes is None:
+        return []
+    configured = {route.dst for route in state.routes if route.enabled and route.gateway == gateway}
+    return [route for route in state.active_routes if route.gateway == gateway and route.dst not in configured]
+
+
+def stale_route_warning(routes: List['RouteEntry'], gateway: str) -> str:
+    return (f'路由器当前路由表中有 {len(routes)} 条指向 {gateway} 的路由不在静态路由配置里'
+            f'（{", ".join(route.dst for route in routes)}）：这是修改或删除静态路由后残留的内核路由，'
+            f'优先于分流规则，会让 {gateway} 自身的流量回环。界面和接口都无法删除，需要重启路由器清除。')
 
 
 def as_dict(value: Any) -> Any:

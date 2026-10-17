@@ -131,6 +131,8 @@ class FakeIKuaiSession:
                                'nexthop': '192.168.1.4', 'protocol': 'any', 'src_addr_inv': 1, 'dst_addr_inv': 0,
                                'src_addr': {'custom': ['192.168.1.4'], 'object': {}},
                                'dst_addr': {'custom': {}, 'object': [{'gp_name': 'proxy_cidr'}]}}],
+            'static_rt_table': [{'id': 1, 'dst_addr': '198.18.0.0', 'netmask': '255.255.0.0', 'gateway': '192.168.1.4',
+                                 'interface': 'lan1', 'prio': 1}],
         }
         if func == 'sysstat':
             return FakeResponse({'code': 0, 'results': {'verinfo': {'version': self.version, 'verstring': 'x64'}}})
@@ -151,6 +153,7 @@ def test_ikuai_driver_login_probe_and_state(monkeypatch):
     assert state.routes[0].dst == '198.18.0.0/16' and state.routes[0].enabled
     assert len(state.nat_bypass) == 1
     assert state.nat_bypass[0].dst == ['198.18.0.0/16', '91.108.4.0/22']
+    assert [(route.dst, route.gateway) for route in state.active_routes] == [('198.18.0.0/16', '192.168.1.4')]
     [rule] = state.policy_routes
     assert (rule.dst, rule.gateway, rule.src, rule.src_invert, rule.protocol) == \
         (['198.18.0.0/16', '91.108.4.0/22'], '192.168.1.4', ['192.168.1.4'], True, 'any')
