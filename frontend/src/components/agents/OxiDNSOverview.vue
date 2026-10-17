@@ -3,11 +3,11 @@
     <p v-if="overview.statistics?.partial" class="m-0 text-xs leading-relaxed text-warning-accent">部分指标缺少基线或插件已重新计数，本轮统计可能不完整；无法确认的值显示「—」。</p>
     <div class="grid grid-cols-2 gap-3.5 xl:grid-cols-3">
       <OxiDNSMetric label="DNS 请求" :value="overview.metrics.requests_total" :hint="periodLabel" />
-      <OxiDNSMetric label="近期请求速率" :value="qps" unit="次/秒" :precision="2" :hint="qps === null ? '等待两次有效采样' : '最近两次采样之间的平均值'" />
+      <OxiDNSMetric label="近期请求速率" :value="qps" unit="次/秒" :precision="2" :hint="qps === null ? '采样中，需两次数据计算' : '最近两次采样之间的平均值'" />
       <OxiDNSMetric label="平均响应时间" :value="overview.metrics.avg_latency_ms" unit="ms" :precision="2" :hint="periodLabel" />
       <OxiDNSMetric label="缓存命中率" :value="cacheRate" unit="%" :precision="1" :hint="selectedCache === '__all__' ? '全部缓存 · 命中数 / 查找次数' : selectedTag + ' · 命中数 / 查找次数'" />
       <OxiDNSMetric label="失败请求" :value="overview.metrics.failed_total" :hint="periodLabel" />
-      <OxiDNSMetric label="处理中" :value="overview.metrics.inflight" hint="本次采样时正在处理的请求" />
+      <OxiDNSMetric label="当前处理中" :value="overview.metrics.inflight" hint="采样那一刻尚未完成的请求，0 表示当时已处理完" />
     </div>
 
 
@@ -86,7 +86,7 @@
       </div>
     </SectionCard>
 
-    <SectionCard title="监听服务统计" :help="'各 DNS 监听服务' + periodLabel + '的统计；处理中为当前值。'" :padded="false">
+    <SectionCard title="监听服务统计" :help="'各 DNS 监听服务' + periodLabel + '的统计。处理中是采样那一刻尚未完成的请求数，0 表示当时已处理完，并不代表没有收到请求。'" :padded="false">
       <EmptyState v-if="!overview.servers.length" title="暂无监听服务统计" description="核心尚未返回监听服务指标。" />
       <div v-else class="cf-table-wrap" tabindex="0" role="region" aria-label="DNS 监听服务统计">
         <table class="cf-table w-full">

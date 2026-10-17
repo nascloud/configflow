@@ -7,6 +7,8 @@ const checked = <T>(data: T): T => {
   if ((data as any)?.success === false) throw new Error((data as any).message || '读取失败，请稍后重试。')
   return data
 }
+const FIRST_RATE_SAMPLE_DELAY = 1000
+const MAX_RATE_SAMPLE_GAP = 30
 
 export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
   const overview = ref<OxiDNSOverview | null>(null)
@@ -32,6 +34,8 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
   let disposed = false
   let queryEpoch = 0
   let timer: ReturnType<typeof setInterval> | undefined
+  let rateTimer: ReturnType<typeof setTimeout> | undefined
+  let rateSampleAttempted = false
   let rangeSince: number | undefined
   let rangeUntil: number | undefined
 
@@ -68,23 +72,48 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
       if (requestEpoch === queryEpoch) queriesLoading.value = false
     }
   }
+  function cancelRateSample() {
+    if (rateTimer !== undefined) clearTimeout(rateTimer)
+    rateTimer = undefined
+  }
+  function scheduleRateSample() {
+    cancelRateSample()
+    const current = overview.value
+    if (disposed || document.hidden || !autoRefresh.value || resettingStatistics.value
+      || rateSampleAttempted || qps.value !== null || !current?.core.instance_id
+      || !monitorNumber(current.metrics.requests_total) || !Number.isFinite(Date.parse(current.collected_at))) return
+    // Only one extra overview per new series; normal polling remains at 10s.
+    // Reuse the authenticated overview and never estimate QPS from query logs.
+    rateTimer = setTimeout(() => {
+      rateTimer = undefined
+      if (disposed || document.hidden || !autoRefresh.value || resettingStatistics.value || overviewLoading.value) return
+      rateSampleAttempted = true
+      void loadOverview()
+    }, FIRST_RATE_SAMPLE_DELAY)
+  }
   function applyOverview(next: OxiDNSOverview, clearQps = false) {
     const prior = overview.value
     const seconds = prior ? (Date.parse(next.collected_at) - Date.parse(prior.collected_at)) / 1000 : 0
     const currentCount = next.metrics.requests_total
     const priorCount = prior?.metrics.requests_total
-    qps.value = !clearQps && prior && next.core.instance_id && prior.core.instance_id === next.core.instance_id
+    const sameSeries = prior && next.core.instance_id && prior.core.instance_id === next.core.instance_id
       && prior.statistics?.generation === next.statistics?.generation
-      && monitorNumber(currentCount) && monitorNumber(priorCount) && currentCount >= priorCount && seconds > 0
+    if (clearQps || !sameSeries || seconds > MAX_RATE_SAMPLE_GAP
+      || (monitorNumber(currentCount) && monitorNumber(priorCount) && currentCount < priorCount)) rateSampleAttempted = false
+    qps.value = !clearQps && sameSeries
+      && monitorNumber(currentCount) && monitorNumber(priorCount) && currentCount >= priorCount
+      && seconds > 0 && seconds <= MAX_RATE_SAMPLE_GAP
       ? (currentCount - priorCount) / seconds : null
     overview.value = next
     if (!next.recorders.includes(recorder.value)) {
       recorder.value = next.recorders[0] || ''
       resetQueries()
     }
+    scheduleRateSample()
   }
   async function loadOverview(force = false) {
     if (disposed || resettingStatistics.value || (overviewLoading.value && !force)) return
+    cancelRateSample()
     overviewController?.abort()
     const controller = overviewController = new AbortController()
     const requestEpoch = epoch
@@ -103,6 +132,7 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
   }
   async function resetStatistics(): Promise<boolean> {
     if (disposed || resettingStatistics.value || !overview.value?.statistics) return false
+    cancelRateSample()
     overviewController?.abort()
     overviewRequest++
     overviewLoading.value = false
@@ -121,7 +151,10 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
       if (!controller.signal.aborted && requestEpoch === epoch) resetError.value = messageOf(error)
       return false
     } finally {
-      if (requestEpoch === epoch) resettingStatistics.value = false
+      if (requestEpoch === epoch) {
+        resettingStatistics.value = false
+        scheduleRateSample()
+      }
     }
   }
   function resetQueries() {
@@ -165,7 +198,14 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
       await loadQueries()
     }
   }
-  const onVisible = () => { if (!document.hidden && autoRefresh.value) void refresh() }
+  const onVisible = () => {
+    cancelRateSample()
+    if (!document.hidden && autoRefresh.value) void refresh()
+  }
+  watch(autoRefresh, enabled => {
+    cancelRateSample()
+    if (enabled && !document.hidden) void refresh()
+  })
   watch(tab, value => {
     if (value === 'queries' && !queries.value && recorder.value) void loadQueries()
     if (value !== 'queries') {
@@ -176,6 +216,8 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
   })
   watch(agentId, () => {
     epoch++
+    cancelRateSample()
+    rateSampleAttempted = false
     overviewController?.abort()
     resetController?.abort()
     overviewRequest++
@@ -199,6 +241,7 @@ export function useOxiDNSMonitor(agentId: Ref<string>, tab: Ref<string>) {
   })
   onUnmounted(() => {
     disposed = true
+    cancelRateSample()
     epoch++
     queryEpoch++
     overviewController?.abort()
