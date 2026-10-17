@@ -7,7 +7,7 @@ from flask import request, jsonify, send_file
 
 from backend.routes import config_bp
 from backend.common.auth import require_auth, validate_token_or_jwt
-from backend.common.config import get_config, save_config, get_repository, reset_config_context
+from backend.common.config import get_config, save_config, get_repository, reset_config_context, save_config_with_publish_guard
 from backend.common.config_repository import ProfileValidationError
 from backend.common.profile_context import resolve_profile_id
 from backend.utils.logger import get_logger
@@ -291,8 +291,8 @@ def handle_custom_mihomo_config():
                         'message': f'YAML 语法错误，未保存: {e}',
                     }), 400
             config_data['mihomo']['custom_config'] = custom_config
-            save_config(config_data)
-            return jsonify({'success': True})
+            guard = save_config_with_publish_guard(config_data, 'mihomo')
+            return jsonify({'success': True, 'publish_guard': guard})
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -323,8 +323,8 @@ def handle_custom_surge_config():
                 config_data['surge']['custom_config'] = data['config']
             if 'smart_groups' in data:
                 config_data['surge']['smart_groups'] = data['smart_groups']
-            save_config(config_data)
-            return jsonify({'success': True})
+            guard = save_config_with_publish_guard(config_data, 'surge')
+            return jsonify({'success': True, 'publish_guard': guard})
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
 
@@ -379,8 +379,8 @@ def handle_custom_mosdns_config():
         try:
             custom_config = request.json.get('config', '')
             config_data['mosdns']['custom_config'] = custom_config
-            save_config(config_data)
-            return jsonify({'success': True})
+            guard = save_config_with_publish_guard(config_data, 'mosdns')
+            return jsonify({'success': True, 'publish_guard': guard})
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
 

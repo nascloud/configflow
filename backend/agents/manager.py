@@ -453,6 +453,9 @@ class AgentManager:
             return {'success': False, 'message': 'Deployment belongs to a different profile', 'http_status': 409}
         if state.get('status') in ('succeeded', 'failed', 'rolled_back'):
             return state
+        if state.get('service_type') != agent.get('service_type', 'mihomo'):
+            return {**state, 'success': False, 'http_status': 409,
+                    'message': 'Deployment belongs to a different service type'}
         if not state.get('submitted'):
             if self._preparation_running(agent_id, deployment_id):
                 return state
@@ -490,6 +493,14 @@ class AgentManager:
     def activate_deployment(self, agent_id, deployment_id):
         state = self.get_deployment(agent_id, deployment_id)
         agent = self.get_agent_by_id(agent_id)
+        if state.get('http_status'):
+            return state
+        if not agent:
+            return {'success': False, 'message': 'Agent not found', 'http_status': 404}
+        if (state.get('profile_id') != (agent.get('profile_id') or self.repository.default_profile_id())
+                or state.get('service_type') != agent.get('service_type', 'mihomo')):
+            return {**state, 'success': False, 'http_status': 409,
+                    'message': 'Deployment profile or service type changed; activation refused'}
         if agent and agent.get('service_type') == 'oxidns':
             if state.get('status') == 'succeeded' and not state.get('http_status'):
                 return state
@@ -618,6 +629,8 @@ class AgentManager:
         try:
             if (agent.get('profile_id') or self.repository.default_profile_id()) != bundle.manifest['profile_id']:
                 raise ValueError('Agent profile changed during preparation')
+            if agent.get('service_type', 'mihomo') != bundle.manifest['service_type']:
+                raise ValueError('Agent service type changed during preparation')
             capability = self._deployment_request(agent, 'get', 'capabilities', timeout=5)
             if 1 not in capability.get('deployment_protocols', []) or capability.get('service_type') != agent.get('service_type'):
                 return self.record_deployment(agent_id, deployment_id, {
@@ -669,6 +682,8 @@ class AgentManager:
         config_content: str,
         extra_data: Optional[Dict[str, Any]] = None,
         config_revision: Optional[int] = None,
+        expected_profile_id: Optional[str] = None,
+        expected_service_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         主动推送配置到 Agent
@@ -688,8 +703,14 @@ class AgentManager:
         if not agent:
             return {'success': False, 'message': 'Agent not found'}
 
-        if agent.get('service_type', 'mihomo') in ('mihomo', 'mosdns', 'oxidns'):
-            bundle = (extra_data or {}).get('deployment_bundle')
+        if ((expected_profile_id is not None and
+             (agent.get('profile_id') or self.repository.default_profile_id()) != expected_profile_id)
+                or (expected_service_type is not None and agent.get('service_type', 'mihomo') != expected_service_type)):
+            return {'success': False, 'message': '草稿已保存，但设备绑定已改变，请重新选择设备后发布。',
+                    'http_status': 409}
+
+        bundle = (extra_data or {}).get('deployment_bundle')
+        if bundle is not None or agent.get('service_type', 'mihomo') in ('mihomo', 'mosdns', 'oxidns'):
             if bundle is None:
                 return {'success': False, 'message': 'A complete deployment bundle is required', 'http_status': 409}
             return self.publish_deployment(agent_id, bundle, activate=(extra_data or {}).get('activate', True),

@@ -11,6 +11,7 @@ export interface AgentDeployment {
   config_version?: string
   config_revision?: number
   profile_id?: string
+  service_type?: string
   created_at?: string
   updated_at?: string
   manual_rollback?: boolean
@@ -53,7 +54,7 @@ export function createDeploymentId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-export function useAgentDeployments(onSuccess: () => void) {
+export function useAgentDeployments(onSuccess: () => void, shouldAnnounce: (agentId: string, task: AgentDeployment) => boolean = () => true) {
   const deployments = reactive<Record<string, AgentDeployment>>({})
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const inFlight = new Set<string>()
@@ -102,6 +103,7 @@ export function useAgentDeployments(onSuccess: () => void) {
 
   function track(agentId: string, task: AgentDeployment, announce = true) {
     if (disposed || !task.deployment_id) return
+    announce = announce && shouldAnnounce(agentId, task)
     const previous = deployments[agentId]
     if (task.rollback_rejected && !(previous?.deployment_id === task.deployment_id && previous.manual_rollback && terminal.has(previous.status))) {
       // The server has resolved an uncertain request as rejected; the original release remains active.

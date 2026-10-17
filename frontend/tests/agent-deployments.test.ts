@@ -8,16 +8,28 @@ import { deploymentStatusLabel, useAgentDeployments } from '@/composables/useAge
 vi.mock('@/api', () => ({ agentApi: { getDeployment: vi.fn(), activateDeployment: vi.fn(), rollbackDeployment: vi.fn(), pushConfig: vi.fn() } }))
 vi.mock('@/lib/feedback', () => ({ notify: { success: vi.fn(), error: vi.fn() } }))
 const wrappers: ReturnType<typeof mount>[] = []
-function render() {
+function render(shouldAnnounce?: Parameters<typeof useAgentDeployments>[1]) {
   let flow!: ReturnType<typeof useAgentDeployments>
   const onSuccess = vi.fn()
-  wrappers.push(mount(defineComponent({ setup() { flow = useAgentDeployments(onSuccess); return () => null } })))
+  wrappers.push(mount(defineComponent({ setup() { flow = useAgentDeployments(onSuccess, shouldAnnounce); return () => null } })))
   return { flow, onSuccess }
 }
 beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks() })
 afterEach(() => { wrappers.splice(0).forEach(w => w.unmount()); vi.useRealTimers() })
 
 describe('Agent deployment lifecycle feedback', () => {
+  it('keeps tracking a submitted task without announcing after its editor session ends', async () => {
+    let active = true
+    const { flow, onSuccess } = render(() => active)
+    vi.mocked(agentApi.getDeployment).mockResolvedValueOnce({ data: { deployment_id: 'background', status: 'succeeded' } } as any)
+    flow.track('agent-1', { deployment_id: 'background', status: 'verifying' })
+    active = false
+    await vi.advanceTimersByTimeAsync(0)
+    expect(flow.deployments['agent-1'].status).toBe('succeeded')
+    expect(notify.success).not.toHaveBeenCalled()
+    expect(onSuccess).not.toHaveBeenCalled()
+  })
+
   it('polls during submission and treats registration 404s as pending rather than retryable', async () => {
     const { flow } = render()
     vi.mocked(agentApi.getDeployment)

@@ -3,7 +3,7 @@ from copy import deepcopy
 from flask import jsonify, request
 from backend.routes import oxidns_bp
 from backend.common.auth import require_auth
-from backend.common.config import get_config, save_config
+from backend.common.config import get_config, save_config_with_publish_guard
 from backend.common.oxidns_settings import normalize_oxidns_settings, OxidnsSettingsError
 
 
@@ -24,8 +24,8 @@ def oxidns_settings():
         # and callers can reset a feature without stale fields surviving.
         settings = normalize_oxidns_settings(value, validate_native_arguments=False)
         config['oxidns'] = settings
-        save_config(config)
-        return jsonify({'success': True, 'settings': settings, 'draft': True})
+        guard = save_config_with_publish_guard(config, 'oxidns')
+        return jsonify({'success': True, 'settings': settings, 'draft': True, 'publish_guard': guard})
     except OxidnsSettingsError as exc:
         return jsonify({'success': False, 'message': str(exc)}), 400
 

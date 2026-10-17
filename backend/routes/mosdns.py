@@ -9,7 +9,7 @@ from backend.converters.mihomo import apply_github_proxy_domain
 from backend.converters.mosdns import RULE_PARTS, convert_rule_content_for_mosdns
 from backend.routes import mosdns_bp as bp
 from backend.common.auth import require_auth
-from backend.common.config import get_config, save_config
+from backend.common.config import get_config, save_config, save_config_with_publish_guard
 from backend.utils.rule_utils import get_rules_dir, sanitize_rule_name
 from backend.utils.rule_fetch import request_rule, validate_rule_url
 from backend.utils.url_utils import safe_exception_details, safe_url_for_log
@@ -365,8 +365,8 @@ def handle_mosdns_cache_settings():
             dump_file = data.get('cache_dump_file', './cache.dump')
             mosdns_config['cache_dump_file'] = str(dump_file) if dump_file is not None else './cache.dump'
 
-            save_config(config_data)
-            return jsonify({'success': True})
+            guard = save_config_with_publish_guard(config_data, 'mosdns')
+            return jsonify({'success': True, 'publish_guard': guard})
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 500
 

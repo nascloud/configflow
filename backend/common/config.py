@@ -177,6 +177,20 @@ def save_config(config: Optional[Dict[str, Any]] = None, profile_id: Optional[st
     return True
 
 
+def save_config_with_publish_guard(config: Dict[str, Any], service_type: str,
+                                   profile_id: Optional[str] = None) -> Dict[str, Any]:
+    """Save a draft and return the exact committed version for an optional push."""
+    from backend.common.profile_context import resolve_profile_id
+
+    resolved_id = resolve_profile_id(profile_id)
+    baseline = (_CONFIG_BASELINES.get() or {}).get(resolved_id)
+    _, revision = get_repository().save_profile(
+        resolved_id, config, baseline=baseline, include_config_revision=True)
+    reset_config_context()
+    return {'expected_profile_id': resolved_id, 'expected_service_type': service_type,
+            'expected_config_revision': revision}
+
+
 def update_config_transaction(
     updater: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]],
     profile_id: Optional[str] = None,
