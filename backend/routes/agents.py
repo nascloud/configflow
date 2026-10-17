@@ -6,6 +6,7 @@ import hmac
 import json
 import math
 import os
+import time
 from urllib.parse import urlsplit, urlunsplit
 from flask import request, jsonify, send_file
 
@@ -888,7 +889,8 @@ def _profile_revision(profile_id):
         return None
 
 
-def _prepare_transactional_content(agent, config_data, *, base_url='', deployment_id=None, prefer_cached=False):
+def _prepare_transactional_content(agent, config_data, *, base_url='', deployment_id=None,
+                                   prefer_cached=False, progress=None):
     """Materialize exactly the files used by a push, without publishing or saving caches."""
     import yaml
     from backend.agents.deployment_bundle import build_deployment_bundle
@@ -932,7 +934,7 @@ def _prepare_transactional_content(agent, config_data, *, base_url='', deploymen
                                      provider_downloads=provider_downloads,
                                      ruleset_downloads=ruleset_downloads,
                                      custom_files=custom_files, base_url=base_url,
-                                     deployment_id=deployment_id)
+                                     deployment_id=deployment_id, progress=progress)
     return {'bundle': bundle, 'config_content': config_content, 'prepared_providers': prepared_providers,
             'provider_downloads': provider_downloads, 'ruleset_downloads': ruleset_downloads,
             'custom_files': custom_files}
@@ -1005,13 +1007,31 @@ def push_config_to_agent(agent_id):
             if reservation.get('existing'):
                 return _deployment_response(agent_manager.get_deployment(agent_id, deployment_id))
         owns_preparation = True
+        agent_manager.record_deployment(agent_id, deployment_id, {
+            'status': 'preparing', 'message': '正在生成并检查配置'})
+        last_progress_at = None
+
+        def rule_progress(done, total):
+            nonlocal last_progress_at
+            now = time.monotonic()
+            # Persist only useful progress, not one config write per rule file.
+            if done not in (0, total) and last_progress_at is not None and now - last_progress_at < 1:
+                return
+            message = (f'正在准备规则文件 {done}/{total}' if done < total
+                       else '规则文件准备完成，正在打包')
+            agent_manager.record_deployment(agent_id, deployment_id, {
+                'status': 'preparing', 'message': message})
+            last_progress_at = now
+
         prepared = _prepare_transactional_content(agent, config_data, base_url=base_url,
-                                                   deployment_id=deployment_id)
+                                                   deployment_id=deployment_id, progress=rule_progress)
         bundle = prepared['bundle']
         prepared_providers = prepared['prepared_providers']
         # Publish caches only after all files and the exact graph are ready.
         if prepared_providers:
             commit_provider_bundle(profile_id, prepared_providers)
+        agent_manager.record_deployment(agent_id, deployment_id, {
+            'status': 'preparing', 'message': '文件已准备，正在校验并连接设备'})
         extra_data = {'deployment_bundle': bundle, 'activate': activate,
                       'base_url': base_url, **{key: prepared[key] for key in
                       ('provider_downloads', 'ruleset_downloads', 'custom_files')}}

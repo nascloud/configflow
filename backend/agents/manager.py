@@ -458,6 +458,7 @@ class AgentManager:
                 return state
             return self.record_deployment(agent_id, deployment_id, {
                 'success': False, 'status': 'failed', 'message': 'Preparation interrupted before upload; current service unchanged'})
+        upload_in_flight = self._preparation_running(agent_id, deployment_id)
         try:
             result = self._deployment_request(agent, 'get', f'deployments/{deployment_id}')
             if state.get('manual_rollback') and result.get('status') == 'succeeded' and not result.get('manual_rollback'):
@@ -473,6 +474,11 @@ class AgentManager:
                 if state.get('manual_rollback'):
                     # A missing journal cannot prove whether the rollback ran.
                     return {**state, 'message': 'Rollback journal unavailable; restore Agent records before retrying', 'pending': True}
+                if upload_in_flight or self._preparation_running(agent_id, deployment_id):
+                    # A concurrent GET can beat the upload to Agent journal
+                    # creation. Even if the upload completed while GET was in
+                    # flight, that earlier 404 cannot prove publication failed.
+                    return {**state, 'message': '设备正在接收发布，等待确认', 'pending': True}
                 return self.record_deployment(agent_id, deployment_id, {
                     'success': False, 'status': 'failed', 'message': 'Agent has no record of the uploaded deployment'})
             if result.get('http_status') or not isinstance(result.get('status'), str):

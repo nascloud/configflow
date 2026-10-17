@@ -8,6 +8,7 @@ import { emptyQueryFilters } from '@/types/oxidnsMonitor'
 
 vi.mock('@/api', () => ({ oxidnsMonitorApi: { clients: vi.fn() } }))
 const wrappers: VueWrapper[] = []
+let scrollDescriptor: PropertyDescriptor | undefined
 const result = (ips = ['192.0.2.1', '192.0.2.10']) => ({ data: { success: true, recorder: 'recorder', clients: ips.map(ip => ({ ip, count: 2 })), sample_size: 4, sample_limited: false } } as any)
 function deferred() {
   let resolve!: (value: any) => void
@@ -34,13 +35,16 @@ beforeEach(() => {
   vi.mocked(oxidnsMonitorApi.clients).mockResolvedValue(result())
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })))
-  Element.prototype.scrollIntoView = vi.fn()
+  scrollDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
+  Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, writable: true, value: vi.fn() })
 })
 afterEach(() => {
   wrappers.splice(0).forEach(wrapper => wrapper.unmount())
   document.body.innerHTML = ''
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  if (scrollDescriptor) Object.defineProperty(Element.prototype, 'scrollIntoView', scrollDescriptor)
+  else Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
 })
 
 describe('existing OxiDNS clients', () => {

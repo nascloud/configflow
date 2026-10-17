@@ -1,6 +1,7 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, isNavigationFailure, NavigationFailureType, type RouteLocationNormalized } from 'vue-router'
 import api from '@/api'
 import { checkNavigationAuth, invalidateAuthSession } from '@/authSession'
+import { notify } from '@/lib/feedback'
 
 // 扩展 RouteMeta 接口以支持自定义属性
 declare module 'vue-router' {
@@ -109,8 +110,30 @@ const router = createRouter({
   routes
 })
 
+// Keep real waits (initial authentication, feature checks, lazy page imports)
+// visible without flashing a loading message on an ordinary page switch.
+let pendingNavigation: { to: RouteLocationNormalized; timer: ReturnType<typeof setTimeout>; toast?: string | number } | undefined
+const finishNavigation = (to?: RouteLocationNormalized) => {
+  if (!pendingNavigation || (to && pendingNavigation.to !== to)) return
+  clearTimeout(pendingNavigation.timer)
+  if (pendingNavigation.toast !== undefined) notify.dismiss(pendingNavigation.toast)
+  pendingNavigation = undefined
+}
+const startNavigation = (to: RouteLocationNormalized) => {
+  finishNavigation()
+  const navigation = {
+    to,
+    timer: setTimeout(() => {
+      if (pendingNavigation === navigation) navigation.toast = notify.loading('正在打开页面…')
+    }, 200),
+    toast: undefined as string | number | undefined,
+  }
+  pendingNavigation = navigation
+}
+
 // 路由守卫
 router.beforeEach(async (to) => {
+  startNavigation(to)
   // 登录页面直接放行
   if (to.path === '/login') {
     invalidateAuthSession()
@@ -134,6 +157,19 @@ router.beforeEach(async (to) => {
       if (localStorage.getItem('subscriptionAggregationEnabled') !== 'true') return '/subscriptions'
     }
   }
+})
+
+router.afterEach((to, _from, failure) => {
+  // Clicking the current page cancels an outstanding navigation, but Vue Router
+  // skips beforeEach for that duplicated target. Retire the superseded wait now
+  // so a late import result cannot leave a spinner or report an obsolete error.
+  if (isNavigationFailure(failure, NavigationFailureType.duplicated)) finishNavigation()
+  else finishNavigation(to)
+})
+router.onError((_error, to) => {
+  if (pendingNavigation?.to !== to) return
+  finishNavigation(to)
+  notify.error('页面打开失败，请重试', '如果刚更新过版本，可以刷新页面后重试。')
 })
 
 export default router

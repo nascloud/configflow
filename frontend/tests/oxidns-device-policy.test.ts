@@ -15,6 +15,7 @@ vi.mock('@/api', () => ({
 }))
 vi.mock('@/lib/feedback', () => ({ confirm: vi.fn(), notify: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 const wrappers: VueWrapper[] = []
+let scrollDescriptor: PropertyDescriptor | undefined
 const response = (data: any) => ({ data } as any)
 const state = (policies: any[] = []) => ({ success: true, draft: true, profile_id: 'office', profile_name: '办公室', revision: 'v1',
   policies, editable: true, reason: '', agents: [{ id: 'one', name: 'DNS 1' }, { id: 'two', name: 'DNS 2' }] })
@@ -34,15 +35,82 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })))
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: vi.fn() })
-  Element.prototype.scrollIntoView = vi.fn()
+  scrollDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView')
+  Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, writable: true, value: vi.fn() })
   vi.mocked(oxidnsDevicePolicyApi.get).mockResolvedValue(response(state()))
   vi.mocked(oxidnsDevicePolicyApi.save).mockImplementation(async (_id, data) => response({ ...state(data.policies), revision: 'v2' }))
   vi.mocked(agentApi.pushConfig).mockImplementation(async (_id, id) => response({ deployment_id: id, status: 'succeeded' }))
   vi.mocked(confirm).mockResolvedValue(true)
 })
-afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ''; vi.unstubAllGlobals() })
+afterEach(() => {
+  wrappers.splice(0).forEach(wrapper => wrapper.unmount())
+  document.body.innerHTML = ''
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+  if (scrollDescriptor) Object.defineProperty(Element.prototype, 'scrollIntoView', scrollDescriptor)
+  else Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
+})
 
 describe('OxiDNS device policy editing', () => {
+  it('shows progress while a slow publish request is pending and ignores its late accepted snapshot', async () => {
+    vi.useFakeTimers()
+    let resolvePublish!: (value: any) => void
+    vi.mocked(agentApi.pushConfig).mockImplementationOnce(() => new Promise(resolve => { resolvePublish = resolve }))
+    vi.mocked(agentApi.getDeployment)
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockImplementationOnce(async (_id, deploymentId) => response({ deployment_id: deploymentId, status: 'uploading' }))
+      .mockImplementationOnce(async (_id, deploymentId) => response({ deployment_id: deploymentId, status: 'checking' }))
+      .mockImplementationOnce(async (_id, deploymentId) => response({ deployment_id: deploymentId, status: 'succeeded' }))
+    const wrapper = await render()
+    await button(wrapper, '发布到当前设备').trigger('click')
+    await flushPromises()
+    const deploymentId = vi.mocked(agentApi.pushConfig).mock.lastCall![1]
+    expect(button(wrapper, '发布中…').attributes('disabled')).toBeDefined()
+    await button(wrapper, '发布中…').trigger('click')
+    expect(agentApi.pushConfig).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(wrapper.text()).toContain('准备文件')
+    expect(wrapper.text()).not.toContain('发布结果暂未确认')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(wrapper.text()).toContain('上传中')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(wrapper.text()).toContain('启动检查')
+    resolvePublish(response({ deployment_id: deploymentId, status: 'verifying' }))
+    await flushPromises()
+    expect(wrapper.text()).toContain('启动检查')
+    expect(wrapper.text()).not.toContain('校验中')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(wrapper.text()).toContain('上次配置推送：成功')
+    expect(button(wrapper, '发布到当前设备').attributes('disabled')).toBeUndefined()
+    expect(wrapper.emitted('published')).toHaveLength(1)
+  })
+
+  it('keeps a polled success when the original request later times out', async () => {
+    vi.useFakeTimers()
+    let rejectPublish!: (error: any) => void
+    vi.mocked(agentApi.pushConfig).mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectPublish = reject }))
+    vi.mocked(agentApi.getDeployment).mockImplementationOnce(async (_id, deploymentId) => response({ deployment_id: deploymentId, status: 'succeeded' }))
+    const wrapper = await render()
+    await button(wrapper, '发布到当前设备').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
+    rejectPublish(new Error('request timed out'))
+    await flushPromises()
+    expect(wrapper.text()).toContain('上次配置推送：成功')
+    expect(wrapper.text()).not.toContain('结果待确认')
+    expect(button(wrapper, '发布到当前设备').attributes('disabled')).toBeUndefined()
+    expect(wrapper.emitted('published')).toHaveLength(1)
+  })
+
+  it('reports a definitive rejection and allows another publication', async () => {
+    vi.mocked(agentApi.pushConfig).mockRejectedValueOnce({ response: { status: 409, data: { message: '配置已更新，请重新载入' } } })
+    const wrapper = await render()
+    await button(wrapper, '发布到当前设备').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('配置已更新，请重新载入')
+    expect(button(wrapper, '发布到当前设备').attributes('disabled')).toBeUndefined()
+  })
+
   it('adds an offline client, saves to the bound profile and publishes the saved revision', async () => {
     const wrapper = await render()
     expect(wrapper.text()).toContain('DNS 1、DNS 2')
