@@ -201,7 +201,7 @@ ConfigFlow 已有 Agent 心跳。mihomo Agent 离线时：
   - **Agent** `PUT /api/return-routing` 应用期望状态：独立表 `inet configflow_return`（单事务整表替换）、路由表 104、`ip rule priority 104`、关闭 `send_redirects`；校验 mark 与 mihomo `routing-mark`/auto-redirect 标记不重叠、路由表与 `iproute2-table-index` 不冲突、优先级小于 `iproute2-rule-index`；`adopt_legacy` 接管同 mark 的手工表——先应用受管规则再删手工表，并把引用它的 `/etc/local.d/*.start|stop` 改名为 `*.configflow-disabled`，手工表导出保存。期望状态持久化在 Agent 目录 `return-routing.json`，Agent 启动时重新应用。`DELETE ?restore_legacy=1` 删除受管规则并恢复被接管的手工规则。
   - **只标记经主路由转发的连接**：标记规则匹配主路由的源 MAC（Agent 从邻居表解析）。客户端直接把 Agent 主机当网关，或收到主路由的 ICMP 重定向后直连时，主路由没见过这条连接，回包若被强制送回主路由会被丢弃，因此这类连接不打标记、直接回包。
   - **回流网段** = 期望代理网段 ∪ 发布后所有 NAT 免转换规则的目的网段（免转换但不打标记会导致回包不对称）。
-  - **iKuai 写入**：静态路由 add/edit/del、NAT 规则 add/edit，参数与字符串编码与 Web UI 一致（`%`→`%25`、空白→`%20` 等）；edit 先读回完整记录再改，回滚用读回的原记录。
+  - **iKuai 写入**：静态路由 add/edit/del、NAT 规则 add/edit，参数与字符串编码与 Web UI 一致（`%`→`%25`、空白→`%20` 等）；edit 先读回完整记录再改，回滚用读回的原记录。名称（tagname）必填且 1–15 字符，新增对象用 `cf_rt_<hash>` / `cf_nat_<hash>`；受管备注写成 `cf-<原备注>`（不用冒号，iKuai 备注字符受限），识别时 `cf:` / `cf-` 都认。
   - **发布**：`POST /api/routers/<id>/plan` 只生成计划（不写入，带指纹）；`POST /api/routers/<id>/apply` 重新计算计划，指纹不一致返回 409，一致才按“回流规则 → 代理路由 → NAT 免转换”执行，每阶段回读校验，失败逆序撤销。冲突网段整体跳过（路由、NAT、回流都不处理）并提示。
   - **RouterOS**：路由器部分只生成 `.rsc` 脚本由用户导入，回流规则阶段照常由 Agent 执行。
 

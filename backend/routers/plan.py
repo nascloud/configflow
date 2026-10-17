@@ -114,7 +114,7 @@ def _nat_ops(report: Dict[str, Any], state: RouterState, gateway: str, skipped: 
                     'summary': f'受管 NAT 免转换规则「{target.comment}」加入 {", ".join(missing)}'})
     if target is None and missing:
         src = _lan_except(gateway)
-        ops.append({'kind': 'nat_add', 'src': src, 'dst': missing, 'comment': 'cf:mihomo',
+        ops.append({'kind': 'nat_add', 'src': src, 'dst': missing, 'comment': 'cf-mihomo',
                     'summary': f'新增 NAT 免转换规则：源 {", ".join(src)}，目的 {", ".join(missing)}'})
 
     # Everything exempt from SNAT after this release must also get return marks.

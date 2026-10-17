@@ -36,6 +36,10 @@ class StatefulIKuai:
         self.writes.append((func, action, copy.deepcopy(param)))
         if self.fail == (func, action):
             return FakeResponse({'code': 2, 'message': '参数错误'})
+        # Real iKuai 4.x: name is required, 1-15 characters (web UI form rule).
+        if action in ('add', 'edit') and not 1 <= len(str(param.get('tagname') or '')) <= 15:
+            return FakeResponse({'code': 2, 'message': '请求参数不合法',
+                                 'details': [{'field': 'tagname', 'msg': '名称长度为1-15'}]})
         if action == 'add':
             rows.append({'enabled': 'yes', **param, 'id': self.next_id})
             self.next_id += 1
@@ -130,12 +134,12 @@ def test_plan_for_home_setup_adopts_and_fills_gaps():
     assert agent_op['previous'] is None
 
     routes = [(op['kind'], op.get('cidr'), op.get('comment')) for op in stages['routes']]
-    assert routes == [('route_add', '91.108.0.0/16', 'cf:Telegram'),
-                      ('route_add', '149.154.160.0/20', 'cf:Telegram'),
-                      ('route_comment', '198.18.0.0/16', 'cf:fake ip')]
+    assert routes == [('route_add', '91.108.0.0/16', 'cf-Telegram'),
+                      ('route_add', '149.154.160.0/20', 'cf-Telegram'),
+                      ('route_comment', '198.18.0.0/16', 'cf-fake ip')]
     [nat] = stages['nat_bypass']
     assert (nat['kind'], nat['id'], nat['comment'], nat['add_dst']) == \
-        ('nat_update', '1', 'cf:mihomo', ['91.108.0.0/16', '149.154.160.0/20'])
+        ('nat_update', '1', 'cf-mihomo', ['91.108.0.0/16', '149.154.160.0/20'])
     assert len(plan['fingerprint']) == 16
 
 
@@ -164,14 +168,17 @@ def test_execute_applies_in_order_and_verifies():
     assert agent.calls[0][0] == 'apply'
 
     add = next(param for func, action, param in session.writes if (func, action) == ('static_rt', 'add'))
-    assert add == {'tagname': '', 'ip_type': '4', 'interface': 'auto', 'dst_addr': '91.108.0.0',
-                   'gateway': GATEWAY, 'netmask': '255.255.0.0', 'prio': 1, 'comment': 'cf:Telegram'}
+    assert add == {'enabled': 'yes', 'tagname': add['tagname'], 'ip_type': '4', 'interface': 'auto',
+                   'dst_addr': '91.108.0.0', 'gateway': GATEWAY, 'netmask': '255.255.0.0', 'prio': 1,
+                   'comment': 'cf-Telegram'}
+    assert add['tagname'].startswith('cf_rt_') and len(add['tagname']) <= 15
     edit = next(param for func, action, param in session.writes if (func, action) == ('static_rt', 'edit'))
-    assert edit['id'] == 1 and edit['comment'] == 'cf:fake%20ip' and 'enabled' not in edit
+    assert edit['id'] == 1 and edit['comment'] == 'cf-fake%20ip'
+    assert edit['tagname'] == 'RT_1' and edit['enabled'] == 'yes'      # unchanged fields are sent back
     nat = next(param for func, action, param in session.writes if func == 'nat_rule')
     assert nat['dst_addr'] == {'custom': ['198.18.0.0/16', '91.108.4.0/22', '185.76.151.0/24',
                                           '91.108.0.0/16', '149.154.160.0/20'], 'object': []}
-    assert nat['src_port'] == {'custom': [], 'object': []} and nat['comment'] == 'cf:mihomo'
+    assert nat['src_port'] == {'custom': [], 'object': []} and nat['comment'] == 'cf-mihomo'
     assert nat['src_addr']['custom'] == ['10.0.0.1-10.0.0.3', '10.0.0.5-10.0.0.255']
 
     # A second preview is empty: everything is managed and in place.
@@ -219,7 +226,7 @@ def test_routeros_router_stages_are_manual_script():
                       build_report(DESIRED, state), LEGACY_STATUS, driver)
     manual = {stage['key']: stage['manual'] for stage in plan['stages']}
     assert manual == {'return_routing': False, 'routes': True, 'nat_bypass': True}
-    assert '/ip route add dst-address=91.108.0.0/16 gateway=10.0.0.4 comment="cf:Telegram"' in plan['script']
+    assert '/ip route add dst-address=91.108.0.0/16 gateway=10.0.0.4 comment="cf-Telegram"' in plan['script']
     assert 'src-address-list=cf-nat-src dst-address=198.18.0.0/16' in plan['script']
     assert '/ip firewall address-list add list=cf-nat-src address=10.0.0.1-10.0.0.3' in plan['script']
 
@@ -256,3 +263,12 @@ def test_router_plan_and_apply_api(authenticated_app, monkeypatch):  # noqa: F81
     router = client.get('/api/routers', headers=admin).get_json()['routers'][0]
     assert router['last_release']['ok'] is True and router['last_release']['fingerprint'] == plan['fingerprint']
     assert client.post('/api/routers/missing/apply', headers=admin, json={}).status_code == 404
+
+
+def test_ikuai_error_details_surface_in_message():
+    session = StatefulIKuai(HOME_ROUTES, HOME_NATS)
+    driver = _driver(session)
+    import pytest
+    from backend.routers.base import RouterError
+    with pytest.raises(RouterError, match='tagname: 名称长度为1-15'):
+        driver._write('static_rt', 'add', {'tagname': '', 'dst_addr': '192.0.2.0'})

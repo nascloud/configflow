@@ -23,7 +23,7 @@ LIST_LIMIT = '0,1000'
 # Escapes used by the web UI besides '%' (escaped first) and whitespace (-> %20).
 _ENCODE = [('"', '%22'), ('`', '%60'), ('$', '%24'), ('&', '%26'), (';', '%3B'),
            ('\\', '%5C'), ('|', '%7C'), ("'", '%27')]
-ROUTE_FIELDS = ('id', 'tagname', 'ip_type', 'interface', 'dst_addr', 'gateway', 'netmask', 'prio', 'comment')
+ROUTE_FIELDS = ('id', 'enabled', 'tagname', 'ip_type', 'interface', 'dst_addr', 'gateway', 'netmask', 'prio', 'comment')
 NAT_FIELDS = ('id', 'enabled', 'tagname', 'comment', 'action', 'protocol', 'iinterface', 'ointerface',
               'src_addr', 'dst_addr', 'src_port', 'dst_port', 'nat_addr', 'nat_port', 'src_addr_inv', 'dst_addr_inv')
 
@@ -172,7 +172,10 @@ class IKuaiDriver(RouterDriver):
         self._login()
         data = self._post('/Action/call', {'func_name': func_name, 'action': action, 'param': encode_value(param)})
         if data.get('code') != 0:
-            raise RouterError(f'iKuai {func_name} {action} 失败：{data.get("message") or data.get("code")}')
+            details = '；'.join(f'{item.get("field")}: {item.get("msg")}' for item in data.get('details') or []
+                               if isinstance(item, dict))
+            raise RouterError(f'iKuai {func_name} {action} 失败：{data.get("message") or data.get("code")}'
+                              + (f'（{details}）' if details else ''))
         return data.get('results') if isinstance(data.get('results'), dict) else {}
 
     def _row(self, func_name: str, row_id: Any) -> Dict[str, Any]:
@@ -203,8 +206,9 @@ class IKuaiDriver(RouterDriver):
     def _add_route(self, cidr: str, gateway: str, comment: str) -> str:
         network = ipaddress.IPv4Network(cidr)
         self._write('static_rt', 'add', {
-            'tagname': '', 'ip_type': '4', 'interface': 'auto', 'dst_addr': str(network.network_address),
-            'gateway': gateway, 'netmask': str(network.netmask), 'prio': 1, 'comment': comment})
+            'enabled': 'yes', 'tagname': _tagname('rt', cidr), 'ip_type': '4', 'interface': 'auto',
+            'dst_addr': str(network.network_address), 'gateway': gateway, 'netmask': str(network.netmask),
+            'prio': 1, 'comment': comment})
         return self._find_id('static_rt', lambda row: row.get('dst_addr') == str(network.network_address)
                              and row.get('netmask') == str(network.netmask) and row.get('gateway') == gateway
                              and row.get('comment') == comment)
@@ -237,7 +241,8 @@ class IKuaiDriver(RouterDriver):
             self._write('nat_rule', 'edit', self._nat_payload(op['record']))
             return {'kind': 'nat_restore', 'record': row}
         if kind == 'nat_add':
-            self._write('nat_rule', 'add', self._nat_payload({}, enabled='yes', tagname='', action='filter',
+            self._write('nat_rule', 'add', self._nat_payload({}, enabled='yes', tagname=_tagname('nat', ','.join(op['dst'])),
+                                                             action='filter',
                                                              protocol='any', iinterface='any', ointerface='any',
                                                              src_addr={'custom': op['src'], 'object': []},
                                                              dst_addr={'custom': op['dst'], 'object': []},
@@ -252,6 +257,11 @@ class IKuaiDriver(RouterDriver):
             return {'kind': 'nat_add', 'src': _address_field(row.get('src_addr'))['custom'],
                     'dst': _address_field(row.get('dst_addr'))['custom'], 'comment': row.get('comment') or ''}
         raise RouterError(f'不支持的操作 {kind}')
+
+
+def _tagname(kind: str, key: str) -> str:
+    """iKuai requires a 1-15 character name; derive a stable one, e.g. ``cf_rt_1a2b3c4d``."""
+    return f'cf_{kind}_{hashlib.sha1(key.encode()).hexdigest()[:15 - len(kind) - 4]}'
 
 
 def _addresses(value: Any, address_sets: Dict[str, List[str]]) -> List[str]:

@@ -80,9 +80,13 @@ def is_managed(comment: Optional[str]) -> bool:
 
 
 def managed_comment(comment: Optional[str]) -> str:
-    """Tag a comment as managed, keeping what the user wrote: ``tg`` -> ``cf:tg``."""
+    """Tag a comment as managed, keeping what the user wrote: ``tg`` -> ``cf-tg``.
+
+    ``-`` rather than ``:``: router UIs restrict comment characters and every
+    existing comment proves ``-`` is accepted.
+    """
     text = (comment or '').strip()
-    return text if is_managed(text) else (f'{MANAGED_PREFIX}:{text}' if text else MANAGED_PREFIX)
+    return text if is_managed(text) else (f'{MANAGED_PREFIX}-{text}' if text else MANAGED_PREFIX)
 
 
 def as_dict(value: Any) -> Any:
