@@ -10,7 +10,7 @@
     </PopoverTrigger>
     <PopoverContent align="start" class="w-[340px] max-w-[calc(100vw-2rem)] p-0">
       <Command :model-value="modelValue" selection-behavior="replace">
-        <div class="flex items-center gap-2 border-b px-3">
+        <div class="flex items-center gap-2 border-b px-3 py-1">
           <Search class="size-4 shrink-0 text-muted-foreground" />
           <ListboxFilter :model-value="search" @update:model-value="changeSearch"
             class="min-h-11 w-full min-w-0 rounded-sm border-0 bg-transparent px-0 font-mono text-base text-foreground outline-none placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-primary-accent md:text-sm"

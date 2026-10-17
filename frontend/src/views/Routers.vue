@@ -64,10 +64,10 @@
                     <Activity v-else class="size-3.5" />
                     探测
                   </Button>
-                  <Button size="sm" variant="outline" class="max-md:min-h-11" @click="openRouteManager(router)">
-                    管理路由
+                  <Button size="sm" variant="outline" class="max-md:min-h-11" :disabled="routeBusy || applying" @click="openRouteManager(router)">
+                    静态路由
                   </Button>
-                  <Button size="sm" :disabled="busyId === router.id" @click="loadReport(router)">
+                  <Button size="sm" :disabled="busyId === router.id || routeBusy || applying" @click="openReport(router)">
                     <Loader2 v-if="busyId === router.id && busyAction === 'report'" class="size-3.5 animate-spin" />
                     <GitCompare v-else class="size-3.5" />
                     差异报告
@@ -93,7 +93,7 @@
       </div>
     </SectionCard>
 
-    <SectionCard v-if="routeRouter" class="mt-4 min-w-0 max-md:[&>header]:flex-col max-md:[&>header]:items-stretch max-md:[&_[data-slot=button]]:min-h-11" :padded="false" :title="`管理路由 · ${routeRouter.name}`"
+    <SectionCard v-if="routeRouter" class="mt-4 min-w-0 max-md:[&>header]:flex-col max-md:[&>header]:items-stretch max-md:[&_[data-slot=button]]:min-h-11" :padded="false" :title="`静态路由 · ${routeRouter.name}`"
       description="直接管理这台设备的静态路由，无需关联 Agent。每次写入前先预览并确认。">
       <template #actions>
         <Button size="sm" variant="outline" :disabled="routeLoading || routeBusy" @click="refreshRoutes()">
@@ -101,7 +101,7 @@
           刷新路由
         </Button>
         <Button size="sm" :disabled="routeLoading || routeBusy || Boolean(routeError)" @click="openRouteEditor()"><Plus class="size-3.5" />新增路由</Button>
-        <Button size="sm" variant="ghost" :disabled="routeBusy" @click="closeRouteManager">关闭管理</Button>
+        <Button size="sm" variant="ghost" :disabled="routeBusy" @click="closeRouteManager">关闭静态路由</Button>
       </template>
       <p class="m-0 px-5 pb-4 text-[12px] leading-relaxed text-muted-foreground max-md:px-4">
         此处只修改选中的静态路由。带 cf 标记的路由可能被后续自动发布调整；NAT、DHCP DNS 和 mihomo 回流配置不随手工操作变化。
@@ -156,6 +156,14 @@
         </form>
       </DialogContent>
     </Dialog>
+
+    <SectionCard v-if="reportRouter && !report" class="mt-4" :title="`差异报告 · ${reportRouter.name}`">
+      <p v-if="reportLoading" role="status" class="m-0 flex items-center gap-2 text-muted-foreground"><Loader2 class="size-4 animate-spin" />正在生成差异报告…</p>
+      <template v-else-if="reportError">
+        <p role="alert" class="mt-0 break-words text-destructive-accent">{{ reportError }}</p>
+        <Button variant="outline" @click="loadReport(reportRouter)">重试</Button>
+      </template>
+    </SectionCard>
 
     <template v-if="report">
       <SectionCard class="mt-4" :title="`差异报告 · ${reportRouter?.name}`" :description="`生成于 ${reportTime}`">
@@ -312,7 +320,7 @@
         title="其他路由"
         description="指向代理网关但不由期望状态推导的手工路由不会被修改；多余项为 ConfigFlow 标记但已不再需要的路由。"
       >
-        <template #actions><Button v-if="reportRouter" size="sm" variant="outline" @click="openRouteManager(reportRouter)">管理路由</Button></template>
+        <template #actions><Button v-if="reportRouter" size="sm" variant="outline" :disabled="applying" @click="openRouteManager(reportRouter)">静态路由</Button></template>
         <div class="cf-table-wrap">
           <table class="cf-table">
             <thead>
@@ -670,6 +678,8 @@ const dhcpDns = computed(() => report.value?.dhcp_dns as DhcpDnsReport | undefin
 const dhcpDnsStatus = computed(() => DHCP_DNS_STATUS[dhcpDns.value?.status || 'disabled'])
 const reportRouter = ref<RouterItem | null>(null)
 const reportTime = ref('')
+const reportLoading = ref(false)
+const reportError = ref('')
 const plan = ref<Plan | null>(null)
 const planVisible = ref(false)
 const planLoading = ref(false)
@@ -758,6 +768,8 @@ const refreshRoutes = async (context = routeContext()) => {
   }
 }
 const openRouteManager = async (router: RouterItem) => {
+  if (routeBusy.value || applying.value) return
+  clearInspection()
   closeRouteManager()
   routeRouter.value = router
   await refreshRoutes()
@@ -856,8 +868,12 @@ const submitRoute = async () => {
     ? { action: 'update', id: routeEditing.value.id, revision: routeEditing.value.revision, values }
     : { action: 'add', values })
 }
-watch(activeProfileId, closeRouteManager, { flush: 'sync' })
-onBeforeUnmount(closeRouteManager)
+const closePanels = () => {
+  closeRouteManager()
+  clearInspection()
+}
+watch(activeProfileId, closePanels, { flush: 'sync' })
+onBeforeUnmount(closePanels)
 
 const returnTone = computed(() => {
   const state = report.value?.return_routing
@@ -926,14 +942,21 @@ const openEdit = (router: RouterItem) => {
   dialogVisible.value = true
 }
 
-const clearInspection = (routerId: string) => {
+const clearInspection = (routerId?: string) => {
+  if (routerId && reportRouter.value?.id !== routerId) return
   inspectionRevision += 1
-  if (reportRouter.value?.id !== routerId) return
   report.value = null
   reportRouter.value = null
   reportTime.value = ''
+  reportLoading.value = false
+  reportError.value = ''
+  if (busyAction.value === 'report') {
+    busyId.value = ''
+    busyAction.value = ''
+  }
   plan.value = null
   planVisible.value = false
+  planLoading.value = false
   releaseResult.value = null
 }
 
@@ -991,8 +1014,20 @@ const probe = async (router: RouterItem) => {
   }
 }
 
+// Changing panels invalidates pending inspection/preview responses. The refresh
+// after publishing keeps the current plan and its result available for review.
+const openReport = async (router: RouterItem) => {
+  if (routeBusy.value || applying.value) return
+  closeRouteManager()
+  clearInspection()
+  reportRouter.value = router
+  await loadReport(router)
+}
+
 const loadReport = async (router: RouterItem) => {
   const revision = inspectionRevision
+  reportLoading.value = true
+  reportError.value = ''
   busyId.value = router.id
   busyAction.value = 'report'
   try {
@@ -1002,10 +1037,15 @@ const loadReport = async (router: RouterItem) => {
     reportRouter.value = router
     reportTime.value = new Date(data.generated_at).toLocaleString()
   } catch (error) {
-    notify.error(errorMessage(error, '生成差异报告失败'))
+    if (revision !== inspectionRevision) return
+    reportError.value = errorMessage(error, '生成差异报告失败')
+    notify.error(reportError.value)
   } finally {
-    busyId.value = ''
-    busyAction.value = ''
+    if (revision === inspectionRevision) {
+      reportLoading.value = false
+      busyId.value = ''
+      busyAction.value = ''
+    }
   }
 }
 
@@ -1024,9 +1064,10 @@ const openPlan = async () => {
     releaseResult.value = null
     planVisible.value = true
   } catch (error) {
+    if (revision !== inspectionRevision) return
     notify.error(errorMessage(error, '生成发布计划失败'))
   } finally {
-    planLoading.value = false
+    if (revision === inspectionRevision) planLoading.value = false
   }
 }
 
