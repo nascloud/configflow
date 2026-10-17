@@ -6,7 +6,8 @@ import OxidnsNativeEditor from '@/components/generate/OxidnsNativeEditor.vue'
 import OxidnsConfigNavigation from '@/components/generate/OxidnsConfigNavigation.vue'
 import OxidnsCommonSettings from '@/components/generate/OxidnsCommonSettings.vue'
 import { oxidnsApi, ruleApi, ruleSetApi } from '@/api'
-import { notify } from '@/lib/feedback'
+import { confirmState, notify, settleConfirm } from '@/lib/feedback'
+import SettingsWorkspace from '@/components/generate/SettingsWorkspace.vue'
 
 vi.mock('@/api', () => ({
   oxidnsApi: { getSettings: vi.fn(), saveSettings: vi.fn(), prepareEditor: vi.fn(), readCommonSettings: vi.fn(), applyCommonSettings: vi.fn(), validateSettings: vi.fn() },
@@ -17,6 +18,7 @@ const config = 'runtime: {worker_threads: 8, extension: false}\nplugins: [{tag: 
 const projection = (settings: any) => ({ values: { worker_threads: (loadYaml(settings.native_config) as any)?.runtime?.worker_threads }, capabilities: {} })
 const settings = () => ({ config_mode: 'native', native_config: config, additional_files: [], template_settings: { worker_threads: 2 } })
 beforeEach(() => {
+  settleConfirm('cancel')
   vi.clearAllMocks()
   vi.mocked(oxidnsApi.getSettings).mockImplementation(async () => ({ data: settings() }) as any)
   vi.mocked(oxidnsApi.validateSettings).mockImplementation(async (value: any) => {
@@ -45,6 +47,7 @@ beforeEach(() => {
   vi.spyOn(notify, 'error').mockImplementation(() => 0)
 })
 afterEach(() => {
+  settleConfirm('cancel')
   wrappers.splice(0).forEach(wrapper => wrapper.unmount())
   document.body.innerHTML = ''
   vi.restoreAllMocks()
@@ -88,6 +91,34 @@ const worker = '#oxi-worker_threads'
 const yamlInput = '[aria-label="OxiDNS 完整配置 YAML"]'
 
 describe('unified OxiDNS profile settings', () => {
+  it('tracks real draft changes without treating editor navigation as unsaved edits', async () => {
+    const wrapper = await render()
+    const workspace = () => wrapper.findComponent(SettingsWorkspace)
+    expect(workspace().props('dirty')).toBe(false)
+    await click('完整参数', views())
+    await click('YAML', views())
+    expect(workspace().props('dirty')).toBe(false)
+    await input(yamlInput, config + '\n# unsaved comment')
+    expect(workspace().props('dirty')).toBe(true)
+    await input(yamlInput, config)
+    expect(workspace().props('dirty')).toBe(false)
+    expect(oxidnsApi.saveSettings).not.toHaveBeenCalled()
+  })
+
+  it('keeps unfinished invalid form input protected when it cannot be synchronized', async () => {
+    const wrapper = await render()
+    await input(worker, '')
+    expect(button('保存草稿').disabled).toBe(true)
+    expect(wrapper.findComponent(SettingsWorkspace).props('dirty')).toBe(true)
+    ;(document.querySelector('[aria-label="返回生成工作台"]') as HTMLButtonElement).click()
+    await flushPromises()
+    expect(confirmState.open).toBe(true)
+    settleConfirm('cancel')
+    await flushPromises()
+    expect(wrapper.emitted('update:open')).toBeUndefined()
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('')
+  })
+
   it('edits one document in all views and saves once to the chosen profile', async () => {
     const wrapper = await render()
     expect(oxidnsApi.prepareEditor).toHaveBeenCalledWith(settings(), 'oxi-profile')
@@ -304,7 +335,17 @@ describe('unified OxiDNS profile settings', () => {
     await click('保存草稿')
     expect(document.querySelector('[role="alert"]')?.textContent).toContain('保存暂时失败')
     expect(button('保存草稿').disabled).toBe(false)
-    await click('取消')
+    ;(document.querySelector('[aria-label="返回生成工作台"]') as HTMLButtonElement).click()
+    await flushPromises()
+    expect(confirmState.open).toBe(true)
+    settleConfirm('cancel')
+    await flushPromises()
+    expect(wrapper.emitted('update:open')).toBeUndefined()
+    expect((document.querySelector(worker) as HTMLInputElement).value).toBe('5')
+    ;(document.querySelector('[aria-label="返回生成工作台"]') as HTMLButtonElement).click()
+    await flushPromises()
+    settleConfirm('confirm')
+    await flushPromises()
     expect(wrapper.emitted('update:open')?.at(-1)).toEqual([false])
     await wrapper.setProps({ open: false })
     await wrapper.setProps({ open: true })

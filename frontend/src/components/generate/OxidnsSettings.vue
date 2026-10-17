@@ -1,23 +1,37 @@
 <template>
-  <Dialog :open="open" @update:open="!saving && emit('update:open', $event)">
-    <DialogContent class="flex h-[92dvh] max-h-[92dvh] max-w-[calc(100vw-2rem)] flex-col overflow-hidden sm:max-w-[1200px] max-sm:gap-3 max-sm:p-3">
-      <DialogHeader>
-        <DialogTitle>OxiDNS 设置</DialogTitle>
-        <DialogDescription class="max-sm:sr-only">常用设置、完整参数与 YAML 共用一份草稿。保存不会发布；发布前必须通过规则检查和目标 OxiDNS 核心检查。</DialogDescription>
-      </DialogHeader>
+  <SettingsWorkspace
+    :open="open"
+    title="OxiDNS 设置"
+    description="常用设置、完整参数与 YAML 共用一份草稿。保存不会发布；发布前必须通过规则检查和目标 OxiDNS 核心检查。"
+    size="wide"
+    :dirty="dirty"
+    :busy="saving"
+    :save-disabled="loading || editorLocked || projecting || !settings || Boolean(loadError) || Boolean(editorError)"
+    save-label="保存草稿"
+    @update:open="emit('update:open', $event)"
+    @save="save"
+  >
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-3 md:p-5" @input.capture="markEdited">
       <LoadingRows v-if="loading" :rows="5" />
       <div v-else-if="loadError" role="alert" class="space-y-3 py-4">
         <p class="text-destructive-accent">{{ loadError }}</p><Button variant="outline" @click="load">重新加载</Button>
       </div>
       <div v-else-if="settings" class="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-        <div class="flex shrink-0 flex-wrap items-center justify-between gap-2">
-          <OxidnsEditorModeToggle v-model="tab" :options="[{ value: 'config', label: '配置' }, { value: 'files', label: '附加文件' }]" label="OxiDNS 设置内容" :disabled="editorLocked" />
+        <div v-if="tab === 'files'" class="flex shrink-0 flex-wrap items-center justify-between gap-2">
+          <OxidnsEditorModeToggle v-model="tab" :options="contentTabs" label="OxiDNS 设置内容" :disabled="editorLocked" />
           <div v-if="settings.legacy_native_config" class="flex items-center gap-1">
             <Button variant="ghost" size="sm" class="min-h-11 max-sm:w-11 max-sm:px-0" :disabled="saving" aria-label="旧草稿备份" @click="downloadLegacy"><Download class="size-3.5" /><span class="max-sm:sr-only">旧草稿备份</span></Button>
             <FieldHelp label="旧草稿备份" text="旧版快捷模板和完整配置分别保存。当前已载入原来生效的配置，另一份未生效的完整配置已保留在备份中，可下载查看或复制所需参数。保存后备份仍保留。" />
           </div>
         </div>
         <OxidnsNativeEditor ref="nativeEditor" v-show="tab === 'config'" v-model="settings.native_config" :disabled="editorLocked" @view="nativeView = $event" @error="editorErrors.native_config = $event">
+          <template #navigation>
+            <OxidnsEditorModeToggle v-model="tab" :options="contentTabs" label="OxiDNS 设置内容" :disabled="editorLocked" />
+            <template v-if="settings.legacy_native_config">
+              <Button variant="ghost" size="icon" class="size-11" :disabled="saving" aria-label="旧草稿备份" @click="downloadLegacy"><Download class="size-3.5" /></Button>
+              <FieldHelp label="旧草稿备份" text="旧版快捷模板和完整配置分别保存。当前已载入原来生效的配置，另一份未生效的完整配置已保留在备份中，可下载查看或复制所需参数。保存后备份仍保留。" />
+            </template>
+          </template>
           <template #common>
             <LoadingRows v-if="projecting" :rows="4" />
             <div v-else-if="projectionError" class="space-y-3 p-3">
@@ -37,35 +51,35 @@
         </div>
         <p v-else-if="applying || pendingCount" role="status" class="flex shrink-0 items-center gap-2 text-xs text-muted-foreground"><Loader2 class="size-3.5 animate-spin" />正在同步当前草稿…</p>
       </div>
-      <section v-if="settings && !loading && !loadError" class="shrink-0 text-xs" aria-label="配置检查结果">
-        <p v-if="validationState === 'pending'" role="status" class="flex min-h-8 items-center gap-2 text-muted-foreground"><Loader2 class="size-3.5 animate-spin" />正在检查草稿参数，可继续编辑或保存…</p>
-        <div v-else-if="validationError" class="flex flex-wrap items-center gap-2">
-          <p role="alert" class="min-w-0 flex-1 break-words text-destructive-accent">{{ validationError }} 可先保存草稿，发布前需重新检查。</p>
-          <Button variant="outline" size="sm" class="min-h-11" :disabled="saving" @click="validateDraft">重新检查</Button>
-        </div>
-        <details v-else-if="validationIssues.length" :open="validationErrors.length > 0" class="rounded-md border border-border px-3">
-          <summary class="min-h-11 cursor-pointer content-center font-medium" :class="validationErrors.length ? 'text-destructive-accent' : 'text-warning-accent'">
-            {{ validationErrors.length ? `${validationErrors.length} 项发布前需要修正` : '规则检查通过，存在待目标环境验证项' }}<span v-if="validationWarnings.length"> · {{ validationWarnings.length }} 项提示</span>
-          </summary>
-          <p class="border-t border-border py-2 text-muted-foreground">草稿可以保存；发布必须通过规则检查和目标 OxiDNS 核心检查。</p>
-          <ul class="max-h-36 space-y-1 overflow-y-auto border-t border-border py-2" aria-label="配置检查问题">
-            <li v-for="(issue, index) in validationIssues" :key="index">
-              <button type="button" class="flex min-h-11 w-full min-w-0 flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accent disabled:opacity-50" :class="issue.severity === 'error' ? 'text-destructive-accent' : 'text-warning-accent'" :disabled="editorLocked || Boolean(editorError)" :aria-label="`定位${issue.severity === 'error' ? '错误' : '提示'} ${index + 1}`" @click="locateValidationIssue(issue)">
-                <span class="break-words">{{ issue.message }}</span><code class="break-all text-[11px] text-muted-foreground">{{ issue.source ? `${issue.source} · ` : '' }}{{ formatOxidnsIssuePath(issue.path) }}</code>
-              </button>
-            </li>
-          </ul>
-        </details>
-        <p v-else-if="validationCurrent" role="status" class="flex min-h-8 items-center gap-1.5 text-muted-foreground"><Check class="size-3.5 text-success-accent" />规则检查通过；发布时还需目标核心检查</p>
-      </section>
-      <p v-if="saveError" role="alert" class="shrink-0 break-words text-sm text-destructive-accent">{{ saveError }}</p>
-      <p v-else-if="editorError && !(tab === 'config' && editorError === editorErrors.native_config)" role="alert" class="shrink-0 break-words text-sm text-destructive-accent">{{ editorError }}</p>
-      <DialogFooter class="shrink-0 flex-row justify-end">
-        <Button variant="outline" :disabled="saving" class="min-h-11" @click="emit('update:open', false)">取消</Button>
-        <Button :disabled="loading || editorLocked || projecting || !settings || Boolean(loadError) || Boolean(editorError)" class="min-h-11" @click="save"><Loader2 v-if="saving" class="size-4 animate-spin" />保存草稿</Button>
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>
+    </div>
+    <template #status>
+      <div class="max-h-[35dvh] space-y-2 overflow-y-auto overscroll-contain">
+        <section v-if="settings && !loading && !loadError" class="shrink-0 text-xs" aria-label="配置检查结果">
+          <p v-if="validationState === 'pending'" role="status" class="flex min-h-8 items-center gap-2 text-muted-foreground"><Loader2 class="size-3.5 animate-spin" />正在检查草稿参数，可继续编辑或保存…</p>
+          <div v-else-if="validationError" class="flex flex-wrap items-center gap-2">
+            <p role="alert" class="min-w-0 flex-1 break-words text-destructive-accent">{{ validationError }} 可先保存草稿，发布前需重新检查。</p>
+            <Button variant="outline" size="sm" class="min-h-11" :disabled="saving" @click="validateDraft">重新检查</Button>
+          </div>
+          <details v-else-if="validationIssues.length" class="rounded-md border border-border px-3">
+            <summary class="min-h-11 cursor-pointer content-center font-medium" :class="validationErrors.length ? 'text-destructive-accent' : 'text-warning-accent'">
+              {{ validationErrors.length ? `${validationErrors.length} 项发布前需要修正` : '规则检查通过，存在待目标环境验证项' }}<span v-if="validationWarnings.length"> · {{ validationWarnings.length }} 项提示</span>
+            </summary>
+            <p class="border-t border-border py-2 text-muted-foreground">草稿可以保存；发布必须通过规则检查和目标 OxiDNS 核心检查。</p>
+            <ul class="space-y-1 border-t border-border py-2" aria-label="配置检查问题">
+              <li v-for="(issue, index) in validationIssues" :key="index">
+                <button type="button" class="flex min-h-11 w-full min-w-0 flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accent disabled:opacity-50" :class="issue.severity === 'error' ? 'text-destructive-accent' : 'text-warning-accent'" :disabled="editorLocked || Boolean(editorError)" :aria-label="`定位${issue.severity === 'error' ? '错误' : '提示'} ${index + 1}`" @click="locateValidationIssue(issue)">
+                  <span class="break-words">{{ issue.message }}</span><code class="break-all text-[11px] text-muted-foreground">{{ issue.source ? `${issue.source} · ` : '' }}{{ formatOxidnsIssuePath(issue.path) }}</code>
+                </button>
+              </li>
+            </ul>
+          </details>
+          <p v-else-if="validationCurrent" role="status" class="flex min-h-8 items-center gap-1.5 text-muted-foreground"><Check class="size-3.5 text-success-accent" />规则检查通过；发布时还需目标核心检查</p>
+        </section>
+        <p v-if="saveError" role="alert" class="shrink-0 break-words text-sm text-destructive-accent">{{ saveError }}</p>
+        <p v-else-if="editorError && !(tab === 'config' && editorError === editorErrors.native_config)" role="alert" class="shrink-0 break-words text-sm text-destructive-accent">{{ editorError }}</p>
+      </div>
+    </template>
+  </SettingsWorkspace>
 </template>
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
@@ -80,7 +94,7 @@ import OxidnsEditorModeToggle from './OxidnsEditorModeToggle.vue'
 import FieldHelp from '@/components/common/FieldHelp.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import SettingsWorkspace from './SettingsWorkspace.vue'
 
 const props = defineProps<{ open: boolean; profileId: string }>()
 const emit = defineEmits<{ (event: 'update:open', value: boolean): void; (event: 'saved'): void }>()
@@ -91,6 +105,7 @@ const loading = ref(false)
 const saving = ref(false)
 const loadError = ref('')
 const saveError = ref('')
+const contentTabs = [{ value: 'config', label: '配置' }, { value: 'files', label: '附加文件' }]
 const tab = ref('config')
 const nativeView = ref('common')
 const nativeEditor = ref<InstanceType<typeof OxidnsNativeEditor>>()
@@ -115,6 +130,10 @@ const validationState = ref<'pending' | 'ready' | 'failed'>('pending')
 const validationIssues = ref<OxidnsValidationIssue[]>([])
 const validationError = ref('')
 const validationSource = computed(() => settings.value ? JSON.stringify(settings.value) : '')
+const savedSource = ref('')
+const editedInput = ref(false)
+const dirty = computed(() => Boolean(settings.value) && (validationSource.value !== savedSource.value || Boolean(pendingCount.value) || (editedInput.value && Boolean(editorError.value))))
+function markEdited() { if (!loading.value) editedInput.value = true }
 const validatedSource = ref('')
 const validationErrors = computed(() => validationIssues.value.filter(issue => issue.severity === 'error'))
 const validationWarnings = computed(() => validationIssues.value.filter(issue => issue.severity === 'warning'))
@@ -221,6 +240,8 @@ async function load() {
   loadError.value = ''
   saveError.value = ''
   settings.value = null
+  savedSource.value = ''
+  editedInput.value = false
   resetCommon()
   invalidateValidation()
   Object.keys(editorErrors).forEach(key => delete editorErrors[key])
@@ -232,6 +253,7 @@ async function load() {
     const prepared = await oxidnsApi.prepareEditor(config.data, props.profileId)
     if (version !== loadVersion) return
     settings.value = prepared.data.settings
+    savedSource.value = JSON.stringify(settings.value)
     tab.value = 'config'
     nativeView.value = 'common'
     rules.value = (availableRules.data || []).filter((item: any) => item.itemType === 'rule')

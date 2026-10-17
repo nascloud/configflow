@@ -75,6 +75,7 @@ Claude 暖色系的「配置流」控制台：炭黑 / 象牙底 + 陶土橙主�
 
 - **基础件**：`components/ui/` 下的 shadcn-vue（Button、Dialog、DropdownMenu、Select、Sheet、Tabs、Tooltip …），用 shadcn CLI 增改
 - **页面骨架**：`PageHeader`（衬线大标题 + 右侧操作）、`SectionCard`（区块卡片）、`Toolbar`、`DataTableShell`、`EmptyState`、`LoadingRows`
+- **配置编辑**：生成页设置复用 `SettingsWorkspace`，统一顶部返回、说明、展开和保存。视口宽度小于 1024px 或高度不超过 760px 时自动全屏；内容区独立滚动，校验详情默认折叠，退出时保护未保存修改
 - **数据展示**：`StatTile`、`Sparkline`、`AnimatedNumber`、`StatusDot`、`.chip`（`chip-acc / ok / warn / bad / sky`）
 - **选择**：`Segmented`（定一个参数）、`ViewToggle`（列表 / 卡片切换）、`MultiSelect`、`button.chip[aria-pressed]`（筛选：点完列表变短）
 - **反馈**：只走 `@/lib/feedback`：`notify.*`（vue-sonner 轻提示）、`confirm()` / `confirmDanger()` / `choose()`（由 App.vue 里的 `ConfirmHost` 渲染）。不要在页面里单独挂确认框
