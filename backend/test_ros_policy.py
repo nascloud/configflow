@@ -188,6 +188,130 @@ def test_exact_managed_main_route_migrates_after_activation():
     assert activation < deletion
 
 
+@pytest.mark.parametrize('needs_nat', [False, True])
+def test_readable_names_share_one_group_and_all_references_resolve(needs_nat):
+    driver = MemoryROS()
+    if needs_nat:
+        driver.rows[NAT][0].pop('out-interface')
+    _, plan = release(driver)
+    assert {row['list'] for row in driver.rows[ADDRESSES]} == {
+        'CF_Source_Proxy_IP_01', 'CF_Destination_Proxy_IP_01', 'CF_Bypass_IP_01'}
+    assert driver.rows[TABLES][-1]['name'] == 'CF_Proxy_Routing_01'
+    assert driver.rows[ROUTES][-1]['routing-table'] == 'CF_Proxy_Routing_01'
+    bypass, mark, entry = driver.rows[MANGLE]
+    assert bypass['chain'] == mark['chain'] == entry['jump-target'] == 'CF_Proxy_Routing_01'
+    assert bypass['src-address-list'] == 'CF_Bypass_IP_01'
+    assert mark['new-routing-mark'] == 'CF_Proxy_Routing_01'
+    assert entry['src-address-list'] == 'CF_Source_Proxy_IP_01'
+    assert entry['dst-address-list'] == 'CF_Destination_Proxy_IP_01'
+    if needs_nat:
+        policy_nat = next(row for row in driver.rows[NAT] if row.get('comment') == 'cf-ros-policy-test')
+        assert policy_nat['src-address-list'] == entry['src-address-list']
+        assert policy_nat['dst-address-list'] == entry['dst-address-list']
+    verify(driver, plan['checks']['ros_policy'])
+    assert inspect(driver)[1]['empty']
+
+
+@pytest.mark.parametrize('path,fields', [
+    (ADDRESSES, {'list': 'CF_Source_Proxy_IP_01', 'address': '203.0.113.1'}),
+    (ADDRESSES, {'list': 'CF_Destination_Proxy_IP_01', 'address': '203.0.113.1'}),
+    (ADDRESSES, {'list': 'CF_Bypass_IP_01', 'address': '203.0.113.1'}),
+    (TABLES, {'name': 'CF_Proxy_Routing_01', 'fib': 'true'}),
+    (MANGLE, {'chain': 'CF_Proxy_Routing_01', 'action': 'return', 'disabled': 'true'}),
+    (FILTER, {'chain': 'forward', 'action': 'accept', 'src-address-list': '!CF_Source_Proxy_IP_01'}),
+    (RAW, {'chain': 'prerouting', 'action': 'accept', 'dst-address-list': 'CF_Destination_Proxy_IP_01'}),
+    (ROUTES, {'dst-address': '203.0.113.0/24', 'gateway': '192.168.0.254@CF_Proxy_Routing_01',
+              'routing-table': 'another', 'disabled': 'true'}),
+])
+def test_names_occupied_by_definitions_or_references_reserve_the_whole_group(path, fields):
+    driver = MemoryROS()
+    foreign = {'.id': '*FOREIGN', **fields}
+    driver.rows[path].append(copy.deepcopy(foreign))
+    release(driver)
+    assert driver.rows[TABLES][-1]['name'] == 'CF_Proxy_Routing_02'
+    assert {row['list'] for row in driver.rows[ADDRESSES] if row['.id'] != '*FOREIGN'} == {
+        'CF_Source_Proxy_IP_02', 'CF_Destination_Proxy_IP_02', 'CF_Bypass_IP_02'}
+    _, withdrawal = inspect(driver, desired_for(driver, selected=False))
+    assert execute(withdrawal, driver, None)['ok']
+    assert next(row for row in driver.rows[path] if row['.id'] == '*FOREIGN') == foreign
+    assert not any(url.endswith('/*FOREIGN') for _, url, _ in driver.writes)
+
+
+def test_updates_keep_old_group_until_activation_and_reuse_only_freed_numbers():
+    driver = MemoryROS()
+    release(driver)
+    start = len(driver.writes)
+    desired = desired_for(driver, cidrs=[TARGET, '149.154.160.0/20'])
+    _, update = inspect(driver, desired)
+    assert execute(update, driver, None)['ok']
+    writes = driver.writes[start:]
+    activation = next(i for i, (method, path, values) in enumerate(writes)
+                      if method == 'PUT' and path == MANGLE and values.get('action') == 'jump')
+    first_deletion = next(i for i, (method, _, _) in enumerate(writes) if method == 'DELETE')
+    assert activation < first_deletion
+    assert driver.rows[TABLES][-1]['name'] == 'CF_Proxy_Routing_02'
+    assert all(row['list'].endswith('_02') for row in driver.rows[ADDRESSES])
+    assert inspect(driver, desired_for(driver, cidrs=[TARGET, '149.154.160.0/20']))[1]['empty']
+    release(driver)
+    assert driver.rows[TABLES][-1]['name'] == 'CF_Proxy_Routing_01'
+    assert all(row['list'].endswith('_01') for row in driver.rows[ADDRESSES])
+
+
+def test_exhausted_readable_groups_block_without_mutating_foreign_objects():
+    driver = MemoryROS()
+    driver.rows[ADDRESSES] = [{'.id': f'*F{i}', 'list': f'CF_Bypass_IP_{i:02d}',
+                              'address': '203.0.113.1', 'disabled': 'true'} for i in range(1, 257)]
+    before = configurations(driver)
+    _, plan = inspect(driver)
+    assert any('没有可用的策略资源名称' in message for message in plan['blockers'])
+    assert not execute(plan, driver, None)['ok']
+    assert not driver.writes and configurations(driver) == before
+
+
+@pytest.mark.parametrize('outcome', ['success', 'rollback', 'external_edit', 'external_reference'])
+def test_legacy_hashed_names_migrate_through_guarded_release(outcome):
+    driver = MemoryROS()
+    _, legacy = inspect(driver)
+    op = legacy['stages'][1]['ops'][0]
+    # Seed the old, previously deployed payload and manifest format.
+    old_name = 'cfp_0123456789abcdef'
+    rename = {'CF_Source_Proxy_IP_01': old_name + '_src',
+              'CF_Destination_Proxy_IP_01': old_name + '_dst',
+              'CF_Bypass_IP_01': old_name + '_bypass', 'CF_Proxy_Routing_01': old_name}
+    for item in op['bundle']:
+        item['values'] = {key: rename.get(value, value) for key, value in item['values'].items()}
+    op['spec'].pop('naming_version')
+    legacy['checks']['ros_policy']['spec'].pop('naming_version', None)
+    assert execute(legacy, driver, None)['ok']
+    before = configurations(driver)
+    if outcome == 'external_edit':
+        driver.rows[MANGLE][-1]['comment'] = 'changed outside ConfigFlow'
+    elif outcome == 'external_reference':
+        driver.rows[RAW].append({'.id': '*FOREIGN', 'chain': 'prerouting', 'action': 'accept',
+                                 'src-address-list': old_name + '_src'})
+    start = len(driver.writes)
+    _, plan = inspect(driver)
+    if outcome.startswith('external_'):
+        assert plan['blockers']
+        assert not execute(plan, driver, None)['ok'] and len(driver.writes) == start
+        return
+    assert not plan['blockers'] and not plan['empty']
+    if outcome == 'rollback':
+        driver.fail = ('DELETE', ADDRESSES, 1)
+    result = execute(plan, driver, None)
+    if outcome == 'rollback':
+        assert not result['ok'] and not any(item['status'] == 'failed' for item in result['rollback'])
+        assert configurations(driver) == before
+        assert 'naming_version' not in driver.ros_policy_manifest['spec']
+        verify(driver, legacy['checks']['ros_policy'])
+    else:
+        assert result['ok']
+        assert driver.rows[TABLES][-1]['name'] == 'CF_Proxy_Routing_01'
+        assert all(not str(value).startswith('cfp_') for rows in driver.rows.values()
+                   for row in rows for value in row.values())
+        assert inspect(driver)[1]['empty']
+
+
 @pytest.mark.parametrize('case', ['fasttrack', 'mangle', 'vrf', 'routing_rule'])
 def test_unsafe_plans_never_write(case):
     driver = MemoryROS()

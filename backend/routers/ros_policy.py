@@ -24,6 +24,7 @@ VRFS = '/ip/vrf'
 SETTINGS = '/routing/settings'
 PATHS = (ADDRESSES, TABLES, MANGLE, ROUTES, NAT, RULES, FILTER, RAW, VRFS)
 PREFIX = 'cf-ros-policy-'
+NAMING_VERSION = 1
 RUNTIME = {'.id', 'bytes', 'packets', 'active', 'inactive', 'immediate-gw', 'used',
            'creation-time', 'belongs-to', 'hw-offloaded', 'debug.fwp-ptr', 'actual-interface',
            'uptime', 'last-updated'}
@@ -291,7 +292,7 @@ def build(desired, state):
 
     gateway = desired.get('proxy_gateway') or ''
     spec = {'sources': request['sources'], 'destinations': [item['cidr'] for item in request['cidrs']],
-            'gateway': gateway}
+            'gateway': gateway, 'naming_version': NAMING_VERSION}
     if request['selected'] and not spec['destinations']:
         result['blockers'].append('选中的策略路由规则集没有可用的真实 IPv4 网段')
     # NAT assessment ignores only manifest-verified Mangle objects. Other
@@ -332,33 +333,38 @@ def build(desired, state):
         return result
     bundle = []
     if request['selected']:
-        # Never reuse an unowned name, even if its current collection is empty.
+        # Reserve a whole readable group. Even references to an empty list or
+        # table count as occupied, and the previous group stays until activation.
         values = {str(value).lstrip('!') for rows in live.values() for row in rows for value in row.values()}
-        for suffix in range(256):
-            name = 'cfp_' + digest([request['owner'], spec, suffix])[:16]
-            names = {name, name + '_src', name + '_dst', name + '_bypass'}
-            if not values & names and not any('@' + name in value for name in names for value in values):
+        for group in range(1, 257):
+            names = {'src': f'CF_Source_Proxy_IP_{group:02d}',
+                     'dst': f'CF_Destination_Proxy_IP_{group:02d}',
+                     'bypass': f'CF_Bypass_IP_{group:02d}',
+                     'routing': f'CF_Proxy_Routing_{group:02d}'}
+            reserved = set(names.values())
+            if not values & reserved and not any('@' + name in value for name in reserved for value in values):
                 break
         else:
             result['blockers'].append('没有可用的策略资源名称')
             return result
+        name = names['routing']
         comment = request['owner']
         def add(path, **fields):
             bundle.append({'path': path, 'values': fields})
         for kind, addresses in (('src', spec['sources']), ('dst', spec['destinations']), ('bypass', [gateway])):
             for address in addresses:
-                add(ADDRESSES, list=name + '_' + kind, address=address, comment=comment, disabled='false')
+                add(ADDRESSES, list=names[kind], address=address, comment=comment, disabled='false')
         add(TABLES, name=name, fib='true')
         add(ROUTES, **{'dst-address': '0.0.0.0/0', 'gateway': gateway + '@main', 'routing-table': name,
                       'comment': comment, 'disabled': 'false'})
         if need_nat:
-            add(NAT, chain='srcnat', action='accept', **{'src-address-list': name + '_src',
-                'dst-address-list': name + '_dst', 'out-interface': interface, 'comment': comment, 'disabled': 'false'})
-        add(MANGLE, chain=name, action='return', **{'src-address-list': name + '_bypass', 'comment': comment, 'disabled': 'false'})
+            add(NAT, chain='srcnat', action='accept', **{'src-address-list': names['src'],
+                'dst-address-list': names['dst'], 'out-interface': interface, 'comment': comment, 'disabled': 'false'})
+        add(MANGLE, chain=name, action='return', **{'src-address-list': names['bypass'], 'comment': comment, 'disabled': 'false'})
         add(MANGLE, chain=name, action='mark-routing', **{'new-routing-mark': name, 'passthrough': 'false', 'comment': comment, 'disabled': 'false'})
         # Activating this last rule is the only step that starts using the bundle.
-        add(MANGLE, chain='prerouting', action='jump', **{'src-address-list': name + '_src',
-            'dst-address-list': name + '_dst', 'dst-address-type': '!local', 'routing-mark': 'main',
+        add(MANGLE, chain='prerouting', action='jump', **{'src-address-list': names['src'],
+            'dst-address-list': names['dst'], 'dst-address-type': '!local', 'routing-mark': 'main',
             'jump-target': name, 'comment': comment, 'disabled': 'false'})
     summary = (f'发布来源策略：{len(spec["sources"])} 个来源范围、{len(spec["destinations"])} 个目的网段 → {gateway}'
                if bundle else '撤销本功能的来源策略，恢复所选网段的静态路由流程')
