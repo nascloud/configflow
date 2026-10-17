@@ -2,6 +2,7 @@ package main
 
 import (
 	"agent/routes"
+	"agent/upgrade"
 	"errors"
 	"io"
 	"log"
@@ -54,7 +55,11 @@ func compactAgentLog(path string) error {
 }
 
 func cleanupDisk(cfg *Config) error {
-	return errors.Join(compactAgentLog("/var/log/configflow-agent.log"), routes.CleanupDisk(toRoutesConfig(cfg)))
+	var prune error
+	if binary, err := os.Executable(); err == nil {
+		prune = upgrade.PruneCompleted(binary)
+	}
+	return errors.Join(compactAgentLog("/var/log/configflow-agent.log"), routes.CleanupDisk(toRoutesConfig(cfg)), prune)
 }
 
 func startDiskCleanup(cfg *Config) {
