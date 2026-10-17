@@ -185,19 +185,32 @@ def test_binding_race_during_reservation_does_not_prepare_or_upload(publish_app,
     assert manager.get_agent_by_id(agent_id)['latest_deployment']['status'] == 'failed'
 
 
-def test_legacy_oxidns_device_policy_guard_remains_compatible(publish_app, monkeypatch):
+@pytest.mark.parametrize('pin_config', [False, True])
+def test_legacy_oxidns_device_policy_guard_remains_compatible(publish_app, monkeypatch, pin_config):
     from backend.common.oxidns_device_policy import revision
     client, repository, manager = publish_app
     agent_id = register(manager, 'oxidns')
-    save(client, 'oxidns')
+    receipt = save(client, 'oxidns')
     guard = {'expected_profile_id': 'office',
              'expected_oxidns_revision': revision(repository.get_compat_config('office')['oxidns'])}
     seen = []
     stub_preparation(monkeypatch, manager, seen)
     path = f'/api/agents/{agent_id}/push-config'
+    if pin_config:
+        guard['expected_config_revision'] = receipt['expected_config_revision']
+        for stale in (receipt['expected_config_revision'] + 1, True, -1, '1'):
+            assert client.post(path, json={**guard, 'expected_config_revision': stale}).status_code == 409
     assert client.post(path, json={**guard, 'expected_oxidns_revision': 'stale'}).status_code == 409
     assert client.post(path, json=guard).status_code == 200
     assert len(seen) == 1
+
+
+def test_missing_service_type_does_not_bypass_saved_draft_guard(publish_app):
+    client, _, manager = publish_app
+    agent_id = register(manager)
+    guard = save(client)
+    guard.pop('expected_service_type')
+    assert client.post(f'/api/agents/{agent_id}/push-config', json=guard).status_code == 400
 
 
 def test_surge_rechecks_binding_after_generation_before_sending(publish_app, monkeypatch):

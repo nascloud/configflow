@@ -970,20 +970,29 @@ def push_config_to_agent(agent_id):
             host = request.headers.get('X-Forwarded-Host', request.host)
             base_url = f'{scheme}://{host}'
         profile_id = (agent.get('profile_id') or get_default_profile_id())
-        guarded = 'expected_service_type' in data or 'expected_config_revision' in data
+        legacy_revision_guard = ('expected_config_revision' in data and
+                                 'expected_profile_id' in data and
+                                 'expected_oxidns_revision' in data and
+                                 'expected_service_type' not in data)
+        guarded = ('expected_service_type' in data or 'expected_config_revision' in data) and not legacy_revision_guard
+        if legacy_revision_guard and (type(data['expected_config_revision']) is not int
+                                      or data['expected_config_revision'] < 0):
+            return jsonify(success=False, message='配置已改变，请重新预览后发布。'), 409
         if guarded and (not isinstance(data.get('expected_profile_id'), str)
                         or not isinstance(data.get('expected_service_type'), str)
                         or type(data.get('expected_config_revision')) is not int
                         or data['expected_config_revision'] < 0):
             return jsonify(success=False, message='保存后的发布信息不完整，请重新保存草稿后发布。'), 400
         try:
-            if guarded:
+            if guarded or legacy_revision_guard:
                 config_data, config_revision = get_repository().get_publish_snapshot(profile_id)
             else:
                 config_data = deepcopy(get_config(profile_id))
                 config_revision = _profile_revision(profile_id)
         except ProfileRepositoryError as exc:
             return jsonify({'success': False, 'message': f'Agent profile unavailable: {exc}'}), 409
+        if legacy_revision_guard and data['expected_config_revision'] != config_revision:
+            return jsonify(success=False, message='配置已改变，请重新预览后发布。'), 409
         service_type = agent.get('service_type', 'mihomo')
         if guarded and (data['expected_profile_id'] != profile_id
                         or data['expected_service_type'] != service_type
