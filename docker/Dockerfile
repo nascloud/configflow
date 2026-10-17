@@ -48,7 +48,7 @@ FROM node:24-bookworm-slim AS node-runtime
 # ==============================================================================
 # Stage 4: 最终镜像（源码部署）
 # ==============================================================================
-FROM python:3.11-slim
+FROM python:3.11-slim AS runtime
 
 # 版本号参数，从 GitHub Actions 传入
 ARG VERSION=dev
@@ -70,6 +70,7 @@ RUN apt-get update && \
 COPY backend/requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip && pip install -r /tmp/requirements.txt && \
+    sha256sum /tmp/requirements.txt | cut -d' ' -f1 > /app/.image-requirements.sha256 && \
     rm /tmp/requirements.txt
 
 # 复制后端源码并替换版本号
@@ -91,6 +92,8 @@ RUN echo "${SUB_STORE_VERSION}" > /opt/sub-store/VERSION && node --version
 COPY docker/nginx.conf /etc/nginx/nginx.conf
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY --chmod=755 docker/sub-store-start.sh /usr/local/bin/sub-store-start.sh
+COPY --chmod=755 docker/configflow-start.sh /usr/local/bin/configflow-start.sh
+COPY --chmod=755 docker/auto_update.py /usr/local/bin/configflow-auto-update.py
 
 ENV DATA_DIR=/data TZ=Asia/Shanghai \
     SUB_STORE_BACKEND_API_HOST=127.0.0.1 \
@@ -99,4 +102,18 @@ ENV DATA_DIR=/data TZ=Asia/Shanghai \
 
 EXPOSE 80
 
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+CMD ["/usr/local/bin/configflow-start.sh"]
+
+# ==============================================================================
+# Stage 5: 自动更新镜像（标签 autoupdate）
+# 在 runtime 基础上加入 Go 与 npm：容器启动时拉取分支最新源码，按需重建前端与
+# Agent 后运行（见 docker/auto_update.py）。默认镜像构建请指定 target: runtime。
+# ==============================================================================
+FROM golang:1.21-bookworm AS go-toolchain
+
+FROM runtime AS autoupdate
+COPY --from=go-toolchain /usr/local/go /usr/local/go
+COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    npm --version && /usr/local/go/bin/go version
+ENV CONFIGFLOW_AUTO_UPDATE=1

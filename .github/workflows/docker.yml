@@ -13,6 +13,8 @@ on:
       - 'docker/nginx.conf'
       - 'docker/supervisord.conf'
       - 'docker/sub-store-start.sh'
+      - 'docker/configflow-start.sh'
+      - 'docker/auto_update.py'
       - '.github/workflows/docker.yml'
   workflow_dispatch:
 
@@ -70,9 +72,27 @@ jobs:
         with:
           context: .
           file: ./docker/Dockerfile
+          target: runtime
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+
+      # Same image plus Go and npm: the container runs the newest branch source on
+      # each start (docker/auto_update.py), so code changes need only a restart.
+      - name: Build and push autoupdate image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: autoupdate
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY_DOCKERHUB }}/${{ env.IMAGE_NAME }}:autoupdate
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
