@@ -64,13 +64,13 @@
                     <Activity v-else class="size-3.5" />
                     探测
                   </Button>
-                  <Button size="sm" variant="outline" class="max-md:min-h-11" :disabled="routeBusy || applying" @click="openRouteManager(router)">
+                  <Button size="sm" variant="outline" class="max-md:min-h-11" :disabled="routeBusy || applying || policyLocked" @click="openRouteManager(router)">
                     静态路由
                   </Button>
-                  <Button v-if="router.type === 'routeros'" size="sm" variant="outline" class="max-md:min-h-11" :disabled="routeBusy || applying" @click="openPolicyManager(router)">
+                  <Button v-if="router.type === 'routeros'" size="sm" variant="outline" class="max-md:min-h-11" :disabled="routeBusy || applying || policyLocked" @click="openPolicyManager(router)">
                     策略路由
                   </Button>
-                  <Button size="sm" :disabled="busyId === router.id || routeBusy || applying" @click="openReport(router)">
+                  <Button size="sm" :disabled="busyId === router.id || routeBusy || applying || policyLocked" @click="openReport(router)">
                     <Loader2 v-if="busyId === router.id && busyAction === 'report'" class="size-3.5 animate-spin" />
                     <GitCompare v-else class="size-3.5" />
                     差异报告
@@ -137,10 +137,8 @@
       <EmptyState v-else-if="!routeError" :icon="RouterIcon" title="没有静态路由" description="可新增目的网段和下一跳，确认变更后写入这台路由器。" />
     </SectionCard>
 
-    <PolicyRoutingPanel v-if="policyRouter" :id="policyRouter.id" :key="policyRouter.id" :name="policyRouter.name" :profile="activeProfileId"
-      :rule-sets="(policyRouter.ros_policy_rule_sets || []).map(id => ruleSets.find(rule => rule.id === id)?.name || id)"
-      :gateway="agents.find(agent => agent.id === policyRouter?.proxy_gateway_agent_id)?.host || ''"
-      @edit="openPolicyEditor(policyRouter)" @preview="previewPolicy(policyRouter)" @close="policyRouter = null" />
+    <PolicyRoutingPanel v-if="policyRouter" ref="policyPanel" :id="policyRouter.id" :key="policyRouter.id" :name="policyRouter.name" :profile="activeProfileId"
+      @saved="load" @busy="policyLocked = $event" @close="policyRouter = null" />
 
     <Dialog :open="routeEditorVisible" @update:open="value => { if (!routeBusy) routeEditorVisible = value }">
       <DialogContent class="max-w-[480px] max-md:[&_[data-slot=button]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-w-11" :show-close-button="!routeBusy">
@@ -422,7 +420,7 @@
               </div>
               <p v-if="stage.note" class="mt-2 mb-0 text-muted-foreground">{{ stage.note }}</p>
               <ul v-if="stage.ops.length" class="mt-2 mb-0 flex list-disc flex-col gap-1 pl-8 text-muted-foreground">
-                <li v-for="op in stage.ops" :key="op.summary">{{ op.summary }}</li>
+                <li v-for="op in stage.ops" :key="op.summary" class="min-w-0"><RouterOperationPreview :op="op" /></li>
               </ul>
             </li>
           </ol>
@@ -451,12 +449,11 @@
     <Dialog :open="dialogVisible" @update:open="value => { if (!saving) dialogVisible = value }">
       <DialogContent class="max-h-[90dvh] max-w-[480px] overflow-y-auto max-md:[&_[data-slot=button]]:min-h-11 max-md:[&_[role=combobox]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-w-11">
         <DialogHeader>
-          <DialogTitle>{{ policyEditing ? '编辑策略路由设置' : editingId ? '编辑路由器' : '添加路由器' }}</DialogTitle>
-          <DialogDescription>{{ policyEditing ? '保存设置后预览变更，确认发布才会写入 ROS。' : '保存仅更新 ConfigFlow 设置，确认发布后才会写入路由器。' }}</DialogDescription>
+          <DialogTitle>{{ editingId ? '编辑路由器' : '添加路由器' }}</DialogTitle>
+          <DialogDescription>保存仅更新 ConfigFlow 设置，确认发布后才会写入路由器。</DialogDescription>
         </DialogHeader>
 
         <form class="flex min-w-0 flex-col gap-4" @submit.prevent="submit">
-          <template v-if="!policyEditing">
           <div class="flex flex-col gap-1.5">
             <Label for="router-name">名称</Label>
             <Input id="router-name" v-model="form.name" class="bg-background/50" maxlength="80" placeholder="例如 主路由" />
@@ -500,7 +497,6 @@
             <Label for="router-verify-tls">校验 HTTPS 证书</Label>
             <FieldHelp label="校验 HTTPS 证书" :text="routerHelp.tls" />
           </div>
-          </template>
           <FormField label="代理网关（mihomo Agent）" html-for="router-gateway" :help="form.type === 'routeros' ? routerHelp.gatewayROS : routerHelp.gateway">
             <Select v-model="form.proxy_gateway_agent_id">
               <SelectTrigger id="router-gateway" class="w-full bg-background/50"><SelectValue placeholder="不关联" /></SelectTrigger>
@@ -512,7 +508,7 @@
               </SelectContent>
             </Select>
           </FormField>
-          <div v-if="!policyEditing" class="flex flex-col gap-1.5">
+          <div class="flex flex-col gap-1.5">
             <div class="flex min-h-11 items-center justify-between gap-3">
               <div class="flex min-w-0 items-center gap-1">
                 <Label for="router-return-routing">自动配置回流</Label>
@@ -535,7 +531,7 @@
               <MultiSelect :model-value="form.ros_policy_rule_sets" trigger-id="router-policy-rule-sets" :options="ruleSetOptions" placeholder="不使用策略路由" @update:model-value="selectPolicyRuleSets" />
             </div>
           </FormField>
-          <FormField v-if="!policyEditing" label="DHCP DNS 服务器（OxiDNS Agent）" html-for="router-dns" :help="routerHelp.dns">
+          <FormField label="DHCP DNS 服务器（OxiDNS Agent）" html-for="router-dns" :help="routerHelp.dns">
             <Select v-model="form.dns_agent_id">
               <SelectTrigger id="router-dns" class="w-full bg-background/50"><SelectValue placeholder="不关联" /></SelectTrigger>
               <SelectContent class="max-w-[calc(100vw-2rem)]">
@@ -552,7 +548,7 @@
           <Button variant="outline" :disabled="saving" @click="dialogVisible = false">取消</Button>
           <Button :disabled="saving" @click="submit">
             <Loader2 v-if="saving" class="size-4 animate-spin" />
-            {{ policyEditing ? '保存并预览' : '保存' }}
+            保存
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -561,7 +557,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { matchedRouteKey, onBeforeRouteLeave } from 'vue-router'
 import {
   Activity,
   CircleX,
@@ -597,6 +594,7 @@ import SectionCard from '@/components/common/SectionCard.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
 import PolicyRoutingPanel from '@/components/routers/PolicyRoutingPanel.vue'
+import RouterOperationPreview from '@/components/routers/RouterOperationPreview.vue'
 import { agentApi, routerApi, ruleApi, type StaticRouteChange, type StaticRouteItem, type StaticRoutePlan, type StaticRouteValues } from '@/api'
 import { activeProfileId, getActiveProfileId } from '@/profileContext'
 import { confirm, confirmDanger, confirmState, notify, settleConfirm } from '@/lib/feedback'
@@ -774,25 +772,16 @@ const errorMessage = (error: any, fallback: string) => error?.response?.data?.me
 // to the device/profile it started from, including time spent in confirmation.
 const routeRouter = ref<RouterItem | null>(null)
 const policyRouter = ref<RouterItem | null>(null)
-const policyEditing = ref(false)
-let policyEditProfile = ''
-let policyEditEpoch = 0
-const openPolicyManager = (router: RouterItem) => {
-  if (routeBusy.value || applying.value) return
+const policyPanel = ref<InstanceType<typeof PolicyRoutingPanel> | null>(null)
+const policyLocked = ref(false)
+const canLeavePolicy = async () => await policyPanel.value?.canLeave() ?? true
+if (inject(matchedRouteKey, undefined)?.value) onBeforeRouteLeave(canLeavePolicy)
+const openPolicyManager = async (router: RouterItem) => {
+  if (routeBusy.value || applying.value || policyLocked.value || policyRouter.value?.id === router.id) return
+  if (!await canLeavePolicy()) return
   closeRouteManager()
   clearInspection()
   policyRouter.value = router
-}
-const openPolicyEditor = (router: RouterItem) => {
-  openEdit(router)
-  policyEditing.value = true
-  policyEditProfile = getActiveProfileId()
-}
-const previewPolicy = async (router: RouterItem) => {
-  const pending = openReport(router)
-  const revision = inspectionRevision
-  await pending
-  if (revision === inspectionRevision && reportRouter.value?.id === router.id && report.value) await openPlan()
 }
 const routeRows = ref<StaticRouteItem[]>([])
 const routeLoading = ref(false)
@@ -844,6 +833,7 @@ const refreshRoutes = async (context = routeContext()) => {
 }
 const openRouteManager = async (router: RouterItem) => {
   if (routeBusy.value || applying.value) return
+  if (!await canLeavePolicy()) return
   policyRouter.value = null
   clearInspection()
   closeRouteManager()
@@ -945,9 +935,7 @@ const submitRoute = async () => {
     : { action: 'add', values })
 }
 const closePanels = () => {
-  policyEditEpoch++
   policyRouter.value = null
-  if (policyEditing.value) dialogVisible.value = false
   closeRouteManager()
   clearInspection()
 }
@@ -999,18 +987,18 @@ const load = async (isCurrent = () => true) => {
   }
 }
 
-const openCreate = () => {
-  policyEditEpoch++
-  policyEditing.value = false
+const openCreate = async () => {
+  if (!await canLeavePolicy()) return
+  policyRouter.value = null
   Object.assign(form, emptyForm())
   editingId.value = ''
   editingHasPassword.value = false
   dialogVisible.value = true
 }
 
-const openEdit = (router: RouterItem) => {
-  policyEditEpoch++
-  policyEditing.value = false
+const openEdit = async (router: RouterItem) => {
+  if (!await canLeavePolicy()) return
+  policyRouter.value = null
   Object.assign(form, {
     name: router.name,
     type: router.type,
@@ -1049,12 +1037,6 @@ const clearInspection = (routerId?: string) => {
 
 const submit = async () => {
   if (saving.value) return
-  const policyEdit = policyEditing.value
-  const profile = policyEditProfile
-  const epoch = policyEditEpoch
-  const editedId = editingId.value
-  const isCurrent = () => !policyEdit || (epoch === policyEditEpoch && profile === getActiveProfileId())
-  if (!isCurrent()) return
   saving.value = true
   const payload = {
     ...form,
@@ -1064,14 +1046,7 @@ const submit = async () => {
     dns_agent_id: form.dns_agent_id === NONE ? '' : form.dns_agent_id
   }
   try {
-    if (policyEdit) {
-      await routerApi.update(editedId, {
-        ip_rule_sets: payload.ip_rule_sets, ros_policy_rule_sets: payload.ros_policy_rule_sets,
-        proxy_gateway_agent_id: payload.proxy_gateway_agent_id
-      }, profile)
-      if (!isCurrent()) return
-    }
-    else if (editingId.value) await routerApi.update(editingId.value, payload)
+    if (editingId.value) await routerApi.update(editingId.value, payload)
     else await routerApi.create(payload)
     notify.success(editingId.value ? '路由器已更新' : '路由器已添加')
     dialogVisible.value = false
@@ -1079,22 +1054,16 @@ const submit = async () => {
       clearInspection(editingId.value)
       if (routeRouter.value?.id === editingId.value) closeRouteManager()
     }
-    const loaded = await load(isCurrent)
-    if (!isCurrent() || !loaded) return
-    if (policyEdit) {
-      const updated = routers.value.find(router => router.id === editedId)
-      if (updated) await previewPolicy(updated)
-    } else if (policyRouter.value?.id === editedId) {
-      policyRouter.value = routers.value.find(router => router.id === editedId) || null
-    }
+    await load()
   } catch (error) {
-    if (isCurrent()) notify.error(errorMessage(error, '保存失败'))
+    notify.error(errorMessage(error, '保存失败'))
   } finally {
     saving.value = false
   }
 }
 
 const remove = async (router: RouterItem) => {
+  if (!await canLeavePolicy()) return
   if (!(await confirmDanger(`删除路由器「${router.name}」？只删除 ConfigFlow 中的接入记录，不会改动路由器。`))) return
   try {
     await routerApi.remove(router.id)
@@ -1127,6 +1096,7 @@ const probe = async (router: RouterItem) => {
 // after publishing keeps the current plan and its result available for review.
 const openReport = async (router: RouterItem) => {
   if (routeBusy.value || applying.value) return
+  if (!await canLeavePolicy()) return
   policyRouter.value = null
   closeRouteManager()
   clearInspection()

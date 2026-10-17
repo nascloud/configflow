@@ -15,6 +15,7 @@
       <SettingsPublishBar :open="open" :profile-id="profileId" service-type="oxidns" :disabled="disabled" :save="() => save(false)" @save-draft="save()" />
     </template>
     <div class="flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-3 md:p-5" @input.capture="markEdited">
+      <p v-if="contextLabel" class="m-0 break-words text-xs text-muted-foreground">{{ contextLabel }}</p>
       <LoadingRows v-if="loading" :rows="5" />
       <div v-else-if="loadError" role="alert" class="space-y-3 py-4">
         <p class="text-destructive-accent">{{ loadError }}</p><Button variant="outline" @click="load">重新加载</Button>
@@ -41,7 +42,7 @@
               <p role="alert" class="text-sm text-destructive-accent">{{ projectionError }}</p>
               <Button variant="outline" @click="projectCommon">重新读取常用设置</Button>
             </div>
-            <OxidnsCommonSettings v-else-if="commonValues" :key="commonKey" :values="commonValues" :capabilities="commonCapabilities" :rules="rules" :rule-sets="ruleSets" :disabled="saving" :navigation-disabled="editorLocked" @change="queueChanges" @error="editorErrors.common = $event" @navigate="nativeEditor?.showFull($event)" @full="nativeEditor?.showFull()" />
+            <OxidnsCommonSettings v-else-if="commonValues" :key="commonKey" :initial-feature="initialFeature" :values="commonValues" :capabilities="commonCapabilities" :rules="rules" :rule-sets="ruleSets" :disabled="saving" :navigation-disabled="editorLocked" @change="queueChanges" @error="editorErrors.common = $event" @navigate="nativeEditor?.showFull($event)" @full="nativeEditor?.showFull()" />
           </template>
         </OxidnsNativeEditor>
         <div ref="filesPanel" v-show="tab === 'files'" class="min-h-0 flex-1 overflow-y-auto">
@@ -100,7 +101,7 @@ import { Button } from '@/components/ui/button'
 import SettingsWorkspace from './SettingsWorkspace.vue'
 import SettingsPublishBar from './SettingsPublishBar.vue'
 
-const props = defineProps<{ open: boolean; profileId: string }>()
+const props = defineProps<{ open: boolean; profileId: string; initialFeature?: string; contextLabel?: string }>()
 const emit = defineEmits<{ (event: 'update:open', value: boolean): void; (event: 'saved'): void }>()
 const settings = ref<Record<string, any> | null>(null)
 const rules = ref<any[]>([])

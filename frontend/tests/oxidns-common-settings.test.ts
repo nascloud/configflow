@@ -33,6 +33,14 @@ async function input(id: string, value: string) {
 const lastChange = (wrapper: ReturnType<typeof mount>) => wrapper.emitted('change')?.at(-1)?.[0]
 
 describe('OxiDNS current common settings', () => {
+  it('opens the requested recorder section without enabling or changing it', async () => {
+    const wrapper = await render({ initialFeature: 'query_recorder' })
+    const selected = wrapper.findAll('[role="tab"]').find(tab => tab.text() === '特色功能')!
+    expect(selected.attributes('data-state')).toBe('active')
+    expect(wrapper.get('[aria-label="查询记录设置"]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('#oxi-enable-query_recorder').attributes('aria-checked')).toBe('false')
+    expect(wrapper.emitted('change')).toBeUndefined()
+  })
   it('shows all seven former control groups without tool, preview or save actions', async () => {
     await render()
     for (const label of ['核心设置', '分流规则', 'DNS 上游', '缓存', '特色功能', 'WebUI / 日志', '高级']) {

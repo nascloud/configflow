@@ -1,0 +1,91 @@
+/** Read-only presentation of the exact release plan, never its unrelated evidence. */
+export interface RouterPlanOperation { summary: string; kind?: string; [key: string]: unknown }
+export interface DetailRow { label: string; value: string; before?: string; action?: '新增' | '移除' | '保留' }
+export interface DetailGroup { title: string; note?: string; rows: DetailRow[] }
+type Fields = Record<string, unknown>
+const record = (value: unknown): Fields => value && typeof value === 'object' && !Array.isArray(value) ? value as Fields : {}
+const list = (value: unknown): unknown[] => Array.isArray(value) ? value : []
+const strings = (value: unknown) => list(value).filter((item): item is string => typeof item === 'string')
+const text = (value: unknown): string => Array.isArray(value) ? value.map(text).join(', ') : value === null || value === undefined || value === '' ? '未设置' : String(value)
+const labels: Record<string, string> = {
+  sources: '来源范围', destinations: '目的网段', gateway: '下一跳', egress_interface: '出口接口', nat_interface: 'NAT 免转换出口',
+  router_ip: '主路由地址', mark: '标记', table: '路由表编号', priority: '规则优先级',
+  list: '地址列表', address: '地址', name: '名称', chain: '规则链', action: '动作',
+  'src-address': '源地址', 'dst-address': '目的地址', 'src-address-list': '来源地址列表', 'dst-address-list': '目的地址列表',
+  'routing-table': '路由表', 'routing-mark': '匹配路由标记', 'new-routing-mark': '写入路由标记', 'jump-target': '跳转链',
+  'dst-address-type': '目的地址类型', 'out-interface': '出口接口', 'in-interface': '入口接口',
+  'out-interface-list': '出口接口列表', 'in-interface-list': '入口接口列表',
+  'src-port': '源端口', 'dst-port': '目的端口', protocol: '协议', passthrough: '继续后续规则',
+  disabled: '停用', fib: '加入转发表', comment: '备注', cidr: '目的网段', id: '对象 ID', network: 'DHCP 网段', dns: 'DNS 列表', 'dns-server': 'DNS 列表'
+}
+const pathNames: Record<string, string> = {
+  '/ip/firewall/address-list': '地址列表', '/ip/firewall/mangle': 'Mangle', '/routing/table': '路由表',
+  '/ip/route': '下一跳路由', '/ip/firewall/nat': 'NAT 免转换'
+}
+const safeFields = (value: unknown): DetailRow[] => Object.entries(record(value))
+  .filter(([key, value]) => !/password|secret|token|authorization/i.test(key) && (value === null || typeof value !== 'object' || Array.isArray(value)))
+  .map(([key, value]) => ({ label: labels[key] ? `${labels[key]} · ${key}` : key, value: text(value) }))
+const valuesOf = (value: unknown) => safeFields(value).map(row => `${row.label}: ${row.value}`).join('\n')
+function addressDiff(title: string, before: unknown, after: unknown): DetailGroup {
+  const old = new Set(strings(before)), next = new Set(strings(after))
+  return { title, note: '对比上次受管策略的地址范围。保留表示范围不变，底层对象仍按本次计划重建。', rows: [
+    ...[...next].filter(ip => !old.has(ip)).map(ip => ({ label: '新增', value: ip, action: '新增' as const })),
+    ...[...old].filter(ip => !next.has(ip)).map(ip => ({ label: '移除', value: ip, action: '移除' as const })),
+    ...[...next].filter(ip => old.has(ip)).map(ip => ({ label: '保留', value: ip, action: '保留' as const }))
+  ] }
+}
+function changedFields(title: string, before: Fields, after: Fields, keys: string[]): DetailGroup {
+  return { title, rows: keys.filter(key => key in before || key in after).map(key => ({
+    label: labels[key] || key, before: text(before[key]), value: text(after[key])
+  })) }
+}
+function objectRow(value: unknown, creating: boolean): DetailRow {
+  const item = record(value), fields = record(creating ? item.values : item.config)
+  const identity = item.id || fields.list || fields.name || fields.chain || fields['routing-table'] || ''
+  return { label: `${pathNames[String(item.path)] || text(item.path)}${identity ? ` · ${identity}` : ''}`, value: valuesOf(fields) }
+}
+export function hasOperationDetails(op: RouterPlanOperation) {
+  return ['ros_policy_replace', 'return_routing_apply', 'route_add', 'route_delete', 'route_comment',
+    'nat_add', 'nat_update', 'dhcp_dns_update', 'policy_route_add', 'policy_route_update', 'policy_route_delete'].includes(op.kind || '')
+}
+export function operationDetails(op: RouterPlanOperation): DetailGroup[] {
+  const groups: DetailGroup[] = []
+  const add = (title: string, rows: DetailRow[], note?: string) => groups.push({ title, rows, note })
+  if (op.kind === 'ros_policy_replace') {
+    const before = record(record(op.previous).spec), after = record(op.spec)
+    groups.push(addressDiff('来源范围', before.sources, after.sources), addressDiff('目的网段', before.destinations, after.destinations),
+      changedFields('网关与出口', before, after, ['gateway', 'egress_interface', 'nat_interface']))
+    const bundle = list(op.bundle)
+    for (const [path, label] of Object.entries(pathNames)) {
+      add(`新增${label}`, bundle.filter(value => record(value).path === path).map(value => objectRow(value, true)),
+        path === '/ip/firewall/mangle' ? '字段来自本次发布计划。按列表顺序创建，最后启用 prerouting 入口规则。' : '以下是本次计划实际创建的对象与字段。')
+    }
+    add('删除旧受管对象', [...list(op.owned)].reverse().map(value => objectRow(value, false)),
+      bundle.length ? '新策略启用成功后，按以下顺序清理旧受管对象；其他程序和手工对象不在此列表中。' : '本次撤销策略，仅删除以下已核实归属的对象。')
+    add('迁移主表静态路由', list(op.migrations).map(value => objectRow(value, false)), '新策略启用后删除下列受管主表路由，改由来源策略匹配。')
+  } else if (op.kind === 'return_routing_apply') {
+    const before = record(op.previous), after = record(op.spec)
+    groups.push(changedFields('回流参数', before, after, ['router_ip', 'mark', 'table', 'priority']))
+    const scope = addressDiff('回流目的网段', before.proxy_dst, after.proxy_dst)
+    scope.note = '对比当前受管回流配置与本次目标网段。'
+    groups.push(scope)
+  } else if (op.kind === 'nat_update') {
+    add('现有匹配条件', safeFields(op.expected), '扩充时保留这些源地址、接口、协议等匹配限制。')
+    add('新增目的网段', strings(op.add_dst).map(value => ({ label: '新增', value, action: '新增' })))
+    groups.push(changedFields('备注', record(op.expected), op, ['comment']))
+  } else if (op.kind === 'dhcp_dns_update') {
+    add('作用网段', safeFields(op.scope))
+    add('现有 DHCP 配置', safeFields(op.expected))
+    add('发布后的 DNS', [{ label: 'DNS 列表', value: text(op.dns) }], '替换原 DNS 列表，客户端续租或重新连接后生效。')
+  } else if (op.kind === 'nat_add') {
+    add('来源范围', strings(op.src).map(value => ({ label: '来源', value })))
+    add('目的网段', strings(op.dst).map(value => ({ label: '目的', value })))
+    add('规则备注', [{ label: '备注', value: text(op.comment) }])
+  } else if (hasOperationDetails(op)) {
+    const values: Fields = {}
+    for (const key of ['id', 'cidr', 'gateway', 'comment']) if (key in op) values[key] = op[key]
+    add(op.kind?.endsWith('_delete') ? '删除对象' : '提交字段', safeFields(values), '仅列出本次计划提供的字段；概要中的接管或删除含义保持不变。')
+    add('目的网段', strings(op.dst).map(value => ({ label: '目的', value })))
+  }
+  return groups.filter(group => group.rows.length)
+}
