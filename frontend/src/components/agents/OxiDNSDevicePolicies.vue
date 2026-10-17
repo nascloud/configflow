@@ -15,7 +15,7 @@
     </template>
     <div class="mb-4 space-y-2 text-xs leading-relaxed text-muted-foreground">
       <p class="m-0 break-words">配置：<span class="font-medium text-foreground">{{ state.profile_name }}</span> · 保存草稿，发布到当前设备后生效。</p>
-      <p v-if="state.agents.length > 1" class="m-0 break-words text-info-accent">共用草稿：{{ state.agents.map(agent => agent.name).join('、') }}</p>
+      <p v-if="state.agents.length > 1" class="m-0 break-words">共用草稿：{{ state.agents.map(agent => agent.name).join('、') }}</p>
       <details>
         <summary class="min-h-11 cursor-pointer content-center text-foreground focus-visible:outline-2 focus-visible:outline-primary-accent">使用说明</summary>
         <p class="mb-2 mt-0">智能分流沿用现有规则，未设置的设备保持默认。</p>
