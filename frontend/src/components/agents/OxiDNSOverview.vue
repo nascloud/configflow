@@ -26,8 +26,8 @@
           <h2 class="m-0 text-sm font-semibold">请求排行</h2>
           <p class="mb-0 mt-1 text-xs leading-relaxed text-muted-foreground">{{ rankingsDescription }}</p>
           <p v-if="rankings" class="mb-0 mt-1 text-xs leading-relaxed text-muted-foreground">
-            客户端样本 {{ formatMonitorNumber(rankings.clients.sample_size) }} 条 · 域名样本 {{ formatMonitorNumber(rankings.domains.sample_size) }} 条<span v-if="rankings.blocked.available"> · 拦截样本 {{ formatMonitorNumber(rankings.blocked.sample_size) }} 条</span>。
-            <span v-if="rankings.clients.at_limit || rankings.domains.at_limit || rankings.blocked.at_limit" class="text-warning-accent">已达到样本上限，排行不代表本轮所有请求。</span>
+            {{ rankingSampleDescription }}<span v-if="rankings.blocked.available"> 拦截排行另基于 {{ formatMonitorNumber(rankings.blocked.sample_size) }} 条查询记录。</span>
+            <span v-if="rankings.clients.at_limit || rankings.domains.at_limit || rankings.blocked.at_limit" class="text-warning-accent">已达到样本上限，可能未覆盖本轮所有请求。</span>
           </p>
         </div>
         <Select v-if="overview.recorders.length > 1" :model-value="recorder" :disabled="resetting" @update:model-value="$emit('recorder', String($event))">
@@ -141,8 +141,16 @@ const statisticsNote = computed(() => props.overview.statistics
   ? (resetReasons[props.overview.statistics.reason] || '本轮统计') + '。重置仅影响此设备的面板统计；缓存条目、处理中数量及查询记录保持原样。'
   : '现有指标仍按核心启动以来展示。重置统计需要 Agent 1.8.14-go 或更新版本。')
 const rankings = computed<OxiDNSRankings | null>(() => props.overview.rankings && 'success' in props.overview.rankings && props.overview.rankings.success === true ? props.overview.rankings : null)
+const rankingSampleDescription = computed(() => {
+  if (!rankings.value) return ''
+  const { clients, domains } = rankings.value
+  if (clients.sample_size === domains.sample_size) {
+    return '基于 ' + formatMonitorNumber(clients.sample_size) + ' 条 DNS 查询记录统计。'
+  }
+  return '客户端排行基于 ' + formatMonitorNumber(clients.sample_size) + ' 条查询记录；域名排行基于 ' + formatMonitorNumber(domains.sample_size) + ' 条查询记录。'
+})
 const rankingsDescription = computed(() => rankings.value
-  ? '从本轮起点起，在记录器「' + rankings.value.recorder + '」保留的记录中，分别取最近 ' + formatMonitorNumber(rankings.value.sample_limit) + ' 条统计前 10 项；这是记录样本排行，不是全量累计。域名按问题名计数，一条查询可包含多个问题。' + (monitorNumber(rankings.value.retention_days) ? '核心保留期 ' + formatMonitorNumber(rankings.value.retention_days) + ' 天。' : '')
+  ? '从本轮起点起，在记录器「' + rankings.value.recorder + '」保留的记录中，分别取最近 ' + formatMonitorNumber(rankings.value.sample_limit) + ' 条统计前 10 项；这是记录样本排行，不是全量累计。样本数是查询记录条数，不是客户端数或去重域名数。域名按问题名计数，一条查询可包含多个问题。' + (monitorNumber(rankings.value.retention_days) ? '核心保留期 ' + formatMonitorNumber(rankings.value.retention_days) + ' 天。' : '')
   : '排行依据核心保留的查询记录计算。')
 const rankingsUnavailableReason = computed(() => props.overview.rankings && 'reason' in props.overview.rankings
   ? props.overview.rankings.reason : '当前 Agent 未返回排行数据，请确认已启用查询记录并升级 Agent。')
