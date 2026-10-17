@@ -38,7 +38,7 @@ async function render(path = '/agents/one/oxidns') {
   // App.vue keys routed pages by path; this reproduces a real device switch remount.
   const shell = defineComponent({ components: { RouterView }, setup: () => ({ route: useRoute() }), template: '<RouterView :key="route.path" />' })
   const wrapper = mount(shell, { global: { plugins: [router], stubs: {
-    OxiDNSOverviewPanel: { props: ['overview'], emits: ['reset'], template: '<div data-test="overview">{{ overview.agent.name }}<button data-test="reset" @click="$emit(\'reset\')">重置统计</button></div>' },
+    OxiDNSOverviewPanel: { props: ['overview'], template: '<div data-test="overview">{{ overview.agent.name }}</div>' },
     OxiDNSQueryTable: { props: ['data'], emits: ['detail'], template: '<div data-test="queries">{{ data?.records[0]?.client_ip }}<button data-test="detail" @click="$emit(\'detail\', { id: 12 })">详情</button></div>' },
     OxiDNSQueryDetail: { props: ['agentId'], template: '<div data-test="query-detail">{{ agentId }}</div>' }
   } } })
@@ -140,7 +140,7 @@ describe('OxiDNS dashboard reset confirmation', () => {
   it('explains scope and preserves the dashboard when confirmation is cancelled', async () => {
     vi.mocked(confirm).mockResolvedValue(false)
     const { wrapper } = await render()
-    await wrapper.get('[data-test="reset"]').trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '重置统计')!.trigger('click')
     await flushPromises()
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('查询记录和 DNS 服务保持不变'), expect.objectContaining({ confirmText: '重新开始统计' }))
     expect(oxidnsMonitorApi.resetStatistics).not.toHaveBeenCalled()
@@ -148,7 +148,7 @@ describe('OxiDNS dashboard reset confirmation', () => {
   })
   it('resets only the selected device after confirmation and reports success', async () => {
     const { wrapper } = await render()
-    await wrapper.get('[data-test="reset"]').trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '重置统计')!.trigger('click')
     await flushPromises()
     expect(oxidnsMonitorApi.resetStatistics).toHaveBeenCalledWith('one', 'queries', expect.anything())
     expect(notify.success).toHaveBeenCalledWith('已重新开始统计', expect.stringContaining('查询记录已保留'))
@@ -157,7 +157,7 @@ describe('OxiDNS dashboard reset confirmation', () => {
     let accept!: (value: boolean) => void
     vi.mocked(confirm).mockReturnValue(new Promise(resolve => { accept = resolve }))
     const { wrapper, router } = await render()
-    await wrapper.get('[data-test="reset"]').trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === '重置统计')!.trigger('click')
     await router.replace('/agents/two/oxidns')
     await flushPromises()
     accept(true)

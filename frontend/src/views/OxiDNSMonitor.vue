@@ -50,11 +50,14 @@
         {{ overviewError }} 保留上次成功读取的数据，采样时间见上方。
       </p>
       <Tabs :model-value="tab" class="min-w-0" @update:model-value="changeTab(String($event))">
-        <TabsList class="mb-4 min-h-11">
-          <TabsTrigger value="overview" class="min-h-11 px-4">运行概览</TabsTrigger>
-          <TabsTrigger value="queries" class="min-h-11 px-4">查询记录</TabsTrigger>
-          <TabsTrigger value="devices" class="min-h-11 px-4">设备策略</TabsTrigger>
-        </TabsList>
+        <div class="mb-4 flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <TabsList class="min-h-11 shrink-0">
+            <TabsTrigger value="overview" class="min-h-11 px-4">运行概览</TabsTrigger>
+            <TabsTrigger value="queries" class="min-h-11 px-4">查询记录</TabsTrigger>
+            <TabsTrigger value="devices" class="min-h-11 px-4">设备策略</TabsTrigger>
+          </TabsList>
+          <OxiDNSStatisticsControls v-if="tab === 'overview' && overview" :statistics="overview.statistics" :resetting="resettingStatistics" @reset="confirmResetStatistics" />
+        </div>
         <template v-if="tab !== 'devices' && !overview">
           <LoadingRows v-if="overviewLoading" :rows="5" />
           <SectionCard v-else>
@@ -63,8 +66,8 @@
             </EmptyState>
           </SectionCard>
         </template>
-        <TabsContent value="overview"><OxiDNSOverviewPanel v-if="overview" :overview="overview" :qps="qps" :recorder="recorder" :resetting="resettingStatistics"
-          @reset="confirmResetStatistics" @recorder="selectRecorder" /></TabsContent>
+        <TabsContent value="overview"><OxiDNSOverviewPanel v-if="overview" :overview="overview" :qps="qps" :recorder="recorder"
+          @recorder="selectRecorder" /></TabsContent>
         <TabsContent value="queries">
           <SectionCard v-if="overview && !overview.recorders.length">
             <EmptyState :icon="Search" title="尚未启用查询记录" description="在此 Agent 绑定的配置空间中，进入「配置生成 → OxiDNS → 设置」启用查询记录，保存后推送到此 Agent。" />
@@ -93,6 +96,7 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import OxiDNSOverviewPanel from '@/components/agents/OxiDNSOverview.vue'
+import OxiDNSStatisticsControls from '@/components/agents/OxiDNSStatisticsControls.vue'
 import OxiDNSQueryTable from '@/components/agents/OxiDNSQueryTable.vue'
 import OxiDNSQueryDetail from '@/components/agents/OxiDNSQueryDetail.vue'
 import OxiDNSDevicePolicies from '@/components/agents/OxiDNSDevicePolicies.vue'
