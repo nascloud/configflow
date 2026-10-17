@@ -52,11 +52,11 @@ vi.mock('@/api', () => {
       configs: ok({ mode: 'Rule' }),
       proxies: ok({ proxies: {
         GLOBAL: { name: 'GLOBAL', type: 'Selector', all: ['Proxy'], now: 'Proxy' },
-        Proxy: { name: 'Proxy', type: 'Selector', all: ['HK', 'DIRECT'], now: 'HK' },
+        Proxy: { name: 'Proxy', type: 'Selector', all: ['HK', 'DIRECT', 'SH'], now: 'HK' },
         HK: { name: 'HK', type: 'Shadowsocks', history: [{ time: '', delay: 88 }] },
         DIRECT: { name: 'DIRECT', type: 'Direct' }
       } }),
-      proxyProviders: ok({ providers: {} }),
+      proxyProviders: ok({ providers: { sh: { name: 'sh', type: 'Proxy', vehicleType: 'HTTP', proxies: [{ name: 'SH', type: 'Trojan', history: [{ time: '', delay: 42 }] }] } } }),
       connections: ok({ uploadTotal: 2048, downloadTotal: 4096, connections: [{
         id: 'c1', upload: 10, download: 20, start: new Date().toISOString(), chains: ['HK', 'Proxy'], rule: 'DomainSuffix', rulePayload: 'example.com',
         metadata: { network: 'tcp', type: 'HTTP', sourceIP: '192.0.2.10', sourcePort: '5000', destinationIP: '', destinationPort: '443', host: 'www.example.com' }
@@ -84,6 +84,11 @@ describe('mihomo panel view', () => {
     expect(wrapper.text()).toContain('Mihomo v1.19.0')
     expect(wrapper.text()).toContain('Proxy')
     expect(wrapper.text()).toContain('88 ms')
+    // provider 节点不在 /proxies 里，展开后也要有类型和延迟
+    await wrapper.findAll('button[aria-expanded]').find(button => button.text().includes('手动选择'))!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Trojan')
+    expect(wrapper.text()).toContain('42 ms')
     expect(vi.mocked(mihomoPanelApi.proxies)).toHaveBeenCalledWith('gw')
     wrapper.unmount()
   })
