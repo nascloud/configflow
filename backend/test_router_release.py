@@ -313,6 +313,18 @@ def test_policy_route_below_top_priority_is_raised():
     assert session.rows['stream_ipport'][0]['prio'] == 0
 
 
+def test_manual_policy_route_is_repaired_without_new_migrations():
+    policies = [_policy(1, 'cf-mihomo', ['91.108.0.0/16', '149.154.160.0/20', '198.18.0.0/16']),
+                _policy(2, 'cf-mihomo-manual', ['1.1.1.1/32'], prio=31)]
+    session = StatefulIKuai([], HOME_NATS, policies=policies)
+    driver = _driver(session)
+    [op] = _plan(driver)['stages'][1]['ops']
+    assert (op['kind'], op['id'], op['dst']) == ('policy_route_update', '2', ['1.1.1.1/32'])
+    assert execute(_plan(driver), driver, FakeAgent(SAFE_RETURN_STATUS))['ok']
+    assert [row['prio'] for row in session.rows['stream_ipport']] == [0, 0]
+    assert _plan(driver)['stages'][1]['ops'] == []
+
+
 def test_kernel_leftover_routes_are_reported_not_rolled_back():
     # iKuai can keep a kernel route after its static route is deleted; it beats
     # 端口分流 and keeps the loop alive, and no API call removes it.

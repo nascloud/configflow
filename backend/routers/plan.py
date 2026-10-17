@@ -166,7 +166,8 @@ def _policy_route_ops(report: Dict[str, Any], state: RouterState, gateway: str, 
     # derived CIDR need no rule of their own.
     migrate = [item['cidr'] for item in report['routes']['unmanaged_other'] if item.get('migrate') and not inside(item['cidr'])]
     manual = policy_route(state, POLICY_MANUAL_COMMENT)
-    if migrate:
+    # An existing manual rule is repaired too (e.g. a lower priority), keeping its CIDRs.
+    if migrate or (manual is not None and not policy_route_ok(manual, gateway)):
         current = list(manual.dst) if manual else []
         dst = current + [cidr for cidr in migrate if cidr not in current]
         op = _policy_op(manual, gateway, dst, POLICY_MANUAL_COMMENT)
