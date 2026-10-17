@@ -99,32 +99,26 @@ func lockReturnJournal(cfg *Config) (func(), error) {
 func returnSafetyStatus(cfg *Config) map[string]interface{} {
 	blockers := []string{}
 	state, err := loadReturnState(cfg)
-	if err == nil && state != nil && (!validReturnOwner(state) || state.Legacy != nil) {
-		err = fmt.Errorf("已有旧版回流状态缺少资源归属记录；保留现有规则，请人工核对后处理")
-	}
-	if err == nil && state != nil && state.Ownership.Pending {
-		err = fmt.Errorf("上次回流事务未完成；已保留归属记录，需先核对残留资源")
-	}
+	var allocation returnAllocation
 	if err == nil {
-		resources, readErr := readReturnResources()
-		err = readErr
+		var resources *returnResources
+		resources, err = readReturnResources()
 		if err == nil {
-			spec := resolvedSpec{ReturnRoutingSpec: ReturnRoutingSpec{SafetyVersion: 1, Table: 104,
-				Priority: 104, Mark: "0x400000"}, mark: 0x400000}
-			routing, readErr := readMihomoRoutingStrict(cfg.ConfigPath)
-			err = readErr
+			var routing mihomoRouting
+			routing, err = readMihomoRoutingStrict(cfg.ConfigPath)
 			if err == nil {
-				err = checkMihomoConflicts(spec, routing)
-			}
-			if err == nil {
-				err = checkReturnResources(spec, state, resources)
+				allocation, err = selectReturnAllocation(state, resources, routing)
 			}
 		}
 	}
 	if err != nil {
 		blockers = append(blockers, err.Error())
 	}
-	return map[string]interface{}{"version": 1, "ok": len(blockers) == 0, "blockers": blockers}
+	status := map[string]interface{}{"version": 1, "ok": len(blockers) == 0, "blockers": blockers}
+	if err == nil {
+		status["allocation"] = allocation
+	}
+	return status
 }
 
 func ownerTag(owner *returnOwnership) string { return "configflow-return:" + owner.Token }
@@ -556,8 +550,20 @@ func ApplyReturnRouting(cfg *Config, input ReturnRoutingSpec) (map[string]interf
 	if state != nil && (!validReturnOwner(state) || state.Legacy != nil || state.Ownership.Pending) {
 		return nil, fmt.Errorf("已有回流状态缺少有效归属或事务未完成，保留现有规则，请先人工核对")
 	}
-	if _, err = checkedResources(spec, state); err != nil {
+	resources, err := checkedResources(spec, state)
+	if err != nil {
 		return nil, err
+	}
+	routing, err := readMihomoRoutingStrict(cfg.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	allocation, err := selectReturnAllocation(state, resources, routing)
+	if err != nil {
+		return nil, err
+	}
+	if allocation.Table != spec.Table || allocation.Priority != spec.Priority || allocation.Mark != fmt.Sprintf("0x%x", spec.mark) {
+		return nil, fmt.Errorf("回流资源分配已变化，请重新预览后发布（表 %d，优先级 %d，标记 %s）", allocation.Table, allocation.Priority, allocation.Mark)
 	}
 	previous := cloneReturnState(state)
 	if state == nil {
@@ -670,13 +676,9 @@ func reapplyReturnRouting(cfg *Config) {
 		return
 	}
 	if state.Ownership == nil {
-		// State from Agent 1.8.2-1.8.4: migrate only if the host holds exactly
-		// what that version created; the migrated resources are already live.
-		if err = migrateLegacyReturnState(cfg, state); err != nil {
-			log.Printf("return routing: preserved legacy resources, migration refused: %v", err)
-		} else {
-			log.Printf("return routing: migrated legacy state to owned resources")
-		}
+		// Familiar names, comments, and matching content cannot establish ownership.
+		// Keep legacy resources and the original journal untouched at boot.
+		log.Printf("return routing: preserved legacy resources; ownership is missing, automatic migration is disabled")
 		return
 	}
 	if !validReturnOwner(state) || state.Legacy != nil || state.Ownership.Pending {

@@ -14,6 +14,7 @@ managed prefix), never recreated. Conflicting routes are skipped and reported.
 import hashlib
 import ipaddress
 import json
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -21,11 +22,10 @@ from backend.routers.base import RouterState, as_dict, is_managed, managed_comme
 from backend.routers.dhcp_dns import build_dns_report
 from backend.routers.report import _networks
 
-RETURN_MARK = '0x400000'   # avoids mihomo auto-redirect marks 0x2023/0x2024
-RETURN_TABLE = 104
-RETURN_PRIORITY = 104
 MANAGED_RETURN_TABLE = 'configflow_return'
 RETURN_SAFETY_VERSION = 1
+RETURN_ALLOCATION_VERSION = 1
+RETURN_ALLOCATION_FIELDS = ('table', 'priority', 'mark')
 
 STAGE_TITLES = {
     'return_routing': 'mihomo 回流规则',
@@ -47,6 +47,26 @@ def _collapse(values: List[str]) -> List[str]:
     return [str(net) for net in ipaddress.collapse_addresses(_networks(values))]
 
 
+def return_allocation(status: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Validate the Agent-selected resources without choosing a local fallback."""
+    safety = status.get('safety') if isinstance(status, dict) else None
+    allocation = safety.get('allocation') if isinstance(safety, dict) else None
+    if (not isinstance(allocation, dict)
+            or type(allocation.get('version')) is not int
+            or allocation['version'] != RETURN_ALLOCATION_VERSION
+            or type(allocation.get('reused')) is not bool
+            or type(allocation.get('table')) is not int or not 1 <= allocation['table'] <= 252
+            or type(allocation.get('priority')) is not int or not 1 <= allocation['priority'] <= 32765):
+        return None
+    mark = allocation.get('mark')
+    if not isinstance(mark, str) or not re.fullmatch(r'0[xX][0-9a-fA-F]{1,8}', mark):
+        return None
+    number = int(mark, 16)
+    if number == 0 or number & (number - 1):
+        return None
+    return {**allocation, 'mark': f'0x{number:x}'}
+
+
 def return_safety_blockers(status: Dict[str, Any], *, require_safe: bool = True) -> List[str]:
     """Require the Agent's ownership-aware safety contract, never infer it by version text."""
     safety = status.get('safety') if isinstance(status, dict) else None
@@ -58,6 +78,8 @@ def return_safety_blockers(status: Dict[str, Any], *, require_safe: bool = True)
         return ['mihomo Agent 的回流安全检查结果不完整，无法确认规则归属']
     if require_safe and (not safety['ok'] or safety['blockers']):
         return safety['blockers'] or ['mihomo Agent 未确认回流配置可安全使用，停止发布']
+    if require_safe and return_allocation(status) is None:
+        return ['mihomo Agent 未提供有效的回流资源自动分配结果，请先升级 Agent，或关闭自动配置回流后继续发布']
     return []
 
 
@@ -165,7 +187,8 @@ def _return_op(return_routing: Dict[str, Any], spec: Dict[str, Any]):
     if same:
         return []
     added = sorted(set(spec['proxy_dst']) - set((current or {}).get('proxy_dst') or []))
-    parts = [f'应用回流规则（表 inet {MANAGED_RETURN_TABLE}，mark {RETURN_MARK}，路由表 {RETURN_TABLE} → {spec["router_ip"]}）',
+    parts = [f'应用回流规则（表 inet {MANAGED_RETURN_TABLE}，mark {spec["mark"]}，'
+             f'路由表 {spec["table"]} → {spec["router_ip"]}，优先级 {spec["priority"]}）',
              f'标记 {len(spec["proxy_dst"])} 个网段']
     if current and added:
         parts.append(f'新增 {", ".join(added)}')
@@ -230,15 +253,17 @@ def build_plan(router: Dict[str, Any], desired: Dict[str, Any], state: RouterSta
     proxy_cidrs = [entry['cidr'] for entry in desired['proxy_cidrs'] if entry['cidr'] not in skipped]
     return_ops = []
     if manage_return:
-        spec = {'router_ip': upstream, 'proxy_dst': _collapse(proxy_cidrs + exempt), 'mark': RETURN_MARK,
-                'table': RETURN_TABLE, 'priority': RETURN_PRIORITY, 'safety_version': RETURN_SAFETY_VERSION}
+        allocation = return_allocation(return_routing)
+        spec = {'router_ip': upstream, 'proxy_dst': _collapse(proxy_cidrs + exempt),
+                **{key: allocation[key] for key in RETURN_ALLOCATION_FIELDS},
+                'safety_version': RETURN_SAFETY_VERSION}
         return_ops = _return_op(return_routing, spec)
 
     manual = driver is not None and not driver.supports_write
     stages = [
         {'key': 'return_routing', 'title': STAGE_TITLES['return_routing'], 'manual': False, 'ops': return_ops,
          'enabled': manage_return,
-         'note': ('已启用自动配置回流；编号或标记被其他配置占用时停止，不接管已有手工规则。' if manage_return
+         'note': ('已启用自动配置回流；自动选择安全可用的编号和标记，不接管已有手工规则。' if manage_return
                   else '未启用自动配置回流：本次跳过，已有回流规则保留，不新增、修改或删除。')},
         {'key': 'routes', 'title': STAGE_TITLES['routes'], 'manual': manual, 'ops': route_ops},
         {'key': 'nat_bypass', 'title': STAGE_TITLES['nat_bypass'], 'manual': manual, 'ops': nat_ops},

@@ -65,8 +65,8 @@ type returnRoutingState struct {
 	Legacy    *legacyBackup     `json:"legacy,omitempty"`
 	AppliedAt string            `json:"applied_at"`
 	Ownership *returnOwnership  `json:"ownership,omitempty"`
-	// Set once state from Agent 1.8.2-1.8.4 has been migrated to owned
-	// resources; MigratedLegacy keeps that version's backup record for audit.
+	// Retain audit metadata written by Agent 1.8.6. New versions never infer
+	// ownership from legacy names/comments or migrate unowned resources.
 	MigratedAt     string        `json:"migrated_at,omitempty"`
 	MigratedLegacy *legacyBackup `json:"migrated_legacy,omitempty"`
 }
