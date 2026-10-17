@@ -23,6 +23,7 @@ BRANCH = os.environ.get('CONFIGFLOW_UPDATE_BRANCH', 'main')
 STATE = os.path.join(os.environ.get('DATA_DIR', '/data'), '.auto-update')
 BACKEND, HTML, AGENTS = '/app/backend', '/usr/share/nginx/html', '/opt/configflow/static/agents'
 IMAGE_COPY = '/app/.image'  # the image's own code, restored when no build is usable
+IMAGE_TREES = '/app/.image-trees.json'  # source fingerprints of the bundled frontend/Agent
 ARCHES = (('amd64', {}), ('arm64', {}), ('armv7', {'GOARCH': 'arm', 'GOARM': '7'}))
 
 
@@ -37,12 +38,25 @@ def fetch(url, timeout=30):
         return response.read()
 
 
-def tree_hash(path):
-    """Content hash of a source tree, to rebuild only what changed."""
+def _frontend_input(name):
+    # Matches what reaches the image build: .dockerignore drops *.md and dotfiles.
+    return not name.endswith('.md') and not name.startswith('.')
+
+
+def _agent_input(name):
+    return name.endswith('.go') or name in ('go.mod', 'go.sum')
+
+
+def tree_hash(path, include=_frontend_input):
+    """Hash of the files that affect a build, to rebuild only what changed.
+
+    Only build inputs count, so the fingerprint taken from the Docker build
+    context equals the one taken from the GitHub source archive.
+    """
     digest = hashlib.sha256()
     for root, dirs, files in os.walk(path):
-        dirs[:] = sorted(d for d in dirs if d not in ('node_modules', 'dist', '.git'))
-        for name in sorted(files):
+        dirs[:] = sorted(d for d in dirs if d not in ('node_modules', 'dist') and not d.startswith('.'))
+        for name in sorted(n for n in files if include(n)):
             full = os.path.join(root, name)
             digest.update(os.path.relpath(full, path).encode())
             with open(full, 'rb') as handle:
@@ -94,9 +108,26 @@ def download(sha):
     return source
 
 
+def image_trees():
+    try:
+        with open(IMAGE_TREES) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
+
+
+class MissingToolchain(Exception):
+    """A changed component cannot be built here; updating would mix versions."""
+
+
 def build_frontend(source, manifest):
     frontend = os.path.join(source, 'frontend')
     key = tree_hash(frontend)
+    if not shutil.which('npm'):
+        if key != image_trees().get('frontend'):
+            raise MissingToolchain('前端有改动但镜像里没有 npm')
+        manifest['frontend'] = None  # unchanged: the bundled frontend matches
+        return None
     out = os.path.join(STATE, f'frontend-{key[:16]}')
     lock_key = hashlib.sha256(open(os.path.join(frontend, 'package-lock.json'), 'rb').read()).hexdigest()[:16]
     # Node resolves packages by walking up to directories literally named
@@ -120,7 +151,12 @@ def build_frontend(source, manifest):
 
 def build_agents(source, manifest):
     agent = os.path.join(source, 'backend', 'agents', 'go-agent')
-    key = tree_hash(agent)
+    key = tree_hash(agent, _agent_input)
+    if not os.path.exists('/usr/local/go/bin/go'):
+        if key != image_trees().get('agents'):
+            raise MissingToolchain('Agent 有改动但镜像里没有 Go')
+        manifest['agents'] = None  # unchanged: the bundled binaries match
+        return None
     out = os.path.join(STATE, f'agents-{key[:16]}')
     if not os.path.isdir(out):
         log('building Agent binaries')
@@ -198,10 +234,13 @@ def install(manifest):
         text = handle.read()
     with open(version, 'w') as handle:
         handle.write(text.replace('__version__ = "dev"', f'__version__ = "{BRANCH}-{manifest["sha"][:7]}"'))
-    if manifest.get('frontend') and os.path.isdir(manifest['frontend']):
-        replace_dir(manifest['frontend'], HTML)
-    if manifest.get('agents') and os.path.isdir(manifest['agents']):
-        replace_dir(manifest['agents'], AGENTS)
+    # A component without its own build uses the image's copy, never a stale
+    # build left over from an earlier commit.
+    for key, path, saved in (('frontend', HTML, 'html'), ('agents', AGENTS, 'agents')):
+        if manifest.get(key) and os.path.isdir(manifest[key]):
+            replace_dir(manifest[key], path)
+        elif os.path.isdir(os.path.join(IMAGE_COPY, saved)):
+            replace_dir(os.path.join(IMAGE_COPY, saved), path)
     return True
 
 
@@ -219,7 +258,19 @@ def prune(manifest):
                 os.remove(path)
 
 
+def record_image(root):
+    """Build time: fingerprint the sources the image's frontend/Agent were built from."""
+    trees = {'frontend': tree_hash(os.path.join(root, 'frontend')),
+             'agents': tree_hash(os.path.join(root, 'go-agent'), _agent_input)}
+    with open(IMAGE_TREES, 'w') as handle:
+        json.dump(trees, handle)
+    print(f'recorded image source fingerprints: {trees}')
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--record-image':
+        record_image(sys.argv[2])
+        return
     if os.environ.get('CONFIGFLOW_AUTO_UPDATE') != '1':
         return
     os.makedirs(STATE, exist_ok=True)
@@ -240,20 +291,19 @@ def main():
     candidate = dict(manifest)
     try:
         candidate['source'] = download(sha)
-        if shutil.which('npm'):
-            build_frontend(candidate['source'], candidate)
-        else:
-            log('npm not available, keeping the bundled frontend')
-        if os.path.exists('/usr/local/go/bin/go'):
-            build_agents(candidate['source'], candidate)
-        else:
-            log('Go not available, keeping the bundled Agent binaries')
+        build_frontend(candidate['source'], candidate)
+        build_agents(candidate['source'], candidate)
         install_requirements(candidate['source'], candidate)
         candidate['sha'] = sha
         install(candidate)
         save_manifest(candidate)
         prune(candidate)
         log(f'running {sha[:7]} (took {time.time() - started:.0f}s)')
+    except MissingToolchain as error:
+        log(f'skipped {sha[:7]}: {error}; use the autoupdate image to build it. '
+            f'Keeping {manifest.get("sha", "image")[:7]} so backend and frontend stay in step')
+        install(manifest)
+        prune(manifest)
     except Exception as error:  # noqa: BLE001 - fall back, never block startup
         log(f'update failed, keeping {manifest.get("sha", "image")[:7]}: {error}')
         try:

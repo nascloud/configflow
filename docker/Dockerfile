@@ -94,6 +94,11 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY --chmod=755 docker/sub-store-start.sh /usr/local/bin/sub-store-start.sh
 COPY --chmod=755 docker/configflow-start.sh /usr/local/bin/configflow-start.sh
 COPY --chmod=755 docker/auto_update.py /usr/local/bin/configflow-auto-update.py
+# Fingerprint the sources the bundled frontend/Agent came from, so auto-update
+# without a toolchain refuses commits that would mix versions.
+RUN --mount=type=bind,source=frontend,target=/tmp/image-src/frontend \
+    --mount=type=bind,source=backend/agents/go-agent,target=/tmp/image-src/go-agent \
+    python3 /usr/local/bin/configflow-auto-update.py --record-image /tmp/image-src
 
 ENV DATA_DIR=/data TZ=Asia/Shanghai \
     SUB_STORE_BACKEND_API_HOST=127.0.0.1 \
