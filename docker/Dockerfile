@@ -76,6 +76,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # 复制后端源码并替换版本号
 COPY backend/ /app/backend/
 RUN sed -i "s/__version__ = \"dev\"/__version__ = \"${VERSION}\"/" /app/backend/version.py
+# Keep the launcher outside auto-update's replaceable backend source directory.
+# Older cached sources still start even when they do not include startup.py.
+COPY backend/startup.py /usr/local/bin/configflow-python-start.py
 
 # 复制 Go Agent 二进制
 COPY --from=go-builder /dist/ /opt/configflow/static/agents/
