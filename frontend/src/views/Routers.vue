@@ -10,8 +10,8 @@
     </PageHeader>
 
     <p class="mt-0 mb-4 text-[12.5px] leading-relaxed text-muted-foreground">
-      读取主路由上与旁路网关相关的配置（代理路由、NAT 免转换）和 mihomo 主机的回流规则，与当前配置空间计算出的期望状态对比。
-      生成报告不会修改任何设备；「预览发布」列出全部变更，确认后才按「回流规则 → 代理路由 → NAT 免转换」的顺序写入，任一阶段校验失败会逆序回滚。
+      读取主路由的代理路由、NAT 免转换配置，与当前配置空间计算出的期望状态对比。选择 OxiDNS Agent 后可下发 DHCP DNS；自动配置回流默认关闭，开启后才读取和管理 mihomo 主机的回流规则。
+      生成报告不会修改任何设备；「预览发布」列出全部变更，确认后按已启用阶段的顺序写入，失败时按相反顺序尝试撤销，并展示回滚结果。
     </p>
 
     <LoadingRows v-if="loading && !routers.length" :rows="3" />
@@ -94,7 +94,7 @@
       <SectionCard class="mt-4" :title="`差异报告 · ${reportRouter?.name}`" :description="`生成于 ${reportTime}`">
         <template #actions>
           <span :class="['chip', report.in_sync ? 'chip-ok' : 'chip-warn']">
-            {{ report.in_sync ? '已全部同步' : '存在差异' }}
+            {{ report.in_sync ? '已全部同步' : reportSummary.unknown ? '存在待确认项' : '存在差异' }}
           </span>
           <Button size="sm" :disabled="planLoading" @click="openPlan">
             <Loader2 v-if="planLoading" class="size-3.5 animate-spin" />
@@ -103,8 +103,8 @@
           </Button>
         </template>
         <div class="flex flex-wrap gap-2">
-          <span v-for="(count, key) in report.summary" :key="key" :class="['chip', STATUS[key]?.chip || 'chip-acc']">
-            {{ STATUS[key]?.label || key }} <span class="num">{{ count }}</span>
+          <span v-for="(count, key) in reportSummary" :key="key" :class="['chip', statusInfo(key).chip]">
+            {{ statusInfo(key).label }} <span class="num">{{ count }}</span>
           </span>
         </div>
         <dl class="mt-4 mb-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[12.5px]">
@@ -135,7 +135,7 @@
               <tr v-for="item in report.routes.items" :key="item.cidr">
                 <td class="font-mono text-[12px]">{{ item.cidr }}</td>
                 <td class="text-[12px] text-muted-foreground">{{ item.sources.join('、') }}</td>
-                <td><span :class="['chip', STATUS[item.status].chip]">{{ STATUS[item.status].label }}</span></td>
+                <td><span :class="['chip', statusInfo(item.status).chip]">{{ statusInfo(item.status).label }}</span></td>
                 <td class="text-[12px] text-muted-foreground">{{ item.detail || '—' }}</td>
               </tr>
             </tbody>
@@ -143,7 +143,7 @@
         </div>
       </SectionCard>
 
-      <SectionCard class="mt-4" :padded="false" title="NAT 免转换" description="发往代理网段的流量不做源地址转换，mihomo 才能看到真实客户端 IP。">
+      <SectionCard class="mt-4" :padded="false" title="NAT 免转换" description="先判断发往代理网段的流量是否可能受源 NAT 影响；未受影响时无需额外规则，证据不足时标为待确认。">
         <div class="cf-table-wrap">
           <table class="cf-table">
             <thead>
@@ -152,7 +152,7 @@
             <tbody>
               <tr v-for="item in report.nat_bypass.items" :key="item.cidr">
                 <td class="font-mono text-[12px]">{{ item.cidr }}</td>
-                <td><span :class="['chip', STATUS[item.status].chip]">{{ STATUS[item.status].label }}</span></td>
+                <td><span :class="['chip', statusInfo(item.status).chip]">{{ statusInfo(item.status).label }}</span></td>
                 <td class="text-[12px] text-muted-foreground">{{ item.detail || '—' }}</td>
               </tr>
             </tbody>
@@ -164,7 +164,7 @@
         </p>
       </SectionCard>
 
-      <SectionCard class="mt-4" title="回流规则（旁路网关）" description="mihomo 主机上把回包强制送回主路由的连接标记与策略路由。">
+      <SectionCard class="mt-4" title="回流规则（旁路网关）" description="按需管理 mihomo 主机上将回包送回主路由的规则，自动配置默认关闭。">
         <template #actions>
           <StatusDot :tone="returnTone" :label="returnLabel" />
         </template>
@@ -196,6 +196,46 @@
             TUN 网卡：<span class="font-mono">{{ report.return_routing.tun_devices.join(', ') }}</span>
           </p>
         </div>
+      </SectionCard>
+
+      <SectionCard
+        v-if="dhcpDns"
+        class="mt-4"
+        :padded="false"
+        title="DHCP DNS"
+        description="只更新包含所选 mihomo 网关的唯一 DHCP 网段；未关联 OxiDNS Agent 时保留现有 DNS。"
+      >
+        <template #actions>
+          <StatusDot :tone="dhcpDnsStatus.tone" :label="dhcpDnsStatus.label" />
+        </template>
+        <div class="flex flex-col gap-2 px-5 pb-4 text-[12.5px] max-md:px-4">
+          <p v-if="dhcpDns.message" class="m-0 text-muted-foreground">{{ dhcpDns.message }}</p>
+          <p v-if="dhcpDns.target_dns" class="m-0">
+            目标 DNS：<span class="font-mono">{{ dhcpDns.target_dns }}</span>
+          </p>
+          <ul v-if="dhcpDns.blockers.length" class="m-0 list-disc pl-5 text-warning-accent">
+            <li v-for="blocker in dhcpDns.blockers" :key="blocker">{{ blocker }}</li>
+          </ul>
+        </div>
+        <div v-if="dhcpDns.items.length" class="cf-table-wrap">
+          <table class="cf-table min-w-[760px]">
+            <thead>
+              <tr><th>网段</th><th>当前 DNS</th><th>下发 DNS</th><th>状态</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in dhcpDns.items" :key="item.id">
+                <td class="whitespace-nowrap font-mono text-[12px]">{{ item.network }}</td>
+                <td class="whitespace-nowrap font-mono text-[12px]">{{ item.current_dns.length ? item.current_dns.join('、') : '自动/未指定' }}</td>
+                <td class="whitespace-nowrap font-mono text-[12px]">{{ item.desired_dns.length ? item.desired_dns.join('、') : '待确认' }}</td>
+                <td><span :class="['chip', statusInfo(item.status).chip]">{{ statusInfo(item.status).label }}</span></td>
+                <td class="min-w-[240px] whitespace-normal break-words text-[12px] text-muted-foreground">{{ item.detail || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-if="dhcpDns.status !== 'disabled'" class="m-0 px-5 pb-4 text-[12px] leading-relaxed text-muted-foreground max-md:px-4">
+          发布会将 DNS 列表替换为所选服务器，不保留旧备用 DNS。终端在 DHCP 续租或重新联网后获得新 DNS。
+        </p>
       </SectionCard>
 
       <SectionCard
@@ -234,7 +274,7 @@
         <DialogHeader>
           <DialogTitle>发布到 {{ reportRouter?.name }}</DialogTitle>
           <DialogDescription>
-            以下是本次发布会做的全部变更，按顺序执行；每个阶段完成后回读校验，失败时按相反顺序撤销已完成的步骤。
+            以下列出各阶段及本次变更，仅执行已启用的阶段；写入后回读校验，失败时按相反顺序尝试撤销已完成的步骤，结果会列在下方。
           </DialogDescription>
         </DialogHeader>
 
@@ -253,34 +293,24 @@
           </ul>
           <p v-if="!plan.blockers.length && plan.empty" class="m-0 text-muted-foreground">已全部同步，无需发布。</p>
 
-          <ol v-if="!plan.empty" class="m-0 flex list-none flex-col gap-3 p-0">
+          <ol v-if="plan.stages.length" class="m-0 flex list-none flex-col gap-3 p-0">
             <li v-for="(stage, index) in plan.stages" :key="stage.key" class="rounded-md border border-border px-3 py-2.5">
               <div class="flex items-center gap-2">
                 <span class="num text-muted-foreground">{{ index + 1 }}</span>
                 <span class="font-semibold">{{ stage.title }}</span>
-                <span v-if="!stage.ops.length" class="chip chip-ok">无变更</span>
-                <span v-else-if="stage.manual" class="chip chip-sky">需手动导入</span>
+                <span v-if="stage.enabled === false" class="chip">已跳过</span>
+                <span v-else-if="!stage.ops.length" class="chip chip-ok">无变更</span>
                 <span v-else class="chip chip-acc">{{ stage.ops.length }} 项</span>
               </div>
+              <p v-if="stage.note" class="mt-2 mb-0 text-muted-foreground">{{ stage.note }}</p>
               <ul v-if="stage.ops.length" class="mt-2 mb-0 flex list-disc flex-col gap-1 pl-8 text-muted-foreground">
                 <li v-for="op in stage.ops" :key="op.summary">{{ op.summary }}</li>
               </ul>
             </li>
           </ol>
 
-          <div v-if="plan.script" class="flex flex-col gap-1.5">
-            <div class="flex items-center justify-between">
-              <span class="text-muted-foreground">RouterOS 脚本（回流规则由 ConfigFlow 下发，路由器部分请在终端检查后导入）</span>
-              <Button size="sm" variant="outline" @click="copyScript">
-                <Copy class="size-3.5" />
-                复制
-              </Button>
-            </div>
-            <pre class="m-0 max-h-[220px] overflow-auto rounded-md bg-muted px-3 py-2 font-mono text-[11.5px] leading-relaxed">{{ plan.script }}</pre>
-          </div>
-
           <div v-if="releaseResult" class="flex flex-col gap-1.5">
-            <p class="m-0 font-semibold">{{ releaseResult.ok ? '发布完成' : '发布失败，已回滚' }}</p>
+            <p class="m-0 font-semibold">{{ releaseStatus }}</p>
             <ul class="m-0 flex list-none flex-col gap-1 p-0">
               <li v-for="(entry, index) in [...releaseResult.log, ...releaseResult.rollback]" :key="index" class="flex items-start gap-2">
                 <span :class="['chip shrink-0', LOG_STATUS[entry.status]?.chip || 'chip-acc']">{{ LOG_STATUS[entry.status]?.label || entry.status }}</span>
@@ -305,11 +335,11 @@
         <DialogHeader>
           <DialogTitle>{{ editingId ? '编辑路由器' : '添加路由器' }}</DialogTitle>
           <DialogDescription>
-            ConfigFlow 通过路由器的管理接口读取配置，iKuai 发布时也通过它写入（需要管理员账号）。RouterOS 支持 HTTPS（www-ssl）和 HTTP（www，需 7.9+），账号权限可按下方说明设置，变更以脚本形式交给你导入。
+            ConfigFlow 通过路由器的管理接口读取配置，并在确认发布后自动写入、回读校验。iKuai 需要管理员账号；RouterOS 支持 HTTPS（www-ssl）和 HTTP（www，需 7.9+），账号权限可按下方说明设置。
           </DialogDescription>
         </DialogHeader>
 
-        <form class="flex flex-col gap-4" @submit.prevent="submit">
+        <form class="flex min-w-0 flex-col gap-4" @submit.prevent="submit">
           <div class="flex flex-col gap-1.5">
             <Label for="router-name">名称</Label>
             <Input id="router-name" v-model="form.name" class="bg-background/50" maxlength="80" placeholder="例如 主路由" />
@@ -383,6 +413,20 @@
             </Select>
           </div>
           <div class="flex flex-col gap-1.5">
+            <div class="flex min-h-11 items-center justify-between gap-3">
+              <Label for="router-return-routing" class="flex min-h-11 flex-1 items-center">自动配置回流</Label>
+              <Switch
+                id="router-return-routing"
+                :model-value="form.manage_return_routing"
+                aria-describedby="router-return-routing-hint"
+                @update:model-value="value => (form.manage_return_routing = Boolean(value))"
+              />
+            </div>
+            <p id="router-return-routing-hint" class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
+              用于需要将回复经主路由返回的网络，默认关闭。关闭只停止管理，已有回流规则会保留。
+            </p>
+          </div>
+          <div class="flex flex-col gap-1.5">
             <Label>按 IP 路由给 mihomo 的规则集</Label>
             <MultiSelect v-model="form.ip_rule_sets" :options="ruleSetOptions" placeholder="只路由 fake-ip 网段" />
             <p class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
@@ -390,16 +434,19 @@
             </p>
           </div>
           <div class="flex flex-col gap-1.5">
-            <Label for="router-dns">DNS 服务器（OxiDNS Agent）</Label>
+            <Label for="router-dns">DHCP DNS 服务器（OxiDNS Agent）</Label>
             <Select v-model="form.dns_agent_id">
-              <SelectTrigger id="router-dns" class="w-full bg-background/50"><SelectValue placeholder="不关联" /></SelectTrigger>
-              <SelectContent>
+              <SelectTrigger id="router-dns" class="w-full bg-background/50" aria-describedby="router-dns-hint"><SelectValue placeholder="不关联" /></SelectTrigger>
+              <SelectContent class="max-w-[calc(100vw-2rem)]">
                 <SelectItem :value="NONE">不关联</SelectItem>
-                <SelectItem v-for="agent in agentsOf('oxidns')" :key="agent.id" :value="agent.id">
+                <SelectItem v-for="agent in agentsOf('oxidns')" :key="agent.id" :value="agent.id" class="whitespace-normal break-words">
                   {{ agent.name }}（{{ agent.host }}）
                 </SelectItem>
               </SelectContent>
             </Select>
+            <p id="router-dns-hint" class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
+              选择后，将包含所选 mihomo 网关的唯一 DHCP 网段的 DNS 列表替换为此服务器，不保留旧备用 DNS。默认不关联，不修改现有 DNS；终端续租或重新联网后获得新 DNS。
+            </p>
           </div>
         </form>
 
@@ -420,7 +467,6 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import {
   Activity,
   CircleX,
-  Copy,
   GitCompare,
   Loader2,
   Pencil,
@@ -453,7 +499,24 @@ import { agentApi, routerApi, ruleApi } from '@/api'
 import { confirmDanger, notify } from '@/lib/feedback'
 
 type RouterType = 'ikuai' | 'routeros'
-type Status = 'synced' | 'adoptable' | 'conflict' | 'missing' | 'extra'
+type Status = 'synced' | 'adoptable' | 'conflict' | 'missing' | 'extra' | 'not_required' | 'unknown' | 'pending'
+type ReportSummary = Partial<Record<Status, number>>
+type DhcpDnsStatus = 'disabled' | 'synced' | 'pending' | 'unknown'
+
+interface DhcpDnsReport {
+  status: DhcpDnsStatus
+  message: string
+  target_dns: string
+  items: {
+    id: string
+    network: string
+    current_dns: string[]
+    desired_dns: string[]
+    status: Exclude<DhcpDnsStatus, 'disabled'>
+    detail: string
+  }[]
+  blockers: string[]
+}
 
 interface RouterItem {
   id: string
@@ -463,6 +526,7 @@ interface RouterItem {
   username: string
   verify_tls: boolean
   proxy_gateway_agent_id: string
+  manage_return_routing?: boolean
   dns_agent_id: string
   ip_rule_sets?: string[]
   has_password: boolean
@@ -477,31 +541,40 @@ interface AgentItem {
 }
 
 const NONE = '__none__'
-const STATUS: Record<string, { label: string; chip: string }> = {
+const STATUS: Record<Status, { label: string; chip: string }> = {
   synced: { label: '已同步', chip: 'chip-ok' },
   adoptable: { label: '可接管', chip: 'chip-sky' },
   conflict: { label: '冲突', chip: 'chip-bad' },
   missing: { label: '缺失', chip: 'chip-warn' },
-  extra: { label: '多余', chip: 'chip-warn' }
+  extra: { label: '多余', chip: 'chip-warn' },
+  not_required: { label: '无需免转换', chip: 'chip-ok' },
+  unknown: { label: '待确认', chip: 'chip-warn' },
+  pending: { label: '待更新', chip: 'chip-warn' }
 }
+const statusInfo = (status: string) => STATUS[status as Status] || STATUS.unknown
+const DHCP_DNS_STATUS = {
+  disabled: { label: '未关联', tone: 'muted' },
+  synced: { label: '已同步', tone: 'success' },
+  pending: { label: '待更新', tone: 'warning' },
+  unknown: { label: '待确认', tone: 'warning' }
+} as const
 const LOG_STATUS: Record<string, { label: string; chip: string }> = {
   ok: { label: '完成', chip: 'chip-ok' },
   verified: { label: '已校验', chip: 'chip-ok' },
-  manual: { label: '待导入', chip: 'chip-sky' },
   failed: { label: '失败', chip: 'chip-bad' }
 }
 
 interface PlanStage {
   key: string
   title: string
-  manual: boolean
+  enabled?: boolean
+  note?: string
   ops: { kind: string; summary: string }[]
 }
 interface Plan {
   stages: PlanStage[]
   blockers: string[]
   warnings: string[]
-  script: string
   fingerprint: string
   empty: boolean
 }
@@ -522,6 +595,9 @@ const editingHasPassword = ref(false)
 const busyId = ref('')
 const busyAction = ref<'probe' | 'report' | ''>('')
 const report = ref<any>(null)
+const reportSummary = computed(() => (report.value?.summary || {}) as ReportSummary)
+const dhcpDns = computed(() => report.value?.dhcp_dns as DhcpDnsReport | undefined)
+const dhcpDnsStatus = computed(() => DHCP_DNS_STATUS[dhcpDns.value?.status || 'disabled'])
 const reportRouter = ref<RouterItem | null>(null)
 const reportTime = ref('')
 const plan = ref<Plan | null>(null)
@@ -529,6 +605,15 @@ const planVisible = ref(false)
 const planLoading = ref(false)
 const applying = ref(false)
 const releaseResult = ref<ReleaseResult | null>(null)
+let inspectionRevision = 0
+const releaseStatus = computed(() => {
+  const result = releaseResult.value
+  if (!result) return ''
+  if (result.ok) return '发布完成'
+  if (result.rollback.some(entry => entry.status === 'failed')) return '发布失败，回滚未完成'
+  if (result.rollback.length) return '发布失败，已撤销已完成的变更'
+  return '发布失败，请检查下方记录'
+})
 
 const emptyForm = () => ({
   name: '',
@@ -538,6 +623,7 @@ const emptyForm = () => ({
   password: '',
   verify_tls: true,
   proxy_gateway_agent_id: NONE,
+  manage_return_routing: false,
   dns_agent_id: NONE,
   ip_rule_sets: [] as string[]
 })
@@ -558,6 +644,7 @@ const returnTone = computed(() => {
 const returnLabel = computed(() => {
   const state = report.value?.return_routing
   if (!state) return ''
+  if (state.status === 'disabled') return '自动配置已关闭'
   if (state.status === 'unlinked') return '未关联'
   if (state.status === 'offline') return 'Agent 离线'
   if (state.status !== 'ok') return '无法读取'
@@ -603,6 +690,7 @@ const openEdit = (router: RouterItem) => {
     password: '',
     verify_tls: router.verify_tls,
     proxy_gateway_agent_id: router.proxy_gateway_agent_id || NONE,
+    manage_return_routing: router.manage_return_routing === true,
     dns_agent_id: router.dns_agent_id || NONE,
     ip_rule_sets: [...(router.ip_rule_sets || [])]
   })
@@ -611,11 +699,23 @@ const openEdit = (router: RouterItem) => {
   dialogVisible.value = true
 }
 
+const clearInspection = (routerId: string) => {
+  inspectionRevision += 1
+  if (reportRouter.value?.id !== routerId) return
+  report.value = null
+  reportRouter.value = null
+  reportTime.value = ''
+  plan.value = null
+  planVisible.value = false
+  releaseResult.value = null
+}
+
 const submit = async () => {
   if (saving.value) return
   saving.value = true
   const payload = {
     ...form,
+    manage_return_routing: form.manage_return_routing === true,
     proxy_gateway_agent_id: form.proxy_gateway_agent_id === NONE ? '' : form.proxy_gateway_agent_id,
     dns_agent_id: form.dns_agent_id === NONE ? '' : form.dns_agent_id
   }
@@ -624,7 +724,7 @@ const submit = async () => {
     else await routerApi.create(payload)
     notify.success(editingId.value ? '路由器已更新' : '路由器已添加')
     dialogVisible.value = false
-    if (reportRouter.value?.id === editingId.value) report.value = null
+    if (editingId.value) clearInspection(editingId.value)
     await load()
   } catch (error) {
     notify.error(errorMessage(error, '保存失败'))
@@ -637,7 +737,7 @@ const remove = async (router: RouterItem) => {
   if (!(await confirmDanger(`删除路由器「${router.name}」？只删除 ConfigFlow 中的接入记录，不会改动路由器。`))) return
   try {
     await routerApi.remove(router.id)
-    if (reportRouter.value?.id === router.id) report.value = null
+    clearInspection(router.id)
     notify.success('已删除')
     await load()
   } catch (error) {
@@ -661,10 +761,12 @@ const probe = async (router: RouterItem) => {
 }
 
 const loadReport = async (router: RouterItem) => {
+  const revision = inspectionRevision
   busyId.value = router.id
   busyAction.value = 'report'
   try {
     const { data } = await routerApi.report(router.id)
+    if (revision !== inspectionRevision) return
     report.value = data.report
     reportRouter.value = router
     reportTime.value = new Date(data.generated_at).toLocaleString()
@@ -682,9 +784,11 @@ const stageTitle = (key: string) => plan.value?.stages.find(stage => stage.key =
 const openPlan = async () => {
   const router = reportRouter.value
   if (!router) return
+  const revision = inspectionRevision
   planLoading.value = true
   try {
     const { data } = await routerApi.plan(router.id)
+    if (revision !== inspectionRevision || reportRouter.value?.id !== router.id) return
     plan.value = data.plan
     releaseResult.value = null
     planVisible.value = true
@@ -698,28 +802,23 @@ const openPlan = async () => {
 const applyPlan = async () => {
   const router = reportRouter.value
   if (!router || !plan.value || applying.value) return
+  const revision = inspectionRevision
   applying.value = true
   try {
     const { data } = await routerApi.apply(router.id, plan.value.fingerprint)
+    if (revision !== inspectionRevision) return
     releaseResult.value = data.result
-    notify.success('发布完成')
+    if (data.result.ok) notify.success('发布完成')
+    else notify.error('发布失败，请检查发布与回滚记录')
   } catch (error: any) {
+    if (revision !== inspectionRevision) return
     const data = error?.response?.data
     if (data?.result) releaseResult.value = data.result
     else if (data?.plan) plan.value = data.plan    // changed since preview: show the fresh plan
     notify.error(errorMessage(error, '发布失败'))
   } finally {
     applying.value = false
-    await loadReport(router)
-  }
-}
-
-const copyScript = async () => {
-  try {
-    await navigator.clipboard.writeText(plan.value?.script || '')
-    notify.success('已复制')
-  } catch {
-    notify.error('复制失败，请手动选择脚本')
+    if (revision === inspectionRevision) await loadReport(router)
   }
 }
 

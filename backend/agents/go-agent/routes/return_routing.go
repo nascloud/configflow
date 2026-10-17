@@ -95,6 +95,7 @@ func parseFwmarkRules(output string) []fwmarkRule {
 
 func collectReturnRouting(cfg *Config) map[string]interface{} {
 	result := map[string]interface{}{"success": true, "managed": managedReturnStatus(cfg)}
+	result["safety"] = returnSafetyStatus(cfg)
 
 	tablesOut, nftErr := runCommand("nft", "list", "tables")
 	result["nft_available"] = nftErr == nil
@@ -115,7 +116,7 @@ func collectReturnRouting(cfg *Config) map[string]interface{} {
 	result["nft_tables"] = allTables
 	result["return_tables"] = returnTables
 
-	rulesOut, ipErr := runCommand("ip", "rule", "show")
+	rulesOut, ipErr := runCommand("ip", "-N", "-4", "rule", "show")
 	result["iproute_available"] = ipErr == nil
 	rules := []fwmarkRule{}
 	routes := map[string][]string{}
@@ -152,11 +153,13 @@ func collectReturnRouting(cfg *Config) map[string]interface{} {
 }
 
 // ReturnRoutingHandler serves /api/return-routing: GET reports, PUT applies the
-// desired state, DELETE removes managed rules (?restore_legacy=1 restores adopted ones).
+// desired state, DELETE removes only journaled owned resources. Legacy restoration is rejected.
 func ReturnRoutingHandler(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
+			returnRoutingMu.Lock()
+			defer returnRoutingMu.Unlock()
 			JsonResponse(w, http.StatusOK, collectReturnRouting(cfg))
 		case http.MethodPut, http.MethodDelete:
 			returnRoutingMu.Lock()

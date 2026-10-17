@@ -188,7 +188,7 @@ export const generateApi = {
   previewMosdns: (profileId = getActiveProfileId()) => api.post(profilePath(profileId, '/generate/mosdns/preview'), { base_url: getBaseUrl() })
 }
 
-// 上游路由器（只读：探测与差异报告）
+// 上游路由器：接入管理、探测、差异报告与预览确认发布
 export const routerApi = {
   list: () => api.get('/routers'),
   create: (data: unknown) => api.post('/routers', data),

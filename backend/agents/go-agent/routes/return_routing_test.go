@@ -62,7 +62,7 @@ func TestCollectReturnRouting(t *testing.T) {
 			return sampleReturnTable, nil
 		case "nft list table inet mihomo":
 			return sampleMihomoTable, nil
-		case "ip rule show":
+		case "ip -N -4 rule show":
 			return sampleRules, nil
 		case "ip route show table 104":
 			return "default via 192.168.1.1 dev eth0\n192.168.1.0/24 via 192.168.1.1 dev eth0\n", nil

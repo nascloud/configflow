@@ -1,11 +1,14 @@
 """Execute a release plan stage by stage, verify each stage, roll back in reverse on failure."""
 import ipaddress
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from backend.routers.base import RouterError, RouterState, is_managed
+from backend.routers.base import RouterError, RouterRollbackError, RouterState, is_managed
+from backend.routers.dhcp_dns import checked_dns_target, verify_dns
+from backend.routers.plan import RETURN_SAFETY_VERSION, return_safety_blockers
 from backend.routers.report import _networks
+from backend.routers.routeros_nat import assess_nat
 
 
 class ReleaseError(Exception):
@@ -29,14 +32,28 @@ class AgentReturnRouting:
         return self.manager.return_routing_status(self.agent)
 
 
-def _apply(op: Dict[str, Any], driver, agent: AgentReturnRouting) -> Dict[str, Any]:
+def _apply(op: Dict[str, Any], driver, agent: Optional[AgentReturnRouting]) -> Dict[str, Any]:
     kind = op['kind']
+    if kind in {'return_routing_apply', 'return_routing_remove'} and agent is None:
+        raise RouterError('未启用 Agent 回流配置，无法执行回流操作')
     if kind == 'return_routing_apply':
+        spec = op['spec']
+        if (type(spec.get('safety_version')) is not int or spec['safety_version'] != RETURN_SAFETY_VERSION
+                or spec.get('adopt_legacy')):
+            raise RouterError('回流操作缺少安全握手或包含手工规则接管，请重新预览')
+        blockers = return_safety_blockers(agent.status())
+        if blockers:
+            raise RouterError('；'.join(blockers))
         agent.apply(op['spec'])
         if op.get('previous'):
             return {'kind': 'return_routing_apply', 'spec': op['previous'], 'previous': None}
-        return {'kind': 'return_routing_remove', 'restore_legacy': True}
+        return {'kind': 'return_routing_remove', 'restore_legacy': False}
     if kind == 'return_routing_remove':
+        # Occupancy can change after a write. A new Agent can still remove only
+        # its own objects; an old Agent's broad cleanup must never be invoked.
+        blockers = return_safety_blockers(agent.status(), require_safe=False)
+        if blockers:
+            raise RouterError('；'.join(blockers))
         agent.remove(op['restore_legacy'])
         return {}
     return driver.apply(op)
@@ -48,22 +65,45 @@ def _covered(cidr: str, state: RouterState) -> bool:
                for rule in state.nat_bypass)
 
 
+def _return_rule_matches(rule: Dict[str, Any], expected: Dict[str, Any]) -> bool:
+    """iproute2 may print marks in decimal or padded hexadecimal form."""
+    def number(value):
+        if type(value) is int:
+            return value
+        if not isinstance(value, str) or not value:
+            raise ValueError('invalid policy rule number')
+        return int(value, 16 if value.lower().startswith('0x') else 10)
+
+    try:
+        mark, mask = str(rule.get('mark', '')).split('/')
+        return (number(rule.get('priority')) == expected['priority']
+                and number(rule.get('table')) == expected['table']
+                and number(mark) == number(mask) == number(expected['mark']))
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def _verify(stage: str, checks: Dict[str, Any], driver, agent: AgentReturnRouting) -> None:
+    if stage == 'dhcp_dns':
+        verify_dns(checks['dhcp_dns'], driver.read_dhcp_dns())
+        return
     if stage == 'return_routing':
         status = agent.status()
+        blockers = return_safety_blockers(status)
+        if blockers:
+            raise ReleaseError('；'.join(blockers))
         managed = status.get('managed') or {}
         expected = checks['return_routing']
         if not managed.get('table_present'):
             raise ReleaseError('Agent 上没有找到 configflow_return 表')
-        if set((managed.get('spec') or {}).get('proxy_dst') or []) != set(expected['proxy_dst']):
+        actual = managed.get('spec') or {}
+        if set(actual.get('proxy_dst') or []) != set(expected['proxy_dst']):
             raise ReleaseError('Agent 上的回流网段与计划不一致')
-        present = {f'{table.get("family")} {table.get("name")}' for table in status.get('return_tables') or []}
-        leftover = sorted(present & set(expected['adopted']))
-        if leftover:
-            raise ReleaseError(f'手工回流规则 {", ".join(leftover)} 仍然存在')
-        if not any(str(rule.get('priority')) == str((managed.get('spec') or {}).get('priority'))
-                   for rule in status.get('fwmark_rules') or []):
-            raise ReleaseError('没有找到回流策略路由（ip rule）')
+        if any(actual.get(key) != expected[key]
+               for key in ('router_ip', 'mark', 'table', 'priority', 'safety_version')):
+            raise ReleaseError('Agent 上的回流路由或安全握手与计划不一致')
+        if not any(_return_rule_matches(rule, expected) for rule in status.get('fwmark_rules') or []):
+            raise ReleaseError('没有找到与计划一致的回流策略路由（ip rule）')
         return
     state = driver.read_state()
     if stage == 'routes':
@@ -78,6 +118,10 @@ def _verify(stage: str, checks: Dict[str, Any], driver, agent: AgentReturnRoutin
         uncovered = [cidr for cidr in checks['nat_bypass'] if not _covered(cidr, state)]
         if uncovered:
             raise ReleaseError(f'回读校验失败：{", ".join(uncovered)} 没有被受管 NAT 免转换规则覆盖')
+        for check in checks.get('nat_not_required') or []:
+            assessment = assess_nat(check['cidr'], check['gateway'], state)
+            if assessment['status'] != 'not_required':
+                raise ReleaseError(f'回读校验失败：{check["cidr"]} 无法继续确认无需 NAT 免转换。{assessment["detail"]}')
 
 
 def _rollback(done: List[Tuple[str, Dict[str, Any], Dict[str, Any]]], driver, agent) -> List[Dict[str, Any]]:
@@ -93,20 +137,42 @@ def _rollback(done: List[Tuple[str, Dict[str, Any], Dict[str, Any]]], driver, ag
     return results
 
 
-def execute(plan: Dict[str, Any], driver, agent: AgentReturnRouting) -> Dict[str, Any]:
+def execute(plan: Dict[str, Any], driver, agent: Optional[AgentReturnRouting]) -> Dict[str, Any]:
     log: List[Dict[str, Any]] = []
     done: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = []
     record = log.append
 
     current = ''
     try:
+        if plan.get('blockers'):
+            raise ReleaseError('发布计划存在阻止项：' + '；'.join(plan['blockers']))
         for stage in plan['stages']:
             current = stage['key']
+            if stage.get('enabled') is False:
+                if stage['ops']:
+                    raise ReleaseError('未启用的发布阶段包含写入操作，请重新预览')
+                continue
             if not stage['ops']:
+                if current == 'return_routing' and plan.get('checks', {}).get('return_routing'):
+                    _verify(current, plan['checks'], driver, agent)
+                    record({'stage': current, 'summary': '回读确认受管回流配置与占用安全检查通过', 'status': 'verified'})
+                elif current == 'nat_bypass' and plan.get('checks', {}).get('nat_not_required'):
+                    _verify(current, plan['checks'], driver, agent)
+                    record({'stage': current, 'summary': '回读确认无需额外 NAT 免转换', 'status': 'verified'})
+                elif current == 'dhcp_dns' and plan.get('checks', {}).get('dhcp_dns'):
+                    _verify(current, plan['checks'], driver, agent)
+                    record({'stage': current, 'summary': '回读确认 DHCP DNS 与所选服务器一致', 'status': 'verified'})
                 continue
             if stage['manual']:
                 record({'stage': current, 'summary': '需要在路由器上手动导入脚本', 'status': 'manual'})
                 continue
+            if current == 'dhcp_dns':
+                # DNS can start directing clients to proxy destinations as soon
+                # as a lease renews. Recheck its scope and forwarding prerequisites
+                # immediately before advertising it, including unchanged routes.
+                _verify('routes', plan['checks'], driver, agent)
+                _verify('nat_bypass', plan['checks'], driver, agent)
+                checked_dns_target(plan['checks']['dhcp_dns'], driver.read_dhcp_dns())
             for op in stage['ops']:
                 undo = _apply(op, driver, agent)
                 done.append((current, op, undo))
@@ -115,5 +181,9 @@ def execute(plan: Dict[str, Any], driver, agent: AgentReturnRouting) -> Dict[str
             record({'stage': current, 'summary': '回读校验通过', 'status': 'verified'})
     except (ReleaseError, RouterError, RuntimeError, requests.RequestException) as error:
         record({'stage': current, 'summary': str(error) or error.__class__.__name__, 'status': 'failed'})
-        return {'ok': False, 'failed_stage': current, 'log': log, 'rollback': _rollback(done, driver, agent)}
+        rollback = []
+        if isinstance(error, RouterRollbackError):
+            rollback.append({'stage': current, 'summary': str(error), 'status': 'failed'})
+        rollback.extend(_rollback(done, driver, agent))
+        return {'ok': False, 'failed_stage': current, 'log': log, 'rollback': rollback}
     return {'ok': True, 'log': log, 'rollback': []}

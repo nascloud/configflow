@@ -1,4 +1,4 @@
-"""Router releases (P1): iKuai writes, release plan, staged execution with rollback, API."""
+"""Router releases: writable drivers, release plans, staged execution with rollback, API."""
 import copy
 
 from backend.routers.ikuai import IKuaiDriver, decode_value, encode_value
@@ -70,10 +70,9 @@ DESIRED = {'fake_ip_range': '198.18.0.0/16', 'proxy_gateway': GATEWAY, 'warnings
            'proxy_cidrs': [{'cidr': '91.108.0.0/16', 'sources': ['Telegram']},
                            {'cidr': '149.154.160.0/20', 'sources': ['Telegram']},
                            {'cidr': '198.18.0.0/16', 'sources': ['fake-ip']}]}
-LEGACY_STATUS = {'status': 'ok', 'managed': None,
-                 'return_tables': [{'family': 'inet', 'name': 'mihomo_return', 'marks': ['0x00400000']}],
-                 'fwmark_rules': [{'priority': '104', 'mark': '0x400000/0x400000', 'table': '104'}]}
-ROUTER = {'id': 'r1', 'type': 'ikuai', 'endpoint': 'http://10.0.0.1'}
+SAFE_RETURN_STATUS = {'status': 'ok', 'managed': None, 'return_tables': [], 'fwmark_rules': [],
+                      'safety': {'version': 1, 'ok': True, 'blockers': []}}
+ROUTER = {'id': 'r1', 'type': 'ikuai', 'endpoint': 'http://10.0.0.1', 'manage_return_routing': True}
 
 
 class FakeAgent:
@@ -86,15 +85,25 @@ class FakeAgent:
         self.calls.append(('apply', spec))
         if self.fail_apply:
             raise RuntimeError('缺少 nft（nftables），无法管理回流规则')
-        saved = {key: value for key, value in spec.items() if key != 'adopt_legacy'}
+        assert spec['safety_version'] == 1 and not spec.get('adopt_legacy')
         self.state['return_tables'] = [table for table in self.state['return_tables']
-                                       if f'{table["family"]} {table["name"]}' not in spec.get('adopt_legacy', [])]
-        self.state['managed'] = {'spec': saved, 'table_present': True}
+                                       if table['name'] != 'configflow_return']
+        self.state['return_tables'].append({'family': 'inet', 'name': 'configflow_return', 'marks': [spec['mark']]})
+        self.state['fwmark_rules'] = [rule for rule in self.state['fwmark_rules']
+                                      if str(rule['priority']) != str(spec['priority'])]
+        self.state['fwmark_rules'].append({'priority': str(spec['priority']),
+                                          'mark': spec['mark'] + '/' + spec['mark'], 'table': str(spec['table'])})
+        self.state['managed'] = {'spec': copy.deepcopy(spec), 'table_present': True}
         return {'success': True}
 
     def remove(self, restore_legacy):
         self.calls.append(('remove', restore_legacy))
-        self.state = copy.deepcopy(LEGACY_STATUS)
+        assert restore_legacy is False
+        self.state['managed'] = None
+        self.state['return_tables'] = [table for table in self.state['return_tables']
+                                       if table['name'] != 'configflow_return']
+        self.state['fwmark_rules'] = [rule for rule in self.state['fwmark_rules']
+                                      if rule != {'priority': '104', 'mark': '0x400000/0x400000', 'table': '104'}]
         return {'success': True}
 
     def status(self):
@@ -107,7 +116,7 @@ def _driver(session):
     return driver
 
 
-def _plan(driver, status=LEGACY_STATUS, desired=DESIRED):
+def _plan(driver, status=SAFE_RETURN_STATUS, desired=DESIRED):
     state = driver.read_state()
     return build_plan(ROUTER, desired, state, build_report(desired, state), status, driver)
 
@@ -130,7 +139,7 @@ def test_plan_for_home_setup_adopts_and_fills_gaps():
     # NAT_1 also exempts 185.76.151.0/24, so it must keep getting return marks.
     assert agent_op['spec'] == {'router_ip': '10.0.0.1', 'mark': '0x400000', 'table': 104, 'priority': 104,
                                 'proxy_dst': ['91.108.0.0/16', '149.154.160.0/20', '185.76.151.0/24', '198.18.0.0/16'],
-                                'adopt_legacy': ['inet mihomo_return']}
+                                'safety_version': 1}
     assert agent_op['previous'] is None
 
     routes = [(op['kind'], op.get('cidr'), op.get('comment')) for op in stages['routes']]
@@ -160,7 +169,7 @@ def test_plan_skips_conflicts_and_blocks_without_agent():
 def test_execute_applies_in_order_and_verifies():
     session = StatefulIKuai(HOME_ROUTES, HOME_NATS)
     driver = _driver(session)
-    agent = FakeAgent(LEGACY_STATUS)
+    agent = FakeAgent(SAFE_RETURN_STATUS)
     plan = _plan(driver)
     result = execute(plan, driver, agent)
     assert result['ok'], result
@@ -189,12 +198,12 @@ def test_execute_applies_in_order_and_verifies():
 def test_execute_failure_rolls_back_in_reverse():
     session = StatefulIKuai(HOME_ROUTES, HOME_NATS, fail=('nat_rule', 'edit'))
     driver = _driver(session)
-    agent = FakeAgent(LEGACY_STATUS)
+    agent = FakeAgent(SAFE_RETURN_STATUS)
     result = execute(_plan(driver), driver, agent)
     assert not result['ok'] and result['failed_stage'] == 'nat_bypass'
     assert all(entry['status'] == 'ok' for entry in result['rollback'])
     assert [entry['stage'] for entry in result['rollback']] == ['routes'] * 3 + ['return_routing']
-    assert agent.calls[-1] == ('remove', True)          # restore the adopted manual rules
+    assert agent.calls[-1] == ('remove', False)          # remove only this release's owned rules
     routes = {(row['dst_addr'], row['comment']) for row in session.rows['static_rt']}
     assert routes == {(row['dst_addr'], row['comment']) for row in HOME_ROUTES}
 
@@ -202,7 +211,7 @@ def test_execute_failure_rolls_back_in_reverse():
 def test_execute_stops_before_router_when_agent_fails():
     session = StatefulIKuai(HOME_ROUTES, HOME_NATS)
     driver = _driver(session)
-    result = execute(_plan(driver), driver, FakeAgent(LEGACY_STATUS, fail_apply=True))
+    result = execute(_plan(driver), driver, FakeAgent(SAFE_RETURN_STATUS, fail_apply=True))
     assert not result['ok'] and result['failed_stage'] == 'return_routing'
     assert session.writes == [] and result['rollback'] == []
 
@@ -219,31 +228,27 @@ class FakeROS(RouterOSDriver):
         pass
 
 
-def test_routeros_router_stages_are_manual_script():
+def test_routeros_router_stages_are_automatic():
     driver = FakeROS()
     state = driver.read_state()
     plan = build_plan({**ROUTER, 'type': 'routeros', 'endpoint': 'https://10.0.0.1'}, DESIRED, state,
-                      build_report(DESIRED, state), LEGACY_STATUS, driver)
+                      build_report(DESIRED, state), SAFE_RETURN_STATUS, driver)
     manual = {stage['key']: stage['manual'] for stage in plan['stages']}
-    assert manual == {'return_routing': False, 'routes': True, 'nat_bypass': True}
-    assert '/ip route add dst-address=91.108.0.0/16 gateway=10.0.0.4 comment="cf-Telegram"' in plan['script']
-    assert 'src-address-list=cf-nat-src dst-address=198.18.0.0/16' in plan['script']
-    assert '/ip firewall address-list add list=cf-nat-src address=10.0.0.1-10.0.0.3' in plan['script']
-
-    agent = FakeAgent(LEGACY_STATUS)
-    result = execute(plan, driver, agent)
-    assert result['ok'] and [entry['status'] for entry in result['log']] == ['ok', 'verified', 'manual', 'manual']
+    assert manual == {'return_routing': False, 'routes': False, 'nat_bypass': False, 'dhcp_dns': False}
+    assert plan['script'] == ''
+    assert all(stage['ops'] for stage in plan['stages'] if stage.get('enabled') is not False)
 
 
 def test_router_plan_and_apply_api(authenticated_app, monkeypatch):  # noqa: F811
     client, _, agents, admin, _ = authenticated_app
     router_id = client.post('/api/routers', headers=admin, json={
         'name': '主路由', 'type': 'ikuai', 'endpoint': 'http://10.0.0.1', 'username': 'admin',
-        'password': 'pw', 'proxy_gateway_agent_id': agents[0]['id']}).get_json()['router']['id']
+        'password': 'pw', 'proxy_gateway_agent_id': agents[0]['id'],
+        'manage_return_routing': True}).get_json()['router']['id']
 
     from backend.routes import routers as routes_module
     session = StatefulIKuai(HOME_ROUTES, HOME_NATS)
-    agent = FakeAgent(LEGACY_STATUS)
+    agent = FakeAgent(SAFE_RETURN_STATUS)
     monkeypatch.setitem(routes_module.DRIVERS, 'ikuai', lambda *args, **kwargs: _driver(session))
     monkeypatch.setattr(routes_module, 'compute_desired', lambda *args, **kwargs: DESIRED)
     monkeypatch.setattr(routes_module, '_return_routing', lambda record: {**agent.status(), 'status': 'ok'})

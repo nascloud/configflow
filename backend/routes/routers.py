@@ -8,6 +8,7 @@ from backend.common.auth import require_auth
 from backend.common.config import get_config, save_config
 from backend.routers.base import RouterError, as_dict
 from backend.routers.desired import compute_desired
+from backend.routers.dhcp_dns import dns_agent_settings
 from backend.routers.ikuai import IKuaiDriver
 from backend.routers.plan import build_plan
 from backend.routers.release import AgentReturnRouting, execute
@@ -107,11 +108,24 @@ def probe_router(router_id):
 def _inspect(config, router, driver):
     """Desired state, router state, drift report and Agent return-routing state."""
     gateway_agent = _agent(router.get('proxy_gateway_agent_id'))
-    desired = compute_desired(config, gateway_agent.get('host') if gateway_agent else None,
-                              router.get('ip_rule_sets') or [])
+    desired = dict(compute_desired(config, gateway_agent.get('host') if gateway_agent else None,
+                                  router.get('ip_rule_sets') or []))
+    dns_id = router.get('dns_agent_id') or ''
+    desired.update(dns_agent_settings(dns_id, _agent(dns_id) if dns_id else None))
     state = driver.read_state()
+    if dns_id and not desired['dns_error']:
+        try:
+            state.dhcp_dns = driver.read_dhcp_dns()
+        except RouterError as error:
+            desired['dns_error'] = f'无法读取 DHCP DNS 配置：{error}'
     report = build_report(desired, state)
-    report['return_routing'] = _return_routing(gateway_agent)
+    if router.get('manage_return_routing') is True:
+        report['return_routing'] = _return_routing(gateway_agent)
+    else:
+        report['return_routing'] = {
+            'status': 'disabled',
+            'message': '未启用自动配置回流；本次不读取或修改主机回流配置，已有规则保留。',
+        }
     return gateway_agent, desired, state, report
 
 
@@ -175,8 +189,11 @@ def router_apply(router_id):
                             'plan': plan}), 409
         if plan['empty']:
             return jsonify({'success': True, 'result': {'ok': True, 'log': [], 'rollback': []}, 'plan': plan})
-        from backend.common.agent_manager import get_agent_manager
-        result = execute(plan, driver, AgentReturnRouting(get_agent_manager(), gateway_agent))
+        agent_client = None
+        if router.get('manage_return_routing') is True:
+            from backend.common.agent_manager import get_agent_manager
+            agent_client = AgentReturnRouting(get_agent_manager(), gateway_agent)
+        result = execute(plan, driver, agent_client)
     except RouterError as error:
         return jsonify({'success': False, 'message': str(error)}), 502
     finally:
@@ -189,7 +206,11 @@ def router_apply(router_id):
             item['last_release'] = {'at': _now(), 'ok': result['ok'], 'fingerprint': plan['fingerprint'],
                                     'failed_stage': result.get('failed_stage', '')}
     _save_items(config, items)
-    message = '' if result['ok'] else f'阶段「{result["failed_stage"]}」失败，已按逆序回滚'
+    message = ''
+    if not result['ok']:
+        rollback_failed = any(item['status'] == 'failed' for item in result['rollback'])
+        detail = '回滚未完成，请检查发布记录' if rollback_failed else '已按逆序撤销已完成的变更'
+        message = f'阶段「{result["failed_stage"]}」失败，{detail}'
     return jsonify({'success': result['ok'], 'result': result, 'plan': plan, 'message': message}), \
         200 if result['ok'] else 502
 

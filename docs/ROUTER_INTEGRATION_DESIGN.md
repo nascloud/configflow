@@ -1,214 +1,231 @@
-# 设计草案：ConfigFlow 接入上游软路由（RouterOS / iKuai）
+# ConfigFlow 接入上游软路由（RouterOS / iKuai）
 
-状态：草案，待评审。
+状态：P0 接入与差异报告、P1 分阶段发布及 DHCP DNS 下发已实现。本文以当前实现为准；未实现的能力列在第 9 节。
 
-## 1. 背景与目标
+## 1. 目标与范围
 
-旁路网关方案（mihomo fake-ip + OxiDNS）真正生效，依赖主路由上的一组配置：
+旁路网关方案（mihomo fake-ip + OxiDNS）依赖主路由把代理网段送往 mihomo，并让这些流量不做源地址转换。部分网络还需要 mihomo 主机的回流规则，把经主路由转发的连接回包送回主路由；每台路由器可以单独开启“自动配置回流”，RouterOS 和 iKuai 都默认关闭。
 
-| 主路由配置 | 作用 | 现状 |
-|---|---|---|
-| 静态/策略路由：fake-ip 网段、Telegram 等直连 IP 段 → mihomo | 把代理流量导入 mihomo | 手工维护，规则集变化不会同步 |
-| NAT 免转换：发往上述网段的流量不做 SNAT | mihomo 看到真实客户端 IP（回流） | 手工维护，且必须与 mihomo 侧回流规则同时生效 |
-| DHCP 下发 DNS / 53 端口劫持 → OxiDNS | 客户端统一使用 OxiDNS | 手工维护；劫持未排除 DNS 服务器自身时会形成查询环路 |
-| DHCP 静态分配 | 固定 OxiDNS / mihomo 地址 | 手工维护；替换主机时容易漏改 |
+ConfigFlow 根据当前配置空间、显式选择的规则集和 mihomo Agent 计算期望状态，读取设备配置生成差异报告，预览确认后执行一次整体发布。
 
-这些配置分散在路由器上，与 ConfigFlow 里的策略、规则集、Agent 拓扑没有关联，出问题时难以定位，也无法回滚。
-
-**目标**：把主路由当作 ConfigFlow 的一个“网关目标”，由 ConfigFlow 根据配置空间和 Agent 拓扑计算主路由**应有的状态**，预览差异后再下发，并支持漂移检测和回滚。
-
-**非目标**：
-
-- 不做通用路由器管理面板（WAN、无线、PPPoE、防火墙全量规则等不管）。
-- 不碰 ConfigFlow 没有创建的对象。
-- 不在 iKuai 上安装任何程序（闭源系统，只走 HTTP API）。
+当前管理范围是 **代理静态路由、NAT 免转换、选择 OxiDNS 后的 DHCP DNS 下发，以及显式开启后管理的 mihomo 主机回流规则**。不管理 WAN、无线、PPPoE 或防火墙全量配置。与期望状态一致的手工对象可以在预览后接管；无关的手工路由保留不动。
 
 ## 2. 接入方式
 
-| 方式 | RouterOS | iKuai | 结论 |
-|---|---|---|---|
-| 服务端直连路由器 API | v7 REST（`/rest/...`，HTTP/HTTPS + Basic）或 API-SSL 8729 | Web 管理接口 `/Action/login`、`/Action/call` | **采用** |
-| 路由器上跑 Agent | 可用 container，但资源和兼容性差 | 不可行 | 不采用 |
-| 下发脚本由用户手动执行 | `.rsc` 导入 | 无对应机制 | 仅作为降级：导出 RouterOS 脚本 |
+| 项目 | RouterOS | iKuai |
+|---|---|---|
+| 支持版本 | 7.1+ | 仅 4.x，3.x 拒绝接入 |
+| 连接方式 | REST `/rest/...`，HTTP/HTTPS + Basic 认证 | Web 管理接口 `/Action/login`、`/Action/call` |
+| 账号要求 | HTTPS 启用 `www-ssl`，HTTP（7.9+）启用 `www`；用户具有 `api`、`rest-api`、`read`、`write` 权限 | 管理员账号 |
+| 读取 | 版本、静态路由、NAT 免转换、地址列表、DHCP 网段与 DNS | 版本、静态路由、NAT 免转换及关联地址对象、DHCP 网段与 DNS |
+| 写入 | REST 自动增删改，阶段完成后回读校验 | Web 管理接口自动增删改，阶段完成后回读校验 |
+| 失败处理 | 逆序执行本次操作的撤销动作，记录回滚结果 | 同左 |
 
-服务端用驱动（driver）抽象不同路由器：
+两种路由器都由 ConfigFlow 服务端直连，不在路由器上安装 Agent。RouterOS 发布不再要求用户复制或导入 `.rsc` 脚本；当前没有 API-SSL 回退通道，也没有脚本导出入口。连接探测成功只证明对应读取请求可用，不等于已经验证写权限或完整流量路径。
 
-```
-RouterDriver
-  probe()            -> 版本、型号、接口列表、能力集
-  read(kind)         -> 当前对象（只返回带 ConfigFlow 标记的对象 + 只读引用）
-  apply(plan)        -> 按计划增删改，返回逐项结果
-  snapshot()/restore(snapshot)
-```
+## 3. 数据模型与期望状态
 
-- `RouterOSDriver`：优先 REST（7.1+），不可用时退回 API-SSL；可选生成 `.rsc` 导出。
-- `IKuaiDriver`：**只支持 iKuai 4.x**（响应在 `results` 下；部分 func 对普通会话返回 1003）。`probe()` 检测到 3.x 时直接拒绝接入并提示升级。iKuai 的 API 没有公开文档，必须以 `probe()` 实测能力为准，不支持的功能在界面上标为不可用，不能盲写。
-
-## 3. 数据模型
-
-配置空间下新增 `routers` 资源：
+路由器记录保存在当前配置空间的 `routers.items` 下，可编辑字段为：
 
 ```yaml
 routers:
-  - id: rt_xxx
-    name: 主路由
-    type: ikuai | routeros
-    endpoint: https://192.168.1.1
-    auth: { username: ..., secret_ref: ... }   # 凭据加密存储，导出时脱敏
-    lan_interface: lan1 | bridge
-    managed_prefix: "cf"                        # 写入对象的 comment/tagname 前缀，用于识别归属
-    topology:
-      proxy_gateway: <mihomo Agent ID>          # 地址从 Agent 记录取，不手填
-      dns_server: <oxidns Agent ID>
-    features:                                   # 每项可单独开关
-      proxy_routes: true
-      nat_bypass: true
-      dns_redirect: false
-      dhcp_bindings: false
-    failover: fail_closed | fail_open           # 代理网关离线时的处理（见 7.2）
+  items:
+    - id: router_xxx
+      name: 主路由
+      type: routeros              # 或 ikuai
+      endpoint: https://192.168.1.1
+      username: configflow
+      password: ...
+      verify_tls: true
+      proxy_gateway_agent_id: ... # mihomo Agent
+      manage_return_routing: false # 自动配置回流，默认关闭
+      dns_agent_id: ...           # 所选 OxiDNS Agent；为空时不管理 DHCP DNS
+      ip_rule_sets: [...]         # 显式选择需要按 IP 路由的规则集 ID
 ```
 
-**期望状态的来源**（不让用户重复填写）：
+编辑时密码留空保持不变。前端接口返回 `has_password`，不返回密码；脱敏导出移除密码，并隐藏用户名与管理地址。当前尚未实现独立的 `secret_ref` 凭据模型。
 
-| 期望对象 | 数据来源 |
+`manage_return_routing` 是每台路由器的独立布尔设置。新建默认为 `false`，旧记录缺少该字段时也按 `false` 处理，读取接口补齐默认值；前端保存时显式提交布尔值。关闭只停止 ConfigFlow 对回流规则的管理，不删除或停用之前已有的规则。
+
+| 期望对象 | 当前来源 |
 |---|---|
-| 代理网段 | mihomo `fake-ip-range` + 规则集里需要按 IP 进 mihomo 的 IP-CIDR（如 Telegram） |
-| 下一跳 | 拓扑中 mihomo Agent 的 host |
-| NAT 免转换 | 代理网段 × LAN 网段（排除网关自身） |
-| DNS 劫持目标 | 拓扑中 OxiDNS Agent 的 host，**自动排除** OxiDNS、mihomo 和路由器自身 |
-| DHCP 绑定 | Agent host + 探测到的 MAC |
+| 代理网段 | mihomo `fake-ip-range` 始终包含；再加入用户显式勾选规则集中的 IPv4 CIDR，并合并网段 |
+| 代理下一跳 | 所关联 mihomo Agent 的 host |
+| 新增 NAT 免转换的源范围 | mihomo host 所在 `/24` 的可用地址，排除 mihomo 自己；当前不是自动发现全部 LAN 网段 |
+| NAT 免转换的目的范围 | 需要代理且被判为可能受源 NAT 影响的网段，排除本次路由冲突而跳过的项；RouterOS 对无需免转换的网段不新增规则 |
+| DHCP DNS（关联 OxiDNS 时） | 所选 OxiDNS Agent 的 IPv4 host，替换包含所选 mihomo 网关的唯一 DHCP 网段的 DNS 列表 |
+| 回流标记的目的范围（开启时） | 期望代理网段与发布后已有 NAT 免转换目的网段的并集 |
+| 回流下一跳（开启时） | 路由器管理地址中的 IPv4 地址 |
 
-## 4. 功能与两种路由器的映射
+始终需要关联 mihomo Agent 配置，以获取代理路由下一跳和 DHCP 目标网段。自动配置回流关闭时，不读取 mihomo Agent 回流状态，不要求该 Agent 在线，也不要求路由器管理地址本身是 IPv4；路由器接口仍须可连接。开启后，路由器管理地址不是 IPv4、mihomo Agent 离线或无法读取回流状态会阻止发布。关联 OxiDNS 后，DHCP DNS 下发另要求所选 OxiDNS Agent 有效、在线且 host 为 IPv4。`dns_agent_id` 不触发 DNS 劫持或 DHCP 静态绑定写入。
 
-| 功能 | RouterOS | iKuai |
-|---|---|---|
-| 代理网段集合 | `/ip firewall address-list`（list=`cf-proxy`） | 路由对象（IP 分组） |
-| 代理路由 | 少量网段：`/ip route dst-address=... gateway=<mihomo>`；网段多时：mangle `mark-routing` + 独立 routing table | `static_rt`（逐条）或分流策略 + 路由对象 |
-| NAT 免转换（回流） | `/ip firewall nat` srcnat `dst-address-list=cf-proxy action=accept`，**必须排在 masquerade 之前** | `nat_rule` 动作“过滤” |
-| DNS 劫持 | dstnat 53 → OxiDNS，`src-address` 排除 DNS 服务器自身 | `nat_rule` DNAT 53，源地址用排除自身的 IP 分组 |
-| DHCP DNS 下发 | `/ip dhcp-server network dns-server` | DHCP 服务端 DNS 字段 |
-| DHCP 静态绑定 | `/ip dhcp-server lease` | `dhcp_static` |
-| 动态地址列表（按 DNS 结果） | 已有：OxiDNS `ros_address_list` / `ros_route` 插件 | 无对应能力 |
+## 4. 路由器写入
 
-RouterOS 侧做完后，可以直接在设置页关联 OxiDNS 的 RouterOS 插件（复用同一份 RouterOS 连接配置），实现“按域名解析结果动态加地址列表”，不必再分别填凭据。
+### 4.1 代理路由
 
-## 5. mihomo Agent 管理回流规则
+- 缺失的期望网段：新增静态路由，下一跳指向 mihomo。
+- 已存在、启用且下一跳正确的手工路由：修改备注为 ConfigFlow 标记，接管原对象，不删除重建。
+- 不再需要的受管路由：删除。
+- 同网段的下一跳不符或其他冲突：提示并跳过该网段，不直接覆盖。无关手工路由保持不变。
 
-NAT 免转换只有在 mihomo 主机能把回包送回主路由时才安全，两者必须作为一次整体发布。回流规则由 mihomo 的 Go Agent 负责，ConfigFlow 只下发期望状态。
+RouterOS 当前使用 `/ip/route` 静态路由；尚未按网段数量切换到 mangle 或独立 routing table。iKuai 使用 `static_rt`。
 
-### 5.1 期望状态（由服务端计算后随发布包下发）
+### 4.2 NAT 免转换
 
-```yaml
-return_routing:
-  enabled: true
-  lan_interface: eth0          # Agent 探测默认路由所在网卡，可覆盖
-  router_ip: 192.168.1.1       # 来自路由器接入配置
-  lan_cidr: 192.168.1.0/24
-  proxy_dst: [198.18.0.0/16, 91.108.4.0/22, ...]   # 与主路由“代理网段”同一份数据
-  mark: 0x400000               # 默认避开 mihomo auto-redirect 的 0x2023/0x2024
-  table: 104
-  priority: 104
-```
+RouterOS 使用 `/ip/firewall/nat` 的 `chain=srcnat action=accept`；新增规则放在源 NAT 转换规则之前。iKuai 使用 `nat_rule` 的过滤动作。
 
-### 5.2 Agent 实现
+**没有显式免转换规则，不等于需要补规则。** RouterOS 会结合代理下一跳的出口和当前源 NAT 规则判断：例如 mihomo 经 `lan4` 到达，而现有 masquerade 仅匹配 `pppoe-out1` 或不含 `lan4` 的 `WAN` 接口列表时，旁路流量本身不会被这些规则转换。
 
-- **按 mihomo 运行模式生成规则**：Agent 读取当前生效的 mihomo 配置判断模式。
-  - TUN（`auto-route`/`auto-redirect`）：TCP 回包在 output 恢复标记；UDP 回包来自 TUN 网卡（名称取 `tun.device`，默认 `Meta`），在 prerouting 恢复标记。
-  - tproxy / redir：只需 output 恢复标记，与社区方案一致。
-- **独立 nft 表** `inet configflow_return`：整表原子替换（`destroy table` + 新表一次提交），不触碰 mihomo 自己的表；不启用发行版的 nftables 服务（它会 `flush ruleset`）。
-- **策略路由**：路由表 `104`（默认网关与本网段都指向主路由）+ `ip rule fwmark <mark>/<mark> lookup 104 priority 104`；同时关闭 `send_redirects`。
-- **持久化**：Agent 启动时按已发布的期望状态自动重新应用（不再依赖 `/etc/local.d` 之类的启动脚本）；mihomo 重启后检查规则仍在，缺失则补回。
-- **依赖检查**：缺少 `nft` / `ip`（iproute2）时在预检阶段报错，不进入发布。
-- **mark 冲突检查**：mark 与 mihomo 配置中的 `routing-mark`、`auto-redirect-*-mark` 有位重叠时拒绝发布。
+| NAT 报告状态 | 含义与发布行为 |
+|---|---|
+| `synced` / `adoptable` | 已有显式免转换规则覆盖，分别为已受管或可接管；保留原有处理方式 |
+| `not_required`（无需免转换） | 没有潜在源 NAT 转换规则，或现有转换规则均可按出口排除；计入同步状态，不生成 NAT 写入操作 |
+| `missing`（缺失） | 普通源 NAT 转换规则可能匹配且没有相应免转换规则，按计划新增或扩充 |
+| `unknown`（待确认） | 出口或源 NAT 匹配证据不足；报告说明原因，不自动新增，并通过计划阻塞项禁止误下发 |
 
-### 5.3 健康检查与回滚
+这是保守的配置判定，不是完整防火墙模拟，重点判断转换动作与出口条件。普通源 NAT 规则无法按出口排除时，即使带有源地址、端口或协议限制，也按“可能匹配”处理，不断言所有客户端都会被转换。复杂接口列表、策略路由或 VRF、出口不明确，以及无法排除的未知 NAT 动作会保留“待确认”；不假定 mangle、递归下一跳或自定义规则链都能完整推演。没有任何潜在源 NAT 转换规则时，也无需新增免转换规则。无需免转换不影响代理路由，回流是否管理由独立开关决定。
 
-- 应用后：nft 表与策略路由存在；通过 fake-ip 访问探测地址成功。
-- 失败：删除 `configflow_return` 表、路由表 104 与 ip rule，恢复到发布前状态（发布前不存在则全部删除）。
-- 回流规则单独存在时不改变行为（主路由仍做 SNAT，回包本来就发往主路由），因此它可以先于主路由变更上线，作为整体发布的第一阶段。
+已覆盖目的网段的手工免转换规则可以接管。需要增加目的网段时，优先扩充已受管或本次接管的规则；没有可扩充的规则时才新增。
 
-## 6. 下发流程
+**RouterOS 扩充规则时保留原有限制**：读取原规则的实际可写配置，为新增目的 CIDR 创建规则，仅替换目的地址、移除旧的 `dst-address-list` 引用，并使用受管备注。原有 `src-address`、`src-address-list`（包括否定条件）、接口、协议、端口及其他匹配限制保留；不修改可能被其他规则引用的共享地址列表。接管原规则只修改备注。新建规则的源 IP 范围转成 CIDR 后直接写入规则，不创建共享 `cf-nat-src` 地址列表。
 
-```
-计算期望状态 → 读取当前状态 → 生成差异（新增 / 修改 / 删除 / 冲突）
-   → 预览确认 → 快照 → 按依赖顺序分阶段应用 → 每阶段健康检查 → 失败自动回滚
-```
+同一规则组拆成多个源 CIDR 时，后续扩充会为所有源分片分别生成预览操作；除源地址外的条件必须一致，不混合不同源地址列表、接口或协议限制。原始匹配条件也参与计划指纹，执行前再次核对，避免源范围在预览后被改变。
 
-### 6.1 归属与冲突
+对于需要显式免转换的网段，NAT 差异报告与发布回读仍主要检查启用的受管规则是否覆盖目的网段，尚未完整推导源地址、接口、协议、规则顺序等条件下的实际流量覆盖。因此“无需免转换”或回读通过都不代表所有客户端的实际转发路径已完成流量验收。
 
-- 只管理带 `managed_prefix` 标记的对象；其他对象只读，不改、不删。
-- 期望对象与一个**非 ConfigFlow 管理**的对象冲突（例如已有同一网段的手工静态路由）时，标为“冲突”，由用户选择：接管（打上标记）、跳过、或先手动删除。不自动覆盖。
+### 4.3 设备对象与撤销
 
-### 6.2 分阶段与顺序（来自实际事故的约束）
+RouterOS 写入前读取相关对象的可写配置，成功后返回相应撤销操作；新增项撤销时删除，修改项恢复原值，删除项按保存的配置恢复。本次操作产生多个对象时也需记录并撤销相应变更。
 
-1. **先旁路网关，后主路由**：一次发布内部按“mihomo Agent 回流规则 → 主路由代理路由 → 主路由 NAT 免转换”的顺序执行；前一阶段健康检查通过才进入下一阶段。顺序反了会出现回包路径不对称而断流。回滚按相反顺序进行：先停用 NAT 免转换，再撤 Agent 回流规则。
-2. **DNS 劫持必须排除 DNS 服务器自身**：OxiDNS（以及 mihomo）发出的 53 端口查询不能被劫持回 OxiDNS，否则形成查询风暴。下发前做静态检查，不满足就拒绝下发。
-3. **改路由前先确认下一跳可用**：mihomo Agent 在线、fake-ip DNS 可应答。
-4. 每个阶段之后做健康检查，失败立即回滚本阶段，不继续下一阶段。
+复合 NAT 操作中途失败时先补偿本次已写入项，再撤销之前的发布操作。对响应超时或损坏的新增请求，通过提交前后对象 ID 与字段核对定位新增项；无法唯一确认或撤销失败时，明确记录“回滚未完成”，不把状态未知当成成功。REST 的方法与规则位置参数遵循 [RouterOS 官方 REST 文档](https://manual.mikrotik.com/docs/developer-guides/rest-api/)。
 
-### 6.3 健康检查
+iKuai 的 add/edit/del 参数与字符串编码按 Web UI 约定处理；edit 前读回完整记录，撤销使用读回的原记录。名称 `tagname` 必填且为 1–15 字符，新增对象使用 `cf_rt_<hash>` / `cf_nat_<hash>`；备注使用 `cf-<原备注>`，归属识别兼容 `cf:` / `cf-`。
 
-- 经 OxiDNS 解析：国内域名为真实 IP，代理域名为 fake-ip，自定义 hosts 正确。
-- 环路检测：在 OxiDNS 主机上用 UDP 查询公共 DNS，查一个只存在于自定义 hosts 里的域名，结果**不能**是 hosts 里的内网地址。
-- 经代理访问探测地址成功。
-- mihomo 连接列表中出现真实客户端 IP（启用 NAT 免转换之后）。
+### 4.4 DHCP DNS 下发
 
-### 6.4 快照与回滚
+“DHCP DNS 服务器（OxiDNS Agent）”选择本身就是管理开关，不增加其他布尔设置。默认未关联时保留路由器现有 DHCP DNS；选择后，以该 Agent 的 IPv4 host 为期望 DNS。
 
-- RouterOS：应用前导出受管对象（以及冲突对象）为 `.rsc` 片段并保存；回滚时按快照逆向操作，不使用整机备份恢复。
-- iKuai：保存受影响对象的完整 JSON（含 id），回滚时逐条恢复或删除新增项。
-- 回滚只覆盖本次计划涉及的对象。如果用户在此期间手动改过同一对象（漂移），回滚前先提示，不强行覆盖。
+只定位**包含所选 mihomo 网关的唯一 DHCP 网段**。成功定位后，把该网段的原 DNS 列表替换为仅包含所选 OxiDNS 地址的列表，**不保留旧备用 DNS**。不修改 DHCP 网关、地址池、租期、静态绑定或其他网段；也不自动创建 DHCP 服务。预览明确列出网段及“旧 DNS → 新 DNS”，用户确认后才写入。
 
-## 7. 运行期
+DHCP DNS 报告包含 `status`、`message`、`target_dns`、`items` 和 `blockers`。每个 item 展示网段、当前 DNS 列表、期望 DNS 列表、状态及说明：
 
-### 7.1 漂移检测
+| 状态 | 展示与处理 |
+|---|---|
+| `disabled` | 未关联 OxiDNS，不管理 DHCP DNS，保留现有值 |
+| `synced` | 唯一目标网段的 DNS 已是所选服务器，无需写入 |
+| `pending` | 唯一目标网段需要更新 DNS，列入发布预览 |
+| `unknown` | 目标或配置证据不足，列出原因并阻止发布；多匹配时展示候选网段 |
 
-定时读取受管对象，与期望状态比对，在界面上显示“已同步 / 有漂移 / 缺失”，不自动纠正。规则集或 Agent 地址变化后，提示有待下发的差异。
+所选 OxiDNS 无效、离线或不是 IPv4，没有匹配 DHCP 网段、匹配多个网段，或自定义 DHCP option 可能覆盖 DNS 时，不猜测或批量修改。当前 DNS 列表为空时显示“自动/未指定”；这不代表终端没有 DNS，例如 RouterOS 可能继承主路由 DNS。
 
-### 7.2 代理网关故障时的处理
+RouterOS 通过 `/ip/dhcp-server/network` 只修改 `dns-server` 和 `dns-none`，并检查 network、server、lease、option set、matcher 以及 RADIUS 的潜在 DNS 覆盖；相关证据无法读取时阻止发布。选项优先级及字段依据 [RouterOS DHCP 文档](https://help.mikrotik.com/docs/spaces/ROS/pages/24805500/DHCP) 和 [DHCP network 命令参考](https://manual.mikrotik.com/docs/cli-reference/ip/dhcp-server/network/)。
 
-ConfigFlow 已有 Agent 心跳。mihomo Agent 离线时：
+iKuai 的字段取自官方 4.0.120-beta Build202603191336 固件内的 DHCP 前端、后端及数据库表结构。`dhcp_server edit` 需要完整表单，因此保存并回读校验全部字段，仅把 `dns1`、`dns2` 都设为所选服务器；两处使用相同地址，避免备用 DNS 留空时产生继承歧义，报告中去重显示。`dhcp_static` 里同网段的独立 DNS 覆盖会阻止发布。遇到未验证的新字段、缺失字段或不完整列表时停止，避免覆盖未知配置。
 
-- `fail_closed`（默认）：保持路由不变，代理流量中断，绝不以家宽 IP 直连（适合对 IP 敏感的服务）。
-- `fail_open`：自动停用代理路由和 DNS 劫持，保证基础上网，同时告警。网关恢复后需要手动确认，才重新启用。
+存在代理路由冲突时阻止 DHCP DNS 下发。写入前再次确认唯一目标网段、路由和 NAT 状态；即使 DNS 已同步而本次只修改路由，末阶段仍回读 DNS。预览指纹包含 DNS Agent、目标地址、网段及覆盖选项的语义配置；普通租约倒计时不影响指纹。
 
-## 8. 安全
+DNS 阶段在本次发布的最后执行，写入后回读，失败时按原值撤销。它更新 DHCP 服务端配置，不强制断开客户端或修改客户端已获取的租约。**终端在 DHCP 续租或重新联网后获得新 DNS**；该流程不做 DNS 劫持，也不代替实际 DNS 查询验收。
 
-- 凭据加密存储，界面与导出中脱敏；日志中不打印 API 请求体。
-- RouterOS 建议建专用用户组，只授予 `api, rest-api, read, write` 中需要的权限，并启用 HTTPS（`www-ssl`）或 API-SSL；默认校验证书，自签证书需导入 CA。REST 也支持 HTTP（RouterOS 7.9+，启用 `www`）。
-- 添加或编辑 RouterOS 时可展开账号权限说明，按 WinBox 的 System → Users / Groups 设置专用账号和用户组。REST 权限不足时提供设置步骤，并保留原始错误以便排查；连接测试成功只证明读取请求可用，不等于已验证写入权限。
-- iKuai 没有细粒度权限，只能使用管理员账号，需在界面上明确提示风险。
-- 安全护栏，下发前强制检查：不管理默认路由、WAN 口相关对象和路由器管理访问规则；不允许把路由器自身或管理网段放进劫持、代理范围，防止把自己锁在外面。
+## 5. mihomo Agent 回流规则
 
-## 9. 分期
+回流规则应用在 **mihomo 主机**，由 Go Agent 管理，不写到 iKuai 或 RouterOS 上。“自动配置回流”适用于需要将回复经主路由返回的网络，默认关闭。
 
-| 阶段 | 内容 | 风险 |
-|---|---|---|
-| P0 | 只读：接入两种路由器（iKuai 仅 4.x）、能力探测、展示当前相关配置与期望状态的差异（漂移报告）；mihomo Agent 上报当前回流规则状态 | 无写操作 |
-| P1 | mihomo Agent 回流规则 + 主路由代理路由 + NAT 免转换，作为一次整体发布：预览、分阶段应用、回读校验、逆序回滚（已实现） | 中 |
-| P2 | DNS 劫持（自动排除自身）+ DHCP DNS 下发 + DHCP 静态绑定；代理网关故障处理 | 中高 |
-| P3 | RouterOS 地址列表按规则集同步；与 OxiDNS RouterOS 插件共用连接；RouterOS `.rsc` 导出 | 低 |
+关闭时，报告返回 `return_routing.status = disabled`，界面以中性状态说明已关闭，不显示缺失、异常或“未发现”。生成报告、预览和发布都不调用 Agent 回流读取、写入或删除接口；已有规则及 Agent 保存的回流状态保留，关闭不会撤销之前发布的配置。
 
-建议先做 P0，用现有家庭环境（iKuai 4.x）把驱动和差异模型跑通，再进入 P1。
+开启时才执行以下管理逻辑，并保留校验与失败回滚流程：
 
-## 10. 已确定
+- 使用独立 nftables 表 `inet configflow_return` 和匿名集合，通过归属记录及具体规则句柄更新自己的对象，不改 mihomo 自己的表。
+- 使用 mark `0x400000`、路由表 `104`、`ip rule priority 104`。不修改全局 `send_redirects` 设置，该设置不属于本功能独占管理的资源。
+- 校验 mark 与 mihomo `routing-mark` / auto-redirect 标记不重叠、路由表与 `iproute2-table-index` 不冲突、优先级小于 `iproute2-rule-index`；检查 `nft`、`ip` 等依赖。还须读取系统实际使用的 nftables 标记、策略路由和路由表，确认目标资源未被其他配置占用。
+- 根据 mihomo 运行模式处理回包；TUN 模式需要处理从 TUN 网卡进入的 UDP 回包。
+- 通过主路由源 MAC 限定需要打标记的连接。客户端直接把 Agent 当网关，或绕过主路由直连 Agent 的连接，不强制回送主路由。
+- 手工规则使用相同标记、路由表或优先级时阻止发布，不自动换号、不接管或删除手工表，也不禁用其启动脚本。`adopt_legacy` 不再用于发布。
+- 期望状态和归属证据保存在 Agent 目录的 `return-routing.json`。只有可以核实归属的 ConfigFlow 对象才允许更新和撤销；旧状态没有归属证据而相关资源已经存在时阻止操作。Agent 启动时重新应用也必须通过同样的安全检查。
 
-- iKuai 只支持 4.x，检测到 3.x 拒绝接入。
-- mihomo 主机上的回流规则由 Go Agent 管理，与主路由的代理路由、NAT 免转换作为一次整体发布（见第 5 节）。
-- 现有手工配置直接接管：差异报告把“内容正确但没有 ConfigFlow 标记”的对象标为“可接管”，P1 发布时为其打上标记，不删除重建。
-- P0 已实现（分支 `feat/router-integration-p0`）：路由器接入、iKuai 4.x / RouterOS 驱动（只读）、期望状态计算、差异报告、mihomo Agent `GET /api/return-routing`、“上游路由”页面。
-- 代理网段只来自 fake-ip 网段与用户在路由器上**显式勾选**的规则集（按 IP 路由），不按策略推断。
-- P1 已实现（分支 `feat/router-integration-p1`）：
-  - **Agent** `PUT /api/return-routing` 应用期望状态：独立表 `inet configflow_return`（单事务整表替换）、路由表 104、`ip rule priority 104`、关闭 `send_redirects`；校验 mark 与 mihomo `routing-mark`/auto-redirect 标记不重叠、路由表与 `iproute2-table-index` 不冲突、优先级小于 `iproute2-rule-index`；`adopt_legacy` 接管同 mark 的手工表——先应用受管规则再删手工表，并把引用它的 `/etc/local.d/*.start|stop` 改名为 `*.configflow-disabled`，手工表导出保存。期望状态持久化在 Agent 目录 `return-routing.json`，Agent 启动时重新应用。`DELETE ?restore_legacy=1` 删除受管规则并恢复被接管的手工规则。
-  - **只标记经主路由转发的连接**：标记规则匹配主路由的源 MAC（Agent 从邻居表解析）。客户端直接把 Agent 主机当网关，或收到主路由的 ICMP 重定向后直连时，主路由没见过这条连接，回包若被强制送回主路由会被丢弃，因此这类连接不打标记、直接回包。
-  - **回流网段** = 期望代理网段 ∪ 发布后所有 NAT 免转换规则的目的网段（免转换但不打标记会导致回包不对称）。
-  - **iKuai 写入**：静态路由 add/edit/del、NAT 规则 add/edit，参数与字符串编码与 Web UI 一致（`%`→`%25`、空白→`%20` 等）；edit 先读回完整记录再改，回滚用读回的原记录。名称（tagname）必填且 1–15 字符，新增对象用 `cf_rt_<hash>` / `cf_nat_<hash>`；受管备注写成 `cf-<原备注>`（不用冒号，iKuai 备注字符受限），识别时 `cf:` / `cf-` 都认。
-  - **发布**：`POST /api/routers/<id>/plan` 只生成计划（不写入，带指纹）；`POST /api/routers/<id>/apply` 重新计算计划，指纹不一致返回 409，一致才按“回流规则 → 代理路由 → NAT 免转换”执行，每阶段回读校验，失败逆序撤销。冲突网段整体跳过（路由、NAT、回流都不处理）并提示。
-  - **RouterOS**：路由器部分只生成 `.rsc` 脚本由用户导入，回流规则阶段照常由 Agent 执行。
+开启后的接口为 `GET /api/return-routing` 查询、`PUT /api/return-routing` 应用。GET 必须返回 `safety = {version: 1, ok: true, blockers: []}` 才能发布；缺少该能力的旧 Agent、结果格式不完整或检查有阻塞项时，预览和执行都会停止。PUT 的配置必须携带 `safety_version: 1`，Agent 在写入前重新检查占用；不能仅凭预览时的结果放行。
 
-## 11. 待确认的问题
+发布失败需要撤销本次新建的回流配置时，调用 `DELETE /api/return-routing`（不请求 legacy 恢复），仅清理由本次管理记录确认归属的对象：按具体句柄删除自有 nft 规则后删除空链，按具体选择条件删除自有策略规则和路由，不按优先级批量删规则、不清空整个路由表。带归属注释的空 nft 表和管理记录会保留，状态变为 `active: false`，`managed.table_present` 返回 `false`，下次启用时重新建立规则。撤销前仍确认 Agent 支持新版安全能力；占用变化不会授权删除第三方对象。已有受管配置的更新失败时尝试恢复此前的配置。关闭开关本身不会调用删除接口。
 
-1. 代理网段里除 fake-ip 和 Telegram 外，是否需要支持用户自定义 IP 段（例如部分游戏、IP 直连服务）？
-2. 多台主路由 / 多个配置空间共用一台路由器时，归属标记如何区分？
-3. RouterOS 侧走“静态路由”还是“mangle + routing table”，是否按代理网段数量自动选择？
-4. 现有手工配置（iKuai 上的 fake-ip / Telegram 静态路由、`NAT_1`，mihomo 主机上的 `inet mihomo_return` 表）接入时如何迁移：接管为受管对象，还是要求先手动删除？
+## 6. 发布流程
+
+### 6.1 预览与确认
+
+`POST /api/routers/<id>/plan` 只生成操作计划、阻塞项、警告和计划指纹，不写设备。
+
+用户确认后，`POST /api/routers/<id>/apply` 携带预览的 fingerprint。服务端重新计算计划；指纹变化返回 409，并把新计划返回给界面。指纹一致且没有阻塞项，才执行写入。当前入口是手动预览与确认，没有定时自动发布。
+
+RouterOS 指纹还包含 NAT 判定依据（路由出口、NAT 条件、策略路由及所用接口列表），即使生成的写入操作相同，依据变化也需要重新预览；流量计数器不参与指纹。开启回流时，安全检查结果及 `safety_version` 也参与指纹。
+
+### 6.2 分阶段顺序
+
+1. mihomo Agent 回流规则，仅在开启自动配置回流时执行。
+2. 主路由代理静态路由。
+3. 主路由 NAT 免转换。
+4. DHCP DNS，仅在关联 OxiDNS Agent 时管理。
+
+两种路由器的计划都保留四个阶段。回流默认跳过，未关联 OxiDNS 时 DHCP DNS 也跳过；被关闭的阶段带 `enabled: false`、空操作列表和说明 `note`，明确本次不管理且保留原有配置。即使整个计划没有变更，预览仍展示该说明。按上述顺序自动执行已启用且有变更的阶段。
+
+RouterOS 存在“无需免转换”网段时，即使 NAT 阶段没有写入，也会重新读取出口与源 NAT 条件，确认判断仍成立。开启回流后，即使该阶段没有变更，也会在执行后续路由器操作前重新校验受管配置和安全检查结果。每个有变更的阶段完成后回读校验，通过才继续。失败时停止后续阶段，并尝试按相反顺序撤销已完成操作；回流开启时，NAT 免转换先于回流规则撤销。回流关闭时，不进行回流校验或回滚，也不因缺少回流状态而阻止路由器配置发布。
+
+DHCP DNS 最后应用，若其写入或回读失败，先撤销本次 DNS 变更，再按相反顺序撤销此前已完成的阶段。
+
+### 6.3 当前回读校验
+
+- 回流阶段（开启时）：Agent 的新版安全检查通过；受管 nftables 表存在；代理目的网段、下一跳、标记、路由表、优先级和安全握手与计划相符；策略路由的优先级、表号、标记及掩码与计划一致。关闭时跳过，不读取 Agent。
+- 路由阶段：期望 CIDR 有启用且下一跳正确的受管路由；应删除的受管路由不再存在。
+- NAT 阶段：需要显式免转换的期望 CIDR 被启用的受管规则目的网段覆盖；`not_required` 必须根据最新读取的配置再次成立，`unknown` 在计划阶段阻止发布。
+- DHCP DNS 阶段：目标网段的 DNS 列表与所选 OxiDNS 地址一致；写入及恢复均保留 DHCP 网关、地址池和租期等其他配置。
+
+RouterOS 驱动还逐项回读实际写入字段，并检查新 NAT 规则相对于指定规则的位置；扩充时保留的源地址、接口、协议等条件也纳入这层检查。
+
+这些校验是配置回读，不包含 DNS 解析、代理实际访问、DNS 环路或真实客户端 IP 的完整流量验收。
+
+### 6.4 回滚与结果
+
+只撤销本次操作涉及的对象，不恢复整机备份。发布日志和回滚日志分别记录每项成功或失败；撤销请求也可能因设备离线、权限或接口错误失败。界面会区分发布完成、已撤销已完成变更、回滚未完成，不能把发布失败一律显示成“已回滚”。
+
+回滚目前没有完整的并发修改冲突检测；计划指纹也不等同于锁定设备状态。发布期间应避免同时手动修改计划涉及的对象。
+
+## 7. 页面与接口
+
+配置空间下的“上游路由”页面提供：
+
+- 路由器新增、编辑、删除；删除只移除 ConfigFlow 接入记录。
+- 每台路由器可选“自动配置回流”，默认关闭；关闭保留已有规则。保存修改后清除该路由器的旧报告和发布预览，重新读取后再发布。
+- 选择 OxiDNS Agent 下发 DHCP DNS，默认不关联；报告显示未关联、已同步、待更新或待确认，预览包含目标网段与完整 DNS 列表变更，并提示终端续租后生效。
+- 连接探测、版本和连接状态展示。
+- 代理路由、NAT 免转换、mihomo 回流状态的差异报告；显示已同步、可接管、冲突、缺失、多余、无需免转换和待确认项。NAT 的说明栏展示出口与源 NAT 判定依据；无需免转换不计为缺失，证据不足时显示待确认。
+- 发布预览、阻塞与警告提示、确认发布、逐阶段执行与回滚结果。
+
+后端提供 `/api/routers` 的列表和新增，`/api/routers/<id>` 的编辑和删除，以及对应的 `/probe`、`/report`、`/plan`、`/apply`。
+
+## 8. 使用约束
+
+- RouterOS 管理地址支持 HTTP 和 HTTPS：HTTPS 需要 RouterOS 7.1+ 并启用 `www-ssl`，HTTP 需要 7.9+ 并启用 `www`。两种驱动默认校验 HTTPS 证书，可在接入配置中调整；HTTP 不涉及证书校验。
+- RouterOS 发布账号需要 `api`、`rest-api`、`read`、`write`；iKuai 需要管理员账号。添加或编辑 RouterOS 时可展开账号权限说明，按 WinBox 的 System → Users / Groups 设置专用账号和用户组。权限不足时，连接或发布错误会提供设置步骤；原始 REST 权限错误仍保留以便排查。
+- 代理网段来源于 fake-ip 和显式选择的规则集，避免把全部规则集一律路由给 mihomo。
+- 当前新增 NAT 源范围按 mihomo 地址的 `/24` 推导。多 LAN 网段、非 `/24` 拓扑尚无专用配置入口。
+- 自动化测试覆盖 API/驱动与发布逻辑，不代替真实 RouterOS 或 iKuai 的网络连通性验收。
+
+## 9. 尚未实现
+
+| 后续能力 | 说明 |
+|---|---|
+| DNS 劫持 | 需要排除 OxiDNS、mihomo 和路由器自身，避免查询环路 |
+| DHCP 静态绑定 | DHCP DNS 下发已实现；静态绑定仍需手工维护 |
+| 定时漂移检测与变化通知 | 当前按用户操作读取报告 |
+| 代理网关故障切换 | 尚无 `fail_open` / `fail_closed` 配置和自动恢复流程 |
+| RouterOS 地址列表按规则集同步 | 当前地址列表用于读取既有 NAT 条件；不创建代理目的地址集合 |
+| OxiDNS RouterOS 插件共用连接 | 当前没有连接配置复用流程 |
+| API-SSL 回退、`.rsc` 导出 | 当前通过 REST 自动发布，没有这些降级入口 |
+| 更完整的 NAT 覆盖校验 | 当前仅对可证实的条件作保守判定；尚无完整防火墙、复杂策略路由及所有源地址/协议/顺序组合的流量模拟 |
+| 流量健康检查与回滚冲突检测 | 配置回读之外的 DNS/代理验收，以及并发手动修改的保护 |
+| 灵活 LAN 与多路由器归属 | 自定义网段、多个配置空间共用设备时的对象隔离仍需完善 |
+
+## 10. 实现位置
+
+- `backend/routers/routeros.py`、`backend/routers/ikuai.py`：设备读取与写入。
+- `backend/routers/desired.py`、`backend/routers/report.py`：期望状态与差异。
+- `backend/routers/plan.py`、`backend/routers/release.py`：计划、分阶段执行、回读与撤销。
+- `backend/routers/store.py`：接入记录和脱敏视图。
+- `frontend/src/views/Routers.vue`：接入、报告和确认发布界面。

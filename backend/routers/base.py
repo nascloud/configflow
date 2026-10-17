@@ -17,6 +17,10 @@ class RouterError(Exception):
     """A router request failed; the message is safe to show to users."""
 
 
+class RouterRollbackError(RouterError):
+    """A driver could not fully compensate its partially applied operation."""
+
+
 @dataclass
 class RouterInfo:
     vendor: str
@@ -42,6 +46,26 @@ class NatBypassEntry:
     src: List[str]
     enabled: bool
     comment: str = ''
+    # Vendor matchers used to preserve source scopes and detect preview drift.
+    attributes: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DhcpDnsEntry:
+    id: str
+    network: str
+    dns: List[str]
+    enabled: bool = True
+    attributes: Dict[str, Any] = field(default_factory=dict)
+    blockers: List[str] = field(default_factory=list)
+    # False when a vendor's empty DNS slot could inherit an unlisted server.
+    dns_explicit: bool = True
+
+
+@dataclass
+class DhcpDnsState:
+    entries: List[DhcpDnsEntry] = field(default_factory=list)
+    evidence: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -50,6 +74,10 @@ class RouterState:
     nat_bypass: List[NatBypassEntry] = field(default_factory=list)
     # Named address sets (iKuai route objects / RouterOS address-lists) -> CIDRs.
     address_sets: Dict[str, List[str]] = field(default_factory=dict)
+    # ROS forwarding/NAT evidence. None keeps legacy drivers' coverage checks;
+    # an empty rules list explicitly means there are no source-NAT rules.
+    nat_context: Optional[Dict[str, Any]] = None
+    dhcp_dns: Optional[DhcpDnsState] = None
 
 
 class RouterDriver:
@@ -62,6 +90,10 @@ class RouterDriver:
 
     def read_state(self) -> RouterState:
         raise NotImplementedError
+
+    def read_dhcp_dns(self) -> DhcpDnsState:
+        """Read DHCP DNS only when the user selected a DNS Agent."""
+        raise RouterError(f'{self.vendor} 不支持 DHCP DNS 下发')
 
     def apply(self, op: Dict[str, Any]) -> Dict[str, Any]:
         """Apply one release operation; return the operation that reverts it."""

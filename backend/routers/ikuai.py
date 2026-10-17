@@ -14,8 +14,10 @@ from urllib.parse import unquote
 import requests
 
 from backend.routers.base import (
-    NatBypassEntry, RouteEntry, RouterDriver, RouterError, RouterInfo, RouterState,
+    DhcpDnsEntry, DhcpDnsState, NatBypassEntry, RouteEntry, RouterDriver, RouterError,
+    RouterInfo, RouterRollbackError, RouterState,
 )
+from backend.routers.dhcp_dns import checked_dns_target
 
 TIMEOUT = 10
 LIST_LIMIT = '0,1000'
@@ -26,6 +28,21 @@ _ENCODE = [('"', '%22'), ('`', '%60'), ('$', '%24'), ('&', '%26'), (';', '%3B'),
 ROUTE_FIELDS = ('id', 'enabled', 'tagname', 'ip_type', 'interface', 'dst_addr', 'gateway', 'netmask', 'prio', 'comment')
 NAT_FIELDS = ('id', 'enabled', 'tagname', 'comment', 'action', 'protocol', 'iinterface', 'ointerface',
               'src_addr', 'dst_addr', 'src_port', 'dst_port', 'nat_addr', 'nat_port', 'src_addr_inv', 'dst_addr_inv')
+
+# Verified against the original vendor UI AND backend/schema in official firmware
+# 4.0.120-beta Build202603191336 (downloaded, extracted, never executed):
+# https://patch.ikuai8.com/3.x/patch/iKuai8_x64_4.0.120_beta_Build202603191336.bin
+# usr/ikuai/script/dhcp_server.sh: edit(), __show_data(), __check_param_add();
+# etc/defaults/config_db.conf: dhcp_server; the backend explicitly allows dns2=''.
+# This is a full edit form: omitting fields would reset unrelated DHCP settings.
+DHCP_OPTIONS = (15, 28, 43, 60, 66, 67, 80, 119, 125, 128, 138, 121)
+DHCP_INT_FIELDS = ('lease', 'delay', 'check_addr_valid', 'check_relay_only') + tuple(
+    f'opt_type{number}' for number in DHCP_OPTIONS)
+DHCP_FIELDS = ('id', 'enabled', 'tagname', 'interface', 'phy_ifnames', 'addr_pool', 'exclude_pool',
+               'netmask', 'gateway', 'next_server', 'dns1', 'dns2', 'domain', 'wins1', 'wins2') + (
+    DHCP_INT_FIELDS) + tuple(f'opt{number}' for number in DHCP_OPTIONS)
+DHCP_STATIC_FIELDS = ('id', 'enabled', 'tagname', 'interface', 'mac', 'gateway', 'dns1', 'dns2',
+                      'ip_addr', 'comment')
 
 
 def encode_value(value: Any, key: str = '') -> Any:
@@ -165,6 +182,161 @@ class IKuaiDriver(RouterDriver):
                 enabled=row.get('enabled') == 'yes', comment=unquote(str(row.get('comment') or ''))))
         return state
 
+    def _dhcp_list(self, func: str, prefix: str = '') -> List[Dict[str, Any]]:
+        results = self.call(func, {'TYPE': f'{prefix}total,{prefix}data', 'limit': LIST_LIMIT})
+        rows, total = results.get(f'{prefix}data'), results.get(f'{prefix}total')
+        # Vendor include/sqlite.sh prints literal [] for an empty JSON query.
+        if (not isinstance(rows, list) or type(total) is not int or total != len(rows)
+                or any(not isinstance(row, dict) for row in rows)):
+            raise RouterError(f'iKuai {func} 配置读取不完整，无法安全下发 DHCP DNS')
+        return [decode_value(row) for row in rows]
+
+    def read_dhcp_dns(self) -> DhcpDnsState:
+        rows = self._dhcp_list('dhcp_server')
+        # Vendor dhcp_lease.sh dumps these DNS fields into ik_dhcpd_static.conf;
+        # per-client overrides must not silently defeat a network-level change.
+        bindings = self._dhcp_list('dhcp_static', 'static_')
+        state = DhcpDnsState(evidence={
+            'servers': [{key: value for key, value in row.items() if key != 'available'} for row in rows],
+            'static': [{key: value for key, value in row.items()
+                        if key not in ('termname', 'hostname', 'ip_addr_int')} for row in bindings],
+        })
+        for row in rows:
+            blockers = []
+            missing = set(DHCP_FIELDS) - row.keys()
+            unknown = row.keys() - set(DHCP_FIELDS) - {'status', 'available'}
+            if missing or unknown:
+                blockers.append('iKuai DHCP 字段与已验证的 4.x 格式不兼容，无法保留完整配置'
+                                + f'（缺少：{",".join(sorted(missing)) or "无"}；未知：{",".join(sorted(unknown)) or "无"}）')
+            for key in DHCP_FIELDS:
+                if key not in row:
+                    continue
+                value = row[key]
+                valid = (type(value) is int if key in DHCP_INT_FIELDS or key == 'id'
+                         else isinstance(value, str))
+                if not valid:
+                    blockers.append(f'iKuai DHCP 字段 {key} 类型无法识别')
+            if row.get('enabled') not in ('yes', 'no'):
+                blockers.append('iKuai DHCP 启用状态无法识别')
+            if row.get('status') != 1 or type(row.get('status')) is not int:
+                blockers.append('iKuai DHCP 服务未生效或无法确认运行状态')
+            if row.get('check_relay_only') != 0:
+                blockers.append('iKuai DHCP 仅响应中继请求，无法确认该网段客户端的 DNS 覆盖')
+            if row.get('phy_ifnames') != 'all':
+                blockers.append('iKuai DHCP 限制了物理接口，无法确认完整网段的 DNS 覆盖')
+            network = ''
+            try:
+                start, end = str(row.get('addr_pool') or '').split('-')
+                start, end = ipaddress.IPv4Address(start), ipaddress.IPv4Address(end)
+                subnet = ipaddress.IPv4Network(f'{start}/{row.get("netmask")}', strict=False)
+                if end not in subnet or start > end or ipaddress.IPv4Address(row.get('gateway')) not in subnet:
+                    raise ValueError
+                network = str(subnet)
+            except (ValueError, TypeError):
+                blockers.append('iKuai DHCP 地址池、掩码或网关无法确定唯一网段')
+            dns = []
+            for field in ('dns1', 'dns2'):
+                value = row.get(field)
+                if value == '':
+                    continue
+                try:
+                    address = str(ipaddress.IPv4Address(value))
+                    if address not in dns:
+                        dns.append(address)
+                except (ValueError, TypeError):
+                    blockers.append('iKuai DHCP DNS 包含无法识别的自动或继承配置')
+            for binding in bindings:
+                if binding.get('enabled') == 'no':
+                    continue
+                try:
+                    if not isinstance(binding.get('ip_addr'), str):
+                        raise ValueError
+                    address = ipaddress.IPv4Address(binding.get('ip_addr'))
+                except (ValueError, TypeError):
+                    blockers.append('iKuai 静态 DHCP 绑定缺少有效地址，无法排除 DNS 覆盖')
+                    continue
+                if network and address not in subnet:
+                    continue
+                if (binding.get('enabled') != 'yes' or not all(key in binding for key in DHCP_STATIC_FIELDS)
+                        or any(not isinstance(binding.get(key), str) for key in DHCP_STATIC_FIELDS if key != 'id')):
+                    blockers.append('iKuai 静态 DHCP 绑定信息不完整，无法排除 DNS 覆盖')
+                elif binding['dns1'] or binding['dns2']:
+                    blockers.append('该网段存在静态 DHCP 绑定的独立 DNS，请先移除绑定中的 DNS 覆盖')
+                if binding.keys() - set(DHCP_STATIC_FIELDS) - {'termname', 'hostname', 'ip_addr_int'}:
+                    blockers.append('iKuai 静态 DHCP 绑定含未验证字段，无法排除 DNS 覆盖')
+            state.entries.append(DhcpDnsEntry(
+                id=str(row.get('id', '')), network=network, dns=dns,
+                enabled=row.get('enabled') != 'no',
+                dns_explicit=bool(row.get('dns1') and row.get('dns2')),
+                attributes={key: row[key] for key in DHCP_FIELDS if key in row},
+                blockers=list(dict.fromkeys(blockers))))
+        return state
+
+    @staticmethod
+    def _dhcp_entry(state: DhcpDnsState, row_id: Any) -> DhcpDnsEntry:
+        matches = [entry for entry in state.entries if entry.id == str(row_id)]
+        if len(matches) != 1:
+            raise RouterError('iKuai DHCP 目标配置不存在或标识不唯一')
+        return matches[0]
+
+    def _dhcp_edit_verified(self, payload: Dict[str, Any]) -> None:
+        self._write('dhcp_server', 'edit', payload)
+        actual = self._dhcp_entry(self.read_dhcp_dns(), payload['id'])
+        if actual.attributes != payload or actual.blockers:
+            raise RouterError('iKuai DHCP DNS 回读校验失败：DNS 或其他 DHCP 配置与提交值不一致')
+
+    def _dhcp_apply(self, op: Dict[str, Any]) -> Dict[str, Any]:
+        if op['kind'] == 'dhcp_dns_restore':
+            payload = op.get('record')
+            if not isinstance(payload, dict) or set(payload) != set(DHCP_FIELDS):
+                raise RouterError('iKuai DHCP DNS 撤销记录不完整')
+            # A rollback already has a complete before-image and known ID. It
+            # must remain possible when the failed release cannot read state.
+            self._dhcp_edit_verified(payload)
+            return {'kind': 'dhcp_dns_restore', 'record': payload}
+        state = self.read_dhcp_dns()
+        if op['kind'] == 'dhcp_dns_update':
+            scope = op.get('scope')
+            if (not isinstance(scope, dict)
+                    or any(not isinstance(scope.get(key), str) or not scope[key]
+                           for key in ('id', 'network', 'gateway'))):
+                raise RouterError('iKuai DHCP DNS 操作缺少已预览网段')
+            entry = checked_dns_target(scope, state)
+            if entry.id != str(op.get('id')) or entry.attributes != op.get('expected'):
+                raise RouterError('iKuai DHCP 配置已变化，请重新预览')
+            target = op.get('dns')
+            try:
+                if (not isinstance(target, list) or len(target) != 1
+                        or not isinstance(target[0], str)):
+                    raise ValueError
+                address = ipaddress.IPv4Address(target[0])
+                if address.is_unspecified or address.is_multicast or address.is_loopback or int(address) == 0xffffffff:
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise RouterError('iKuai DHCP DNS 需要单个有效 IPv4 地址') from None
+            # The UI requires both fields. Set both explicitly to the same DNS:
+            # no blank value can inherit a firmware-specific fallback resolver.
+            # read_dhcp_dns deduplicates the effective server list.
+            payload = {**entry.attributes, 'dns1': str(address), 'dns2': str(address)}
+        before = entry.attributes
+        try:
+            self._dhcp_edit_verified(payload)
+        except RouterError as error:
+            try:
+                try:
+                    actual = self._dhcp_entry(self.read_dhcp_dns(), payload['id'])
+                    changed = actual.attributes != before
+                except RouterError:
+                    # An unreachable read does not imply that edit failed. The
+                    # known ID and complete before-image still permit rollback.
+                    changed = True
+                if changed:
+                    self._dhcp_edit_verified(before)
+            except RouterError as rollback_error:
+                raise RouterRollbackError(f'{error}；DHCP DNS 局部撤销失败：{rollback_error}') from None
+            raise
+        return {'kind': 'dhcp_dns_restore', 'record': before}
+
 
     # --- writes -------------------------------------------------------------
 
@@ -215,6 +387,8 @@ class IKuaiDriver(RouterDriver):
 
     def apply(self, op: Dict[str, Any]) -> Dict[str, Any]:
         kind = op['kind']
+        if kind in ('dhcp_dns_update', 'dhcp_dns_restore'):
+            return self._dhcp_apply(op)
         if kind == 'route_add':
             route_id = self._add_route(op['cidr'], op['gateway'], op['comment'])
             return {'kind': 'route_delete', 'id': route_id}

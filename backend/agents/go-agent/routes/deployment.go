@@ -217,7 +217,7 @@ func CapabilitiesHandler(cfg *Config) http.HandlerFunc {
 			w.WriteHeader(405)
 			return
 		}
-		JsonResponse(w, 200, map[string]interface{}{"success": true, "deployment_protocols": []int{1}, "service_type": cfg.ServiceType, "config_path": filepath.Base(cfg.ConfigPath)})
+		JsonResponse(w, 200, map[string]interface{}{"success": true, "deployment_protocols": []int{1}, "return_routing_safety_protocols": []int{1}, "service_type": cfg.ServiceType, "config_path": filepath.Base(cfg.ConfigPath)})
 	}
 }
 func DeploymentUploadHandler(cfg *Config) http.HandlerFunc {

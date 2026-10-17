@@ -1130,15 +1130,15 @@ class AgentManager:
         return body
 
     def return_routing_status(self, agent: Dict[str, Any]) -> Dict[str, Any]:
-        """读取旁路网关上的回流规则现状（连接标记表、策略路由）。"""
+        """读取回流规则现状及新版 Agent 的资源归属、占用安全检查。"""
         return self._agent_json_request(agent, 'get', '/api/return-routing', 15, '回流规则状态')
 
     def return_routing_apply(self, agent: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str, Any]:
-        """在旁路网关上应用回流规则期望状态（可接管同 mark 的手工规则）。"""
+        """通过安全握手应用回流规则；占用阻止写入，不接管手工规则。"""
         return self._agent_json_request(agent, 'put', '/api/return-routing', 60, '回流规则管理', json=spec)
 
     def return_routing_remove(self, agent: Dict[str, Any], restore_legacy: bool) -> Dict[str, Any]:
-        """删除受管回流规则；restore_legacy 时恢复被接管的手工规则。"""
+        """仅撤销归属可验证的回流对象；新版 Agent 拒绝 legacy 恢复请求。"""
         return self._agent_json_request(agent, 'delete', '/api/return-routing', 60, '回流规则管理',
                                         params={'restore_legacy': '1'} if restore_legacy else None)
 

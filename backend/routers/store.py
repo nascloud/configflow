@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 ROUTER_TYPES = ('ikuai', 'routeros')
 EDITABLE_FIELDS = ('name', 'type', 'endpoint', 'username', 'verify_tls', 'proxy_gateway_agent_id', 'dns_agent_id',
-                   'ip_rule_sets')
+                   'ip_rule_sets', 'manage_return_routing')
 
 
 class RouterValidationError(ValueError):
@@ -26,6 +26,7 @@ def find_router(config: Dict[str, Any], router_id: str) -> Optional[Dict[str, An
 def public_view(router: Dict[str, Any]) -> Dict[str, Any]:
     """Router as returned to the UI: never expose the password."""
     result = {key: router.get(key) for key in ('id', *EDITABLE_FIELDS, 'last_probe', 'last_release')}
+    result['manage_return_routing'] = router.get('manage_return_routing') is True
     result['has_password'] = bool(router.get('password'))
     return result
 
@@ -48,6 +49,10 @@ def normalize(payload: Dict[str, Any], existing: Optional[Dict[str, Any]] = None
     router['endpoint'] = str(router.get('endpoint') or '').strip().rstrip('/')
     router['username'] = str(router.get('username') or '').strip()
     router['verify_tls'] = router.get('verify_tls') is not False
+    manage_return = router.get('manage_return_routing', False)
+    if not isinstance(manage_return, bool):
+        raise RouterValidationError('自动配置回流必须为布尔值')
+    router['manage_return_routing'] = manage_return
     for key in ('proxy_gateway_agent_id', 'dns_agent_id'):
         router[key] = str(router.get(key) or '')
     rule_sets = router.get('ip_rule_sets') or []
