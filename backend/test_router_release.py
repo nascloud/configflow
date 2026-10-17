@@ -70,8 +70,9 @@ DESIRED = {'fake_ip_range': '198.18.0.0/16', 'proxy_gateway': GATEWAY, 'warnings
            'proxy_cidrs': [{'cidr': '91.108.0.0/16', 'sources': ['Telegram']},
                            {'cidr': '149.154.160.0/20', 'sources': ['Telegram']},
                            {'cidr': '198.18.0.0/16', 'sources': ['fake-ip']}]}
+SAFE_RETURN_ALLOCATION = {'version': 1, 'table': 104, 'priority': 104, 'mark': '0x400000', 'reused': False}
 SAFE_RETURN_STATUS = {'status': 'ok', 'managed': None, 'return_tables': [], 'fwmark_rules': [],
-                      'safety': {'version': 1, 'ok': True, 'blockers': []}}
+                      'safety': {'version': 1, 'ok': True, 'blockers': [], 'allocation': SAFE_RETURN_ALLOCATION}}
 ROUTER = {'id': 'r1', 'type': 'ikuai', 'endpoint': 'http://10.0.0.1', 'manage_return_routing': True}
 
 
@@ -94,16 +95,21 @@ class FakeAgent:
         self.state['fwmark_rules'].append({'priority': str(spec['priority']),
                                           'mark': spec['mark'] + '/' + spec['mark'], 'table': str(spec['table'])})
         self.state['managed'] = {'spec': copy.deepcopy(spec), 'table_present': True}
+        self.state['safety']['allocation'] = {
+            'version': 1, 'reused': True, **{key: spec[key] for key in ('table', 'priority', 'mark')}}
         return {'success': True}
 
     def remove(self, restore_legacy):
         self.calls.append(('remove', restore_legacy))
         assert restore_legacy is False
+        spec = self.state['managed']['spec']
         self.state['managed'] = None
         self.state['return_tables'] = [table for table in self.state['return_tables']
                                        if table['name'] != 'configflow_return']
         self.state['fwmark_rules'] = [rule for rule in self.state['fwmark_rules']
-                                      if rule != {'priority': '104', 'mark': '0x400000/0x400000', 'table': '104'}]
+                                      if rule != {'priority': str(spec['priority']),
+                                                  'mark': spec['mark'] + '/' + spec['mark'],
+                                                  'table': str(spec['table'])}]
         return {'success': True}
 
     def status(self):

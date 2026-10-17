@@ -6,7 +6,9 @@ import requests
 
 from backend.routers.base import RouterError, RouterRollbackError, RouterState, is_managed
 from backend.routers.dhcp_dns import checked_dns_target, verify_dns
-from backend.routers.plan import RETURN_SAFETY_VERSION, return_safety_blockers
+from backend.routers.plan import (
+    RETURN_ALLOCATION_FIELDS, RETURN_SAFETY_VERSION, return_allocation, return_safety_blockers,
+)
 from backend.routers.report import _networks
 from backend.routers.routeros_nat import assess_nat
 
@@ -32,6 +34,15 @@ class AgentReturnRouting:
         return self.manager.return_routing_status(self.agent)
 
 
+def _check_return_allocation(status: Dict[str, Any], spec: Dict[str, Any]) -> None:
+    blockers = return_safety_blockers(status)
+    if blockers:
+        raise RouterError('；'.join(blockers))
+    allocation = return_allocation(status)
+    if any(allocation[key] != spec.get(key) for key in RETURN_ALLOCATION_FIELDS):
+        raise RouterError('回流资源分配在预览后发生变化，请重新预览后发布')
+
+
 def _apply(op: Dict[str, Any], driver, agent: Optional[AgentReturnRouting]) -> Dict[str, Any]:
     kind = op['kind']
     if kind in {'return_routing_apply', 'return_routing_remove'} and agent is None:
@@ -41,9 +52,7 @@ def _apply(op: Dict[str, Any], driver, agent: Optional[AgentReturnRouting]) -> D
         if (type(spec.get('safety_version')) is not int or spec['safety_version'] != RETURN_SAFETY_VERSION
                 or spec.get('adopt_legacy')):
             raise RouterError('回流操作缺少安全握手或包含手工规则接管，请重新预览')
-        blockers = return_safety_blockers(agent.status())
-        if blockers:
-            raise RouterError('；'.join(blockers))
+        _check_return_allocation(agent.status(), spec)
         agent.apply(op['spec'])
         if op.get('previous'):
             return {'kind': 'return_routing_apply', 'spec': op['previous'], 'previous': None}
@@ -89,11 +98,9 @@ def _verify(stage: str, checks: Dict[str, Any], driver, agent: AgentReturnRoutin
         return
     if stage == 'return_routing':
         status = agent.status()
-        blockers = return_safety_blockers(status)
-        if blockers:
-            raise ReleaseError('；'.join(blockers))
-        managed = status.get('managed') or {}
         expected = checks['return_routing']
+        _check_return_allocation(status, expected)
+        managed = status.get('managed') or {}
         if not managed.get('table_present'):
             raise ReleaseError('Agent 上没有找到 configflow_return 表')
         actual = managed.get('spec') or {}
