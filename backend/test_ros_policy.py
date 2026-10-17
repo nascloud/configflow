@@ -131,6 +131,70 @@ def configurations(driver):
     return {path: [config_row(row) for row in rows] for path, rows in driver.rows.items()}
 
 
+def test_policy_view_reads_only_recorded_ids_and_survives_external_changes():
+    from backend.routers.ros_policy_view import read_policy_objects
+    driver = MemoryROS()
+    release(driver)
+    manifest = copy.deepcopy(driver.ros_policy_manifest)
+    # A matching name is not sufficient to adopt a foreign object.
+    driver.rows[ADDRESSES].append({'.id': '*foreign', 'list': 'CF_Source_Proxy_IP_01', 'address': '10.0.0.1'})
+    source = manifest['resources'][0]
+    driver.rows[source['path']] = [row for row in driver.rows[source['path']] if row['.id'] != source['id']]
+    marked = next(row for row in driver.rows[MANGLE] if row['action'] == 'mark-routing')
+    marked.update(disabled='true', **{'private-field': 'do-not-export'})
+    writes = copy.deepcopy(driver.writes)
+    view = read_policy_objects(driver, manifest)
+    assert len(view) == len(manifest['resources'])
+    assert not any(row['id'] == '*foreign' for row in view)
+    assert view[0]['status'] == 'missing' and view[0]['fields']['address'] == source['config']['address']
+    changed = next(row for row in view if row['kind'] == 'mangle' and row['id'] == marked['.id'])
+    assert changed['status'] == 'changed' and changed['fields']['disabled'] == 'true'
+    assert 'private-field' not in changed['fields']
+    assert any(row['kind'] == 'routes' and row['fields']['immediate-gw'] == GATEWAY + '%bridge' for row in view)
+    assert read_policy_objects(driver, None) == []
+    assert driver.writes == writes
+
+
+def test_policy_view_api_is_authenticated_read_only_and_type_scoped(authenticated_app, monkeypatch):
+    client, manager, agents, admin, _ = authenticated_app
+    from backend.routes import routers as routes_module
+    driver = MemoryROS()
+    monkeypatch.setitem(routes_module.DRIVERS, 'routeros', lambda *args, **kwargs: driver)
+    monkeypatch.setattr(manager, 'get_all_agents', lambda: [
+        {'id': 'same', 'name': 'Same profile', 'service_type': 'oxidns', 'profile_id': 'default'},
+        {'id': 'legacy', 'name': 'Default profile', 'service_type': 'oxidns'},
+        {'id': 'other', 'name': 'Other profile', 'service_type': 'oxidns', 'profile_id': 'other'},
+        {'id': 'proxy', 'name': 'Proxy', 'service_type': 'mihomo', 'profile_id': 'default'},
+    ])
+    created = client.post('/api/routers', headers=admin, json={**ROUTER, 'name': 'ROS',
+        'username': 'admin', 'password': 'router-secret'})
+    router_id = created.get_json()['router']['id']
+    path = f'/api/routers/{router_id}/policy'
+    assert client.get(path).status_code == 401
+    assert client.post(path, headers=admin).status_code == 405
+    assert client.get('/api/routers/missing/policy', headers=admin).status_code == 404
+    response = client.get(path, headers=admin)
+    assert response.status_code == 200 and response.get_json()['policy']['objects'] == []
+    assert {item['id'] for item in response.get_json()['policy']['source_agents']} == {'same', 'legacy'}
+    assert response.headers['Cache-Control'] == 'no-store'
+    assert 'router-secret' not in response.get_data(as_text=True)
+    assert not driver.writes
+    release(driver)
+    config = routes_module.get_config()
+    config['routers']['items'][0]['ros_policy_state'] = driver.ros_policy_manifest
+    routes_module.save_config(config)
+    writes = copy.deepcopy(driver.writes)
+    response = client.get(path, headers=admin)
+    assert len(response.get_json()['policy']['objects']) == len(driver.ros_policy_manifest['resources'])
+    assert driver.writes == writes
+    monkeypatch.setattr(driver, '_list', lambda path: (_ for _ in ()).throw(RouterError('设备无法连接')))
+    assert client.get(path, headers=admin).status_code == 502
+    client.put(f'/api/routers/{router_id}', headers=admin, json={'ros_policy_rule_sets': []})
+    other = client.post('/api/routers', headers=admin, json={'name': 'ikuai', 'type': 'ikuai',
+        'endpoint': 'http://192.168.0.1', 'username': 'admin', 'password': 'pw'}).get_json()['router']['id']
+    assert client.get(f'/api/routers/{other}/policy', headers=admin).status_code == 400
+
+
 def test_longest_prefix_sources_exclude_direct_and_gateway():
     ranges = smart_sources([
         {'ip': '192.168.0.0/24', 'mode': 'smart'},

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import Routers from '@/views/Routers.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
@@ -7,20 +7,27 @@ import MultiSelect from '@/components/common/MultiSelect.vue'
 import { Select } from '@/components/ui/select'
 import { routerApi, agentApi, ruleApi } from '@/api'
 import { NAV_GROUPS, scopeOfPath } from '@/navigation'
+import { activeProfileId } from '@/profileContext'
+import { notify } from '@/lib/feedback'
 
 vi.mock('@/api', () => ({
   agentApi: { getAll: vi.fn() },
   routerApi: {
-    list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), probe: vi.fn(), report: vi.fn(), plan: vi.fn(), apply: vi.fn(), routes: vi.fn(), routePlan: vi.fn(), routeApply: vi.fn()
+    list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), probe: vi.fn(), report: vi.fn(), plan: vi.fn(), apply: vi.fn(), routes: vi.fn(), routePlan: vi.fn(), routeApply: vi.fn(), policy: vi.fn()
   },
   ruleApi: { getAll: vi.fn() }
 }))
 vi.mock('@/lib/feedback', () => ({ notify: { success: vi.fn(), error: vi.fn() }, confirmDanger: vi.fn(), confirm: vi.fn(), confirmState: { resolve: null }, settleConfirm: vi.fn() }))
 
 const wrappers: VueWrapper[] = []
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+})
 afterEach(() => {
   wrappers.splice(0).forEach(wrapper => wrapper.unmount())
+  activeProfileId.value = 'default'
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
 })
 
 const ROUTER = {
@@ -58,6 +65,11 @@ const DHCP_DNS_PENDING = {
 
 const buttonInDocument = (label: string) => Array.from(document.body.querySelectorAll('button'))
   .find(button => button.textContent?.trim() === label)!
+const toggleHelp = async (label: string) => {
+  document.querySelector<HTMLButtonElement>(`button[aria-label="${label}说明"]`)!.click()
+  await flushPromises()
+  return document.querySelector<HTMLElement>('[data-field-help-content]')
+}
 
 const mountRouter = async (router: Record<string, unknown> | null = ROUTER, agents: Record<string, unknown>[] = []) => {
   vi.mocked(routerApi.list).mockResolvedValue({ data: { success: true, routers: router ? [router] : [] } } as any)
@@ -70,6 +82,91 @@ const mountRouter = async (router: Record<string, unknown> | null = ROUTER, agen
 }
 
 describe('routers view', () => {
+  it.each(['unmount', 'profile round trip'])('does not start a preview after a pending policy save and %s', async change => {
+    let finish!: (value: any) => void
+    vi.mocked(routerApi.policy).mockResolvedValue({ data: { success: true, policy: { objects: [], source_agents: [] } } } as any)
+    vi.mocked(routerApi.update).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = await mountRouter({ ...ROUTER, type: 'routeros' })
+    buttonInDocument('策略路由').click()
+    await flushPromises()
+    buttonInDocument('编辑规则集与网关').click()
+    await flushPromises()
+    buttonInDocument('保存并预览').click()
+    await flushPromises()
+    const reads = vi.mocked(routerApi.list).mock.calls.length
+    if (change === 'unmount') wrapper.unmount()
+    else {
+      activeProfileId.value = 'other'
+      activeProfileId.value = 'default'
+    }
+    finish({ data: { success: true } })
+    await flushPromises()
+    expect(routerApi.list).toHaveBeenCalledTimes(reads)
+    expect(routerApi.report).not.toHaveBeenCalled()
+    expect(routerApi.plan).not.toHaveBeenCalled()
+    expect(notify.success).not.toHaveBeenCalled()
+  })
+
+  it('does not preview after leaving during the refresh following a policy save', async () => {
+    let finish!: (value: any) => void
+    vi.mocked(routerApi.policy).mockResolvedValue({ data: { success: true, policy: { objects: [], source_agents: [] } } } as any)
+    vi.mocked(routerApi.update).mockResolvedValue({ data: { success: true } } as any)
+    const wrapper = await mountRouter({ ...ROUTER, type: 'routeros' })
+    buttonInDocument('策略路由').click()
+    await flushPromises()
+    buttonInDocument('编辑规则集与网关').click()
+    await flushPromises()
+    vi.mocked(routerApi.list).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    buttonInDocument('保存并预览').click()
+    await flushPromises()
+    wrapper.unmount()
+    finish({ data: { success: true, routers: [{ ...ROUTER, type: 'routeros' }] } })
+    await flushPromises()
+    expect(routerApi.report).not.toHaveBeenCalled()
+    expect(routerApi.plan).not.toHaveBeenCalled()
+  })
+
+  it('opens ROS policy objects and edits only saved rule sets and gateway before preview', async () => {
+    vi.mocked(routerApi.policy).mockResolvedValue({ data: { success: true, policy: { objects: [], source_agents: [] }, generated_at: '2026-10-17T10:00:00' } } as any)
+    vi.mocked(routerApi.update).mockResolvedValue({ data: { success: true } } as any)
+    vi.mocked(routerApi.report).mockResolvedValue({ data: { report: REPORT, generated_at: '2026-10-17T10:00:00' } } as any)
+    vi.mocked(routerApi.plan).mockResolvedValue({ data: { plan: { stages: [], blockers: [], warnings: [], empty: true, fingerprint: 'p' } } } as any)
+    await mountRouter({ ...ROUTER, type: 'routeros', ros_policy_rule_sets: ['telegram'] })
+    buttonInDocument('策略路由').click()
+    await flushPromises()
+    expect(routerApi.policy).toHaveBeenCalledWith('router_1', 'default')
+    expect(document.body.textContent).toContain('尚无已下发的策略对象')
+    buttonInDocument('编辑规则集与网关').click()
+    await flushPromises()
+    expect(document.body.textContent).toContain('编辑策略路由设置')
+    expect(document.body.querySelector('#router-password')).toBeNull()
+    buttonInDocument('保存并预览').click()
+    await flushPromises()
+    expect(routerApi.update).toHaveBeenCalledWith('router_1', {
+      ip_rule_sets: [], ros_policy_rule_sets: ['telegram'], proxy_gateway_agent_id: 'a1'
+    }, 'default')
+    expect(routerApi.plan).toHaveBeenCalledWith('router_1')
+    expect(routerApi.apply).not.toHaveBeenCalled()
+  })
+
+  it('only shows the policy entry on ROS and switches it with other panels', async () => {
+    vi.mocked(routerApi.policy).mockResolvedValue({ data: { success: true, policy: { objects: [], source_agents: [] }, generated_at: '2026-10-17T10:00:00' } } as any)
+    vi.mocked(routerApi.routes).mockResolvedValue({ data: { success: true, routes: [] } } as any)
+    const ikuai = await mountRouter()
+    expect(ikuai.findAll('button').some(button => button.text() === '策略路由')).toBe(false)
+    ikuai.unmount()
+    const ros = await mountRouter({ ...ROUTER, type: 'routeros' })
+    buttonInDocument('策略路由').click()
+    await flushPromises()
+    expect(ros.text()).toContain('策略路由 · 主路由')
+    buttonInDocument('静态路由').click()
+    await flushPromises()
+    expect(ros.text()).not.toContain('策略路由 · 主路由')
+    buttonInDocument('策略路由').click()
+    await flushPromises()
+    expect(ros.text()).not.toContain('静态路由 · 主路由')
+  })
+
   it('selects policy rule sets directly without selecting any static rule sets', async () => {
     vi.mocked(ruleApi.getAll).mockResolvedValueOnce({ data: [
       { id: 'telegram', itemType: 'ruleset', name: 'Telegram', policy: '代理' },
@@ -265,9 +362,13 @@ describe('routers view', () => {
 
     const toggle = document.querySelector<HTMLButtonElement>('#router-return-routing')!
     expect(toggle.getAttribute('aria-checked')).toBe('false')
-    expect(document.body.textContent).toContain('关闭只停止管理，已有回流规则会保留')
+    expect(document.body.textContent).not.toContain('关闭只停止管理，已有回流规则会保留')
+    expect((await toggleHelp('自动配置回流'))?.textContent).toContain('关闭只停止管理，已有回流规则会保留')
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    await toggleHelp('自动配置回流')
     expect(document.body.textContent).toContain('DHCP DNS 服务器（OxiDNS Agent）')
-    expect(document.body.textContent).toContain('默认不关联，不修改现有 DNS')
+    expect((await toggleHelp('DHCP DNS 服务器（OxiDNS Agent）'))?.textContent).toContain('默认不关联，不修改现有 DNS')
+    await toggleHelp('DHCP DNS 服务器（OxiDNS Agent）')
     for (const [id, value] of [
       ['router-name', '新主路由'], ['router-endpoint', 'http://192.0.2.1'],
       ['router-username', 'admin'], ['router-password', 'example-password']
@@ -290,14 +391,6 @@ describe('routers view', () => {
     const wrapper = await mountRouter({ ...ROUTER, type, manage_return_routing: initial })
     await wrapper.find('button[aria-label="编辑"]').trigger('click')
     await flushPromises()
-    const permissionGuide = document.querySelector('details')
-    expect(Boolean(permissionGuide)).toBe(type === 'routeros')
-    if (permissionGuide) {
-      expect(permissionGuide.textContent).toContain('如何设置 RouterOS 账号权限')
-      expect(permissionGuide.textContent).toContain('read、write、api、rest-api')
-      expect(permissionGuide.textContent).toContain('当前填写的账号：admin')
-      expect(permissionGuide.textContent).toContain('不代表已验证写入权限')
-    }
     const toggle = document.querySelector<HTMLButtonElement>('#router-return-routing')!
     expect(toggle.getAttribute('aria-checked')).toBe(String(initial === true))
     if ((initial === true) !== saved) toggle.click()
@@ -481,7 +574,7 @@ describe('routers view', () => {
     expect(document.body.textContent).toContain('发布完成')
   })
 
-  it.each(['ikuai', 'routeros'])('shows account setup guidance only for RouterOS when editing %s', async (type) => {
+  it.each(['ikuai', 'routeros'])('keeps account guidance behind its field help when editing %s', async (type) => {
     vi.mocked(routerApi.list).mockResolvedValue({ data: { success: true, routers: [{ ...ROUTER, type }] } } as any)
     vi.mocked(agentApi.getAll).mockResolvedValue({ data: [] } as any)
     vi.mocked(ruleApi.getAll).mockResolvedValue({ data: [] } as any)
@@ -491,11 +584,14 @@ describe('routers view', () => {
     await wrapper.find('button[aria-label="编辑"]').trigger('click')
     await flushPromises()
 
-    const guide = document.querySelector<HTMLDetailsElement>('details')
-    expect(Boolean(guide)).toBe(type === 'routeros')
-    if (!guide) return
-    guide.querySelector('summary')!.click()
-    expect(guide.open).toBe(true)
+    expect(document.body.textContent).not.toContain('如何设置 RouterOS 账号权限')
+    expect(document.body.textContent).toContain('保存仅更新 ConfigFlow 设置')
+    const guide = (await toggleHelp('用户名'))!
+    if (type === 'ikuai') {
+      expect(guide.textContent).toContain('iKuai 需要管理员账号')
+      expect(guide.textContent).not.toContain('RouterOS')
+      return
+    }
     for (const text of ['如何设置 RouterOS 账号权限', 'System → Users', 'read、write、api、rest-api',
       '当前填写的账号：admin', '不代表已验证写入权限']) {
       expect(guide.textContent).toContain(text)

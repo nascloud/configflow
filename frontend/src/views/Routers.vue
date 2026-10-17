@@ -67,6 +67,9 @@
                   <Button size="sm" variant="outline" class="max-md:min-h-11" :disabled="routeBusy || applying" @click="openRouteManager(router)">
                     静态路由
                   </Button>
+                  <Button v-if="router.type === 'routeros'" size="sm" variant="outline" class="max-md:min-h-11" :disabled="routeBusy || applying" @click="openPolicyManager(router)">
+                    策略路由
+                  </Button>
                   <Button size="sm" :disabled="busyId === router.id || routeBusy || applying" @click="openReport(router)">
                     <Loader2 v-if="busyId === router.id && busyAction === 'report'" class="size-3.5 animate-spin" />
                     <GitCompare v-else class="size-3.5" />
@@ -133,6 +136,11 @@
       </div>
       <EmptyState v-else-if="!routeError" :icon="RouterIcon" title="没有静态路由" description="可新增目的网段和下一跳，确认变更后写入这台路由器。" />
     </SectionCard>
+
+    <PolicyRoutingPanel v-if="policyRouter" :id="policyRouter.id" :key="policyRouter.id" :name="policyRouter.name" :profile="activeProfileId"
+      :rule-sets="(policyRouter.ros_policy_rule_sets || []).map(id => ruleSets.find(rule => rule.id === id)?.name || id)"
+      :gateway="agents.find(agent => agent.id === policyRouter?.proxy_gateway_agent_id)?.host || ''"
+      @edit="openPolicyEditor(policyRouter)" @preview="previewPolicy(policyRouter)" @close="policyRouter = null" />
 
     <Dialog :open="routeEditorVisible" @update:open="value => { if (!routeBusy) routeEditorVisible = value }">
       <DialogContent class="max-w-[480px] max-md:[&_[data-slot=button]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-w-11" :show-close-button="!routeBusy">
@@ -440,16 +448,15 @@
       </DialogContent>
     </Dialog>
 
-    <Dialog v-model:open="dialogVisible">
-      <DialogContent class="max-h-[90dvh] max-w-[480px] overflow-y-auto">
+    <Dialog :open="dialogVisible" @update:open="value => { if (!saving) dialogVisible = value }">
+      <DialogContent class="max-h-[90dvh] max-w-[480px] overflow-y-auto max-md:[&_[data-slot=button]]:min-h-11 max-md:[&_[role=combobox]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-h-11 max-md:[&_[data-slot=dialog-close]]:min-w-11">
         <DialogHeader>
-          <DialogTitle>{{ editingId ? '编辑路由器' : '添加路由器' }}</DialogTitle>
-          <DialogDescription>
-            ConfigFlow 通过路由器的管理接口读取配置，并在确认发布后自动写入、回读校验。iKuai 需要管理员账号；RouterOS 支持 HTTPS（www-ssl）和 HTTP（www，需 7.9+），账号权限可按下方说明设置。
-          </DialogDescription>
+          <DialogTitle>{{ policyEditing ? '编辑策略路由设置' : editingId ? '编辑路由器' : '添加路由器' }}</DialogTitle>
+          <DialogDescription>{{ policyEditing ? '保存设置后预览变更，确认发布才会写入 ROS。' : '保存仅更新 ConfigFlow 设置，确认发布后才会写入路由器。' }}</DialogDescription>
         </DialogHeader>
 
         <form class="flex min-w-0 flex-col gap-4" @submit.prevent="submit">
+          <template v-if="!policyEditing">
           <div class="flex flex-col gap-1.5">
             <Label for="router-name">名称</Label>
             <Input id="router-name" v-model="form.name" class="bg-background/50" maxlength="80" placeholder="例如 主路由" />
@@ -464,20 +471,18 @@
               </SelectContent>
             </Select>
           </div>
-          <div class="flex flex-col gap-1.5">
-            <Label for="router-endpoint">管理地址</Label>
+          <FormField label="管理地址" html-for="router-endpoint" :help="form.type === 'routeros' ? routerHelp.endpointROS : routerHelp.endpointIkuai">
             <Input
               id="router-endpoint"
               v-model="form.endpoint"
               class="bg-background/50 font-mono"
               :placeholder="form.type === 'routeros' ? 'https://192.168.88.1' : 'http://192.168.1.1'"
             />
-          </div>
+          </FormField>
           <div class="grid grid-cols-2 gap-3 max-md:grid-cols-1">
-            <div class="flex flex-col gap-1.5">
-              <Label for="router-username">用户名</Label>
+            <FormField label="用户名" html-for="router-username" :help="accountHelp">
               <Input id="router-username" v-model="form.username" class="bg-background/50" autocomplete="off" />
-            </div>
+            </FormField>
             <div class="flex flex-col gap-1.5">
               <Label for="router-password">密码</Label>
               <Input
@@ -490,28 +495,13 @@
               />
             </div>
           </div>
-          <details v-if="form.type === 'routeros'" class="rounded-md border border-border text-[12px]">
-            <summary class="min-h-11 cursor-pointer rounded-md px-3 py-3 font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accent">
-              如何设置 RouterOS 账号权限
-            </summary>
-            <div class="px-3 pb-3 leading-relaxed text-muted-foreground">
-              <ol class="m-0 list-decimal space-y-2 pl-5">
-                <li>使用管理员账号登录 WinBox，打开 System → Users。</li>
-                <li>在 Groups 中新建专用用户组（例如 configflow），勾选 read、write、api、rest-api；已有专用组可补齐这些权限。</li>
-                <li>在 Users 中新建或选择供 ConfigFlow 使用的账号，将 Group 设为该专用组，再把账号和密码填写到此处。</li>
-              </ol>
-              <p v-if="form.username" class="mt-2 mb-0 break-all">当前填写的账号：{{ form.username }}。请检查这个账号所属的组。</p>
-              <p class="mt-2 mb-0">read 用于读取配置，write 用于修改配置，api 和 rest-api 用于接口访问。</p>
-              <p class="mt-2 mb-0">保存后先测试连接，再重新生成发布预览。连接成功只表示能读取配置，不代表已验证写入权限。</p>
-              <a href="https://manual.mikrotik.com/docs/developer-guides/rest-api/#create-a-rest-user" target="_blank" rel="noopener noreferrer" class="mt-2 inline-flex min-h-11 items-center rounded-sm text-primary-accent underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-accent">查看 RouterOS 官方账号设置说明</a>
-            </div>
-          </details>
-          <label class="flex items-center gap-2 text-[13px]">
-            <Switch :model-value="form.verify_tls" @update:model-value="value => (form.verify_tls = Boolean(value))" />
-            校验 HTTPS 证书
-          </label>
-          <div class="flex flex-col gap-1.5">
-            <Label for="router-gateway">代理网关（mihomo Agent）</Label>
+          <div class="flex items-center gap-2">
+            <Switch id="router-verify-tls" :model-value="form.verify_tls" @update:model-value="value => (form.verify_tls = Boolean(value))" />
+            <Label for="router-verify-tls">校验 HTTPS 证书</Label>
+            <FieldHelp label="校验 HTTPS 证书" :text="routerHelp.tls" />
+          </div>
+          </template>
+          <FormField label="代理网关（mihomo Agent）" html-for="router-gateway" :help="form.type === 'routeros' ? routerHelp.gatewayROS : routerHelp.gateway">
             <Select v-model="form.proxy_gateway_agent_id">
               <SelectTrigger id="router-gateway" class="w-full bg-background/50"><SelectValue placeholder="不关联" /></SelectTrigger>
               <SelectContent>
@@ -521,46 +511,33 @@
                 </SelectItem>
               </SelectContent>
             </Select>
-          </div>
-          <div class="flex flex-col gap-1.5">
+          </FormField>
+          <div v-if="!policyEditing" class="flex flex-col gap-1.5">
             <div class="flex min-h-11 items-center justify-between gap-3">
-              <Label for="router-return-routing" class="flex min-h-11 flex-1 items-center">自动配置回流</Label>
+              <div class="flex min-w-0 items-center gap-1">
+                <Label for="router-return-routing">自动配置回流</Label>
+                <FieldHelp label="自动配置回流" :text="routerHelp.returnRouting" />
+              </div>
               <Switch
                 id="router-return-routing"
                 :model-value="form.manage_return_routing"
-                aria-describedby="router-return-routing-hint"
                 @update:model-value="value => (form.manage_return_routing = Boolean(value))"
               />
             </div>
-            <p id="router-return-routing-hint" class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
-              用于需要将回复经主路由返回的网络，默认关闭。关闭只停止管理，已有回流规则会保留。
-            </p>
           </div>
-          <div class="flex flex-col gap-1.5">
-            <Label for="router-ip-rule-sets">{{ form.type === 'routeros' ? '使用静态路由的 IP 规则集' : '按 IP 路由给 mihomo 的规则集' }}</Label>
+          <FormField :label="form.type === 'routeros' ? '使用静态路由的 IP 规则集' : '按 IP 路由给 mihomo 的规则集'" html-for="router-ip-rule-sets" :help="routerHelp.staticRules">
             <div class="[&_[role=combobox]]:min-h-11">
               <MultiSelect :model-value="form.ip_rule_sets" trigger-id="router-ip-rule-sets" :options="ruleSetOptions" placeholder="仅 fake-ip 网段" @update:model-value="selectStaticRuleSets" />
             </div>
-            <p class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
-              fake-ip 网段始终包含。只勾选客户端直接连 IP、不经过 DNS 的规则集（如 Telegram）；其余流量经 OxiDNS 解析成 fake-ip 后自然进入 mihomo。
-            </p>
-          </div>
-          <div v-if="form.type === 'routeros'" class="flex flex-col gap-1.5">
-            <Label for="router-policy-rule-sets">使用策略路由的 IP 规则集</Label>
+          </FormField>
+          <FormField v-if="form.type === 'routeros'" label="使用策略路由的 IP 规则集" html-for="router-policy-rule-sets" :help="routerHelp.policyRules">
             <div class="[&_[role=combobox]]:min-h-11">
               <MultiSelect :model-value="form.ros_policy_rule_sets" trigger-id="router-policy-rule-sets" :options="ruleSetOptions" placeholder="不使用策略路由" @update:model-value="selectPolicyRuleSets" />
             </div>
-            <p class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
-              两组独立选择，同一规则集只能使用一种方式；选到另一组时自动移出原组。fake-ip 始终使用静态路由。取消选择后停止下发该规则集，保存后需预览并发布才生效。
-            </p>
-            <p v-if="form.ros_policy_rule_sets.length" class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
-              来源取当前配置空间已保存的 OxiDNS 设备策略，仅包含显式设为智能分流的 IPv4 地址或网段；保留更具体的直连例外并排除 Mihomo 自身。请同步发布 OxiDNS 设备策略。
-            </p>
-          </div>
-          <div class="flex flex-col gap-1.5">
-            <Label for="router-dns">DHCP DNS 服务器（OxiDNS Agent）</Label>
+          </FormField>
+          <FormField v-if="!policyEditing" label="DHCP DNS 服务器（OxiDNS Agent）" html-for="router-dns" :help="routerHelp.dns">
             <Select v-model="form.dns_agent_id">
-              <SelectTrigger id="router-dns" class="w-full bg-background/50" aria-describedby="router-dns-hint"><SelectValue placeholder="不关联" /></SelectTrigger>
+              <SelectTrigger id="router-dns" class="w-full bg-background/50"><SelectValue placeholder="不关联" /></SelectTrigger>
               <SelectContent class="max-w-[calc(100vw-2rem)]">
                 <SelectItem :value="NONE">不关联</SelectItem>
                 <SelectItem v-for="agent in agentsOf('oxidns')" :key="agent.id" :value="agent.id" class="whitespace-normal break-words">
@@ -568,17 +545,14 @@
                 </SelectItem>
               </SelectContent>
             </Select>
-            <p id="router-dns-hint" class="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
-              选择后，将包含所选 mihomo 网关的唯一 DHCP 网段的 DNS 列表替换为此服务器，不保留旧备用 DNS。默认不关联，不修改现有 DNS；终端续租或重新联网后获得新 DNS。
-            </p>
-          </div>
+          </FormField>
         </form>
 
         <DialogFooter>
-          <Button variant="outline" @click="dialogVisible = false">取消</Button>
+          <Button variant="outline" :disabled="saving" @click="dialogVisible = false">取消</Button>
           <Button :disabled="saving" @click="submit">
             <Loader2 v-if="saving" class="size-4 animate-spin" />
-            保存
+            {{ policyEditing ? '保存并预览' : '保存' }}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -617,9 +591,12 @@ import { Switch } from '@/components/ui/switch'
 import EmptyState from '@/components/common/EmptyState.vue'
 import LoadingRows from '@/components/common/LoadingRows.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import FormField from '@/components/common/FormField.vue'
+import FieldHelp from '@/components/common/FieldHelp.vue'
 import SectionCard from '@/components/common/SectionCard.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import MultiSelect from '@/components/common/MultiSelect.vue'
+import PolicyRoutingPanel from '@/components/routers/PolicyRoutingPanel.vue'
 import { agentApi, routerApi, ruleApi, type StaticRouteChange, type StaticRouteItem, type StaticRoutePlan, type StaticRouteValues } from '@/api'
 import { activeProfileId, getActiveProfileId } from '@/profileContext'
 import { confirm, confirmDanger, confirmState, notify, settleConfirm } from '@/lib/feedback'
@@ -668,6 +645,17 @@ interface AgentItem {
 }
 
 const NONE = '__none__'
+const routerHelp = {
+  endpointROS: '填写路由器管理地址。RouterOS 7.1+ 支持 HTTPS（www-ssl）；HTTP（www）需要 7.9+。',
+  endpointIkuai: '填写 iKuai 4.x 的管理地址，例如 http://192.168.1.1。',
+  tls: '使用 HTTPS 时校验证书的有效性和签发机构；使用 HTTP 时此选项不生效。',
+  gateway: '选择用于代理转发的 mihomo Agent，其地址将作为静态代理路由的下一跳。',
+  gatewayROS: '选择用于代理转发的 mihomo Agent。这个网关同时用于本路由器的静态代理路由和来源策略路由。',
+  returnRouting: '用于需要将回复经主路由返回的网络，默认关闭。关闭只停止管理，已有回流规则会保留。',
+  staticRules: 'fake-ip 网段始终包含。只勾选客户端直接连 IP、不经过 DNS 的规则集（如 Telegram）；其余流量经 OxiDNS 解析成 fake-ip 后自然进入 mihomo。',
+  policyRules: '两组独立选择，同一规则集只能使用一种方式；选到另一组时自动移出原组。fake-ip 始终使用静态路由。取消选择后停止下发该规则集，保存后需预览并发布才生效。\n\n来源取当前配置空间已保存的 OxiDNS 设备策略，仅包含显式设为智能分流的 IPv4 地址或网段；保留更具体的直连例外并排除 Mihomo 自身。请同步发布 OxiDNS 设备策略。',
+  dns: '选择后，将包含所选 mihomo 网关的唯一 DHCP 网段的 DNS 列表替换为此服务器，不保留旧备用 DNS。默认不关联，不修改现有 DNS；终端续租或重新联网后获得新 DNS。'
+}
 const STATUS: Record<Status, { label: string; chip: string }> = {
   synced: { label: '已同步', chip: 'chip-ok' },
   adoptable: { label: '可接管', chip: 'chip-sky' },
@@ -775,11 +763,37 @@ const selectPolicyRuleSets = (selected: string[]) => {
   form.ip_rule_sets = form.ip_rule_sets.filter(id => !selected.includes(id))
 }
 const agentsOf = (serviceType: string) => agents.value.filter(agent => agent.service_type === serviceType)
+const accountHelp = computed(() => form.type === 'routeros'
+  ? '如何设置 RouterOS 账号权限：\n1. 使用管理员账号登录 WinBox，打开 System → Users。\n2. 在 Groups 中新建专用用户组（例如 configflow），勾选 read、write、api、rest-api；已有专用组可补齐这些权限。\n3. 在 Users 中新建或选择供 ConfigFlow 使用的账号，将 Group 设为该专用组，再填写账号和密码。'
+    + (form.username ? `\n\n当前填写的账号：${form.username}。请检查这个账号所属的组。` : '')
+    + '\n\nread 用于读取配置，write 用于修改配置，api 和 rest-api 用于接口访问。保存后先测试连接，再重新生成发布预览。连接成功只表示能读取配置，不代表已验证写入权限。'
+  : 'iKuai 需要管理员账号，用于读取和发布路由配置。')
 const errorMessage = (error: any, fallback: string) => error?.response?.data?.message || fallback
 
 // Keep route management independent of Agent inspection and pin each operation
 // to the device/profile it started from, including time spent in confirmation.
 const routeRouter = ref<RouterItem | null>(null)
+const policyRouter = ref<RouterItem | null>(null)
+const policyEditing = ref(false)
+let policyEditProfile = ''
+let policyEditEpoch = 0
+const openPolicyManager = (router: RouterItem) => {
+  if (routeBusy.value || applying.value) return
+  closeRouteManager()
+  clearInspection()
+  policyRouter.value = router
+}
+const openPolicyEditor = (router: RouterItem) => {
+  openEdit(router)
+  policyEditing.value = true
+  policyEditProfile = getActiveProfileId()
+}
+const previewPolicy = async (router: RouterItem) => {
+  const pending = openReport(router)
+  const revision = inspectionRevision
+  await pending
+  if (revision === inspectionRevision && reportRouter.value?.id === router.id && report.value) await openPlan()
+}
 const routeRows = ref<StaticRouteItem[]>([])
 const routeLoading = ref(false)
 const routeBusy = ref(false)
@@ -830,6 +844,7 @@ const refreshRoutes = async (context = routeContext()) => {
 }
 const openRouteManager = async (router: RouterItem) => {
   if (routeBusy.value || applying.value) return
+  policyRouter.value = null
   clearInspection()
   closeRouteManager()
   routeRouter.value = router
@@ -930,6 +945,9 @@ const submitRoute = async () => {
     : { action: 'add', values })
 }
 const closePanels = () => {
+  policyEditEpoch++
+  policyRouter.value = null
+  if (policyEditing.value) dialogVisible.value = false
   closeRouteManager()
   clearInspection()
 }
@@ -951,7 +969,7 @@ const returnLabel = computed(() => {
   return returnTone.value === 'success' ? '已配置' : '未配置'
 })
 
-const load = async () => {
+const load = async (isCurrent = () => true) => {
   loading.value = true
   try {
     const [routerResult, agentResult, ruleResult] = await Promise.allSettled([
@@ -959,6 +977,7 @@ const load = async () => {
       agentApi.getAll(),
       ruleApi.getAll()
     ])
+    if (!isCurrent()) return false
     if (routerResult.status === 'rejected') throw routerResult.reason
     routers.value = routerResult.value.data.routers || []
     const agentData = agentResult.status === 'fulfilled' ? agentResult.value.data : []
@@ -971,14 +990,18 @@ const load = async () => {
     if (agentResult.status === 'rejected' || ruleResult.status === 'rejected') {
       notify.error('关联 Agent 或规则集暂时无法读取，仍可管理设备上的静态路由')
     }
+    return true
   } catch (error) {
-    notify.error(errorMessage(error, '加载路由器失败'))
+    if (isCurrent()) notify.error(errorMessage(error, '加载路由器失败'))
+    return false
   } finally {
-    loading.value = false
+    if (isCurrent()) loading.value = false
   }
 }
 
 const openCreate = () => {
+  policyEditEpoch++
+  policyEditing.value = false
   Object.assign(form, emptyForm())
   editingId.value = ''
   editingHasPassword.value = false
@@ -986,6 +1009,8 @@ const openCreate = () => {
 }
 
 const openEdit = (router: RouterItem) => {
+  policyEditEpoch++
+  policyEditing.value = false
   Object.assign(form, {
     name: router.name,
     type: router.type,
@@ -1024,6 +1049,12 @@ const clearInspection = (routerId?: string) => {
 
 const submit = async () => {
   if (saving.value) return
+  const policyEdit = policyEditing.value
+  const profile = policyEditProfile
+  const epoch = policyEditEpoch
+  const editedId = editingId.value
+  const isCurrent = () => !policyEdit || (epoch === policyEditEpoch && profile === getActiveProfileId())
+  if (!isCurrent()) return
   saving.value = true
   const payload = {
     ...form,
@@ -1033,7 +1064,14 @@ const submit = async () => {
     dns_agent_id: form.dns_agent_id === NONE ? '' : form.dns_agent_id
   }
   try {
-    if (editingId.value) await routerApi.update(editingId.value, payload)
+    if (policyEdit) {
+      await routerApi.update(editedId, {
+        ip_rule_sets: payload.ip_rule_sets, ros_policy_rule_sets: payload.ros_policy_rule_sets,
+        proxy_gateway_agent_id: payload.proxy_gateway_agent_id
+      }, profile)
+      if (!isCurrent()) return
+    }
+    else if (editingId.value) await routerApi.update(editingId.value, payload)
     else await routerApi.create(payload)
     notify.success(editingId.value ? '路由器已更新' : '路由器已添加')
     dialogVisible.value = false
@@ -1041,9 +1079,16 @@ const submit = async () => {
       clearInspection(editingId.value)
       if (routeRouter.value?.id === editingId.value) closeRouteManager()
     }
-    await load()
+    const loaded = await load(isCurrent)
+    if (!isCurrent() || !loaded) return
+    if (policyEdit) {
+      const updated = routers.value.find(router => router.id === editedId)
+      if (updated) await previewPolicy(updated)
+    } else if (policyRouter.value?.id === editedId) {
+      policyRouter.value = routers.value.find(router => router.id === editedId) || null
+    }
   } catch (error) {
-    notify.error(errorMessage(error, '保存失败'))
+    if (isCurrent()) notify.error(errorMessage(error, '保存失败'))
   } finally {
     saving.value = false
   }
@@ -1055,6 +1100,7 @@ const remove = async (router: RouterItem) => {
     await routerApi.remove(router.id)
     clearInspection(router.id)
     if (routeRouter.value?.id === router.id) closeRouteManager()
+    if (policyRouter.value?.id === router.id) policyRouter.value = null
     notify.success('已删除')
     await load()
   } catch (error) {
@@ -1081,6 +1127,7 @@ const probe = async (router: RouterItem) => {
 // after publishing keeps the current plan and its result available for review.
 const openReport = async (router: RouterItem) => {
   if (routeBusy.value || applying.value) return
+  policyRouter.value = null
   closeRouteManager()
   clearInspection()
   reportRouter.value = router

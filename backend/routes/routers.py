@@ -266,6 +266,41 @@ def list_device_routes(router_id):
         driver.close()
 
 
+@routers_bp.route('/<router_id>/policy', methods=['GET'])
+@require_auth
+def list_device_policy(router_id):
+    from backend.common.agent_manager import get_agent_manager
+    from backend.common.config import get_default_profile_id
+    from backend.common.profile_context import resolve_profile_id
+    from backend.routers.ros_policy_view import read_policy_objects
+
+    router = find_router(get_config(), router_id)
+    if router is None:
+        return _not_found()
+    if router['type'] != 'routeros':
+        return jsonify({'success': False, 'message': '策略路由查看仅支持 RouterOS'}), 400
+    driver = _driver(router)
+    try:
+        with router_operation_lock(router):
+            current = find_router(get_config(), router_id)
+            if current != router:
+                raise RouterConflictError('路由器设置已变化，请刷新后重试')
+            objects = read_policy_objects(driver, router.get('ros_policy_state'))
+        profile_id = resolve_profile_id()
+        source_agents = [{'id': item['id'], 'name': item.get('name') or item['id']}
+                         for item in get_agent_manager().get_all_agents()
+                         if item.get('service_type') == 'oxidns'
+                         and (item.get('profile_id') or get_default_profile_id()) == profile_id]
+        response = jsonify({'success': True, 'policy': {'objects': objects, 'source_agents': source_agents},
+                            'generated_at': _now()})
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except RouterError as error:
+        return jsonify({'success': False, 'message': str(error)}), 502
+    finally:
+        driver.close()
+
+
 @routers_bp.route('/<router_id>/routes/plan', methods=['POST'])
 @require_auth
 def preview_device_route(router_id):
