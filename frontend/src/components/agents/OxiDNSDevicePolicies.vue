@@ -68,7 +68,7 @@
       </div>
       <Button v-if="task?.status === 'ready'" class="min-h-11" :disabled="publishing" @click="activate(agentId)">应用并启动</Button>
       <Button v-else variant="outline" class="min-h-11" :disabled="dirty || !state.editable || saving || loading || publishing || busy(agentId)" @click="publish">
-        <Loader2 v-if="publishing || busy(agentId)" class="size-4 animate-spin" /><Upload v-else class="size-4" />发布到当前设备
+        <Loader2 v-if="publishing || busy(agentId)" class="size-4 animate-spin" /><Upload v-else class="size-4" />{{ publishing || busy(agentId) ? '发布中…' : '发布到当前设备' }}
       </Button>
     </div>
   </SectionCard>
@@ -107,7 +107,7 @@ const saving = ref(false)
 const publishing = ref(false)
 const error = ref('')
 const dirty = computed(() => !!state.value && JSON.stringify(rows.value) !== JSON.stringify(state.value.policies))
-const { deployments, busy, track, activate } = useAgentDeployments(() => emit('published'))
+const { deployments, busy, track, beginSubmission, endSubmission, activate } = useAgentDeployments(() => emit('published'))
 const task = computed(() => deployments[props.agentId])
 let epoch = 0
 let disposed = false
@@ -176,19 +176,19 @@ async function publish() {
   const id = props.agentId
   const expected = { expected_profile_id: state.value.profile_id, expected_oxidns_revision: state.value.revision }
   if (!await confirm(`将发布「${state.value.profile_name}」的完整已保存配置到当前设备，并按现有发布流程校验、备份和应用配置。`, { title: '发布配置', confirmText: '发布' })) return
-  if (disposed || id !== props.agentId) return
+  if (disposed || id !== props.agentId || dirty.value || publishing.value || busy(id)) return
+  const deploymentId = createDeploymentId()
+  if (!beginSubmission(id, deploymentId)) return
   publishing.value = true
   error.value = ''
-  const deploymentId = createDeploymentId()
-  deployments[id] = { deployment_id: deploymentId, status: 'preparing' }
   try {
     const { data } = await agentApi.pushConfig(id, deploymentId, expected)
-    if (!disposed) track(id, data)
+    if (!disposed) endSubmission(id, deploymentId, data)
   } catch (failure: any) {
     if (disposed) return
-    if (failure.response?.data?.deployment_id) track(id, failure.response.data)
-    else if (!failure.response) track(id, { deployment_id: deploymentId, status: 'unknown' })
-    else { delete deployments[id]; error.value = messageOf(failure) }
+    if (failure.response?.data?.deployment_id) endSubmission(id, deploymentId, failure.response.data)
+    else if (!failure.response || failure.response.status >= 500) endSubmission(id, deploymentId, 'unknown')
+    else if (!endSubmission(id, deploymentId, 'rejected')) error.value = messageOf(failure)
   } finally { publishing.value = false }
 }
 function beforeUnload(event: BeforeUnloadEvent) {

@@ -4,7 +4,8 @@ All callbacks are resolved from the captured profile, never from a second HTTP
 request to ConfigFlow. A missing resource aborts publication instead of leaving
 an Agent to download a partial configuration.
 """
-from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
@@ -15,6 +16,7 @@ import json
 from pathlib import PurePosixPath
 import re
 import tarfile
+from threading import Lock
 from urllib.parse import parse_qs, unquote, urlsplit
 import uuid
 
@@ -26,6 +28,8 @@ from backend.utils.rule_fetch import is_internal_rule_url, request_rule
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_FILES = 4096
+MAX_RAW_CACHE_BYTES = 16 * 1024 * 1024
+MAX_RAW_CACHE_ENTRIES = 128
 
 
 class DeploymentPreparationError(ValueError):
@@ -160,7 +164,7 @@ def _fetch_bytes(url, config):
             response.close()
 
 
-def materialize_rule(url, config, base_url, *, depth=0, raw_mosdns=False):
+def materialize_rule(url, config, base_url, *, depth=0, raw_mosdns=False, fetch_raw=None):
     if depth > 3:
         raise DeploymentPreparationError('Recursive rule callback')
     parsed = urlsplit(url)
@@ -171,7 +175,8 @@ def materialize_rule(url, config, base_url, *, depth=0, raw_mosdns=False):
         original = parse_qs(parsed.query).get('url', [''])[0]
         if not original:
             raise DeploymentPreparationError('Rule conversion callback has no source')
-        value = materialize_rule(original, config, base_url, depth=depth + 1, raw_mosdns=raw_mosdns)
+        value = materialize_rule(original, config, base_url, depth=depth + 1,
+                                 raw_mosdns=raw_mosdns, fetch_raw=fetch_raw)
         # The final consuming plugin chooses domain/IP conversion for bundles.
         return value if raw_mosdns else convert_mosdns_rules(value)
     rule = _local_rule(url, config, base_url)
@@ -181,8 +186,9 @@ def materialize_rule(url, config, base_url, *, depth=0, raw_mosdns=False):
         source = rule.get('url', '')
         if source == url:
             raise DeploymentPreparationError('Rule callback refers to itself')
-        return materialize_rule(source, config, base_url, depth=depth + 1, raw_mosdns=raw_mosdns)
-    return _fetch_bytes(url, config)
+        return materialize_rule(source, config, base_url, depth=depth + 1,
+                                raw_mosdns=raw_mosdns, fetch_raw=fetch_raw)
+    return fetch_raw(url) if fetch_raw is not None else _fetch_bytes(url, config)
 
 
 def convert_mosdns_rules(content, rule_type='domain_set'):
@@ -254,7 +260,8 @@ def convert_mosdns_rules(content, rule_type='domain_set'):
 
 
 def build_deployment_bundle(agent, config, config_content, *, provider_downloads=(),
-                            ruleset_downloads=(), custom_files=(), base_url='', deployment_id=None):
+                            ruleset_downloads=(), custom_files=(), base_url='', deployment_id=None,
+                            progress=None):
     """Pack the exact generated graph and all its managed file references."""
     config = deepcopy(config)
     service = agent.get('service_type', 'mihomo')
@@ -328,16 +335,72 @@ def build_deployment_bundle(agent, config, config_content, *, provider_downloads
             if not definition.get('url'):
                 raise DeploymentPreparationError(f'Rule provider {name} references an unbundled local file; use a managed rule source')
             downloads.append({'name': name, 'url': definition['url'], 'local_path': path})
+    # Share only original response bytes within this captured deployment. A
+    # classical source may feed both domain and IP files through different
+    # local callbacks; conversion and per-file/total limits still run for each
+    # destination. Bound retained originals too: a large comment-only source
+    # can become a very small converted file. Never reuse these responses
+    # across separate publications.
+    raw_downloads = OrderedDict()
+    pending_downloads = {}
+    cached_bytes = 0
+    download_lock = Lock()
+
+    def fetch_raw(url):
+        nonlocal cached_bytes
+        with download_lock:
+            cached = raw_downloads.get(url)
+            if cached is not None:
+                raw_downloads.move_to_end(url)
+                return cached
+            future = pending_downloads.get(url)
+            owner = future is None
+            if owner:
+                future = pending_downloads[url] = Future()
+        if not owner:
+            return future.result()
+        # The owning worker fetches directly, without scheduling a second
+        # pool task or holding the lock while other consumers wait.
+        try:
+            value = _fetch_bytes(url, config)
+            with download_lock:
+                if len(value) <= MAX_RAW_CACHE_BYTES and MAX_RAW_CACHE_ENTRIES > 0:
+                    while raw_downloads and (cached_bytes + len(value) > MAX_RAW_CACHE_BYTES
+                                             or len(raw_downloads) >= MAX_RAW_CACHE_ENTRIES):
+                        _, evicted = raw_downloads.popitem(last=False)
+                        cached_bytes -= len(evicted)
+                    raw_downloads[url] = value
+                    cached_bytes += len(value)
+            future.set_result(value)
+            return value
+        except BaseException as exc:
+            future.set_exception(exc)
+            raise
+        finally:
+            with download_lock:
+                pending_downloads.pop(url, None)
+
     def download(item):
         try:
             value = materialize_rule(item.get('url', ''), config, base_url,
-                                     raw_mosdns=relative_path(item['local_path']) in rule_types)
+                                     raw_mosdns=relative_path(item['local_path']) in rule_types,
+                                     fetch_raw=fetch_raw)
         except DeploymentPreparationError as exc:
             raise DeploymentPreparationError(f"Rule {item.get('name', 'unnamed')}: {exc}") from None
         return item, value
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        for item, value in pool.map(download, downloads):
-            add(item['local_path'], value, 'rule')
+    if progress is not None:
+        progress(0, len(downloads))
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = (pool.submit(download, item) for item in downloads)
+            for done, future in enumerate(as_completed(futures), 1):
+                item, value = future.result()
+                add(item['local_path'], value, 'rule')
+                if progress is not None:
+                    progress(done, len(downloads))
+    finally:
+        raw_downloads.clear()
+        pending_downloads.clear()
 
     if service == 'mihomo':
         for section in ('proxy-providers', 'rule-providers'):

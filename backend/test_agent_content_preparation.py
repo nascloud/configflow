@@ -183,3 +183,15 @@ def test_background_bundle_helper_uses_the_same_complete_preparation(content_env
         actual = agents._prepare_content_bundle(agent, deepcopy(config), base_url=BASE_URL,
                                                 deployment_id='background-check')
         assert deployment_content_fingerprint(actual.manifest) == fingerprint(expected)
+
+
+def test_optional_preparation_progress_keeps_the_same_bundle(content_env):
+    config, _remote, _fetches, _repository = content_env
+    expected = prepare(config, 'mosdns')
+    progress = []
+    actual = agents._prepare_transactional_content(
+        {'id': 'mosdns-agent', 'profile_id': 'default', 'service_type': 'mosdns'},
+        config, base_url=BASE_URL, progress=lambda done, total: progress.append((done, total)))
+    assert fingerprint(actual) == fingerprint(expected)
+    total = len(actual['ruleset_downloads'])
+    assert progress == [(done, total) for done in range(total + 1)]

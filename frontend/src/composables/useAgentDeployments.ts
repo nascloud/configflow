@@ -57,6 +57,7 @@ export function useAgentDeployments(onSuccess: () => void) {
   const deployments = reactive<Record<string, AgentDeployment>>({})
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const inFlight = new Set<string>()
+  const submissions = new Map<string, { id: string; observed: boolean }>()
   const announced = new Set<string>()
   let disposed = false
 
@@ -67,7 +68,36 @@ export function useAgentDeployments(onSuccess: () => void) {
 
   function schedule(agentId: string, delay = 2000) {
     clearTimeout(timers.get(agentId))
-    if (!disposed) timers.set(agentId, setTimeout(() => { void refresh(agentId) }, delay))
+    if (!disposed) timers.set(agentId, setTimeout(() => {
+      timers.delete(agentId)
+      void refresh(agentId)
+    }, delay))
+  }
+
+  function beginSubmission(agentId: string, deploymentId: string) {
+    if (disposed || submissions.has(agentId) || busy(agentId)) return false
+    submissions.set(agentId, { id: deploymentId, observed: false })
+    track(agentId, { deployment_id: deploymentId, status: 'preparing' })
+    return true
+  }
+
+  function endSubmission(agentId: string, deploymentId: string, result: AgentDeployment | 'unknown' | 'rejected') {
+    const submission = submissions.get(agentId)
+    if (!submission || submission.id !== deploymentId) return false
+    submissions.delete(agentId)
+    const current = deployments[agentId]
+    if (disposed || current?.deployment_id !== deploymentId) return false
+    // Polls can reach activation or completion while the original POST is still
+    // pending. Its accepted snapshot (or transport error) is then older evidence.
+    if (submission.observed && (typeof result === 'string' || !terminal.has(result.status))) return true
+    if (result === 'rejected') {
+      clearTimeout(timers.get(agentId))
+      timers.delete(agentId)
+      delete deployments[agentId]
+      return false
+    }
+    track(agentId, result === 'unknown' ? { deployment_id: deploymentId, status: 'unknown' } : result)
+    return true
   }
 
   function track(agentId: string, task: AgentDeployment, announce = true) {
@@ -126,15 +156,25 @@ export function useAgentDeployments(onSuccess: () => void) {
     try {
       const { data } = await agentApi.getDeployment(agentId, task.deployment_id)
       if (!disposed && deployments[agentId] === task) {
+        const submission = submissions.get(agentId)
+        if (submission?.id === task.deployment_id) submission.observed = true
         track(agentId, data)
       }
     } catch (error: any) {
       if (!disposed && deployments[agentId] === task) {
+        if (error.response?.status === 404 && submissions.get(agentId)?.id === task.deployment_id) {
+          // The POST may not have registered its ID yet. It is still in flight,
+          // so this is not evidence that the user should submit it again.
+          schedule(agentId)
+          return
+        }
         deployments[agentId] = { ...task, query_error: true, not_recorded: error.response?.status === 404 }
         schedule(agentId, 5000)
       }
     } finally {
       inFlight.delete(agentId)
+      const current = deployments[agentId]
+      if (!disposed && current && !terminal.has(current.status) && current.status !== 'ready' && !timers.has(agentId)) schedule(agentId)
     }
   }
 
@@ -206,7 +246,8 @@ export function useAgentDeployments(onSuccess: () => void) {
     disposed = true
     timers.forEach(clearTimeout)
     timers.clear()
+    submissions.clear()
   })
 
-  return { deployments, busy, track, refresh, activate, retryPublish, rollback }
+  return { deployments, busy, track, refresh, beginSubmission, endSubmission, activate, retryPublish, rollback }
 }

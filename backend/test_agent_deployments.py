@@ -394,6 +394,89 @@ def test_late_pending_response_never_regresses_terminal_result(env):
     manager.finish_deployment_preparation(agent['id'], 'late-response')
 
 
+@pytest.mark.parametrize('finish_during_get', [False, True])
+def test_poll_before_upload_registration_does_not_fail_publication(env, monkeypatch, finish_during_get):
+    _, manager, agent, _ = env
+    deployment_id = 'upload-registering'
+    manager.begin_deployment(agent['id'], deployment_id)
+    manager.record_deployment(agent['id'], deployment_id, {
+        'status': 'uploading', 'submitted': True, 'success': True})
+
+    def not_registered(*_args, **_kwargs):
+        if finish_during_get:
+            manager.record_deployment(agent['id'], deployment_id, {'status': 'checking'})
+            manager.finish_deployment_preparation(agent['id'], deployment_id)
+        return {'success': False, 'http_status': 404}
+
+    monkeypatch.setattr(manager, '_deployment_request', not_registered)
+    pending = manager.get_deployment(agent['id'], deployment_id)
+    assert pending['pending'] is True
+    assert pending['status'] == 'uploading'
+    assert manager.get_agent_by_id(agent['id'])['deployments'][deployment_id]['status'] != 'failed'
+    manager.finish_deployment_preparation(agent['id'], deployment_id)
+    monkeypatch.setattr(manager, '_deployment_request', lambda *_a, **_k: {
+        'success': True, 'status': 'succeeded', 'config_version': 'confirmed'})
+    assert manager.get_deployment(agent['id'], deployment_id)['status'] == 'succeeded'
+
+
+def test_missing_agent_journal_after_upload_still_fails(env, monkeypatch):
+    _, manager, agent, _ = env
+    manager.begin_deployment(agent['id'], 'missing-upload')
+    manager.record_deployment(agent['id'], 'missing-upload', {'status': 'uploading', 'submitted': True})
+    manager.finish_deployment_preparation(agent['id'], 'missing-upload')
+    monkeypatch.setattr(manager, '_deployment_request', lambda *_a, **_k: {
+        'success': False, 'http_status': 404})
+    assert manager.get_deployment(agent['id'], 'missing-upload')['status'] == 'failed'
+
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_route_preparation_progress_is_visible_throttled_and_terminal_safe(env, monkeypatch, fail):
+    from flask import Flask
+    from backend.routes import agents as routes, register_blueprints
+    _, manager, agent, config = env
+    monkeypatch.setattr(routes, 'get_agent_manager', lambda: manager)
+    now = [10.0]
+    monkeypatch.setattr(routes.time, 'monotonic', lambda: now[0])
+    messages = []
+    original_record = manager.record_deployment
+
+    def record(agent_id, deployment_id, updates):
+        if updates.get('status') == 'preparing':
+            messages.append(updates['message'])
+        return original_record(agent_id, deployment_id, updates)
+
+    monkeypatch.setattr(manager, 'record_deployment', record)
+    app = Flask(__name__)
+    register_blueprints(app)
+    client = app.test_client()
+
+    def prepare(*_args, progress, **_kwargs):
+        for done in range(6):
+            progress(done, 5)
+            if done == 2:
+                now[0] += 1.1
+        state = client.get(f'/api/agents/{agent["id"]}/deployments/progress').json
+        assert state['status'] == 'preparing'
+        assert state['message'] == '规则文件准备完成，正在打包'
+        if fail:
+            raise DeploymentPreparationError('Invalid candidate')
+        return {'bundle': minimal_bundle(agent, config, 'progress'), 'config_content': 'mode: rule',
+                'prepared_providers': [], 'provider_downloads': [], 'ruleset_downloads': [], 'custom_files': []}
+
+    monkeypatch.setattr(routes, '_prepare_transactional_content', prepare)
+    monkeypatch.setattr(manager, 'push_config_to_agent', lambda *_a, **_k:
+                        manager.record_deployment(agent['id'], 'progress', {'success': True, 'status': 'succeeded'}))
+    result = client.post(f'/api/agents/{agent["id"]}/push-config', json={'deployment_id': 'progress'})
+    assert result.status_code == (400 if fail else 200)
+    assert result.json['status'] == ('failed' if fail else 'succeeded')
+    assert messages == ['正在生成并检查配置', '正在准备规则文件 0/5', '正在准备规则文件 3/5',
+                        '规则文件准备完成，正在打包'] + ([] if fail else ['文件已准备，正在校验并连接设备'])
+    final = client.get(f'/api/agents/{agent["id"]}/deployments/progress').json
+    assert final['status'] == result.json['status']
+    assert final.get('message') == ('Invalid candidate' if fail else None)
+    assert not manager._preparation_running(agent['id'], 'progress')
+
+
 @pytest.mark.parametrize('status', ['preparing', 'uploading', 'checking', 'ready', 'rollback_failed'])
 def test_profile_rebinding_rejected_for_every_unfinished_deployment(env, status):
     from backend.agents.manager import AgentDeploymentConflict
