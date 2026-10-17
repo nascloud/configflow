@@ -115,7 +115,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import OxiDNSMetric from './OxiDNSMetric.vue'
 import OxiDNSRankingTable from './OxiDNSRankingTable.vue'
 import { formatMonitorNumber, monitorNumber, type OxiDNSOverview, type OxiDNSRankings } from '@/types/oxidnsMonitor'
-const props = defineProps<{ overview: OxiDNSOverview; qps: number | null; recorder?: string }>()
+const props = defineProps<{ overview: OxiDNSOverview; qps: number | null; recorder?: string; resetting?: boolean }>()
 defineEmits<{ recorder: [value: string] }>()
 const periodLabel = computed(() => props.overview.statistics ? '自本轮统计开始以来' : '自核心启动以来')
 const rankings = computed<OxiDNSRankings | null>(() => props.overview.rankings && 'success' in props.overview.rankings && props.overview.rankings.success === true ? props.overview.rankings : null)

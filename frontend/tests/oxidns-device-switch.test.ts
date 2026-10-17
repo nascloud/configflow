@@ -39,7 +39,7 @@ async function render(path = '/agents/one/oxidns') {
   const shell = defineComponent({ components: { RouterView }, setup: () => ({ route: useRoute() }), template: '<RouterView :key="route.path" />' })
   const wrapper = mount(shell, { global: { plugins: [router], stubs: {
     OxidnsSettings: { props: ['profileId', 'initialFeature', 'contextLabel'], template: '<div data-test="recorder-settings">{{ profileId }} · {{ initialFeature }} · {{ contextLabel }}</div>' },
-    OxiDNSOverviewPanel: { props: ['overview'], template: '<div data-test="overview">{{ overview.agent.name }}</div>' },
+    OxiDNSOverviewPanel: { props: ['overview', 'resetting'], template: '<div data-test="overview" :data-resetting="String(resetting)">{{ overview.agent.name }}</div>' },
     OxiDNSQueryTable: { props: ['data'], emits: ['detail'], template: '<div data-test="queries">{{ data?.records[0]?.client_ip }}<button data-test="detail" @click="$emit(\'detail\', { id: 12 })">详情</button></div>' },
     OxiDNSQueryDetail: { props: ['agentId'], template: '<div data-test="query-detail">{{ agentId }}</div>' }
   } } })
@@ -198,6 +198,18 @@ describe('OxiDNS dashboard reset confirmation', () => {
     await flushPromises()
     expect(oxidnsMonitorApi.resetStatistics).toHaveBeenCalledWith('one', 'queries', expect.anything())
     expect(notify.success).toHaveBeenCalledWith('已重新开始统计', expect.stringContaining('查询记录已保留'))
+  })
+  it('passes pending reset state to the overview until the request completes', async () => {
+    let finish!: (value: any) => void
+    vi.mocked(oxidnsMonitorApi.resetStatistics).mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    const { wrapper } = await render()
+    expect(wrapper.get('[data-test="overview"]').attributes('data-resetting')).toBe('false')
+    await wrapper.findAll('button').find(button => button.text() === '重置统计')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="overview"]').attributes('data-resetting')).toBe('true')
+    finish(response({ ...snapshot('one'), statistics: { generation: 'reset', started_at_ms: 0, reason: 'manual', partial: false } }))
+    await flushPromises()
+    expect(wrapper.get('[data-test="overview"]').attributes('data-resetting')).toBe('false')
   })
   it('does not reset a newly selected device when an old confirmation is accepted', async () => {
     let accept!: (value: boolean) => void
