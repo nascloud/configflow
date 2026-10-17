@@ -1,4 +1,8 @@
-"""RouterOS v7 driver (read-only) using the REST API (``/rest``, RouterOS 7.1+)."""
+"""RouterOS v7 driver using the REST API (``/rest``, RouterOS 7.1+).
+
+Reads go through REST; release operations are rendered as an ``.rsc`` script
+for the user to review and import instead of being applied directly.
+"""
 import ipaddress
 import re
 from typing import Any, Dict, List
@@ -92,6 +96,36 @@ class RouterOSDriver(RouterDriver):
                 id=str(row.get('.id', '')), dst=dst, src=src,
                 enabled=not _truthy(row.get('disabled')), comment=str(row.get('comment') or '')))
         return state
+
+
+    def render_script(self, ops: List[Dict[str, Any]]) -> str:
+        lines = ['# ConfigFlow 生成：请在 RouterOS 终端中检查后执行（/import 或粘贴）']
+        for op in ops:
+            kind = op['kind']
+            lines.append(f'# {op["summary"]}')
+            if kind == 'route_add':
+                lines.append(f'/ip route add dst-address={op["cidr"]} gateway={op["gateway"]} '
+                             f'comment={_quote(op["comment"])}')
+            elif kind == 'route_comment':
+                lines.append(f'/ip route set [find where .id={op["id"]}] comment={_quote(op["comment"])}')
+            elif kind == 'route_delete':
+                lines.append(f'/ip route remove [find where .id={op["id"]}]')
+            elif kind == 'nat_update':
+                lines.append(f'/ip firewall nat set [find where .id={op["id"]}] comment={_quote(op["comment"])}')
+                for cidr in op.get('add_dst') or []:
+                    lines.append(f'/ip firewall nat add chain=srcnat action=accept dst-address={cidr} '
+                                 f'comment={_quote(op["comment"])} place-before=0')
+            elif kind == 'nat_add':
+                for source in op['src']:
+                    lines.append(f'/ip firewall address-list add list=cf-nat-src address={source} comment=cf')
+                for cidr in op['dst']:
+                    lines.append(f'/ip firewall nat add chain=srcnat action=accept src-address-list=cf-nat-src '
+                                 f'dst-address={cidr} comment={_quote(op["comment"])} place-before=0')
+        return '\n'.join(lines) + '\n'
+
+
+def _quote(text: str) -> str:
+    return '"' + str(text).replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$') + '"'
 
 
 def _truthy(value: Any) -> bool:

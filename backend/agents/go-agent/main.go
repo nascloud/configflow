@@ -123,6 +123,7 @@ func main() {
 	// 3. 在后台启动心跳循环
 	startDiskCleanup(cfg)
 	StartHeartbeatLoop(cfg)
+	routes.ReapplyReturnRouting(toRoutesConfig(cfg))
 
 	// 4. 在前台启动 API 服务器 (这是一个阻塞操作)
 	StartAPIServer(cfg)

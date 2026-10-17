@@ -69,7 +69,7 @@ func TestCollectReturnRouting(t *testing.T) {
 		}
 		return "", errors.New("unexpected command")
 	}
-	result := collectReturnRouting()
+	result := collectReturnRouting(&Config{})
 	if result["nft_available"] != true || result["iproute_available"] != true {
 		t.Fatalf("availability flags: %v", result)
 	}
@@ -91,13 +91,13 @@ func TestCollectReturnRoutingWithoutTools(t *testing.T) {
 	defer func() { runCommand, listInterfaces = oldRun, oldIfaces }()
 	listInterfaces = func() []string { return nil }
 	runCommand = func(string, ...string) (string, error) { return "", errors.New("not found") }
-	result := collectReturnRouting()
+	result := collectReturnRouting(&Config{})
 	if result["nft_available"] != false || result["iproute_available"] != false || result["success"] != true {
 		t.Fatalf("missing tools must still report: %v", result)
 	}
 }
 
-func TestReturnRoutingHandlerRejectsWrites(t *testing.T) {
+func TestReturnRoutingHandlerRejectsPost(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ReturnRoutingHandler(&Config{})(recorder, httptest.NewRequest(http.MethodPost, "/api/return-routing", nil))
 	if recorder.Code != http.StatusMethodNotAllowed {

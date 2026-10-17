@@ -25,7 +25,7 @@ def find_router(config: Dict[str, Any], router_id: str) -> Optional[Dict[str, An
 
 def public_view(router: Dict[str, Any]) -> Dict[str, Any]:
     """Router as returned to the UI: never expose the password."""
-    result = {key: router.get(key) for key in ('id', *EDITABLE_FIELDS, 'last_probe')}
+    result = {key: router.get(key) for key in ('id', *EDITABLE_FIELDS, 'last_probe', 'last_release')}
     result['has_password'] = bool(router.get('password'))
     return result
 
@@ -79,7 +79,7 @@ def redact_routers(routers: Any) -> Any:
     items = []
     for item in routers.get('items') or []:
         if isinstance(item, dict):
-            clean = {key: value for key, value in item.items() if key not in ('password', 'last_probe')}
+            clean = {key: value for key, value in item.items() if key not in ('password', 'last_probe', 'last_release')}
             if clean.get('username'):
                 clean['username'] = '[REDACTED]'
             if clean.get('endpoint'):

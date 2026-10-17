@@ -6,7 +6,9 @@ import { NAV_GROUPS, scopeOfPath } from '@/navigation'
 
 vi.mock('@/api', () => ({
   agentApi: { getAll: vi.fn() },
-  routerApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), probe: vi.fn(), report: vi.fn() },
+  routerApi: {
+    list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn(), probe: vi.fn(), report: vi.fn(), plan: vi.fn(), apply: vi.fn()
+  },
   ruleApi: { getAll: vi.fn() }
 }))
 vi.mock('@/lib/feedback', () => ({ notify: { success: vi.fn(), error: vi.fn() }, confirmDanger: vi.fn() }))
@@ -69,5 +71,45 @@ describe('routers view', () => {
     for (const label of ['已同步', '可接管', '缺失', '存在差异', '已配置', 'mihomo_return', '8.8.8.8/32', '没有本地缓存']) {
       expect(text).toContain(label)
     }
+  })
+
+  it('previews a release and applies it with the previewed fingerprint', async () => {
+    vi.mocked(routerApi.list).mockResolvedValue({ data: { success: true, routers: [ROUTER] } } as any)
+    vi.mocked(agentApi.getAll).mockResolvedValue({ data: [] } as any)
+    vi.mocked(ruleApi.getAll).mockResolvedValue({ data: [] } as any)
+    vi.mocked(routerApi.report).mockResolvedValue({ data: { success: true, report: REPORT, generated_at: '2026-10-17T10:00:00' } } as any)
+    vi.mocked(routerApi.plan).mockResolvedValue({ data: { success: true, plan: {
+      blockers: [], warnings: ['149.154.160.0/20：同网段路由下一跳为 192.0.2.9。本次跳过该网段'], script: '', fingerprint: 'abc123', empty: false,
+      stages: [
+        { key: 'return_routing', title: 'mihomo 回流规则', manual: false, ops: [{ kind: 'return_routing_apply', summary: '接管并移除手工规则 inet mihomo_return' }] },
+        { key: 'routes', title: '主路由代理路由', manual: false, ops: [{ kind: 'route_add', summary: '新增路由 91.108.0.0/16 → 192.0.2.4' }] },
+        { key: 'nat_bypass', title: '主路由 NAT 免转换', manual: false, ops: [] }
+      ]
+    } } } as any)
+    vi.mocked(routerApi.apply).mockResolvedValue({ data: { success: true, result: {
+      ok: true, rollback: [],
+      log: [{ stage: 'routes', summary: '新增路由 91.108.0.0/16 → 192.0.2.4', status: 'ok' }, { stage: 'routes', summary: '回读校验通过', status: 'verified' }]
+    } } } as any)
+
+    const wrapper = mount(Routers, { attachTo: document.body })
+    wrappers.push(wrapper)
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text().includes('差异报告'))!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text().includes('预览发布'))!.trigger('click')
+    await flushPromises()
+    expect(routerApi.plan).toHaveBeenCalledWith('router_1')
+    expect(routerApi.apply).not.toHaveBeenCalled()
+    const body = document.body.textContent || ''
+    for (const label of ['mihomo 回流规则', '接管并移除手工规则', '新增路由 91.108.0.0/16', '无变更', '本次跳过该网段']) {
+      expect(body).toContain(label)
+    }
+
+    const confirm = Array.from(document.body.querySelectorAll('button')).find(button => button.textContent?.includes('确认发布'))
+    confirm!.click()
+    await flushPromises()
+    expect(routerApi.apply).toHaveBeenCalledWith('router_1', 'abc123')
+    expect(document.body.textContent).toContain('发布完成')
+    expect(document.body.textContent).toContain('已校验')
   })
 })

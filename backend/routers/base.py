@@ -1,14 +1,15 @@
 """Common types for upstream router drivers.
 
-Drivers are read-only in P0: they probe the device and return the objects
-relevant to side-gateway deployments, normalized to a vendor-neutral shape so
-the drift report does not need to know router specifics.
+Drivers probe the device and return the objects relevant to side-gateway
+deployments, normalized to a vendor-neutral shape so the drift report does not
+need to know router specifics. Writable drivers apply release operations (see
+``backend.routers.plan``) one at a time and return the operation that undoes it.
 """
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-# Prefix written into comment/tagname of objects ConfigFlow manages. In P0 it
-# is only used to classify existing objects as managed or adoptable.
+# Prefix written into the comment of objects ConfigFlow manages; objects without
+# it are never modified except when adopted (re-commented) during a release.
 MANAGED_PREFIX = 'cf'
 
 
@@ -53,12 +54,21 @@ class RouterState:
 
 class RouterDriver:
     vendor = ''
+    # False: router stages are exported as a script for the user to import.
+    supports_write = False
 
     def probe(self) -> RouterInfo:
         raise NotImplementedError
 
     def read_state(self) -> RouterState:
         raise NotImplementedError
+
+    def apply(self, op: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply one release operation; return the operation that reverts it."""
+        raise RouterError(f'{self.vendor} 不支持直接写入')
+
+    def render_script(self, ops: List[Dict[str, Any]]) -> str:
+        return ''
 
     def close(self) -> None:
         pass
@@ -67,6 +77,12 @@ class RouterDriver:
 def is_managed(comment: Optional[str]) -> bool:
     text = (comment or '').strip().lower()
     return text == MANAGED_PREFIX or text.startswith(MANAGED_PREFIX + ':') or text.startswith(MANAGED_PREFIX + '-')
+
+
+def managed_comment(comment: Optional[str]) -> str:
+    """Tag a comment as managed, keeping what the user wrote: ``tg`` -> ``cf:tg``."""
+    text = (comment or '').strip()
+    return text if is_managed(text) else (f'{MANAGED_PREFIX}:{text}' if text else MANAGED_PREFIX)
 
 
 def as_dict(value: Any) -> Any:

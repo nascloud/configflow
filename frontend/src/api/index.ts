@@ -195,7 +195,10 @@ export const routerApi = {
   update: (id: string, data: unknown) => api.put(`/routers/${id}`, data),
   remove: (id: string) => api.delete(`/routers/${id}`),
   probe: (id: string) => api.post(`/routers/${id}/probe`, null, { timeout: 60000 }),
-  report: (id: string) => api.get(`/routers/${id}/report`, { timeout: 90000 })
+  report: (id: string) => api.get(`/routers/${id}/report`, { timeout: 90000 }),
+  plan: (id: string) => api.post(`/routers/${id}/plan`, null, { timeout: 90000 }),
+  apply: (id: string, fingerprint: string) =>
+    api.post(`/routers/${id}/apply`, { fingerprint }, { timeout: 300000 })
 }
 
 // OxiDNS 统一配置

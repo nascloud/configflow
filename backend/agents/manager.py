@@ -1133,6 +1133,15 @@ class AgentManager:
         """读取旁路网关上的回流规则现状（连接标记表、策略路由）。"""
         return self._agent_json_request(agent, 'get', '/api/return-routing', 15, '回流规则状态')
 
+    def return_routing_apply(self, agent: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str, Any]:
+        """在旁路网关上应用回流规则期望状态（可接管同 mark 的手工规则）。"""
+        return self._agent_json_request(agent, 'put', '/api/return-routing', 60, '回流规则管理', json=spec)
+
+    def return_routing_remove(self, agent: Dict[str, Any], restore_legacy: bool) -> Dict[str, Any]:
+        """删除受管回流规则；restore_legacy 时恢复被接管的手工规则。"""
+        return self._agent_json_request(agent, 'delete', '/api/return-routing', 60, '回流规则管理',
+                                        params={'restore_legacy': '1'} if restore_legacy else None)
+
     def region_targets(self, agent: Dict[str, Any]) -> List[Dict[str, Any]]:
         """探测组可切换的目标（节点与策略组）。"""
         return self._agent_json_request(agent, 'get', '/api/region-check/targets', 15, '区域检测').get('targets') or []

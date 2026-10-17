@@ -8,12 +8,13 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
-// Read-only report of side-gateway return routing (connection marks + policy
-// routing that force replies back through the upstream router). P0 only
-// inspects; managing the rules comes with transactional releases later.
+// Report of side-gateway return routing (connection marks + policy routing that
+// force replies back through the upstream router). Writes live in
+// return_routing_manage.go.
 
 // runCommand is replaceable in tests.
 var runCommand = func(name string, args ...string) (string, error) {
@@ -92,8 +93,8 @@ func parseFwmarkRules(output string) []fwmarkRule {
 	return rules
 }
 
-func collectReturnRouting() map[string]interface{} {
-	result := map[string]interface{}{"success": true}
+func collectReturnRouting(cfg *Config) map[string]interface{} {
+	result := map[string]interface{}{"success": true, "managed": managedReturnStatus(cfg)}
 
 	tablesOut, nftErr := runCommand("nft", "list", "tables")
 	result["nft_available"] = nftErr == nil
@@ -150,13 +151,21 @@ func collectReturnRouting() map[string]interface{} {
 	return result
 }
 
-// ReturnRoutingHandler serves GET /api/return-routing.
+// ReturnRoutingHandler serves /api/return-routing: GET reports, PUT applies the
+// desired state, DELETE removes managed rules (?restore_legacy=1 restores adopted ones).
 func ReturnRoutingHandler(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			JsonResponse(w, http.StatusOK, collectReturnRouting(cfg))
+		case http.MethodPut, http.MethodDelete:
+			returnRoutingMu.Lock()
+			defer returnRoutingMu.Unlock()
+			returnRoutingWrite(cfg, w, r)
+		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
 		}
-		JsonResponse(w, http.StatusOK, collectReturnRouting())
 	}
 }
+
+var returnRoutingMu sync.Mutex

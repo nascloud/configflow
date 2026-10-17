@@ -1,4 +1,4 @@
-"""Upstream routers (read-only P0): CRUD, capability probe and drift report."""
+"""Upstream routers: CRUD, capability probe, drift report and staged releases."""
 from datetime import datetime
 
 import requests
@@ -9,6 +9,8 @@ from backend.common.config import get_config, save_config
 from backend.routers.base import RouterError, as_dict
 from backend.routers.desired import compute_desired
 from backend.routers.ikuai import IKuaiDriver
+from backend.routers.plan import build_plan
+from backend.routers.release import AgentReturnRouting, execute
 from backend.routers.report import build_report
 from backend.routers.routeros import RouterOSDriver
 from backend.routers.store import (
@@ -102,6 +104,21 @@ def probe_router(router_id):
     return jsonify({'success': probe['ok'], 'probe': probe, 'message': probe.get('message', '')}), 200 if probe['ok'] else 502
 
 
+def _inspect(config, router, driver):
+    """Desired state, router state, drift report and Agent return-routing state."""
+    gateway_agent = _agent(router.get('proxy_gateway_agent_id'))
+    desired = compute_desired(config, gateway_agent.get('host') if gateway_agent else None,
+                              router.get('ip_rule_sets') or [])
+    state = driver.read_state()
+    report = build_report(desired, state)
+    report['return_routing'] = _return_routing(gateway_agent)
+    return gateway_agent, desired, state, report
+
+
+def _now():
+    return datetime.now().isoformat(timespec='seconds')
+
+
 @routers_bp.route('/<router_id>/report', methods=['GET'])
 @require_auth
 def router_report(router_id):
@@ -109,20 +126,72 @@ def router_report(router_id):
     router = find_router(config, router_id)
     if router is None:
         return _not_found()
-    gateway_agent = _agent(router.get('proxy_gateway_agent_id'))
-    desired = compute_desired(config, gateway_agent.get('host') if gateway_agent else None,
-                              router.get('ip_rule_sets') or [])
-
     driver = _driver(router)
     try:
-        state = driver.read_state()
+        _, _, _, report = _inspect(config, router, driver)
     except RouterError as error:
         return jsonify({'success': False, 'message': str(error)}), 502
     finally:
         driver.close()
-    report = build_report(desired, state)
-    report['return_routing'] = _return_routing(gateway_agent)
-    return jsonify({'success': True, 'report': report, 'generated_at': datetime.now().isoformat(timespec='seconds')})
+    return jsonify({'success': True, 'report': report, 'generated_at': _now()})
+
+
+@routers_bp.route('/<router_id>/plan', methods=['POST'])
+@require_auth
+def router_plan(router_id):
+    """Preview a release: nothing is written."""
+    config = get_config()
+    router = find_router(config, router_id)
+    if router is None:
+        return _not_found()
+    driver = _driver(router)
+    try:
+        _, desired, state, report = _inspect(config, router, driver)
+        plan = build_plan(router, desired, state, report, report['return_routing'], driver)
+    except RouterError as error:
+        return jsonify({'success': False, 'message': str(error)}), 502
+    finally:
+        driver.close()
+    return jsonify({'success': True, 'plan': plan, 'generated_at': _now()})
+
+
+@routers_bp.route('/<router_id>/apply', methods=['POST'])
+@require_auth
+def router_apply(router_id):
+    """Run the previewed release. The plan is rebuilt and must match the preview's fingerprint."""
+    config = get_config()
+    router = find_router(config, router_id)
+    if router is None:
+        return _not_found()
+    expected = str((request.get_json(silent=True) or {}).get('fingerprint') or '')
+    driver = _driver(router)
+    try:
+        gateway_agent, desired, state, report = _inspect(config, router, driver)
+        plan = build_plan(router, desired, state, report, report['return_routing'], driver)
+        if plan['blockers']:
+            return jsonify({'success': False, 'message': '；'.join(plan['blockers']), 'plan': plan}), 409
+        if not expected or plan['fingerprint'] != expected:
+            return jsonify({'success': False, 'message': '路由器、Agent 或期望状态在预览后发生了变化，请重新预览',
+                            'plan': plan}), 409
+        if plan['empty']:
+            return jsonify({'success': True, 'result': {'ok': True, 'log': [], 'rollback': []}, 'plan': plan})
+        from backend.common.agent_manager import get_agent_manager
+        result = execute(plan, driver, AgentReturnRouting(get_agent_manager(), gateway_agent))
+    except RouterError as error:
+        return jsonify({'success': False, 'message': str(error)}), 502
+    finally:
+        driver.close()
+
+    config = get_config()   # reload: the release may have taken a while
+    items = routers_of(config)
+    for item in items:
+        if item.get('id') == router_id:
+            item['last_release'] = {'at': _now(), 'ok': result['ok'], 'fingerprint': plan['fingerprint'],
+                                    'failed_stage': result.get('failed_stage', '')}
+    _save_items(config, items)
+    message = '' if result['ok'] else f'阶段「{result["failed_stage"]}」失败，已按逆序回滚'
+    return jsonify({'success': result['ok'], 'result': result, 'plan': plan, 'message': message}), \
+        200 if result['ok'] else 502
 
 
 def _return_routing(agent):

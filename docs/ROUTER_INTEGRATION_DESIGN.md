@@ -184,7 +184,7 @@ ConfigFlow 已有 Agent 心跳。mihomo Agent 离线时：
 | 阶段 | 内容 | 风险 |
 |---|---|---|
 | P0 | 只读：接入两种路由器（iKuai 仅 4.x）、能力探测、展示当前相关配置与期望状态的差异（漂移报告）；mihomo Agent 上报当前回流规则状态 | 无写操作 |
-| P1 | mihomo Agent 回流规则 + 主路由代理路由 + NAT 免转换，作为一次整体发布：预览、分阶段应用、健康检查、逆序回滚 | 中 |
+| P1 | mihomo Agent 回流规则 + 主路由代理路由 + NAT 免转换，作为一次整体发布：预览、分阶段应用、回读校验、逆序回滚（已实现） | 中 |
 | P2 | DNS 劫持（自动排除自身）+ DHCP DNS 下发 + DHCP 静态绑定；代理网关故障处理 | 中高 |
 | P3 | RouterOS 地址列表按规则集同步；与 OxiDNS RouterOS 插件共用连接；RouterOS `.rsc` 导出 | 低 |
 
@@ -196,6 +196,13 @@ ConfigFlow 已有 Agent 心跳。mihomo Agent 离线时：
 - mihomo 主机上的回流规则由 Go Agent 管理，与主路由的代理路由、NAT 免转换作为一次整体发布（见第 5 节）。
 - 现有手工配置直接接管：差异报告把“内容正确但没有 ConfigFlow 标记”的对象标为“可接管”，P1 发布时为其打上标记，不删除重建。
 - P0 已实现（分支 `feat/router-integration-p0`）：路由器接入、iKuai 4.x / RouterOS 驱动（只读）、期望状态计算、差异报告、mihomo Agent `GET /api/return-routing`、“上游路由”页面。
+- 代理网段只来自 fake-ip 网段与用户在路由器上**显式勾选**的规则集（按 IP 路由），不按策略推断。
+- P1 已实现（分支 `feat/router-integration-p1`）：
+  - **Agent** `PUT /api/return-routing` 应用期望状态：独立表 `inet configflow_return`（单事务整表替换）、路由表 104、`ip rule priority 104`、关闭 `send_redirects`；校验 mark 与 mihomo `routing-mark`/auto-redirect 标记不重叠、路由表与 `iproute2-table-index` 不冲突、优先级小于 `iproute2-rule-index`；`adopt_legacy` 接管同 mark 的手工表——先应用受管规则再删手工表，并把引用它的 `/etc/local.d/*.start|stop` 改名为 `*.configflow-disabled`，手工表导出保存。期望状态持久化在 Agent 目录 `return-routing.json`，Agent 启动时重新应用。`DELETE ?restore_legacy=1` 删除受管规则并恢复被接管的手工规则。
+  - **回流网段** = 期望代理网段 ∪ 发布后所有 NAT 免转换规则的目的网段（免转换但不打标记会导致回包不对称）。
+  - **iKuai 写入**：静态路由 add/edit/del、NAT 规则 add/edit，参数与字符串编码与 Web UI 一致（`%`→`%25`、空白→`%20` 等）；edit 先读回完整记录再改，回滚用读回的原记录。
+  - **发布**：`POST /api/routers/<id>/plan` 只生成计划（不写入，带指纹）；`POST /api/routers/<id>/apply` 重新计算计划，指纹不一致返回 409，一致才按“回流规则 → 代理路由 → NAT 免转换”执行，每阶段回读校验，失败逆序撤销。冲突网段整体跳过（路由、NAT、回流都不处理）并提示。
+  - **RouterOS**：路由器部分只生成 `.rsc` 脚本由用户导入，回流规则阶段照常由 Agent 执行。
 
 ## 11. 待确认的问题
 
