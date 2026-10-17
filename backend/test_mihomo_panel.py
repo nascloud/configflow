@@ -124,3 +124,18 @@ def test_route_requires_admin_auth_and_forwards_name(authenticated_app, calls):
     assert response.status_code == 200 and response.headers['Cache-Control'] == 'no-store'
     assert calls[0]['url'].endswith('/api/mihomo/proxies/%E8%8A%82%E7%82%B9%2FA')
     assert client.get(f'/api/agents/{aid}/mihomo/logs', headers=admin).status_code == 404
+
+
+def test_reload_and_upgrade_need_newer_agent_and_send_no_body(calls):
+    old = Manager()  # 1.8.15-go
+    for resource, method in (('configs/reload', 'PUT'), ('upgrade', 'POST')):
+        with pytest.raises(MonitorError) as exc:
+            panel.call(old, 'mihomo', resource, method, MultiDict(), {'path': '/tmp/evil.yaml'})
+        assert exc.value.code == 'UPGRADE_REQUIRED' and '1.8.16-go' in exc.value.message
+    assert calls == []
+    new = Manager({**AGENT, 'version': '1.8.16-go'})
+    panel.call(new, 'mihomo', 'configs/reload', 'PUT', MultiDict(), {'path': '/tmp/evil.yaml', 'payload': 'x'})
+    panel.call(new, 'mihomo', 'upgrade', 'POST', MultiDict({'channel': 'alpha'}))
+    assert [(c['method'], c['url'].rsplit('/api/mihomo/', 1)[1], c['data'], c['params']) for c in calls] == [
+        ('PUT', 'configs', None, {}), ('POST', 'upgrade', None, {})]
+    assert calls[1]['timeout'] == (3, 200)

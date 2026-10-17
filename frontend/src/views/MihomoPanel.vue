@@ -21,6 +21,7 @@
       </template>
       <template v-if="agentId" #actions>
         <Segmented :model-value="mode" :options="MODE_OPTIONS" label="代理模式" :disabled="!coreVersion || modeSaving" @update:model-value="changeMode" />
+        <MihomoCoreActions :agent-id="agentId" :disabled="!coreVersion && !statusError" @changed="reloadAll" />
         <Button variant="outline" class="min-h-11" :disabled="statusLoading" @click="reloadAll">
           <RefreshCw class="size-4" :class="{ 'animate-spin': statusLoading }" />刷新
         </Button>
@@ -83,6 +84,7 @@ import Segmented from '@/components/common/Segmented.vue'
 import MihomoProxies from '@/components/mihomo/MihomoProxies.vue'
 import MihomoConnections from '@/components/mihomo/MihomoConnections.vue'
 import MihomoRules from '@/components/mihomo/MihomoRules.vue'
+import MihomoCoreActions from '@/components/mihomo/MihomoCoreActions.vue'
 import { agentApi, mihomoPanelApi } from '@/api'
 import { notify } from '@/lib/feedback'
 import { panelError, type MihomoMode } from '@/types/mihomo'

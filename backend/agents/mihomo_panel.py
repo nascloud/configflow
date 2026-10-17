@@ -38,7 +38,13 @@ ROUTES = {
     ('providers/rule', 'PUT'): 'providers/rules/{name}',
     ('cache/fakeip/flush', 'POST'): 'cache/fakeip/flush',
     ('cache/dns/flush', 'POST'): 'cache/dns/flush',
+    # The Agent reloads the core's current config file and ignores any body.
+    ('configs/reload', 'PUT'): 'configs',
+    ('upgrade', 'POST'): 'upgrade',
 }
+# Core operations added after the first panel release need a newer Agent.
+RESOURCE_MIN_VERSION = {'configs/reload': '1.8.16-go', 'upgrade': '1.8.16-go'}
+RESOURCE_TIMEOUT = {'configs/reload': 70, 'upgrade': 200}
 MODES = ('rule', 'global', 'direct')
 
 MESSAGES = {
@@ -56,18 +62,19 @@ def _fail(code, status=502, message=None):
     return MonitorError(code, status, message or MESSAGES.get(code, MESSAGES['INVALID_RESPONSE']))
 
 
-def _agent(manager, agent_id):
+def _agent(manager, agent_id, min_version=MIN_AGENT_VERSION):
     agent = manager.get_agent_by_id(agent_id)
     if not agent:
         raise _fail('AGENT_NOT_FOUND', 404, '未找到这台 Agent。')
     if agent.get('service_type', 'mihomo') != 'mihomo':
         raise _fail('WRONG_SERVICE', 400, 'Mihomo 面板仅适用于 Mihomo Agent。')
     try:
-        supported = compare_versions(agent.get('version', '0'), MIN_AGENT_VERSION) >= 0
+        supported = compare_versions(agent.get('version', '0'), min_version) >= 0
     except (ValueError, TypeError, AttributeError):
         supported = False
     if not supported:
-        raise _fail('UPGRADE_REQUIRED', 409, f'请将此 Agent 升级到 {MIN_AGENT_VERSION} 或更新版本后使用 Mihomo 面板。')
+        feature = 'Mihomo 面板' if min_version == MIN_AGENT_VERSION else '这个内核操作'
+        raise _fail('UPGRADE_REQUIRED', 409, f'请将此 Agent 升级到 {min_version} 或更新版本后使用{feature}。')
     return agent
 
 
@@ -95,7 +102,7 @@ def _query(resource, args):
 
 
 def _body(resource, method, body):
-    if method not in ('PUT', 'PATCH'):
+    if method not in ('PUT', 'PATCH') or resource == 'configs/reload':
         return None
     if resource == 'proxy':
         # Switching a selector group: {"name": "<member>"}
@@ -115,12 +122,13 @@ def call(manager, agent_id, resource, method, args, body=None):
     template = ROUTES.get((resource, method))
     if template is None:
         raise _fail('NOT_ALLOWED', 404, '面板不支持这个操作。')
-    agent = _agent(manager, agent_id)
+    agent = _agent(manager, agent_id, RESOURCE_MIN_VERSION.get(resource, MIN_AGENT_VERSION))
     path = template.replace('{name}', quote(_name(args), safe='')) if '{name}' in template else template
     params = _query(resource, args)
     payload = _body(resource, method, body)
     url = _agent_origin(agent) + '/api/mihomo/' + path
-    timeout = 40 if resource.endswith(('delay', 'healthcheck')) or resource.startswith('providers/') else 20
+    timeout = RESOURCE_TIMEOUT.get(resource) or (
+        40 if resource.endswith(('delay', 'healthcheck')) or resource.startswith('providers/') else 20)
     try:
         with requests.Session() as session:
             session.trust_env = False

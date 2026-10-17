@@ -54,7 +54,8 @@ func TestMihomoPanelRejectsOtherEndpoints(t *testing.T) {
 		method, target string
 		status         int
 	}{
-		{"PUT", "/api/mihomo/configs", http.StatusMethodNotAllowed},
+		{"PUT", "/api/mihomo/rules", http.StatusMethodNotAllowed},
+		{"POST", "/api/mihomo/upgrade/ui", http.StatusNotFound},
 		{"POST", "/api/mihomo/restart", http.StatusNotFound},
 		{"GET", "/api/mihomo/logs", http.StatusNotFound},
 		{"DELETE", "/api/mihomo/rules", http.StatusMethodNotAllowed},
@@ -88,5 +89,37 @@ func TestMihomoPanelRequiresMihomoAgent(t *testing.T) {
 	mihomoPanelHandler(&Config{ServiceType: "oxidns"})(recorder, httptest.NewRequest("GET", "/api/mihomo/version", nil))
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("got %d", recorder.Code)
+	}
+}
+
+func TestMihomoPanelReloadOnlyUsesCurrentConfigFile(t *testing.T) {
+	var seen string
+	handler := newMihomoPanelFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seen = r.Method + " " + r.URL.RequestURI() + " " + string(body)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	recorder := httptest.NewRecorder()
+	handler(recorder, httptest.NewRequest("PUT", "/api/mihomo/configs?force=false",
+		strings.NewReader(`{"path":"/tmp/evil.yaml","payload":"mode: global"}`)))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("got %d %s", recorder.Code, recorder.Body.String())
+	}
+	if want := `PUT /configs?force=true {"path":"","payload":""}`; seen != want {
+		t.Fatalf("forwarded %q, want %q", seen, want)
+	}
+}
+
+func TestMihomoPanelUpgradeDropsQueryAndBody(t *testing.T) {
+	var seen string
+	handler := newMihomoPanelFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seen = r.Method + " " + r.URL.RequestURI() + " " + string(body)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+	recorder := httptest.NewRecorder()
+	handler(recorder, httptest.NewRequest("POST", "/api/mihomo/upgrade?channel=alpha&force=true", strings.NewReader(`{"path":"x"}`)))
+	if recorder.Code != http.StatusOK || seen != "POST /upgrade " {
+		t.Fatalf("got %d, forwarded %q", recorder.Code, seen)
 	}
 }

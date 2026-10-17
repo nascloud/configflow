@@ -1,10 +1,16 @@
 """Agent 版本管理"""
 
 # Agent 最新版本号
-LATEST_AGENT_VERSION = "1.8.15-go"
+LATEST_AGENT_VERSION = "1.8.16-go"
 
 # 版本更新日志（可选）
 VERSION_CHANGELOG = {
+    "1.8.16-go": {
+        "date": "2026-10-18",
+        "features": [
+            "Mihomo 面板支持重载配置（只从内核当前配置文件重新读取）和更新内核；两者与配置推送、服务重启共用服务操作锁"
+        ]
+    },
     "1.8.15-go": {
         "date": "2026-10-17",
         "features": [
