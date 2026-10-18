@@ -6,6 +6,8 @@ excludes a potentially translating rule; other packet matchers remain possible.
 import ipaddress
 from typing import Any, Dict, Optional, Tuple
 
+from backend.routers.base import RouteEntry, static_route_selection
+
 
 NON_TRANSLATING = {'accept', 'log', 'passthrough', 'return'}
 TRANSLATING = {'masquerade', 'src-nat', 'netmap', 'same', 'endpoint-independent-nat'}
@@ -101,22 +103,30 @@ def _egress(cidr: str, gateway: str, context: Dict[str, Any], *,
     if policy_routing:
         return _gateway_egress(next_hop, main)
 
-    # A more-specific route can send part of this destination elsewhere. Do not
-    # infer one egress from an aggregate route in that case.
-    if any(_enabled(row) and network != target and network.subnet_of(target)
-           for row, network in main):
-        return None, '代理网段内存在更细的路由，不能确定整个网段使用同一旁路出口'
-
-    exact = [row for row, network in main if network == target]
-    if exact:
-        if len(exact) != 1:
-            return None, '同一代理网段存在多条路由，不能排除多出口或冲突'
-        row = exact[0]
-        if (not _enabled(row) or not _truthy(row.get('active'))
+    entries, raw = [], {}
+    for index, (row, network) in enumerate(main):
+        active = _truthy(row['active']) if 'active' in row else None
+        if active is None and 'inactive' in row:
+            active = not _truthy(row['inactive'])
+        if _truthy(row.get('inactive')) or _truthy(row.get('invalid')):
+            active = False
+        try:
+            distance = int(row['distance'])
+        except (KeyError, TypeError, ValueError):
+            distance = None
+        key = str(index)
+        entries.append(RouteEntry(key, str(network), str(row.get('gateway') or ''), _enabled(row),
+                                  active=active, distance=distance))
+        raw[key] = row
+    selection = static_route_selection(entries, cidr, str(next_hop))
+    if selection.conflict:
+        return None, '代理网段存在有效的其他下一跳，不能确定整个网段使用同一旁路出口'
+    interfaces = set()
+    for entry in selection.selected:
+        row = raw[entry.id]
+        if (entry.active is not True
                 or any(_truthy(row.get(key)) for key in ('blackhole', 'invalid', 'ecmp'))):
             return None, '代理路由未生效、无效、属于黑洞路由或包含多个等价出口'
-        if str(row.get('gateway') or '') != str(next_hop):
-            return None, '代理路由下一跳与计划中的旁路地址不一致'
         immediate = str(row.get('immediate-gw') or '')
         parts = immediate.split('%')
         if len(parts) != 2:
@@ -128,9 +138,18 @@ def _egress(cidr: str, gateway: str, context: Dict[str, Any], *,
         interface = _interface(parts[1])
         if not interface:
             return None, '代理路由包含多个或无法识别的实际出口'
-        return interface, ''
+        interfaces.add(interface)
 
-    return _gateway_egress(next_hop, main)
+    if not selection.covered:
+        if any(network == target for _, network in main):
+            return None, '代理路由未生效，无法确认整个网段的实际出口'
+        interface, error = _gateway_egress(next_hop, main)
+        if interface is None:
+            return None, error
+        interfaces.add(interface)
+    if len(interfaces) != 1:
+        return None, '代理网段的有效路由使用不同或无法确认的实际出口'
+    return next(iter(interfaces)), ''
 
 
 def _gateway_egress(next_hop, main):
@@ -252,3 +271,56 @@ def assess_nat(cidr: str, gateway: str, state, *, policy_routing: bool = False) 
         return {'status': 'missing', 'detail': '存在可能匹配旁路流量的源 NAT 转换规则，需要免 NAT 保护'}
     return {'status': 'not_required',
             'detail': f'旁路出口为 {interface}，与启用的潜在源 NAT 规则均不匹配，无需额外免 NAT'}
+
+
+def preserves_sources(rows, sources, destinations, interface, context):
+    """Prove no source translation for every source/destination pair, in order.
+
+    Only literal address and proven egress selectors can discharge coverage.
+    Other matchers never establish an unconditional exemption. An unsupported
+    translating/jump rule remains a possible match and prevents the proof.
+    """
+    pending = [(source, destination) for source in sources for destination in destinations]
+    fields = {'.id', 'chain', 'action', 'disabled', 'comment', 'log', 'log-prefix',
+              'bytes', 'packets', 'dynamic', 'invalid', 'src-address', 'dst-address',
+              'out-interface'}
+    for row in rows:
+        if not pending:
+            return True
+        if not _enabled(row) or row.get('chain') not in ('srcnat', None):
+            continue
+        egress_match = _selector_matches(row.get('out-interface'), interface, context, False)
+        list_match = _selector_matches(row.get('out-interface-list'), interface, context, True)
+        if egress_match is False or list_match is False:
+            continue
+        try:
+            source = ipaddress.IPv4Network(row.get('src-address') or '0.0.0.0/0', strict=False)
+            destination = ipaddress.IPv4Network(row.get('dst-address') or '0.0.0.0/0', strict=False)
+        except (ValueError, TypeError):
+            source = destination = None
+        affected = [(src, dst) for src, dst in pending
+                    if source is None or (src.overlaps(source) and dst.overlaps(destination))]
+        if not affected:
+            continue
+        action = row.get('action')
+        if action in ('log', 'passthrough'):
+            continue
+        if action != 'accept':
+            return False
+        if (source is None or not row.get('chain') or set(row) - fields
+                or _truthy(row.get('invalid')) or _truthy(row.get('dynamic'))
+                or egress_match is not True):
+            continue
+        remainder = []
+        for src, dst in pending:
+            if not src.overlaps(source) or not dst.overlaps(destination):
+                remainder.append((src, dst))
+                continue
+            src_hit = src if src.subnet_of(source) else source
+            dst_hit = dst if dst.subnet_of(destination) else destination
+            remainder.extend((part, dst) for part in src.address_exclude(src_hit))
+            remainder.extend((src_hit, part) for part in dst.address_exclude(dst_hit))
+        pending = remainder
+    # Uncovered packets are safe only if no possibly matching translation or
+    # unsupported control flow was encountered on their path through the chain.
+    return True

@@ -5,6 +5,7 @@ deployments, normalized to a vendor-neutral shape so the drift report does not
 need to know router specifics. Writable drivers apply release operations (see
 ``backend.routers.plan``) one at a time and return the operation that undoes it.
 """
+import ipaddress
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +41,106 @@ class RouteEntry:
     gateway: str
     enabled: bool
     comment: str = ''
+    table: str = 'main'
+    # None means this driver/API response did not supply runtime evidence.
+    active: Optional[bool] = None
+    distance: Optional[int] = None
+
+
+@dataclass
+class StaticRouteSelection:
+    """Forwarding evidence and the minimal correct route ownership proof.
+
+    ``candidates`` must ALL be owned to verify a deployment. It never includes
+    a wrong aggregate merely because correct more-specific routes shadow it.
+    ``selected`` includes every potentially forwarding route for NAT evidence.
+    """
+    candidates: List[RouteEntry] = field(default_factory=list)
+    selected: List[RouteEntry] = field(default_factory=list)
+    covered: bool = False
+    conflict: bool = False
+
+
+def _preferred_routes(routes: List[RouteEntry]) -> List[RouteEntry]:
+    live = [route for route in routes if route.active is not False]
+    if not live:
+        return []
+    active = [route for route in live if route.active is True]
+    distance = min((route.distance for route in active or live if route.distance is not None),
+                   default=None)
+    # Active alternatives remain possible even when preference contradicts
+    # runtime evidence. Inactive equal/lower-distance siblings are likewise
+    # ambiguous; an inactive more-specific prefix alone cannot forward.
+    return [route for route in routes
+            if route.active is True
+            or (route.distance is not None and distance is not None and route.distance <= distance)
+            or (route.active is not False and (route.distance is None or distance is None))]
+
+
+def static_route_selection(routes: List[RouteEntry], cidr: str, gateway: str) -> StaticRouteSelection:
+    """Prove effective coverage using longest-prefix and runtime selection.
+
+    Destination boundaries partition the target without enumerating addresses.
+    A wrong aggregate is harmless only if correct effective subnets cover every
+    address. Drivers lacking runtime/preference evidence retain legacy exact
+    configured-route semantics.
+    """
+    target = ipaddress.ip_network(cidr, strict=False)
+    groups = {}
+    for route in routes:
+        if route.table != 'main' or not route.enabled:
+            continue
+        try:
+            network = ipaddress.ip_network(route.dst, strict=False)
+        except ValueError:
+            continue
+        if network.version == target.version and network.subnet_of(target):
+            groups.setdefault(network, []).append(route)
+    exact = groups.get(target, [])
+    result = StaticRouteSelection()
+    if not any(route.active is not None or route.distance is not None
+               for group in groups.values() for route in group):
+        good = [route for route in exact if gateway and route.gateway == gateway]
+        if good:
+            result.candidates = [next((route for route in good if is_managed(route.comment)), good[0])]
+            result.selected = good
+            result.covered = True
+        return result
+
+    preferred = {network: _preferred_routes(group) for network, group in groups.items()}
+    boundaries = {int(target.network_address), int(target.broadcast_address) + 1}
+    for network, group in preferred.items():
+        if group:
+            boundaries.update((int(network.network_address), int(network.broadcast_address) + 1))
+    selected_groups = {}
+    result.covered = True
+    for start in sorted(boundaries)[:-1]:
+        covering = [network for network, group in preferred.items()
+                    if group and int(network.network_address) <= start <= int(network.broadcast_address)]
+        if not covering:
+            result.covered = False
+            continue
+        network = max(covering, key=lambda network: network.prefixlen)
+        selected_groups[network] = preferred[network]
+    result.selected = [route for group in selected_groups.values() for route in group]
+    result.conflict = any(not gateway or route.gateway != gateway for route in result.selected)
+    if result.covered and not result.conflict:
+        # A correct effective exact route remains the deployment anchor even
+        # when manual same-gateway specifics exist. Otherwise own the complete
+        # more-specific coverage, not an unrelated/wrong exact route.
+        anchors = preferred.get(target, [])
+        ownership = [anchors] if anchors and all(route.gateway == gateway for route in anchors) else selected_groups.values()
+        for group in ownership:
+            live = [route for route in group if route.active is True]
+            if not live:
+                live = [route for route in group if route.active is not False]
+            result.candidates.append(next((route for route in live if is_managed(route.comment)), live[0]))
+    return result
+
+
+def static_route_candidates(routes: List[RouteEntry], cidr: str, gateway: str) -> List[RouteEntry]:
+    """Return the complete ownership proof, empty for incomplete/unsafe coverage."""
+    return static_route_selection(routes, cidr, gateway).candidates
 
 
 @dataclass
