@@ -186,13 +186,14 @@ def _verify_replacement_nat(driver, op, resources):
     previous = (op.get('previous') or {}).get('spec') or {}
     if not previous.get('sources') or not op.get('static_checks'):
         return
-    from backend.routers.routeros_nat import _egress, preserves_sources
+    from backend.routers.routeros_nat import _egress, preserves_sources, RouteEgressIndex
     state = driver.read_state()
     live = snapshot(driver)
     removing = {(item['path'], item['id']) for item in op['owned'] + op['migrations']}
     policy = removing | {(item['path'], item['id']) for item in resources}
     context = state.nat_context or {}
     context['mangle'] = [row for row in live[MANGLE] if (MANGLE, row['.id']) not in policy]
+    route_index = RouteEgressIndex(context)
     rows = [row for row in live[NAT] if (NAT, row['.id']) not in removing]
     sources = [ipaddress.IPv4Network(value) for value in previous['sources']]
     for check in op['static_checks']:
@@ -204,7 +205,7 @@ def _verify_replacement_nat(driver, op, resources):
                 destinations.append(old if old.subnet_of(target) else target)
         if not destinations:
             continue
-        interface, reason = _egress(check['cidr'], check['gateway'], context)
+        interface, reason = _egress(check['cidr'], check['gateway'], context, route_index=route_index)
         if interface is None or not preserves_sources(rows, sources, destinations, interface, context):
             raise RouterError('替代静态 NAT 无法证明覆盖原策略的来源、目的及出口，保留原来源策略：'
                               + check['cidr'] + (('；' + reason) if reason else ''))
@@ -229,10 +230,11 @@ def apply(driver, op):
             undo = driver.apply(preparation)
             journal.append({'action': 'operation', 'undo': undo})
         if op.get('static_checks'):
-            from backend.routers.base import is_managed, static_route_candidates
+            from backend.routers.base import is_managed, StaticRouteIndex
             state = driver.read_state()
+            route_index = StaticRouteIndex(state.routes)
             for check in op['static_checks']:
-                candidates = static_route_candidates(state.routes, check['cidr'], check['gateway'])
+                candidates = route_index.select(check['cidr'], check['gateway']).candidates
                 if not candidates or not all(is_managed(route.comment) for route in candidates):
                     raise RouterError('替代静态路由尚未生效，保留原来源策略：' + check['cidr'])
         if op.get('static_nat_checks'):
@@ -293,7 +295,7 @@ def verify(driver, check):
     owned_keys = {(entry['path'], entry['id']) for entry in owned}
     if any(enabled(row) and row.get('action') == 'fasttrack-connection' for row in live[FILTER]):
         raise RouterError('发布期间出现 FastTrack，无法确认来源策略继续生效')
-    from backend.routers.routeros_nat import assess_nat, _egress
+    from backend.routers.routeros_nat import assess_nat, _egress, RouteEgressIndex
     state = driver.read_state()
     state.nat_context.update(
         mangle=[row for row in live[MANGLE] if (MANGLE, row['.id']) not in owned_keys],
@@ -302,7 +304,9 @@ def verify(driver, check):
            and row.get('action') in {'mark-routing', 'route', 'jump', 'accept', 'return'}
            for row in state.nat_context['mangle']):
         raise RouterError('发布期间出现其他 prerouting 分流或终止规则，请重新预览')
-    interface, reason = _egress(check['spec']['destinations'][0], check['spec']['gateway'], state.nat_context, policy_routing=True)
+    route_index = RouteEgressIndex(state.nat_context)
+    interface, reason = _egress(check['spec']['destinations'][0], check['spec']['gateway'], state.nat_context,
+                               policy_routing=True, route_index=route_index)
     if interface is None:
         raise RouterError('回读无法确认策略下一跳出口：' + reason)
     if check['spec'].get('egress_interface', interface) != interface:
@@ -312,7 +316,8 @@ def verify(driver, check):
             raise RouterError('策略下一跳出口在发布期间发生变化')
     else:
         for cidr in check['spec']['destinations']:
-            assessment = assess_nat(cidr, check['spec']['gateway'], state, policy_routing=True)
+            assessment = assess_nat(cidr, check['spec']['gateway'], state, policy_routing=True,
+                                    route_index=route_index)
             if assessment['status'] != 'not_required':
                 raise RouterError('策略流量不再能确认无需 NAT 免转换：' + assessment['detail'])
     for entry in owned:

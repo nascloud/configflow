@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 from backend.routers.base import (
     POLICY_AUTO_COMMENT, POLICY_MANUAL_COMMENT, RouterState, as_dict, is_managed, managed_comment, policy_route,
-    policy_route_ok, stale_route_warning, stale_routes, static_route_candidates,
+    policy_route_ok, stale_route_warning, stale_routes, StaticRouteIndex,
 )
 from backend.routers.dhcp_dns import build_dns_report
 from backend.routers.report import _networks
@@ -104,6 +104,7 @@ def _lan_except(gateway: str) -> List[str]:
 
 def _route_ops(report: Dict[str, Any], state: RouterState, gateway: str, warnings: List[str]):
     ops, skipped = [], set()
+    route_index = StaticRouteIndex(state.routes)
     for item in report['routes']['items']:
         cidr = item['cidr']
         if item['status'] == 'missing':
@@ -111,7 +112,7 @@ def _route_ops(report: Dict[str, Any], state: RouterState, gateway: str, warning
             ops.append({'kind': 'route_add', 'cidr': cidr, 'gateway': gateway, 'comment': comment,
                         'summary': f'新增路由 {cidr} → {gateway}（备注 {comment}）'})
         elif item['status'] == 'adoptable':
-            for route in static_route_candidates(state.routes, cidr, gateway):
+            for route in route_index.select(cidr, gateway).candidates:
                 if is_managed(route.comment):
                     continue
                 comment = managed_comment(route.comment)

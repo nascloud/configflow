@@ -6,14 +6,14 @@ import requests
 
 from backend.routers.base import (
     RouterError, RouterRollbackError, RouterState, is_managed, policy_route, policy_route_ok, stale_route_warning,
-    stale_routes, static_route_candidates,
+    stale_routes, StaticRouteIndex,
 )
 from backend.routers.dhcp_dns import checked_dns_target, verify_dns
 from backend.routers.plan import (
     RETURN_ALLOCATION_FIELDS, RETURN_SAFETY_VERSION, return_allocation, return_safety_blockers,
 )
 from backend.routers.report import _networks
-from backend.routers.routeros_nat import assess_nat
+from backend.routers.routeros_nat import assess_nat, RouteEgressIndex
 
 
 class ReleaseError(Exception):
@@ -82,8 +82,9 @@ def verify_nat(checks: Dict[str, Any], state: RouterState) -> None:
     uncovered = [cidr for cidr in checks['nat_bypass'] if not _covered(cidr, state)]
     if uncovered:
         raise RouterError(f'回读校验失败：{", ".join(uncovered)} 没有被受管 NAT 免转换规则覆盖')
+    route_index = RouteEgressIndex(state.nat_context)
     for check in checks.get('nat_not_required') or []:
-        assessment = assess_nat(check['cidr'], check['gateway'], state)
+        assessment = assess_nat(check['cidr'], check['gateway'], state, route_index=route_index)
         if assessment['status'] != 'not_required':
             raise RouterError(f'回读校验失败：{check["cidr"]} 无法继续确认无需 NAT 免转换。{assessment["detail"]}')
 
@@ -131,8 +132,9 @@ def _verify(stage: str, checks: Dict[str, Any], driver, agent: AgentReturnRoutin
         if checks.get('ros_policy') is not None:
             from backend.routers.ros_policy_write import verify
             verify(driver, checks['ros_policy'])
+        route_index = StaticRouteIndex(state.routes)
         for check in checks['routes']:
-            candidates = static_route_candidates(state.routes, check['cidr'], check['gateway'])
+            candidates = route_index.select(check['cidr'], check['gateway']).candidates
             if not candidates or not all(is_managed(route.comment) for route in candidates):
                 raise ReleaseError(f'回读校验失败：{check["cidr"]} 没有有效且无冲突的受管主路由指向 {check["gateway"]}')
         for check in checks.get('policy_routes') or []:

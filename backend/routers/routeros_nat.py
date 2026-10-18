@@ -6,7 +6,7 @@ excludes a potentially translating rule; other packet matchers remain possible.
 import ipaddress
 from typing import Any, Dict, Optional, Tuple
 
-from backend.routers.base import RouteEntry, static_route_selection
+from backend.routers.base import RouteEntry, StaticRouteIndex
 
 
 NON_TRANSLATING = {'accept', 'log', 'passthrough', 'return'}
@@ -50,8 +50,57 @@ def _interface(value: Any) -> Optional[str]:
     return None
 
 
+class RouteEgressIndex:
+    """Parsed NAT route evidence scoped to a single, unchanged device read."""
+    def __init__(self, context):
+        self.error = ''
+        self.main = []
+        self.raw = {}
+        self._static = None
+        self._gateways = {}
+        rows = context.get('routes') if isinstance(context, dict) else None
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            self.error = '无法读取路由出口信息'
+            return
+        for row in rows:
+            if (row.get('routing-table') or 'main') != 'main':
+                continue
+            network = _network(row)
+            if network is None:
+                if _enabled(row):
+                    self.error = '主路由表包含无法识别的目的地址'
+                continue
+            self.main.append((row, network))
+        self.exact = {network for _, network in self.main}
+
+    def select(self, cidr, gateway):
+        if self._static is None:
+            entries = []
+            for index, (row, network) in enumerate(self.main):
+                active = _truthy(row['active']) if 'active' in row else None
+                if active is None and 'inactive' in row:
+                    active = not _truthy(row['inactive'])
+                if _truthy(row.get('inactive')) or _truthy(row.get('invalid')):
+                    active = False
+                try:
+                    distance = int(row['distance'])
+                except (KeyError, TypeError, ValueError):
+                    distance = None
+                key = str(index)
+                entries.append(RouteEntry(key, str(network), str(row.get('gateway') or ''), _enabled(row),
+                                          active=active, distance=distance))
+                self.raw[key] = row
+            self._static = StaticRouteIndex(entries)
+        return self._static.select(cidr, gateway)
+
+    def gateway_egress(self, next_hop):
+        if next_hop not in self._gateways:
+            self._gateways[next_hop] = _gateway_egress(next_hop, self.main)
+        return self._gateways[next_hop]
+
+
 def _egress(cidr: str, gateway: str, context: Dict[str, Any], *,
-            policy_routing: bool = False) -> Tuple[Optional[str], str]:
+            policy_routing: bool = False, route_index=None) -> Tuple[Optional[str], str]:
     """Resolve static destinations or the next hop of a verified policy table.
 
     Policy callers validate Mangle priority and their table separately. Its
@@ -91,39 +140,18 @@ def _egress(cidr: str, gateway: str, context: Dict[str, Any], *,
     if any(_enabled(row) and row.get('name') != 'main' for row in context['vrfs']):
         return None, '存在非 main VRF，不能确定旁路出口'
 
-    rows = context.get('routes')
-    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-        return None, '无法读取路由出口信息'
-    main = [(row, _network(row)) for row in rows
-            if (row.get('routing-table') or 'main') == 'main']
-    if any(network is None for row, network in main if _enabled(row)):
-        return None, '主路由表包含无法识别的目的地址'
-    main = [(row, network) for row, network in main if network is not None]
-
+    index = route_index if route_index is not None else RouteEgressIndex(context)
+    if index.error:
+        return None, index.error
     if policy_routing:
-        return _gateway_egress(next_hop, main)
+        return index.gateway_egress(next_hop)
 
-    entries, raw = [], {}
-    for index, (row, network) in enumerate(main):
-        active = _truthy(row['active']) if 'active' in row else None
-        if active is None and 'inactive' in row:
-            active = not _truthy(row['inactive'])
-        if _truthy(row.get('inactive')) or _truthy(row.get('invalid')):
-            active = False
-        try:
-            distance = int(row['distance'])
-        except (KeyError, TypeError, ValueError):
-            distance = None
-        key = str(index)
-        entries.append(RouteEntry(key, str(network), str(row.get('gateway') or ''), _enabled(row),
-                                  active=active, distance=distance))
-        raw[key] = row
-    selection = static_route_selection(entries, cidr, str(next_hop))
+    selection = index.select(cidr, str(next_hop))
     if selection.conflict:
         return None, '代理网段存在有效的其他下一跳，不能确定整个网段使用同一旁路出口'
     interfaces = set()
     for entry in selection.selected:
-        row = raw[entry.id]
+        row = index.raw[entry.id]
         if (entry.active is not True
                 or any(_truthy(row.get(key)) for key in ('blackhole', 'invalid', 'ecmp'))):
             return None, '代理路由未生效、无效、属于黑洞路由或包含多个等价出口'
@@ -141,9 +169,9 @@ def _egress(cidr: str, gateway: str, context: Dict[str, Any], *,
         interfaces.add(interface)
 
     if not selection.covered:
-        if any(network == target for _, network in main):
+        if target in index.exact:
             return None, '代理路由未生效，无法确认整个网段的实际出口'
-        interface, error = _gateway_egress(next_hop, main)
+        interface, error = index.gateway_egress(next_hop)
         if interface is None:
             return None, error
         interfaces.add(interface)
@@ -221,7 +249,7 @@ def _selector_matches(value: Any, interface: str, context: Dict[str, Any], is_li
     return not result if negate and result is not None else result
 
 
-def assess_nat(cidr: str, gateway: str, state, *, policy_routing: bool = False) -> Dict[str, str]:
+def assess_nat(cidr: str, gateway: str, state, *, policy_routing: bool = False, route_index=None) -> Dict[str, str]:
     """Return ``not_required``, ``missing`` or ``unknown`` for one proxy CIDR.
 
     ``missing`` means a source-NAT rule may match: source, destination, protocol
@@ -247,7 +275,8 @@ def assess_nat(cidr: str, gateway: str, state, *, policy_routing: bool = False) 
         restricted = bool(row.get('out-interface') or row.get('out-interface-list'))
         if restricted:
             if egress_error is None:
-                interface, egress_error = _egress(cidr, gateway, context, policy_routing=policy_routing)
+                interface, egress_error = _egress(cidr, gateway, context, policy_routing=policy_routing,
+                                                  route_index=route_index)
             if interface is None:
                 unknown.append(egress_error)
                 continue

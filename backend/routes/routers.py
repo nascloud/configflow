@@ -126,7 +126,7 @@ def update_or_delete_router(router_id):
             router = normalize(request.get_json(silent=True), existing)
         except RouterValidationError as error:
             return jsonify({'success': False, 'message': str(error)}), 400
-        if any(router.get(key) != existing.get(key) for key in ('type', 'endpoint', 'username', 'password')):
+        if any(router.get(key) != existing.get(key) for key in ('type', 'endpoint', 'username', 'password', 'verify_tls')):
             router.pop('last_probe', None)   # stale once the connection changes
         get_repository().save_router_settings(profile_id, existing, router)
         reset_config_context()

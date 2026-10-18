@@ -360,17 +360,19 @@ def build(desired, state):
         context['mangle'] = other_mangle
         route_ids = {item['id'] for item in migrations if item['path'] == ROUTES}
         context['routes'] = [row for row in context['routes'] if row.get('.id') not in route_ids]
-    from backend.routers.routeros_nat import assess_nat, _egress
+    from backend.routers.routeros_nat import assess_nat, _egress, RouteEgressIndex
+    route_index = RouteEgressIndex(context)
     proxy_state = copy.copy(state)
     proxy_state.nat_context = context
     need_nat = False
     interface = None
     if request['selected'] and spec['destinations']:
-        interface, reason = _egress(spec['destinations'][0], gateway, context or {}, policy_routing=True)
+        interface, reason = _egress(spec['destinations'][0], gateway, context or {}, policy_routing=True,
+                                   route_index=route_index)
         if interface is None:
             result['blockers'].append('无法确认 Mihomo 的 LAN 出口：' + reason)
         for cidr in spec['destinations']:
-            assessment = assess_nat(cidr, gateway, proxy_state, policy_routing=True)
+            assessment = assess_nat(cidr, gateway, proxy_state, policy_routing=True, route_index=route_index)
             if assessment['status'] == 'unknown':
                 result['blockers'].append(f'{cidr}：{assessment["detail"]}')
                 break
