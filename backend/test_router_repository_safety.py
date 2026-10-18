@@ -59,7 +59,7 @@ def replace_routers(repository, writer, routers):
 
 @pytest.mark.parametrize('writer', ['profile-import', 'whole-import', 'fields', 'save', 'transaction'])
 @pytest.mark.parametrize('change', ['remove-router', 'remove-manifest', 'replace-manifest', 'id',
-                                    'type', 'endpoint', 'username', 'password', 'verify_tls'])
+                                    'type', 'endpoint'])
 def test_every_writer_rejects_live_ownership_loss(repository, writer, change):
     persist(repository)
     before = repository.export_all()
@@ -77,6 +77,31 @@ def test_every_writer_rejects_live_ownership_loss(repository, writer, change):
     with pytest.raises(ProfileInUse):
         replace_routers(repository, writer, routers)
     assert repository.path.read_bytes() == raw
+    assert repository.export_all() == before
+
+
+@pytest.mark.parametrize('writer', ['profile-import', 'whole-import', 'fields', 'save', 'transaction'])
+@pytest.mark.parametrize('field', ['username', 'password', 'verify_tls'])
+def test_credential_repair_preserves_ownership_in_every_writer(repository, writer, field):
+    persist(repository)
+    before = repository.export_all()
+    routers = copy.deepcopy(before['profiles']['live']['routers'])
+    routers['items'][0][field] = False if field == 'verify_tls' else 'replacement'
+    replace_routers(repository, writer, routers)
+    saved = repository.get_profile('live')['routers']['items'][0]
+    assert saved == routers['items'][0]
+    assert saved['ros_policy_state'] == MANIFEST
+
+
+@pytest.mark.parametrize('field', ['username', 'password', 'verify_tls'])
+def test_live_publication_still_locks_credential_repairs(repository, field):
+    router = persist(repository)
+    before = repository.export_all()
+    replacement = {**router, field: False if field == 'verify_tls' else 'replacement'}
+    with job_lock('live', router['id'], router) as acquired:
+        assert acquired
+        with pytest.raises(ProfileInUse):
+            replace_routers(repository, 'profile-import', {'items': [replacement]})
     assert repository.export_all() == before
 
 
@@ -310,16 +335,51 @@ def test_batch_http_mutation_during_first_readback_cannot_erase_router(router_ap
 
 
 @pytest.mark.parametrize('field', ['username', 'password', 'verify_tls'])
-def test_router_settings_reject_live_credential_changes(router_api, field):
+def test_router_settings_allow_credential_repair_without_device_writes(router_api, field):
     client, admin, path, driver, constructed, closed = router_api
     publish(client, admin, path)
     before = snapshot()
+    manifest = copy.deepcopy(before['routers']['items'][0]['ros_policy_state'])
     rows, writes = copy.deepcopy(driver.rows), copy.deepcopy(driver.writes)
     constructed.clear()
     closed.clear()
     response = client.put(path, headers=admin,
                           json={field: False if field == 'verify_tls' else 'changed'})
-    assert response.status_code == 409, response.get_json()
-    assert snapshot() == before
+    assert response.status_code == 200, response.get_json()
+    saved = snapshot()['routers']['items'][0]
+    assert saved[field] == (False if field == 'verify_tls' else 'changed')
+    assert saved['ros_policy_state'] == manifest
     assert driver.rows == rows and driver.writes == writes
     assert not constructed and not closed
+
+
+def test_rotated_router_password_can_be_repaired_then_policy_withdrawn(router_api, monkeypatch):
+    from backend.routers.base import RouterError
+    client, admin, path, driver, _, _ = router_api
+    publish(client, admin, path)
+    manifest = copy.deepcopy(snapshot()['routers']['items'][0]['ros_policy_state'])
+    rows = copy.deepcopy(driver.rows)
+    authenticated = [False]
+    original_request = driver._request
+
+    def require_new_password(endpoint, username, password, **kwargs):
+        authenticated[0] = password == 'new-password'
+        return driver
+
+    def authenticated_request(*args, **kwargs):
+        if not authenticated[0]:
+            raise RouterError('RouterOS 认证失败')
+        return original_request(*args, **kwargs)
+
+    monkeypatch.setitem(routes_module.DRIVERS, 'routeros', require_new_password)
+    monkeypatch.setattr(driver, '_request', authenticated_request)
+    assert client.post(path + '/plan', headers=admin).status_code == 502
+    response = client.put(path, headers=admin, json={'password': 'new-password'})
+    assert response.status_code == 200, response.get_json()
+    assert snapshot()['routers']['items'][0]['ros_policy_state'] == manifest
+    assert driver.rows == rows
+    response = client.put(path, headers=admin, json={'ros_policy_rule_sets': []})
+    assert response.status_code == 200, response.get_json()
+    publish(client, admin, path)
+    assert not snapshot()['routers']['items'][0].get('ros_policy_state')
+    assert not driver.rows['/ip/firewall/mangle']

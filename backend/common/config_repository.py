@@ -166,7 +166,8 @@ RESOURCE_FIELDS = SHARED_FIELDS[:3]
 PROFILE_FIELDS = ('proxy_groups', 'rule_configs', 'mihomo', 'surge', 'mosdns', 'oxidns', 'loon', 'domain_discovery', 'routers')
 BUILTIN_POLICIES = {'DIRECT', 'REJECT'}
 RULE_SOURCE_FIELDS = ('name', 'url', 'behavior', 'content', 'source_type', 'format')
-ROUTER_CONNECTION_FIELDS = ('type', 'endpoint', 'username', 'password', 'verify_tls')
+ROUTER_IDENTITY_FIELDS = ('type', 'endpoint')
+ROUTER_CONNECTION_FIELDS = (*ROUTER_IDENTITY_FIELDS, 'username', 'password', 'verify_tls')
 
 def _items_by_id(items, label):
     if not isinstance(items, list):
@@ -621,11 +622,16 @@ class ProfileRepository:
             new = new_routers.get(key)
             connection_changed = new is None or any(
                 old.get(field) != new.get(field) for field in ROUTER_CONNECTION_FIELDS)
+            identity_changed = new is None or any(
+                old.get(field) != new.get(field) for field in ROUTER_IDENTITY_FIELDS)
             manifest_changed = new is None or old.get('ros_policy_state') != new.get('ros_policy_state')
+            # Credentials may have expired on the same device. Keep its exact
+            # ownership receipt while allowing access to be repaired; every
+            # connection change still takes the publication lock below.
             if old.get('ros_policy_state') and (
-                    connection_changed or (manifest_changed and key != policy_router)):
+                    identity_changed or (manifest_changed and key != policy_router)):
                 profile_id, router_id = key
-                raise ProfileInUse('路由器仍有已发布的策略路由；请先发布并核对撤回，再修改连接或删除发布记录',
+                raise ProfileInUse('路由器仍有已发布的策略路由；请先发布并核对撤回，再修改类型、地址或删除发布记录',
                                    [{'kind': 'router', 'id': router_id, 'name': old.get('name', router_id),
                                      'profile_id': profile_id,
                                      'profile_name': previous['profiles'][profile_id]['name']}])

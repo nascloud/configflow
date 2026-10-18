@@ -6,6 +6,8 @@ need to know router specifics. Writable drivers apply release operations (see
 ``backend.routers.plan``) one at a time and return the operation that undoes it.
 """
 import ipaddress
+from bisect import bisect_left, bisect_right
+from heapq import heappop, heappush
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -77,65 +79,93 @@ def _preferred_routes(routes: List[RouteEntry]) -> List[RouteEntry]:
             or (route.active is not False and (route.distance is None or distance is None))]
 
 
-def static_route_selection(routes: List[RouteEntry], cidr: str, gateway: str) -> StaticRouteSelection:
-    """Prove effective coverage using longest-prefix and runtime selection.
+class StaticRouteIndex:
+    """One readback's parsed routes; callers discard it after their batch.
 
-    Destination boundaries partition the target without enumerating addresses.
-    A wrong aggregate is harmless only if correct effective subnets cover every
-    address. Drivers lacking runtime/preference evidence retain legacy exact
-    configured-route semantics.
+    Sorted network starts restrict each lookup to possible subnets. Neither
+    this index nor its selections are cached across device reads or writes.
     """
-    target = ipaddress.ip_network(cidr, strict=False)
-    groups = {}
-    for route in routes:
-        if route.table != 'main' or not route.enabled:
-            continue
-        try:
-            network = ipaddress.ip_network(route.dst, strict=False)
-        except ValueError:
-            continue
-        if network.version == target.version and network.subnet_of(target):
-            groups.setdefault(network, []).append(route)
-    exact = groups.get(target, [])
-    result = StaticRouteSelection()
-    if not any(route.active is not None or route.distance is not None
-               for group in groups.values() for route in group):
-        good = [route for route in exact if gateway and route.gateway == gateway]
-        if good:
-            result.candidates = [next((route for route in good if is_managed(route.comment)), good[0])]
-            result.selected = good
-            result.covered = True
+    def __init__(self, routes: List[RouteEntry]):
+        self.exact = {}
+        self.groups = {}
+        for route in routes:
+            if route.table != 'main':
+                continue
+            self.exact.setdefault(route.dst, []).append(route)
+            if not route.enabled:
+                continue
+            try:
+                network = ipaddress.ip_network(route.dst, strict=False)
+            except ValueError:
+                continue
+            self.groups.setdefault(network, []).append(route)
+        self.preferred = {network: _preferred_routes(group) for network, group in self.groups.items()}
+        self.networks = {
+            version: sorted((network for network in self.groups if network.version == version),
+                            key=lambda network: (int(network.network_address), network.prefixlen))
+            for version in (4, 6)}
+        self.starts = {version: [int(network.network_address) for network in networks]
+                       for version, networks in self.networks.items()}
+
+    def select(self, cidr: str, gateway: str) -> StaticRouteSelection:
+        target = ipaddress.ip_network(cidr, strict=False)
+        starts = self.starts[target.version]
+        left = bisect_left(starts, int(target.network_address))
+        right = bisect_right(starts, int(target.broadcast_address))
+        networks = [network for network in self.networks[target.version][left:right]
+                    if network.prefixlen >= target.prefixlen]
+        groups = {network: self.groups[network] for network in networks}
+        exact = groups.get(target, [])
+        result = StaticRouteSelection()
+        if not any(route.active is not None or route.distance is not None
+                   for group in groups.values() for route in group):
+            good = [route for route in exact if gateway and route.gateway == gateway]
+            if good:
+                result.candidates = [next((route for route in good if is_managed(route.comment)), good[0])]
+                result.selected = good
+                result.covered = True
+            return result
+
+        preferred = {network: self.preferred[network] for network in networks if self.preferred[network]}
+        boundaries = {int(target.network_address), int(target.broadcast_address) + 1}
+        intervals = []
+        for network in preferred:
+            start, end = int(network.network_address), int(network.broadcast_address)
+            boundaries.update((start, end + 1))
+            intervals.append((start, end, network))
+        selected_groups = {}
+        result.covered = True
+        active, cursor = [], 0
+        for start in sorted(boundaries)[:-1]:
+            while cursor < len(intervals) and intervals[cursor][0] <= start:
+                _, end, network = intervals[cursor]
+                heappush(active, (-network.prefixlen, end, cursor, network))
+                cursor += 1
+            while active and active[0][1] < start:
+                heappop(active)
+            if not active:
+                result.covered = False
+                continue
+            network = active[0][3]
+            selected_groups[network] = preferred[network]
+        result.selected = [route for group in selected_groups.values() for route in group]
+        result.conflict = any(not gateway or route.gateway != gateway for route in result.selected)
+        if result.covered and not result.conflict:
+            # Own the effective exact anchor, or the full more-specific cover.
+            # A wrong aggregate shadowed by correct subnets is never adopted.
+            anchors = preferred.get(target, [])
+            ownership = [anchors] if anchors and all(route.gateway == gateway for route in anchors) else selected_groups.values()
+            for group in ownership:
+                live = [route for route in group if route.active is True]
+                if not live:
+                    live = [route for route in group if route.active is not False]
+                result.candidates.append(next((route for route in live if is_managed(route.comment)), live[0]))
         return result
 
-    preferred = {network: _preferred_routes(group) for network, group in groups.items()}
-    boundaries = {int(target.network_address), int(target.broadcast_address) + 1}
-    for network, group in preferred.items():
-        if group:
-            boundaries.update((int(network.network_address), int(network.broadcast_address) + 1))
-    selected_groups = {}
-    result.covered = True
-    for start in sorted(boundaries)[:-1]:
-        covering = [network for network, group in preferred.items()
-                    if group and int(network.network_address) <= start <= int(network.broadcast_address)]
-        if not covering:
-            result.covered = False
-            continue
-        network = max(covering, key=lambda network: network.prefixlen)
-        selected_groups[network] = preferred[network]
-    result.selected = [route for group in selected_groups.values() for route in group]
-    result.conflict = any(not gateway or route.gateway != gateway for route in result.selected)
-    if result.covered and not result.conflict:
-        # A correct effective exact route remains the deployment anchor even
-        # when manual same-gateway specifics exist. Otherwise own the complete
-        # more-specific coverage, not an unrelated/wrong exact route.
-        anchors = preferred.get(target, [])
-        ownership = [anchors] if anchors and all(route.gateway == gateway for route in anchors) else selected_groups.values()
-        for group in ownership:
-            live = [route for route in group if route.active is True]
-            if not live:
-                live = [route for route in group if route.active is not False]
-            result.candidates.append(next((route for route in live if is_managed(route.comment)), live[0]))
-    return result
+
+def static_route_selection(routes: List[RouteEntry], cidr: str, gateway: str) -> StaticRouteSelection:
+    """Single lookup; batch callers reuse a StaticRouteIndex for their snapshot."""
+    return StaticRouteIndex(routes).select(cidr, gateway)
 
 
 def static_route_candidates(routes: List[RouteEntry], cidr: str, gateway: str) -> List[RouteEntry]:

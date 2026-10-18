@@ -14,10 +14,10 @@ from typing import Any, Dict, Iterable, List
 
 from backend.routers.base import (
     POLICY_AUTO_COMMENT, POLICY_MANUAL_COMMENT, RouterState, as_dict, is_managed, policy_route, policy_route_ok,
-    static_route_selection,
+    StaticRouteIndex,
 )
 from backend.routers.dhcp_dns import build_dns_report
-from backend.routers.routeros_nat import assess_nat
+from backend.routers.routeros_nat import assess_nat, RouteEgressIndex
 
 
 def _networks(values: Iterable[str]) -> List[ipaddress.IPv4Network]:
@@ -88,9 +88,10 @@ def _route_items(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
     desired_cidrs = {entry['cidr'] for entry in desired['proxy_cidrs']}
     items = []
     required_route_ids = set()
+    route_index = StaticRouteIndex(state.routes)
     for entry in desired['proxy_cidrs']:
-        matches = [route for route in state.routes if route.table == 'main' and route.dst == entry['cidr']]
-        selection = static_route_selection(state.routes, entry['cidr'], gateway)
+        matches = route_index.exact.get(entry['cidr'], [])
+        selection = route_index.select(entry['cidr'], gateway)
         good = selection.candidates
         required_route_ids.update(route.id for route in good)
         if good and all(is_managed(route.comment) for route in good):
@@ -126,6 +127,7 @@ def _route_items(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
 
 def _nat_items(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
     rules = [rule for rule in state.nat_bypass if rule.enabled]
+    route_index = RouteEgressIndex(state.nat_context)
     items = []
     for entry in desired['proxy_cidrs']:
         target = ipaddress.IPv4Network(entry['cidr'])
@@ -135,7 +137,8 @@ def _nat_items(desired: Dict[str, Any], state: RouterState) -> Dict[str, Any]:
         elif covering:
             status, detail = 'adoptable', f'已被手工规则「{covering[0].comment or covering[0].id}」覆盖，将直接接管'
         elif state.nat_context is not None:
-            assessment = assess_nat(entry['cidr'], desired.get('proxy_gateway') or '', state)
+            assessment = assess_nat(entry['cidr'], desired.get('proxy_gateway') or '', state,
+                                    route_index=route_index)
             status, detail = assessment['status'], assessment['detail']
         else:
             status, detail = 'missing', '未发现覆盖该网段的 NAT 免转换规则，需结合源 NAT 配置确认是否影响客户端 IP'
